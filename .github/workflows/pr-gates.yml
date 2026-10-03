@@ -443,7 +443,7 @@ jobs:
 
       - name: Trivy 檔案系統掃描（vuln → SARIF）
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:
           scan-type: fs
           scan-ref: .
@@ -482,7 +482,7 @@ jobs:
         id: cfg
         shell: bash
         run: |
-          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
           echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
@@ -490,6 +490,7 @@ jobs:
         continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
         uses: gitleaks/gitleaks-action@v2
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: config/gitleaks.toml
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
           GITLEAKS_ENABLE_SUMMARY: "true"
@@ -515,7 +516,7 @@ jobs:
           if [ "${{ steps.cfg.outputs.mode }}" = "enforce" ] && [ "$fail" = "1" ]; then exit 1; fi
 
       - name: Upload Gitleaks SARIF（若產生）
-        if: always()
+        if: always() && hashFiles('results.sarif') != ''
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -539,7 +540,7 @@ jobs:
         id: cfg
         shell: bash
         run: |
-          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
           echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
@@ -582,7 +583,7 @@ jobs:
         id: cfg
         shell: bash
         run: |
-          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Checkov（IaC → SARIF）
@@ -603,7 +604,7 @@ jobs:
 
       - name: Trivy config 掃描（IaC misconfig → SARIF）
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:
           scan-type: config
           scan-ref: .
@@ -633,7 +634,7 @@ jobs:
         id: cfg
         shell: bash
         run: |
-          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
           echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
@@ -788,7 +789,7 @@ jobs:
       - name: 彙整 gate-status 矩陣
         shell: bash
         run: |
-          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           mkdir -p reports
           find _artifacts -name 'g*-gate.json' -exec cp {} reports/ \; 2>/dev/null || true
           python3 - "$MODE" <<'EOF'
