@@ -1,0 +1,195 @@
+# VibeSec 夜間全量掃描 — 補齊 diff-aware 未覆蓋的全庫檢查
+# 02:00 Asia/Taipei（= 18:00 UTC）。CodeQL 深度 SAST + 全量 Semgrep + 全量 G1（Syft/Grype/Trivy）+ EPSS/KEV 富化。
+name: VibeSec Nightly Full Scan
+
+on:
+  schedule:
+    - cron: "0 18 * * *"   # 18:00 UTC = 02:00 Asia/Taipei
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  codeql:
+    name: CodeQL 深度 SAST（全量）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: vibesec-nightly-codeql-${{ matrix.language }}
+
+  semgrep-full:
+    name: Semgrep 全量（無 baseline）
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan（全庫、無 diff baseline）
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          semgrep scan \
+            --config config/semgrep/vibesec-rules.yaml \
+            --config p/owasp-top-ten \
+            --config p/security-audit \
+            --sarif --output reports/semgrep-full.sarif || true
+      - name: Upload Semgrep full SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/semgrep-full.sarif
+          category: vibesec-nightly-semgrep
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibesec-nightly-semgrep
+          path: reports/
+          if-no-files-found: ignore
+
+  g1-full:
+    name: G1 全量供應鏈（Syft/Grype/Trivy + EPSS/KEV 富化）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore 富化快取（EPSS/KEV）
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: vibesec-enrich-${{ github.run_id }}
+          restore-keys: |
+            vibesec-enrich-
+
+      - name: 安裝 Syft 與 Grype（best-effort）
+        continue-on-error: true
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin || echo "syft install failed"
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin || echo "grype install failed"
+
+      - name: Syft SBOM（全庫）+ Grype（SARIF + JSON）
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          if command -v syft >/dev/null 2>&1; then
+            syft dir:. -o cyclonedx-json=reports/sbom.cdx.json
+          fi
+          if command -v grype >/dev/null 2>&1 && [ -f reports/sbom.cdx.json ]; then
+            grype sbom:reports/sbom.cdx.json -o sarif --file reports/grype-full.sarif || true
+            grype sbom:reports/sbom.cdx.json -o json --file reports/grype-full.json || true
+          fi
+
+      - name: Trivy 全庫掃描（SARIF）
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: reports/trivy-full.sarif
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+
+      - name: EPSS / KEV 富化（inline python, stdlib；分欄記錄、不混算）
+        continue-on-error: true
+        run: |
+          python3 - <<'EOF'
+          # 由 Grype/Trivy 輸出收集 CVE，查 FIRST EPSS 與 CISA KEV。
+          # 不可違反：EPSS 與查詢日、KEV 與日期分欄記錄；不做 CVSS × EPSS × 信心 乘法。
+          import json, re, pathlib, datetime, urllib.request, urllib.error, os
+          NOW = datetime.datetime.now(datetime.timezone.utc)
+          def iso(dt): return dt.replace(microsecond=0).isoformat()
+          REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
+          CACHE = pathlib.Path(".cache"); CACHE.mkdir(exist_ok=True)
+
+          # 收集 CVE
+          cves = set()
+          for p in ["reports/grype-full.json", "reports/grype-full.sarif", "reports/trivy-full.sarif"]:
+              fp = pathlib.Path(p)
+              if not fp.exists(): continue
+              cves |= set(re.findall(r'CVE-\d{4}-\d{4,7}', fp.read_text(encoding="utf-8", errors="replace")))
+          cves = sorted(cves)
+          print(f"收集到 {len(cves)} 個 CVE")
+
+          enrichment = {}
+
+          # KEV 清單（整包快取 1 天）
+          kev_cache = CACHE / "kev.json"
+          kev_set = {}
+          try:
+              if kev_cache.exists() and (NOW.timestamp() - kev_cache.stat().st_mtime) < 86400:
+                  kev_data = json.loads(kev_cache.read_text(encoding="utf-8"))
+              else:
+                  req = urllib.request.Request("https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+                                               headers={"User-Agent": "vibesec-nightly"})
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      kev_data = json.loads(r.read().decode("utf-8"))
+                  kev_cache.write_text(json.dumps(kev_data), encoding="utf-8")
+              for v in kev_data.get("vulnerabilities", []):
+                  kev_set[v.get("cveID")] = v.get("dateAdded")
+          except Exception as e:
+              print(f"KEV 取得失敗：{e}")
+
+          # EPSS 逐一（或批次）查詢，附查詢日
+          query_date = NOW.date().isoformat()
+          for cve in cves:
+              epss = None; epss_date = None
+              try:
+                  req = urllib.request.Request(f"https://api.first.org/data/v1/epss?cve={cve}",
+                                               headers={"User-Agent": "vibesec-nightly"})
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      d = json.loads(r.read().decode("utf-8"))
+                  rows = d.get("data", [])
+                  if rows:
+                      epss = rows[0].get("epss")
+                      epss_date = rows[0].get("date")
+              except Exception as e:
+                  print(f"EPSS {cve} 失敗：{e}")
+              enrichment[cve] = {
+                  "epss": epss, "epss_date": epss_date, "epss_query_date": query_date,
+                  "kev": cve in kev_set, "kev_date": kev_set.get(cve),
+              }
+          (REPORTS / "enrichment.json").write_text(json.dumps(enrichment, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(f"寫出 reports/enrichment.json（{len(enrichment)} 筆）")
+          EOF
+
+      - name: Upload Grype full SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/grype-full.sarif
+          category: vibesec-nightly-grype
+
+      - name: Upload Trivy full SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/trivy-full.sarif
+          category: vibesec-nightly-trivy
+
+      - name: Upload nightly G1 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibesec-nightly-g1
+          path: reports/
+          if-no-files-found: ignore

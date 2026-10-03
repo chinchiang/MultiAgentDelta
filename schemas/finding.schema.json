@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chinchiang/MultiAgentDelta/schemas/finding.schema.json",
+  "title": "VibeSec Finding",
+  "description": "統一 JSON 發現介面（PLAN.md §4）。技術嚴重度、處置優先序、證據可信度、驗證狀態分開呈現；不適用欄位使用 null。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "gate", "rule_id", "title", "control_id", "cwe", "cve",
+    "severity", "cvss_version", "cvss_vector", "cvss_score",
+    "epss", "epss_date", "kev", "kev_date",
+    "evidence_grade", "validation_status", "policy_tier", "priority",
+    "owner", "due_date", "location", "evidence_refs", "retest_result",
+    "sources", "created_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^VS-[0-9]{8}-[0-9a-f]{8}$", "description": "VS-YYYYMMDD-<8 hex>" },
+    "gate": { "$ref": "#/$defs/gate" },
+    "rule_id": { "type": "string", "description": "來源工具或 vibesec 規則 ID，例如 vibesec.g3.sql-string-concat 或 gitleaks:openai-api-key" },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "control_id": {
+      "type": ["string", "null"],
+      "pattern": "^(ASVS5-V[0-9]+\\.[0-9]+(\\.[0-9]+)?|LLM[0-9]{2}:2025|MAESTRO-L[1-7]|VS-G[0-6]-[A-Z0-9-]+)$",
+      "description": "必須存在於 config/catalogs 中；不得由模型猜測"
+    },
+    "cwe": { "type": ["string", "null"], "pattern": "^CWE-[0-9]+$" },
+    "cve": { "type": ["string", "null"], "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$" },
+    "severity": { "type": ["string", "null"], "enum": ["critical", "high", "medium", "low", "info", null], "description": "技術嚴重度（CVSS 推導或工具提供）" },
+    "cvss_version": { "type": ["string", "null"], "enum": ["4.0", "3.1", null] },
+    "cvss_vector": { "type": ["string", "null"], "pattern": "^CVSS:(4\\.0|3\\.1)/" },
+    "cvss_score": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+    "epss": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "epss_date": { "type": ["string", "null"], "format": "date" },
+    "kev": { "type": ["boolean", "null"] },
+    "kev_date": { "type": ["string", "null"], "format": "date", "description": "KEV 收錄日或查詢日" },
+    "evidence_grade": { "type": "string", "enum": ["E0", "E1", "E2", "E3"], "description": "E0 無支持推測 / E1 候選線索 / E2 有直接支持 / E3 已確認" },
+    "validation_status": { "type": "string", "enum": ["pending", "confirmed", "refuted"] },
+    "policy_tier": { "type": "string", "enum": ["blocking", "advisory"] },
+    "priority": { "type": ["string", "null"], "enum": ["P0", "P1", "P2", "P3", null] },
+    "owner": { "type": ["string", "null"] },
+    "due_date": { "type": ["string", "null"], "format": "date" },
+    "location": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["code", "dependency", "config", "http", "prompt", "architecture"] },
+        "path": { "type": ["string", "null"] },
+        "start_line": { "type": ["integer", "null"], "minimum": 1 },
+        "end_line": { "type": ["integer", "null"], "minimum": 1 },
+        "package": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "url": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["tool_output", "http_exchange", "code_excerpt", "advisory", "model_review", "human_note", "sbom", "trace"] },
+          "ref": { "type": "string", "description": "檔案路徑、URL 或 artifact 內的相對路徑" },
+          "digest": { "type": ["string", "null"], "description": "sha256 或 artifact digest" },
+          "note": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "review": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "opinions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "provider", "family", "round", "verdict"],
+            "properties": {
+              "role": { "type": "string", "enum": ["architecture", "appsec", "identity-authz", "supplychain-cicd"] },
+              "provider": { "type": "string" },
+              "family": { "type": "string", "enum": ["anthropic", "openai", "glm", "deepseek", "fake"] },
+              "model": { "type": ["string", "null"] },
+              "prompt_version": { "type": ["string", "null"] },
+              "round": { "type": "integer", "minimum": 1, "maximum": 3 },
+              "verdict": { "type": "string", "enum": ["confirm", "refute", "uncertain"] },
+              "rationale": { "type": ["string", "null"] },
+              "minority": { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "requires_human": { "type": "boolean" },
+        "human_decision": { "type": ["string", "null"] }
+      }
+    },
+    "retest_result": { "type": ["string", "null"], "enum": ["fixed", "still_present", "regressed", "not_retested", null] },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "tool_version"],
+      "properties": {
+        "tool": { "type": "string" },
+        "tool_version": { "type": ["string", "null"] },
+        "rule_version": { "type": ["string", "null"] },
+        "advisory_url": { "type": ["string", "null"] },
+        "advisory_published": { "type": ["string", "null"], "format": "date" },
+        "queried_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "notes": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "gate": { "type": "string", "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6"] }
+  }
+}

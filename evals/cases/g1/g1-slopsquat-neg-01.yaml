@@ -1,0 +1,15 @@
+id: g1-slopsquat-neg-01
+gate: G1
+domain: dependency
+title: 常見且健康的套件應放行
+input:
+  kind: manifest
+  ecosystem: npm
+  added: ["axios@1.7.2"]
+expected:
+  should_flag: false
+  control_id: ASVS5-V10.1
+  rule_id: vibesec.g1.hallucinated-package
+  policy_tier: blocking
+held_out: false
+notes: 存在、週下載遠大於 1000、發布超過冷卻期。

@@ -1,0 +1,72 @@
+# VibeSec G1：Registry 健康度、冷卻期與名稱相似度參數
+# 讀取者：harness G1 步驟與 .github/workflows/pr-gates.yml。
+# 與 vibesec.yaml 的對應：gates.g1_supply_chain.cooldown_days / min_weekly_downloads / popular_lists / blacklist / allowlist。
+# 若本檔與 vibesec.yaml 衝突，以 vibesec.yaml 為準（本檔只補 vibesec.yaml 未定義的細節）。
+
+version: 1
+
+thresholds:
+  cooldown_days: 14            # 新套件或既有套件「新版本」發布未滿此天數 → 阻擋（允許範圍 7–14；預設取上限）
+  min_weekly_downloads: 1000   # 週下載低於此值 → 高風險（advisory；若同時命中相似度則升為 blocking）
+  min_age_days: 30             # 套件「首次發布」未滿此天數（全新套件）→ 阻擋並要求人工審查
+  min_versions: 2              # 只有 1 個版本的套件視為歷史單薄
+  max_maintainer_change_days: 30   # 近 30 天內維護者變更 → 升高風險並標記（帳號接管常見前兆）
+
+similarity:
+  # 名稱正規化後（小寫；pypi 把 _ 與 . 視同 -；npm 去除 scope 另比）與 popular list 比對
+  levenshtein_max: 2           # 距離 ≤ 2 且不相等 → 疑似 typosquat
+  difflib_ratio_min: 0.85      # difflib.SequenceMatcher ratio ≥ 0.85 且不相等 → 疑似 typosquat
+  min_name_length: 4           # 太短的名稱不比對（避免 ws / qs 等誤報）
+  homoglyph_check: true        # 同形字（大寫 I vs 小寫 l、數字 0 vs 字母 o）正規化後再比
+  separator_variants: true     # foo-bar / foo_bar / foobar / foo.bar 視為同一候選
+  popular_lists:
+    npm: config/slopsquat/popular-npm.txt
+    pypi: config/slopsquat/popular-pypi.txt
+
+blacklist: config/slopsquat/blacklist.yaml
+allowlist: config/slopsquat/allowlist.yaml
+
+registries:
+  npm:
+    metadata_url: "https://registry.npmjs.org/<pkg>"                            # time.created / time[<version>] / maintainers / versions
+    downloads_url: "https://api.npmjs.org/downloads/point/last-week/<pkg>"       # { downloads: N }
+    publish_time_path: "time.<version>"
+    first_publish_path: "time.created"
+  pypi:
+    metadata_url: "https://pypi.org/pypi/<pkg>/json"                             # releases.<version>[0].upload_time_iso_8601
+    downloads_url: "https://pypistats.org/api/packages/<pkg>/recent"             # { data: { last_week: N } }
+    publish_time_path: "releases.<version>[0].upload_time_iso_8601"
+    first_publish_path: "min(releases.*[0].upload_time_iso_8601)"
+
+# 掃描範圍：manifest + lockfile + Agent 規則檔（AI 助手會「照做」規則檔裡的 pip install / npm i）
+manifests:
+  npm: [package.json, package-lock.json, pnpm-lock.yaml, yarn.lock]
+  pypi: [requirements.txt, requirements/*.txt, pyproject.toml, uv.lock, poetry.lock, Pipfile, Pipfile.lock, setup.py, setup.cfg]
+agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "CLAUDE.md", ".cursor/rules/**/*.mdc", "**/*.md"]
+install_command_regex: '(?i)\b(?:pip3?|uv pip|uv add|poetry add|pipx)\s+install\s+([^\n#]+)|\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\s+([^\n#]+)'
+
+# 安裝鉤子靜態啟發式（postinstall / preinstall / setup.py / pyproject build hooks）
+install_hooks:
+  npm_scripts: [preinstall, install, postinstall, prepare]
+  python_files: [setup.py, setup.cfg, pyproject.toml]
+  suspicious_patterns:
+    network: ['(?i)\b(curl|wget|Invoke-WebRequest|fetch\(|http\.request|https\.request|axios|urllib\.request|requests\.(get|post)|socket\.connect)\b']
+    env_read: ['(?i)\bprocess\.env\b', '(?i)\bos\.environ\b', '(?i)\bos\.getenv\b', '(?i)\$\{?[A-Z_]*(TOKEN|SECRET|KEY|PASSWORD)[A-Z_]*\}?']
+    credential_paths: ['~/\.aws', '~/\.npmrc', '~/\.pypirc', '~/\.ssh', '~/\.claude', '~/\.config/gcloud', '~/\.docker/config\.json', '~/\.gitconfig', '~/\.netrc', '~/\.kube/config', '\.env\b']
+    ai_cli_abuse: ['(?i)\b(claude|gemini|codex|aider)\b\s+(-p|--print|--prompt|-y|--yes|--dangerously-skip-permissions)']   # Nx s1ngularity / Shai-Hulud 手法
+    exec: ['(?i)\b(child_process|execSync|spawnSync|subprocess|os\.system|eval\(|new Function\()\b', '(?i)\bbase64\b.*\b(decode|atob|b64decode)\b']
+  decision:
+    any_network_and_env_read: block        # 同時外連 + 讀環境變數 → blocking（vibesec.g1.postinstall-egress）
+    credential_path_access: block
+    ai_cli_abuse: block
+    exec_only: advisory
+
+sbom:
+  tool: syft
+  format: cyclonedx-json
+  output: reports/sbom.cdx.json
+  scanners: [grype, trivy]
+  enrich:
+    epss_url: "https://api.first.org/data/v1/epss?cve=<cve>"
+    kev_url: "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+    record_query_date: true

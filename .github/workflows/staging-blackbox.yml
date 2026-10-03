@@ -1,0 +1,406 @@
+# VibeSec Staging 黑箱 — G5 DAST/API + G6 LLM/Agent 紅隊（由外而內）
+# 部署至 Staging 後、上線前執行；每週定期複測。
+# 不可違反（CLAUDE.md #8）：攻擊性探針只能對 VIBESEC_TARGET_URL 指向的、已授權的測試環境執行。
+# incomplete ≠ pass：目標無法連線／缺帳號 token → 閘門 incomplete，絕不通過。
+name: VibeSec Staging Blackbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "已授權的測試目標 URL（留空則在 job 內啟動 examples/vulnapp 靶場）"
+        required: false
+        type: string
+  schedule:
+    - cron: "0 20 * * 0"   # 每週日 20:00 UTC
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  blackbox:
+    name: G5 DAST/API + G6 AI 紅隊
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        continue-on-error: true
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: 啟動靶場 examples/vulnapp（當未提供 target_url）
+        id: target
+        shell: bash
+        run: |
+          mkdir -p reports
+          INPUT_URL="${{ github.event.inputs.target_url }}"
+          if [ -n "$INPUT_URL" ]; then
+            echo "使用外部已授權目標：$INPUT_URL"
+            echo "url=$INPUT_URL" >> "$GITHUB_OUTPUT"
+            echo "is_vulnapp=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "未提供 target_url → 啟動 examples/vulnapp 靶場（僅打靶場）"
+            export PATH="$HOME/.local/bin:$PATH"
+            nohup uv run --project examples/vulnapp uvicorn app.main:app --host 0.0.0.0 --port 8000 > reports/_vulnapp.log 2>&1 &
+            echo "url=http://127.0.0.1:8000" >> "$GITHUB_OUTPUT"
+            echo "is_vulnapp=true" >> "$GITHUB_OUTPUT"
+            # wait-for-ready
+            for i in $(seq 1 30); do
+              if curl -sf http://127.0.0.1:8000/openapi.json >/dev/null 2>&1 || curl -sf http://127.0.0.1:8000/ >/dev/null 2>&1; then
+                echo "靶場就緒"; break
+              fi
+              sleep 2
+            done
+          fi
+
+      - name: 取得雙帳號 token（靶場登入 seeded users，否則取自 secrets）
+        id: tokens
+        shell: bash
+        env:
+          SECRET_TOKEN_A: ${{ secrets.VIBESEC_TOKEN_A }}
+          SECRET_TOKEN_B: ${{ secrets.VIBESEC_TOKEN_B }}
+        run: |
+          URL="${{ steps.target.outputs.url }}"
+          extract() { python3 -c "import sys,json;
+          try:
+              d=json.load(sys.stdin)
+          except Exception:
+              print(''); sys.exit()
+          print(d.get('access_token') or d.get('token') or d.get('jwt') or '')"; }
+          if [ "${{ steps.target.outputs.is_vulnapp }}" = "true" ]; then
+            TA=$(curl -s -X POST "$URL/login" -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice-pass"}' | extract)
+            TB=$(curl -s -X POST "$URL/login" -H 'Content-Type: application/json' -d '{"username":"bob","password":"bob-pass"}' | extract)
+          else
+            TA="$SECRET_TOKEN_A"; TB="$SECRET_TOKEN_B"
+          fi
+          # 不回顯 token 內容；僅標記是否取得
+          [ -n "$TA" ] && echo "has_a=true" >> "$GITHUB_OUTPUT" || echo "has_a=false" >> "$GITHUB_OUTPUT"
+          [ -n "$TB" ] && echo "has_b=true" >> "$GITHUB_OUTPUT" || echo "has_b=false" >> "$GITHUB_OUTPUT"
+          echo "TOKEN_A=$TA" >> "$GITHUB_ENV"
+          echo "TOKEN_B=$TB" >> "$GITHUB_ENV"
+          echo "::add-mask::$TA"; echo "::add-mask::$TB"
+
+      # ---------- G5：ZAP ----------
+      - name: ZAP API Scan（OpenAPI）
+        continue-on-error: true
+        uses: zaproxy/action-api-scan@v0.7.0
+        with:
+          target: ${{ steps.target.outputs.url }}/openapi.json
+          format: openapi
+          rules_file_name: config/zap/api-scan.conf
+          cmd_options: "-I"
+          allow_issue_writing: false
+          artifact_name: vibesec-zap-api
+
+      - name: ZAP Baseline Scan
+        continue-on-error: true
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: ${{ steps.target.outputs.url }}
+          rules_file_name: config/zap/baseline.conf
+          cmd_options: "-I"
+          allow_issue_writing: false
+          artifact_name: vibesec-zap-baseline
+
+      # ---------- G5：api-probes（stdlib urllib）----------
+      - name: G5 api-probes（雙帳號 BOLA / JWT / SSRF / 設定外溢 / rate-limit）
+        continue-on-error: true
+        env:
+          VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
+          HAS_A: ${{ steps.tokens.outputs.has_a }}
+          HAS_B: ${{ steps.tokens.outputs.has_b }}
+          VIBESEC_MODE: shadow
+        run: |
+          python3 - <<'EOF'
+          # G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（CLAUDE.md #8）。
+          # checks: bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata,
+          #         swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit
+          import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.error
+          NOW = datetime.datetime.now(datetime.timezone.utc)
+          def iso(dt): return dt.replace(microsecond=0).isoformat()
+          URL = os.environ["VIBESEC_TARGET_URL"].rstrip("/")
+          TA = os.environ.get("TOKEN_A", ""); TB = os.environ.get("TOKEN_B", "")
+          HAS_A = os.environ.get("HAS_A") == "true"; HAS_B = os.environ.get("HAS_B") == "true"
+          REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
+
+          results = []; rules = {}
+          coverage = {}  # control_id -> state
+          def add(rule_id, level, msg, tier="advisory"):
+              rules.setdefault(rule_id, {"id": rule_id, "name": rule_id,
+                                         "shortDescription": {"text": rule_id},
+                                         "defaultConfiguration": {"level": level},
+                                         "properties": {"policy_tier": tier}})
+              results.append({"ruleId": rule_id, "level": level, "message": {"text": msg},
+                              "locations": [{"physicalLocation": {"artifactLocation": {"uri": URL}}}],
+                              "properties": {"policy_tier": tier}})
+
+          def req(path, method="GET", token=None, data=None, headers=None, timeout=15):
+              url = path if path.startswith("http") else URL + path
+              h = {"User-Agent": "vibesec-g5-probes"}
+              if token: h["Authorization"] = f"Bearer {token}"
+              if headers: h.update(headers)
+              body = None
+              if data is not None:
+                  body = json.dumps(data).encode(); h["Content-Type"] = "application/json"
+              r = urllib.request.Request(url, data=body, headers=h, method=method)
+              try:
+                  with urllib.request.urlopen(r, timeout=timeout) as resp:
+                      return resp.status, resp.read().decode("utf-8", "replace")
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read().decode("utf-8", "replace")
+              except Exception as e:
+                  return None, str(e)
+
+          # 連線性檢查
+          status, _ = req("/openapi.json")
+          reachable = status is not None
+          incomplete_reason = None
+          if not reachable:
+              incomplete_reason = f"目標 {URL} 無法連線"
+
+          # ---- swagger_exposed ----
+          if reachable:
+              exposed = []
+              for p in ["/openapi.json", "/docs", "/redoc", "/swagger", "/swagger.json"]:
+                  s, _ = req(p)
+                  if s == 200: exposed.append(p)
+              if exposed:
+                  add("vibesec.g5.swagger-exposed", "warning",
+                      f"API 文件/schema 對外暴露：{', '.join(exposed)}（開發便利設定外溢）", "advisory")
+                  coverage["swagger_exposed"] = "fail"
+              else:
+                  coverage["swagger_exposed"] = "pass"
+
+          # ---- graphql_introspection ----
+          if reachable:
+              q = {"query": "{__schema{types{name}}}"}
+              s, body = req("/graphql", "POST", data=q)
+              if s == 200 and "__schema" in (body or ""):
+                  add("vibesec.g5.graphql-introspection", "warning",
+                      "GraphQL introspection 開啟（洩漏 schema）", "advisory")
+                  coverage["graphql_introspection"] = "fail"
+              else:
+                  coverage["graphql_introspection"] = "pass" if s is not None else "untested"
+
+          # ---- debug_stacktrace ----
+          if reachable:
+              s, body = req("/__vibesec_nonexistent__/%ff", "GET")
+              markers = ("Traceback (most recent call last)", "File \"", "Exception", "at line")
+              if body and any(m in body for m in markers):
+                  add("vibesec.g5.debug-stacktrace", "warning",
+                      "錯誤回應洩漏 stack trace（Debug Mode 外溢）", "advisory")
+                  coverage["debug_stacktrace"] = "fail"
+              else:
+                  coverage["debug_stacktrace"] = "pass"
+
+          # ---- jwt_alg_none ----
+          # 以現有 token payload 重組 alg:none，送至受保護端點
+          def b64url(d): return base64.urlsafe_b64encode(d).decode().rstrip("=")
+          if reachable and HAS_A and TA.count(".") == 2:
+              try:
+                  _, payload_b64, _ = TA.split(".")
+                  pad = "=" * (-len(payload_b64) % 4)
+                  payload = json.loads(base64.urlsafe_b64decode(payload_b64 + pad))
+                  header = {"alg": "none", "typ": "JWT"}
+                  forged = f"{b64url(json.dumps(header).encode())}.{b64url(json.dumps(payload).encode())}."
+                  # 探測一組常見受保護端點
+                  accepted = None
+                  for p in ["/me", "/api/me", "/profile", "/users/me", "/account"]:
+                      s_auth, _ = req(p, token=TA)
+                      if s_auth == 200:
+                          s_forged, _ = req(p, token=forged)
+                          if s_forged == 200:
+                              accepted = p; break
+                  if accepted:
+                      add("vibesec.g5.jwt-alg-none", "error",
+                          f"受保護端點 {accepted} 接受 alg:none 偽造 JWT（授權繞過）", "blocking")
+                      coverage["jwt_alg_none"] = "fail"
+                  else:
+                      coverage["jwt_alg_none"] = "pass"
+              except Exception as e:
+                  coverage["jwt_alg_none"] = "untested"
+          else:
+              coverage["jwt_alg_none"] = "untested"
+
+          # ---- jwt_alg_confusion（RS256→HS256）----
+          # 無目標公鑰時無法可靠實證 → 誠實記為 untested（incomplete ≠ pass）
+          coverage["jwt_alg_confusion"] = "untested"
+          add("vibesec.g5.jwt-alg-confusion", "note",
+              "RS256/HS256 混淆需目標公鑰方能實證；本探針未持有公鑰 → untested，建議人工/Burp 驗證", "advisory")
+
+          # ---- bola_idor（雙帳號實測）----
+          if reachable and HAS_A and HAS_B:
+              # 以 A 探索一個自身資源 ID，再用 B 的 token 存取
+              discovered = []
+              for listp in ["/api/items", "/items", "/api/orders", "/orders", "/api/documents", "/documents"]:
+                  s, body = req(listp, token=TA)
+                  if s == 200 and body:
+                      ids = re.findall(r'"id"\s*:\s*"?([A-Za-z0-9\-]+)"?', body)
+                      base = listp
+                      for rid in ids[:3]:
+                          discovered.append((base, rid))
+                  # 單一資源形式
+              confirmed = False
+              for base, rid in discovered:
+                  resource = f"{base}/{rid}"
+                  s_a, _ = req(resource, token=TA)
+                  s_b, _ = req(resource, token=TB)
+                  if s_a == 200 and s_b == 200:
+                      add("vibesec.g5.bola-idor", "error",
+                          f"雙帳號 BOLA 實證：帳號 B 可存取帳號 A 的資源 {resource}（HTTP 200）", "blocking")
+                      confirmed = True; break
+              coverage["bola_idor"] = "fail" if confirmed else ("pass" if discovered else "untested")
+          else:
+              coverage["bola_idor"] = "untested"
+
+          # ---- ssrf_metadata ----
+          if reachable:
+              tried = False; ssrf_hit = False
+              for ep in ["/fetch", "/api/fetch", "/import", "/api/import", "/proxy", "/url"]:
+                  for key in ["url", "uri", "target", "endpoint"]:
+                      s, body = req(ep, "POST", token=TA or None, data={key: "http://169.254.169.254/latest/meta-data/"})
+                      if s is not None and s != 404:
+                          tried = True
+                          if body and ("ami-id" in body or "iam" in body.lower() or "meta-data" in body.lower() or "169.254.169.254" in body):
+                              add("vibesec.g5.ssrf-metadata", "error",
+                                  f"SSRF：端點 {ep}（{key}）可讀取雲端 metadata 169.254.169.254", "blocking")
+                              ssrf_hit = True
+                      if ssrf_hit: break
+                  if ssrf_hit: break
+              coverage["ssrf_metadata"] = "fail" if ssrf_hit else ("pass" if tried else "untested")
+
+          # ---- rate_limit ----
+          if reachable:
+              codes = []
+              for _ in range(25):
+                  s, _ = req("/login", "POST", data={"username": "alice", "password": "wrong"})
+                  codes.append(s)
+              if 429 not in codes:
+                  add("vibesec.g5.rate-limit-missing", "warning",
+                      "登入端點 25 次連續請求未見 429（缺 Rate Limiting / Captcha）", "advisory")
+                  coverage["rate_limit"] = "fail"
+              else:
+                  coverage["rate_limit"] = "pass"
+
+          # ---- 輸出 SARIF ----
+          sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+                   "version": "2.1.0",
+                   "runs": [{"tool": {"driver": {"name": "vibesec-g5-api-probes", "version": "1.0.0",
+                                                 "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
+                                                 "rules": list(rules.values())}}, "results": results}]}
+          (REPORTS / "g5-api-probes.sarif").write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+
+          blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
+          advisory = sum(1 for r in results if r["properties"]["policy_tier"] == "advisory")
+
+          # 缺帳號或無法連線 → incomplete
+          status_reason = None
+          if incomplete_reason:
+              gstatus = "incomplete"; status_reason = incomplete_reason
+          elif not (HAS_A and HAS_B):
+              gstatus = "incomplete"
+              status_reason = f"雙帳號測試需兩個 token（has_a={HAS_A}, has_b={HAS_B}）；缺 token 的 BOLA/JWT 檢查記為 untested"
+          elif blocking > 0:
+              gstatus = "fail"  # 但 mode=shadow 僅報告（見 summary）
+          else:
+              gstatus = "pass"
+
+          cov = [{"control_id": k, "state": v, "reason": ("缺 token 或目標限制，未能實測" if v == "untested" else None)}
+                 for k, v in coverage.items()]
+          # schema：not_applicable 才強制 reason；untested 可無 reason，但附上更佳
+          gate = {"gate": "G5", "status": gstatus, "status_reason": status_reason,
+                  "mode": os.environ.get("VIBESEC_MODE", "shadow"), "scope": "full", "diff_base": None,
+                  "commit": None, "started_at": iso(NOW),
+                  "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
+                  "tools": [{"name": "vibesec-g5-api-probes", "version": "1.0.0", "state": "ran",
+                             "exit_code": 0, "output_ref": "reports/g5-api-probes.sarif", "duration_seconds": None}],
+                  "findings_count": {"blocking": blocking, "advisory": advisory},
+                  "coverage": cov}
+          (REPORTS / "g5-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(f"G5 api-probes: status={gstatus} blocking={blocking} advisory={advisory}")
+          print(json.dumps(coverage, ensure_ascii=False))
+          EOF
+
+      - name: Upload G5 api-probes SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/g5-api-probes.sarif
+          category: vibesec-g5-api-probes
+
+      # ---------- G6：LLM / Agent 紅隊 ----------
+      - name: G6 promptfoo（對照 OWASP LLM Top 10）
+        continue-on-error: true
+        shell: bash
+        env:
+          VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
+        run: |
+          mkdir -p reports
+          if npx --yes promptfoo@latest eval -c config/promptfoo/promptfooconfig.yaml \
+               --output reports/g6-promptfoo.json 2>reports/_promptfoo.log; then
+            echo "promptfoo 完成"
+          else
+            echo "::warning::promptfoo 執行失敗或缺 provider 金鑰 → G6 promptfoo incomplete"
+            python3 - <<'PY'
+          import json, datetime, pathlib
+          NOW = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+          pathlib.Path("reports/g6-promptfoo-gate.json").write_text(json.dumps({
+              "gate": "G6", "status": "incomplete",
+              "status_reason": "promptfoo 執行失敗或缺模型 provider 金鑰（incomplete ≠ pass）",
+              "mode": "shadow", "scope": "full", "diff_base": None, "commit": None,
+              "started_at": NOW, "finished_at": NOW,
+              "tools": [{"name": "promptfoo", "version": None, "state": "error", "exit_code": 1,
+                         "output_ref": "reports/_promptfoo.log", "duration_seconds": None}],
+              "findings_count": {"blocking": 0, "advisory": 0},
+              "coverage": [{"control_id": "LLM01:2025", "state": "untested", "reason": None}]
+          }, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+          fi
+
+      - name: G6 garak（LLM 漏洞掃描）
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p reports
+          pip install garak 2>reports/_garak-install.log || echo "garak 安裝失敗"
+          if command -v garak >/dev/null 2>&1; then
+            garak --config config/garak/vibesec.probes.yaml --report_prefix reports/g6-garak 2>reports/_garak.log || \
+              echo "::warning::garak 執行回傳非零 → 視輸出判定"
+          else
+            echo "::warning::garak 缺席 → G6 garak incomplete（incomplete ≠ pass）"
+          fi
+
+      - name: Upload 黑箱 reports（artifact）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibesec-blackbox-reports
+          path: reports/
+          if-no-files-found: ignore
+
+      - name: 黑箱彙整（G5/G6 狀態；shadow 僅報告）
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'EOF'
+          import json, glob, os, pathlib
+          rows = ["# VibeSec 黑箱閘門狀態（G5 / G6）", "",
+                  "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
+          for p in sorted(glob.glob("reports/g5-gate.json") + glob.glob("reports/g6-*gate.json")):
+              try: g = json.load(open(p, encoding="utf-8"))
+              except Exception: continue
+              fc = g.get("findings_count", {})
+              rows.append(f"| {g.get('gate')} | `{g.get('status')}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {g.get('status_reason') or ''} |")
+          rows += ["", "> 攻擊性探針僅對已授權 VIBESEC_TARGET_URL 執行；缺 token／目標限制的檢查記為 untested，incomplete ≠ pass。"]
+          text = "\n".join(rows)
+          sp = os.environ.get("GITHUB_STEP_SUMMARY")
+          if sp: open(sp, "a", encoding="utf-8").write(text + "\n")
+          print(text)
+          EOF

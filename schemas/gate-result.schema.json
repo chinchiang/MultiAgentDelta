@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chinchiang/MultiAgentDelta/schemas/gate-result.schema.json",
+  "title": "VibeSec Gate Result",
+  "description": "單一閘門一次執行的結果。狀態語意：incomplete（工具缺席、逾時、API 失敗）永遠不等於 pass；not_applicable 必附理由。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["gate", "status", "mode", "scope", "started_at", "finished_at", "tools", "findings_count", "coverage"],
+  "properties": {
+    "gate": { "type": "string", "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6"] },
+    "status": { "type": "string", "enum": ["pass", "fail", "pending", "untested", "not_applicable", "incomplete"] },
+    "status_reason": { "type": ["string", "null"], "description": "not_applicable / incomplete 時必填" },
+    "mode": { "type": "string", "enum": ["shadow", "enforce"] },
+    "risk_tier": { "type": "string", "enum": ["L1", "L2", "L3"] },
+    "scope": { "type": "string", "enum": ["diff", "full"] },
+    "diff_base": { "type": ["string", "null"] },
+    "commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "state"],
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": ["string", "null"] },
+          "state": { "type": "string", "enum": ["ran", "missing", "timeout", "error"] },
+          "exit_code": { "type": ["integer", "null"] },
+          "output_ref": { "type": ["string", "null"] },
+          "duration_seconds": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "findings_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocking", "advisory"],
+      "properties": {
+        "blocking": { "type": "integer", "minimum": 0 },
+        "advisory": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "description": "本閘門涵蓋的控制與其狀態；用於報告「已完成測試占適用控制的比例」",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["control_id", "state"],
+        "properties": {
+          "control_id": { "type": "string" },
+          "state": { "type": "string", "enum": ["pass", "fail", "pending", "untested", "not_applicable"] },
+          "reason": { "type": ["string", "null"] }
+        },
+        "if": { "properties": { "state": { "const": "not_applicable" } } },
+        "then": { "required": ["reason"], "properties": { "reason": { "type": "string", "minLength": 1 } } }
+      }
+    },
+    "exit_code": { "type": "integer", "enum": [0, 1, 2], "description": "0 通過或 shadow；1 enforce 且有 blocking 發現；2 enforce 且 blocking 閘門 incomplete" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["not_applicable", "incomplete"] } } },
+      "then": { "required": ["status_reason"], "properties": { "status_reason": { "type": "string", "minLength": 1 } } }
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+# config/providers.yaml — 多模型審查的 provider 設定
+# 由 harness agent（docs/08、docs/09）讀取。每個 provider 透過統一介面
+#   complete(messages, json_schema, temperature) 呼叫；harness 不直接依賴任一家 SDK。
+# 規則：
+#   - 金鑰只從環境變數讀（api_key_env），本檔不得出現明文金鑰。
+#   - allowed_data_classes 決定哪些內容可以送給該 provider（CLAUDE.md 第 7 條「不得外傳」）。
+#   - family 相同的 provider 只算「一個模型家族」；高風險控制需 ≥ 2 個不同 family。
+#   - 模型名稱為啟動前需盤點的佔位值；標 "確認可用版本" 者請以供應商當日文件為準。
+
+version: 1
+
+# 資料分級定義（與 schemas/threat-model.schema.json 的 assets[].sensitivity 對齊）
+#   public        公開資訊、開源程式碼
+#   internal      一般內部程式碼與設定（不含祕密、不含個資）
+#   confidential  商業機密、含遮罩祕密的片段、客戶資料結構
+#   pii           個人資料樣本或可識別個人之內容
+data_classes: [public, internal, confidential, pii]
+
+providers:
+
+  # ---------------------------------------------------------------- anthropic
+  anthropic-cloud:
+    family: anthropic                 # 模型家族，用於計算 min_families
+    kind: anthropic                   # 使用 Anthropic Messages API 介面
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY    # 從此環境變數讀金鑰
+    model: claude-sonnet-5-5          # 預設模型；確認可用版本
+    timeout_seconds: 120              # 單次呼叫逾時；逾時 → opinion 缺席（docs/09 §11）
+    max_tokens: 4096                  # 回應上限；角色輸出為結構化 JSON，4k 足夠
+    temperature: 0                    # 固定 0，使同一 prompt_version 的輸出可比較
+    json_mode: true                   # 要求結構化輸出；不支援時 harness 以 schema 事後驗證
+    allowed_data_classes: [public, internal]   # 雲端：不得送 confidential / pii
+    enabled: true
+
+  # ------------------------------------------------------------------- openai
+  openai-cloud:
+    family: openai
+    kind: openai_compatible           # Chat Completions 相容端點
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-5                      # 確認可用版本
+    timeout_seconds: 120
+    max_tokens: 4096
+    temperature: 0
+    json_mode: true                   # response_format: json_schema / json_object
+    allowed_data_classes: [public, internal]
+    enabled: true
+
+  # ---------------------------------------------------------------------- glm
+  glm-cloud:
+    family: glm
+    kind: openai_compatible
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: GLM_API_KEY
+    model: glm-4.5                    # 確認可用版本
+    timeout_seconds: 120
+    max_tokens: 4096
+    temperature: 0
+    json_mode: true
+    allowed_data_classes: [public]    # 境外雲端且資料出境限制：只送公開資訊（例如開源套件公告比對）
+    enabled: true
+
+  # ----------------------------------------------------------------- deepseek
+  deepseek-cloud:
+    family: deepseek
+    kind: openai_compatible
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    model: deepseek-chat              # 確認可用版本
+    timeout_seconds: 120
+    max_tokens: 4096
+    temperature: 0
+    json_mode: true
+    allowed_data_classes: [public]
+    enabled: true
+
+  # ------------------------------------------------------------- 地端 vLLM 範例
+  # 地端 OpenAI 相容端點（vLLM / TGI / Ollama 皆可）。family 依實際部署的模型填寫：
+  # 若跑的是 DeepSeek 開源權重就填 deepseek，跑 GLM 開源權重就填 glm；
+  # 地端與雲端同 family 不算兩個家族。此處以 deepseek 為例。
+  onprem_vllm:
+    family: deepseek
+    kind: openai_compatible
+    base_url: http://vllm.internal:8000/v1
+    api_key_env: ONPREM_VLLM_API_KEY  # 內網仍建議設 token；無則設為任意非空值
+    model: deepseek-r1-distill-qwen-32b   # 佔位；以實際載入的權重為準
+    timeout_seconds: 300              # 地端推論較慢，給較長預算
+    max_tokens: 4096
+    temperature: 0
+    json_mode: true                   # vLLM 支援 guided_json；不支援時關閉並靠事後驗證
+    allowed_data_classes: [public, internal, confidential, pii]   # 未分類與敏感資料只能留地端
+    enabled: false                    # 有地端環境時改 true
+
+# ------------------------------------------------------------------- rotation
+# 角色 → 偏好 family 順序。harness 依序挑「enabled、金鑰存在、allowed_data_classes 符合」者，
+# 第一個為主意見、第二個不同 family 為第二意見（高風險控制必需）。
+rotation:
+  high_risk_min_families: 2           # 與 vibesec.yaml review.min_families_for_high_risk 一致
+  roles:
+    architecture:      [anthropic, openai, deepseek, glm]
+    appsec:            [anthropic, openai, deepseek, glm]
+    identity-authz:    [openai, anthropic, deepseek, glm]
+    supplychain-cicd:  [openai, deepseek, anthropic, glm]
+  # 當偏好 family 全部不可用時的遞補順序（provider 名稱，非 family）
+  fallback_order: [anthropic-cloud, openai-cloud, onprem_vllm, deepseek-cloud, glm-cloud]
+  # 資料分級為 confidential / pii 時，只允許這些 provider（覆寫上面的偏好）
+  sensitive_data_providers: [onprem_vllm]
+  # 審查預算（每次 harness 執行）；超過 → 剩餘高風險發現 pending、閘門 incomplete（docs/09 §6）
+  budget:
+    max_calls_per_run: 400
+    max_calls_per_finding: 24         # 4 角色 × 2 family × 3 輪

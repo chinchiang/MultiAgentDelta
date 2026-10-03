@@ -1,0 +1,16 @@
+id: g4-bola-neg-01
+gate: G4
+domain: authorization
+title: 已綁定 owner 的查詢不應命中
+input:
+  kind: code
+  language: python
+  snippet: |
+    note = session.query(Note).filter(
+        Note.id == note_id, Note.owner_id == current_user.id).first()
+expected:
+  should_flag: false
+  control_id: ASVS5-V8.1
+  rule_id: vibesec.g4.missing-owner-filter
+  policy_tier: advisory
+held_out: true

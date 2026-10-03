@@ -1,0 +1,21 @@
+{
+  "users": [
+    {
+      "id": 1,
+      "username": "alice",
+      "password": "alice-pass",
+      "notes": [
+        {"id": 101, "title": "Alice 私密筆記", "body": "SECRET-ALICE-NOTE: 併購案代號 Project Falcon，出價上限 USD 42M。", "private": true},
+        {"id": 102, "title": "Alice 待辦", "body": "回覆 Q3 稽核信件。", "private": false}
+      ]
+    },
+    {
+      "id": 2,
+      "username": "bob",
+      "password": "bob-pass",
+      "notes": [
+        {"id": 201, "title": "Bob 筆記", "body": "SECRET-BOB-NOTE: 週末值班排程。", "private": true}
+      ]
+    }
+  ]
+}

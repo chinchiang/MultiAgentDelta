@@ -1,0 +1,58 @@
+# VibeSec pre-commit — 本機第一道白箱閘門（G1 快篩、G2 祕密、G3 Semgrep）。
+# 安裝：pipx install pre-commit && pre-commit install
+# 這些 hook 與 .github/workflows/pr-gates.yml 對齊；本機擋下、CI 再驗一次（不可繞過）。
+# 跳過單一 hook 僅限緊急：SKIP=<id> git commit；政策要求在 PR 說明記錄原因。
+minimum_pre_commit_version: "3.5.0"
+default_stages: [pre-commit]
+
+repos:
+  # G2 機密與金鑰：只掃本次 staged 變更，命中即阻擋 commit
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        name: "G2 gitleaks protect --staged（祕密掃描）"
+        entry: gitleaks protect --staged --redact --config config/gitleaks.toml
+        language: golang
+        pass_filenames: false
+
+  # G3 SAST：Semgrep 以 vibesec 自訂規則 + OWASP Top Ten 快掃變更檔
+  - repo: https://github.com/semgrep/semgrep
+    rev: v1.95.0
+    hooks:
+      - id: semgrep
+        name: "G3 semgrep（vibesec 規則，SAST 快篩）"
+        args:
+          - "--config=config/semgrep/vibesec-rules.yaml"
+          - "--config=p/owasp-top-ten"
+          - "--error"
+          - "--skip-unknown-extensions"
+          - "--quiet"
+
+  # 本機小工具
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+        name: "偵測私鑰"
+      - id: check-added-large-files
+        name: "阻擋過大檔案"
+        args: ["--maxkb=1024"]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  # 本地 hook：G1 供應鏈快篩 + .env 防護；相依清單或 Agent 規則檔變動時觸發
+  - repo: local
+    hooks:
+      - id: vibesec-g1-slopcheck
+        name: "G1 供應鏈快篩（存在性/相似度/冷卻期）"
+        entry: python3 scripts/g1_slopcheck.py --staged
+        language: system
+        pass_filenames: false
+        files: '(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|\.cursorrules|AGENTS\.md|SKILL\.md)$'
+      - id: vibesec-env-guard
+        name: "G2 .env 防護（不得追蹤 .env，且須在 .gitignore）"
+        entry: python3 scripts/env_guard.py
+        language: system
+        pass_filenames: false
+        always_run: true

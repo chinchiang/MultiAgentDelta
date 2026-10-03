@@ -1,0 +1,99 @@
+# VibeSec Checkov 設定（G3 IaC）
+# 用法：checkov -d . --config-file config/checkov/.checkov.yaml
+# 輸出：SARIF（上傳 GitHub Code Scanning，rule_id 前綴 checkov:）+ CLI 摘要
+# soft-fail: true → 影子模式（只報告不阻擋）；切到 enforce 時由 harness 依 blocking-policy 決定 exit code，
+#              不是靠 checkov 本身的 exit code（CLAUDE.md 規則 1：不得改政策讓檢查通過）。
+# check: 為「只跑這些檢查」的 allow-list，用來把 PR 階段控制在數分鐘內並降低噪音；
+#        夜間全量（nightly-full.yml）可改用 --config-file config/checkov/.checkov.yaml --check '' 跑完整規則集。
+
+framework:
+  - terraform
+  - terraform_plan
+  - dockerfile
+  - kubernetes
+  - github_actions
+  - secrets
+
+directory:
+  - .
+
+external-checks-dir:
+  - config/checkov/custom
+
+skip-path:
+  - node_modules
+  - .venv
+  - venv
+  - dist
+  - build
+  - examples/vulnapp/infra   # 靶場刻意有漏洞的 IaC；由 evals 專用工作流另行掃描
+
+check:
+  # ---- AWS：IMDSv2 / 中繼資料 / SSRF 路徑（G3 核心） ----
+  - CKV_AWS_79      # EC2 instance metadata options: http_tokens = required（IMDSv2）
+  - CKV_AWS_341     # Launch template: metadata hop limit ≤ 1
+  - CKV_AWS_8       # Launch configuration EBS encrypted
+  - CKV_AWS_135     # EC2 EBS optimized
+  # ---- AWS：網路暴露 ----
+  - CKV_AWS_23      # Security group rule has description
+  - CKV_AWS_24      # No SSH (22) from 0.0.0.0/0
+  - CKV_AWS_25      # No RDP (3389) from 0.0.0.0/0
+  - CKV_AWS_260     # No HTTP (80) from 0.0.0.0/0
+  - CKV_AWS_17      # RDS not publicly accessible
+  - CKV_AWS_16      # RDS storage encrypted
+  # ---- AWS：S3 ----
+  - CKV_AWS_18      # S3 access logging
+  - CKV_AWS_19      # S3 encryption at rest
+  - CKV_AWS_21      # S3 versioning
+  - CKV2_AWS_6      # S3 public access block
+  # ---- AWS：IAM / 硬編碼祕密 ----
+  - CKV_AWS_40      # IAM policies attached to groups/roles not users
+  - CKV_AWS_41      # No hard-coded AWS access key in provider
+  - CKV_AWS_45      # Lambda env: no hard-coded secrets
+  - CKV_AWS_46      # EC2 user_data: no hard-coded secrets
+  - CKV_AWS_49      # IAM policy: no "*" actions
+  - CKV_AWS_62      # IAM policy: no full "*:*" admin
+  - CKV_AWS_63      # IAM policy: no "*" resources with "*" actions
+  - CKV_AWS_60      # IAM role assume policy not open to all
+  - CKV_AWS_61      # IAM role assume policy: no wildcard principal
+  # ---- Dockerfile（G3） ----
+  - CKV_DOCKER_1    # Do not EXPOSE 22
+  - CKV_DOCKER_2    # HEALTHCHECK present
+  - CKV_DOCKER_3    # USER instruction present（不以 root 執行）
+  - CKV_DOCKER_4    # COPY instead of ADD
+  - CKV_DOCKER_5    # apt-get upgrade not used alone
+  - CKV_DOCKER_7    # Base image not :latest
+  - CKV_DOCKER_8    # Last USER is not root
+  - CKV_DOCKER_9    # apt (interactive) not used
+  # ---- Kubernetes ----
+  - CKV_K8S_16      # No privileged containers
+  - CKV_K8S_20      # allowPrivilegeEscalation = false
+  - CKV_K8S_21      # Not in default namespace
+  - CKV_K8S_22      # Read-only root filesystem
+  - CKV_K8S_23      # Containers not run as root
+  - CKV_K8S_28      # Drop NET_RAW
+  - CKV_K8S_35      # Secrets as files not env vars
+  - CKV_K8S_37      # Minimize capabilities
+  - CKV_K8S_40      # High UID
+  - CKV_K8S_43      # Image digest pinned
+  # ---- GitHub Actions ----
+  - CKV_GHA_1       # Workflow top-level permissions are not write-all
+  - CKV_GHA_2       # No run: with injectable context（script injection）
+  - CKV_GHA_7       # No pull_request_target with checkout of PR head
+  # ---- Secrets（Checkov 內建；G2 的第二道）----
+  - CKV_SECRET_6    # Base64 high entropy string
+  - CKV_SECRET_2    # AWS access key
+  # ---- VibeSec 自訂（config/checkov/custom/） ----
+  - CKV2_VIBESEC_1  # IMDSv2 required on aws_instance / aws_launch_template
+  - CKV2_VIBESEC_2  # CORS allowed origins must not be "*"
+
+output:
+  - sarif
+  - cli
+output-file-path: reports/checkov
+
+soft-fail: true          # shadow 模式；不要靠改這裡放行 PR
+compact: true
+quiet: true
+download-external-modules: false
+evaluate-variables: true

@@ -1,0 +1,839 @@
+# VibeSec PR 閘門 — G1 供應鏈 / G2 機密 / G3 SAST+IaC / G4 存取控制（diff-aware、白箱）
+# 由內而外、每次 pull_request 執行。語意見 docs/08-harness-agent.md。
+# 不可違反：incomplete ≠ pass（工具缺席／逾時／API 失敗 → 閘門 incomplete 且絕不通過）。
+name: VibeSec PR Gates
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+concurrency:
+  group: vibesec-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # G1 供應鏈與 Slopsquatting —— order: first（惡意 postinstall 於安裝瞬間執行，必須最先跑）
+  g1-supply-chain:
+    name: G1 供應鏈與 Slopsquatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout（full history for diff）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 讀取 vibesec.yaml 設定（mode / risk_tier / cooldown_days）
+        id: cfg
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re, pathlib
+          txt = pathlib.Path("vibesec.yaml").read_text(encoding="utf-8")
+          def scalar(key, default):
+              m = re.search(rf'^\s*{key}\s*:\s*([^\s#]+)', txt, re.M)
+              return m.group(1).strip() if m else default
+          mode = scalar("mode", "shadow")
+          tier = scalar("risk_tier", "L2")
+          cooldown = scalar("cooldown_days", "14")
+          print(f"mode={mode}")
+          print(f"risk_tier={tier}")
+          print(f"cooldown_days={cooldown}")
+          print(f"shadow={'true' if mode=='shadow' else 'false'}")
+          PY
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安裝 PyYAML（供 blacklist/allowlist 解析，best-effort）
+        continue-on-error: true
+        run: pip install pyyaml
+
+      - name: 偵測變更的 manifest 檔
+        id: diff
+        shell: bash
+        run: |
+          mkdir -p reports
+          BASE="origin/${{ github.base_ref }}"
+          if [ -z "${{ github.base_ref }}" ]; then BASE="HEAD~1"; fi
+          git fetch origin "${{ github.base_ref }}" --depth=0 2>/dev/null || true
+          CHANGED=$(git diff --name-only "${BASE}...HEAD" 2>/dev/null || git diff --name-only HEAD~1...HEAD)
+          echo "$CHANGED" > reports/_changed-files.txt
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "變更檔案："; cat reports/_changed-files.txt
+
+      - name: G1 四層快篩（SlopCheck，stdlib only）
+        id: slopcheck
+        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        env:
+          VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
+          VIBESEC_TIER: ${{ steps.cfg.outputs.risk_tier }}
+          COOLDOWN_DAYS: ${{ steps.cfg.outputs.cooldown_days }}
+          DIFF_BASE: ${{ steps.diff.outputs.base }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python - <<'EOF'
+          # G1 Slopsquatting 四層快篩：Registry 存在性+健康度 / 名稱相似度+黑名單 / 安裝 Hook / 冷卻期
+          # 僅用 stdlib（urllib, json, difflib, datetime, re, pathlib）。網路錯誤 → 閘門 incomplete，絕不 pass。
+          import json, re, difflib, pathlib, os, datetime, urllib.request, urllib.error
+
+          MODE = os.environ.get("VIBESEC_MODE", "shadow")
+          TIER = os.environ.get("VIBESEC_TIER", "L2")
+          COOLDOWN_DAYS = int(os.environ.get("COOLDOWN_DAYS", "14") or "14")
+          DIFF_BASE = os.environ.get("DIFF_BASE", "")
+          COMMIT = os.environ.get("COMMIT_SHA", "")[:40] or None
+          MIN_WEEKLY = 1000
+          SIM_THRESHOLD = 0.85
+          NOW = datetime.datetime.now(datetime.timezone.utc)
+          REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
+
+          def iso(dt): return dt.replace(microsecond=0).isoformat()
+
+          # ---- 讀取 slopsquat 設定（popular 清單、blacklist、allowlist）----
+          def read_lines(p):
+              fp = pathlib.Path(p)
+              if not fp.exists(): return []
+              return [l.strip().lower() for l in fp.read_text(encoding="utf-8").splitlines()
+                      if l.strip() and not l.strip().startswith("#")]
+
+          popular_npm = read_lines("config/slopsquat/popular-npm.txt")
+          popular_pypi = read_lines("config/slopsquat/popular-pypi.txt")
+
+          def load_yaml_list(path, *keys):
+              fp = pathlib.Path(path)
+              if not fp.exists(): return set()
+              try:
+                  import yaml
+                  data = yaml.safe_load(fp.read_text(encoding="utf-8")) or {}
+                  out = set()
+                  if isinstance(data, dict):
+                      for k in keys:
+                          v = data.get(k) or []
+                          if isinstance(v, list):
+                              out |= {str(x).strip().lower() for x in v}
+                  elif isinstance(data, list):
+                      out |= {str(x).strip().lower() for x in data}
+                  return out
+              except Exception:
+                  # 退回極簡 regex 解析：抓取 "- name" 清單項
+                  txt = fp.read_text(encoding="utf-8")
+                  return {m.group(1).strip().lower() for m in re.finditer(r'^\s*-\s*([A-Za-z0-9._@/-]+)', txt, re.M)}
+
+          blacklist = load_yaml_list("config/slopsquat/blacklist.yaml", "packages", "npm", "pypi", "names")
+          allowlist = load_yaml_list("config/slopsquat/allowlist.yaml", "packages", "npm", "pypi", "names")
+
+          # ---- 解析 diff，抽出新增套件（名稱+版本）與 agent rule 檔中的安裝提及 ----
+          changed = []
+          cf = REPORTS / "_changed-files.txt"
+          if cf.exists():
+              changed = [l.strip() for l in cf.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+          import subprocess
+          def added_lines(path):
+              try:
+                  base = DIFF_BASE or "HEAD~1"
+                  out = subprocess.run(["git", "diff", f"{base}...HEAD", "--", path],
+                                       capture_output=True, text=True, timeout=60).stdout
+              except Exception:
+                  out = ""
+              return [l[1:] for l in out.splitlines() if l.startswith("+") and not l.startswith("+++")]
+
+          MANIFESTS = ("package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+                       "requirements", "pyproject.toml", "poetry.lock", "uv.lock")
+          AGENT_RULE = (".cursorrules", "AGENTS.md", "SKILL.md")
+
+          # candidates: list of (ecosystem, name, version|None, source)
+          candidates = []
+
+          def is_manifest(p):
+              b = p.split("/")[-1]
+              return (b in MANIFESTS) or b.startswith("requirements") or b in ("pyproject.toml", "poetry.lock", "uv.lock")
+
+          for p in changed:
+              b = p.split("/")[-1]
+              if not is_manifest(p):
+                  continue
+              lines = added_lines(p)
+              text = "\n".join(lines)
+              if b == "package.json" or b.endswith(".json") or b in ("pnpm-lock.yaml", "yarn.lock", "package-lock.json"):
+                  # npm: "name": "version"
+                  for m in re.finditer(r'"([@A-Za-z0-9._/-]+)"\s*:\s*"[~^>=<* ]*([0-9][0-9A-Za-z.\-+]*)"', text):
+                      nm, ver = m.group(1), m.group(2)
+                      if nm in ("version", "name", "resolved", "integrity"): continue
+                      candidates.append(("npm", nm, ver, p))
+                  # yarn.lock style  name@version:
+                  for m in re.finditer(r'^\s*"?([@A-Za-z0-9._/-]+)@[^:\n]*"?:\s*$', text, re.M):
+                      candidates.append(("npm", m.group(1), None, p))
+              if b.startswith("requirements") or b == "pyproject.toml" or b == "poetry.lock" or b == "uv.lock":
+                  for m in re.finditer(r'^\s*["\']?([A-Za-z0-9][A-Za-z0-9._-]+)["\']?\s*(?:[=<>!~]=|==|>=)\s*["\']?([0-9][0-9A-Za-z.\-+]*)', text, re.M):
+                      candidates.append(("pypi", m.group(1), m.group(2), p))
+                  for m in re.finditer(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]+)\s*$', text, re.M):
+                      candidates.append(("pypi", m.group(1), None, p))
+
+          # agent rule 檔 + diff 中的 *.md：掃描 npm install X / pip install X / from X import
+          rule_targets = [p for p in changed if p.split("/")[-1] in AGENT_RULE or p.endswith(".md")]
+          for p in rule_targets:
+              fp = pathlib.Path(p)
+              if not fp.exists(): continue
+              try: body = fp.read_text(encoding="utf-8", errors="replace")
+              except Exception: continue
+              for m in re.finditer(r'npm\s+install\s+(?:-[A-Za-z]+\s+)*([@A-Za-z0-9._/-]+)', body):
+                  candidates.append(("npm", m.group(1), None, f"{p} (agent-rule)"))
+              for m in re.finditer(r'pip\s+install\s+(?:-[A-Za-z]+\s+)*([A-Za-z0-9][A-Za-z0-9._-]+)', body):
+                  candidates.append(("pypi", m.group(1), None, f"{p} (agent-rule)"))
+              for m in re.finditer(r'^\s*from\s+([A-Za-z0-9_][A-Za-z0-9_]*)\s+import', body, re.M):
+                  candidates.append(("pypi", m.group(1), None, f"{p} (agent-rule import)"))
+
+          # 去重
+          seen = set(); uniq = []
+          for eco, nm, ver, src in candidates:
+              key = (eco, nm.lower(), ver)
+              if key in seen: continue
+              seen.add(key); uniq.append((eco, nm, ver, src))
+
+          # ---- 網路查詢 helpers ----
+          NET_ERROR = {"hit": False, "detail": None}
+          def fetch_json(url, timeout=15):
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1-slopcheck"})
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      return json.loads(r.read().decode("utf-8")), None
+              except urllib.error.HTTPError as e:
+                  return None, ("http", e.code)
+              except Exception as e:
+                  NET_ERROR["hit"] = True; NET_ERROR["detail"] = f"{url} -> {e}"
+                  return None, ("neterr", str(e))
+
+          def npm_meta(name):
+              return fetch_json(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='@/')}")
+          def npm_downloads(name):
+              d, err = fetch_json(f"https://api.npmjs.org/downloads/point/last-week/{urllib.parse.quote(name, safe='@/')}")
+              return (d or {}).get("downloads"), err
+          def pypi_meta(name):
+              return fetch_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json")
+          def pypi_downloads(name):
+              d, err = fetch_json(f"https://pypistats.org/api/packages/{urllib.parse.quote(name.lower())}/recent")
+              return ((d or {}).get("data") or {}).get("last_week"), err
+
+          import urllib.parse
+
+          findings = []  # minimal shape {rule_id, package, ecosystem, version, reason, policy_tier}
+          incomplete_reason = None
+
+          def best_similarity(name, popular):
+              name_l = name.lower()
+              best = (0.0, None)
+              for cand in popular:
+                  if cand == name_l:
+                      return (1.0, cand, True)  # exact → 熱門套件本身，非 slopsquat
+                  r = difflib.SequenceMatcher(None, name_l, cand).ratio()
+                  if r > best[0]:
+                      best = (r, cand)
+              return (best[0], best[1], False)
+
+          for eco, name, ver, src in uniq:
+              name_l = name.lower()
+              if name_l in allowlist:
+                  continue
+              reasons = []
+              tier = "advisory"
+
+              # Layer 2a: 幻覺黑名單
+              if name_l in blacklist:
+                  findings.append({"rule_id": "vibesec.g1.slopsquat-blacklist", "package": name,
+                                   "ecosystem": eco, "version": ver,
+                                   "reason": f"套件名命中 config/slopsquat/blacklist.yaml 幻覺黑名單；來源 {src}",
+                                   "policy_tier": "blocking"})
+                  continue
+
+              # Layer 2b: 名稱相似度
+              popular = popular_npm if eco == "npm" else popular_pypi
+              sim, near, exact = best_similarity(name, popular)
+              if (not exact) and sim >= SIM_THRESHOLD:
+                  findings.append({"rule_id": "vibesec.g1.slopsquat-typosquat", "package": name,
+                                   "ecosystem": eco, "version": ver,
+                                   "reason": f"與熱門套件 '{near}' 相似度 {sim:.2f} ≥ {SIM_THRESHOLD}（疑似 typosquat/幻覺）；來源 {src}",
+                                   "policy_tier": "blocking"})
+
+              # Layer 1 + 3 + 4：查 registry
+              if eco == "npm":
+                  meta, merr = npm_meta(name)
+                  dl, derr = npm_downloads(name)
+                  if merr and merr[0] == "http" and merr[1] == 404:
+                      findings.append({"rule_id": "vibesec.g1.package-nonexistent", "package": name,
+                                       "ecosystem": eco, "version": ver,
+                                       "reason": f"npm registry 查無此套件（幻覺套件）；來源 {src}",
+                                       "policy_tier": "blocking"})
+                      continue
+                  if merr and merr[0] == "neterr":
+                      incomplete_reason = f"npm registry 查詢失敗：{NET_ERROR['detail']}"
+                      continue
+                  if meta:
+                      # Layer 1 健康度
+                      if isinstance(dl, int) and dl < MIN_WEEKLY:
+                          findings.append({"rule_id": "vibesec.g1.low-downloads", "package": name,
+                                           "ecosystem": eco, "version": ver,
+                                           "reason": f"週下載 {dl} < {MIN_WEEKLY}（健康度不足）；來源 {src}",
+                                           "policy_tier": "blocking"})
+                      # Layer 4 冷卻期
+                      times = meta.get("time", {})
+                      pub = times.get(ver) if ver else None
+                      if pub:
+                          try:
+                              pub_dt = datetime.datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                              age = (NOW - pub_dt).days
+                              if age < COOLDOWN_DAYS:
+                                  findings.append({"rule_id": "vibesec.g1.cooldown-not-met", "package": name,
+                                                   "ecosystem": eco, "version": ver,
+                                                   "reason": f"版本發布 {age} 天 < 冷卻期 {COOLDOWN_DAYS} 天（新版本蠕蟲風險）；來源 {src}",
+                                                   "policy_tier": "blocking"})
+                          except Exception:
+                              pass
+                      # Layer 3 安裝 hook（postinstall/preinstall/install）
+                      vinfo = (meta.get("versions", {}) or {}).get(ver, {}) if ver else {}
+                      scripts = (vinfo.get("scripts") or {}) if isinstance(vinfo, dict) else {}
+                      hooks = [h for h in ("postinstall", "preinstall", "install") if scripts.get(h)]
+                      if hooks:
+                          findings.append({"rule_id": "vibesec.g1.install-hook", "package": name,
+                                           "ecosystem": eco, "version": ver,
+                                           "reason": f"存在安裝階段 script：{', '.join(hooks)}（需人工審查網路外連/憑證存取）；來源 {src}",
+                                           "policy_tier": "advisory"})
+              else:  # pypi
+                  meta, merr = pypi_meta(name)
+                  if merr and merr[0] == "http" and merr[1] == 404:
+                      findings.append({"rule_id": "vibesec.g1.package-nonexistent", "package": name,
+                                       "ecosystem": eco, "version": ver,
+                                       "reason": f"PyPI 查無此套件（幻覺套件）；來源 {src}",
+                                       "policy_tier": "blocking"})
+                      continue
+                  if merr and merr[0] == "neterr":
+                      incomplete_reason = f"PyPI 查詢失敗：{NET_ERROR['detail']}"
+                      continue
+                  dl, derr = pypi_downloads(name)
+                  if isinstance(dl, int) and dl < MIN_WEEKLY:
+                      findings.append({"rule_id": "vibesec.g1.low-downloads", "package": name,
+                                       "ecosystem": eco, "version": ver,
+                                       "reason": f"週下載 {dl} < {MIN_WEEKLY}（健康度不足）；來源 {src}",
+                                       "policy_tier": "blocking"})
+                  if meta and ver:
+                      rel = (meta.get("releases", {}) or {}).get(ver) or []
+                      if rel and isinstance(rel, list):
+                          up = rel[0].get("upload_time_iso_8601")
+                          if up:
+                              try:
+                                  pub_dt = datetime.datetime.fromisoformat(up.replace("Z", "+00:00"))
+                                  age = (NOW - pub_dt).days
+                                  if age < COOLDOWN_DAYS:
+                                      findings.append({"rule_id": "vibesec.g1.cooldown-not-met", "package": name,
+                                                       "ecosystem": eco, "version": ver,
+                                                       "reason": f"版本發布 {age} 天 < 冷卻期 {COOLDOWN_DAYS} 天（新版本蠕蟲風險）；來源 {src}",
+                                                       "policy_tier": "blocking"})
+                              except Exception:
+                                  pass
+                      # setup.py 存在性（Layer 3）：PyPI 無直接 scripts 欄位，標記來源需人工審
+                      # （sdist 內含 setup.py 屬正常，僅對相似度/新版本套件提示）
+
+          # ---- 輸出 slopcheck JSON ----
+          (REPORTS / "g1-slopcheck.json").write_text(
+              json.dumps({"generated_at": iso(NOW), "mode": MODE, "risk_tier": TIER,
+                          "cooldown_days": COOLDOWN_DAYS, "findings": findings}, ensure_ascii=False, indent=2),
+              encoding="utf-8")
+
+          # ---- 輸出 SARIF 2.1.0 ----
+          rules = {}; results = []
+          level_map = {"blocking": "error", "advisory": "warning"}
+          for f in findings:
+              rid = f["rule_id"]
+              rules.setdefault(rid, {"id": rid, "name": rid,
+                                     "shortDescription": {"text": rid},
+                                     "defaultConfiguration": {"level": level_map.get(f["policy_tier"], "warning")},
+                                     "properties": {"policy_tier": f["policy_tier"]}})
+              results.append({
+                  "ruleId": rid,
+                  "level": level_map.get(f["policy_tier"], "warning"),
+                  "message": {"text": f"[{f['ecosystem']}] {f['package']}@{f['version'] or '?'} — {f['reason']}"},
+                  "locations": [{"physicalLocation": {"artifactLocation": {"uri": "reports/g1-slopcheck.json"}}}],
+                  "properties": {"package": f["package"], "ecosystem": f["ecosystem"],
+                                 "version": f["version"], "policy_tier": f["policy_tier"]}
+              })
+          sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+                   "version": "2.1.0",
+                   "runs": [{"tool": {"driver": {"name": "vibesec-slopcheck", "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
+                                                 "version": "1.0.0", "rules": list(rules.values())}},
+                             "results": results}]}
+          (REPORTS / "g1-slopcheck.sarif").write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+
+          # ---- 閘門結果（符合 schemas/gate-result.schema.json）----
+          blocking = sum(1 for f in findings if f["policy_tier"] == "blocking")
+          advisory = sum(1 for f in findings if f["policy_tier"] == "advisory")
+          if incomplete_reason or NET_ERROR["hit"]:
+              status = "incomplete"
+              reason = incomplete_reason or f"registry/下載 API 查詢失敗：{NET_ERROR['detail']}"
+          elif blocking > 0:
+              status = "fail" if MODE == "enforce" else "pass"  # shadow：僅報告
+          else:
+              status = "pass"
+          gate = {
+              "gate": "G1", "status": status, "status_reason": (reason if status in ("incomplete", "not_applicable") else None),
+              "mode": MODE, "risk_tier": TIER, "scope": "diff", "diff_base": DIFF_BASE or None,
+              "commit": COMMIT, "started_at": iso(NOW), "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
+              "tools": [{"name": "vibesec-slopcheck", "version": "1.0.0", "state": "ran", "exit_code": 0,
+                         "output_ref": "reports/g1-slopcheck.sarif", "duration_seconds": None}],
+              "findings_count": {"blocking": blocking, "advisory": advisory},
+              "coverage": [
+                  {"control_id": "VS-G1-SLOPSQUAT", "state": "fail" if blocking else "pass", "reason": None},
+                  {"control_id": "VS-G1-COOLDOWN", "state": "pass", "reason": None},
+                  {"control_id": "VS-G1-SBOM", "state": "pending", "reason": None},
+              ],
+          }
+          if status == "incomplete":
+              # 移除 coverage 中可能誤導的 pass
+              gate["coverage"] = [{"control_id": "VS-G1-SLOPSQUAT", "state": "untested", "reason": None}]
+          (REPORTS / "g1-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+
+          print(f"G1 slopcheck: status={status} blocking={blocking} advisory={advisory}")
+          # enforce 且有 blocking 或 incomplete → 失敗（shadow 由 continue-on-error 吸收）
+          if MODE == "enforce" and (status == "incomplete" or blocking > 0):
+              raise SystemExit(1)
+          EOF
+
+      - name: Upload SlopCheck SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/g1-slopcheck.sarif
+          category: vibesec-g1-slopcheck
+
+      - name: 安裝 Syft 與 Grype（官方 install script，best-effort）
+        continue-on-error: true
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin || echo "syft install failed"
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin || echo "grype install failed"
+
+      - name: 產生 SBOM（Syft CycloneDX）與漏洞掃描（Grype → SARIF）
+        id: sbom
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          if command -v syft >/dev/null 2>&1; then
+            syft dir:. -o cyclonedx-json=reports/sbom.cdx.json
+          else
+            echo "syft 缺席 → SBOM incomplete"; echo "syft_missing=true" >> "$GITHUB_OUTPUT"
+          fi
+          if command -v grype >/dev/null 2>&1 && [ -f reports/sbom.cdx.json ]; then
+            grype sbom:reports/sbom.cdx.json -o sarif --file reports/grype.sarif || true
+          else
+            echo "grype 缺席或無 SBOM → incomplete"; echo "grype_missing=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload Grype SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/grype.sarif
+          category: vibesec-g1-grype
+
+      - name: Trivy 檔案系統掃描（vuln → SARIF）
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: reports/trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+
+      - name: Upload Trivy SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/trivy-fs.sarif
+          category: vibesec-g1-trivy
+
+      - name: Upload G1 reports（artifact）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibesec-g1-reports
+          path: reports/
+          if-no-files-found: ignore
+
+  # G2 機密與金鑰（全 Git 歷史）
+  g2-secrets:
+    name: G2 機密與金鑰
+    needs: g1-supply-chain
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 讀取 mode
+        id: cfg
+        shell: bash
+        run: |
+          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
+          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Gitleaks（全歷史）
+        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: config/gitleaks.toml
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          GITLEAKS_ENABLE_SUMMARY: "true"
+
+      - name: 檢查 .env 是否在 .gitignore 且無已追蹤的 .env 檔
+        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        shell: bash
+        run: |
+          mkdir -p reports
+          fail=0
+          if [ -f .gitignore ] && grep -Eq '(^|/)\.env' .gitignore; then
+            echo "OK: .env* 已列入 .gitignore"
+          else
+            echo "::error::.env* 未列入 .gitignore（require_env_in_gitignore: true）"; fail=1
+          fi
+          TRACKED=$(git ls-files | grep -E '(^|/)\.env(\..*)?$' || true)
+          if [ -n "$TRACKED" ]; then
+            echo "::error::偵測到已追蹤的 .env 檔："; echo "$TRACKED"; fail=1
+          else
+            echo "OK: 無已追蹤的 .env 檔"
+          fi
+          echo "{\"gate\":\"G2\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
+          if [ "${{ steps.cfg.outputs.mode }}" = "enforce" ] && [ "$fail" = "1" ]; then exit 1; fi
+
+      - name: Upload Gitleaks SARIF（若產生）
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: vibesec-g2-gitleaks
+
+  # G3 SAST 與 IaC（diff-aware；跨檔污點分析 + IaC 設定掃描）
+  g3-sast-iac:
+    name: G3 SAST 與 IaC
+    needs: g2-secrets
+    if: always()
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 讀取 mode
+        id: cfg
+        shell: bash
+        run: |
+          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
+          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Semgrep（vibesec 規則 + OWASP Top Ten + security-audit，diff-aware）
+        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        shell: bash
+        env:
+          SEMGREP_BASELINE_REF: origin/${{ github.base_ref }}
+        run: |
+          mkdir -p reports
+          BASELINE=""
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=0 2>/dev/null || true
+            BASELINE="--baseline-commit origin/${{ github.base_ref }}"
+          fi
+          semgrep ci \
+            --config config/semgrep/vibesec-rules.yaml \
+            --config p/owasp-top-ten \
+            --config p/security-audit \
+            --sarif --output reports/semgrep.sarif ${BASELINE} || true
+
+      - name: Upload Semgrep SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/semgrep.sarif
+          category: vibesec-g3-semgrep
+
+  # G3 IaC 掃描（Checkov + Trivy config）獨立於 semgrep container 執行
+  g3-iac:
+    name: G3 IaC（Checkov / Trivy config）
+    needs: g2-secrets
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 讀取 mode
+        id: cfg
+        shell: bash
+        run: |
+          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkov（IaC → SARIF）
+        continue-on-error: true
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          config_file: config/checkov/.checkov.yaml
+          output_format: sarif
+          output_file_path: reports/
+
+      - name: Upload Checkov SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/results_sarif.sarif
+          category: vibesec-g3-checkov
+
+      - name: Trivy config 掃描（IaC misconfig → SARIF）
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: reports/trivy-config.sarif
+
+      - name: Upload Trivy config SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/trivy-config.sarif
+          category: vibesec-g3-trivy-config
+
+  # G4 架構與存取控制（靜態檢查 + PR 留言提示 LLM 審查）
+  g4-access-control:
+    name: G4 架構與存取控制
+    needs: g3-sast-iac
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 讀取 mode
+        id: cfg
+        shell: bash
+        run: |
+          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
+          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: G4 靜態檢查（Unicode / RLS / Agent tool allow-list / 單層 middleware）
+        id: g4static
+        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        env:
+          VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'EOF'
+          # G4 靜態檢查：隱形 Unicode（Rules File Backdoor）、Supabase RLS、Agent 工具 allow-list、單層 middleware 授權
+          import json, re, pathlib, os, datetime, glob
+          NOW = datetime.datetime.now(datetime.timezone.utc)
+          def iso(dt): return dt.replace(microsecond=0).isoformat()
+          MODE = os.environ.get("VIBESEC_MODE", "shadow")
+          COMMIT = os.environ.get("COMMIT_SHA", "")[:40] or None
+          REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
+
+          results = []; rules = {}
+          def add(rule_id, level, msg, uri, line=1, tier="advisory"):
+              rules.setdefault(rule_id, {"id": rule_id, "name": rule_id,
+                                         "shortDescription": {"text": rule_id},
+                                         "defaultConfiguration": {"level": level},
+                                         "properties": {"policy_tier": tier}})
+              results.append({"ruleId": rule_id, "level": level, "message": {"text": msg},
+                              "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri},
+                                             "region": {"startLine": line}}}],
+                              "properties": {"policy_tier": tier}})
+
+          # 1) 隱形 Unicode 掃描
+          INVISIBLE = ["​", "‌", "‍", "⁠", "﻿"]
+          INVISIBLE += [chr(c) for c in range(0x202A, 0x202F)]  # U+202A-U+202E bidi
+          INVISIBLE += [chr(c) for c in range(0x2066, 0x206A)]  # U+2066-U+2069 isolates
+          rule_files = []
+          for pat in [".cursorrules", "AGENTS.md", "SKILL.md"]:
+              rule_files += glob.glob(pat)
+          rule_files += glob.glob(".claude/**/*.md", recursive=True)
+          for p in sorted(set(rule_files)):
+              fp = pathlib.Path(p)
+              if not fp.exists(): continue
+              try: lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+              except Exception: continue
+              for i, ln in enumerate(lines, 1):
+                  hits = [hex(ord(ch)) for ch in ln if ch in INVISIBLE]
+                  if hits:
+                      add("vibesec.g4.rules-file-unicode", "error",
+                          f"Rules File Backdoor：{p} 第 {i} 行含隱形 Unicode {hits}", p, i, "blocking")
+
+          # 2) Supabase migrations RLS
+          for p in glob.glob("supabase/migrations/**/*.sql", recursive=True) + glob.glob("**/migrations/**/*.sql", recursive=True):
+              fp = pathlib.Path(p)
+              if not fp.exists(): continue
+              body = fp.read_text(encoding="utf-8", errors="replace")
+              if re.search(r'disable\s+row\s+level\s+security', body, re.I):
+                  add("vibesec.g4.rls-disabled", "error", f"{p} 明確停用 RLS（全表暴露風險）", p, 1, "blocking")
+              for m in re.finditer(r'create\s+table\s+(?:if\s+not\s+exists\s+)?["`]?([A-Za-z0-9_.]+)', body, re.I):
+                  tbl = m.group(1)
+                  if not re.search(rf'alter\s+table\s+["`]?{re.escape(tbl)}["`]?\s+enable\s+row\s+level\s+security', body, re.I):
+                      add("vibesec.g4.rls-not-enabled", "warning",
+                          f"{p}：資料表 {tbl} 未見 enable row level security", p, 1, "advisory")
+
+          # 3) Agent 工具 allow-list lint（高危工具暴露）
+          DANGEROUS = r'(delete_user|execute_sql|drop_table)'
+          for p in glob.glob("**/*.py", recursive=True) + glob.glob("**/*.ts", recursive=True) + glob.glob("**/*.js", recursive=True):
+              if "/node_modules/" in p or p.startswith(".git/"): continue
+              fp = pathlib.Path(p)
+              try: body = fp.read_text(encoding="utf-8", errors="replace")
+              except Exception: continue
+              if re.search(r'(tool|register_tool|tools\s*=|@tool)', body) and re.search(DANGEROUS, body, re.I):
+                  for i, ln in enumerate(body.splitlines(), 1):
+                      if re.search(DANGEROUS, ln, re.I):
+                          add("vibesec.g4.agent-tool-allowlist", "warning",
+                              f"{p} 第 {i} 行疑似向 Agent 註冊高危工具（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i, "advisory")
+                          break
+
+          # 4) 單層 middleware 授權（CVE-2025-29927 類）— advisory
+          for p in glob.glob("**/middleware.ts", recursive=True) + glob.glob("middleware.ts"):
+              if "/node_modules/" in p: continue
+              add("vibesec.g4.single-middleware-authz", "note",
+                  f"偵測到 Next.js {p}：請確認授權不只靠單層 middleware（CVE-2025-29927），資料層需獨立 authz", p, 1, "advisory")
+
+          sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+                   "version": "2.1.0",
+                   "runs": [{"tool": {"driver": {"name": "vibesec-g4-static", "version": "1.0.0",
+                                                 "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
+                                                 "rules": list(rules.values())}}, "results": results}]}
+          (REPORTS / "g4-static.sarif").write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+
+          blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
+          advisory = len(results) - blocking
+          status = "fail" if (MODE == "enforce" and blocking) else "pass"
+          gate = {"gate": "G4", "status": status, "status_reason": None, "mode": MODE, "scope": "diff",
+                  "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
+                  "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
+                  "tools": [{"name": "vibesec-g4-static", "version": "1.0.0", "state": "ran", "exit_code": 0,
+                             "output_ref": "reports/g4-static.sarif", "duration_seconds": None}],
+                  "findings_count": {"blocking": blocking, "advisory": advisory},
+                  "coverage": [
+                      {"control_id": "VS-G4-RULES-UNICODE", "state": "fail" if any(r["ruleId"]=="vibesec.g4.rules-file-unicode" for r in results) else "pass", "reason": None},
+                      {"control_id": "VS-G4-RLS", "state": "pass", "reason": None},
+                      {"control_id": "VS-G4-AGENT-ALLOWLIST", "state": "pass", "reason": None},
+                      {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
+                  ]}
+          (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(f"G4 static: blocking={blocking} advisory={advisory}")
+          if MODE == "enforce" and blocking:
+              raise SystemExit(1)
+          EOF
+
+      - name: Upload G4 static SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/g4-static.sarif
+          category: vibesec-g4-static
+
+      - name: PR 留言：G4 LLM 審查需人工／harness 執行
+        if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- vibesec-g4-llm-review -->';
+            const body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / 單層 middleware）。\n\n**G4 LLM 審查需由 \`/vibesec-harness\` 或人工執行**（跨檔授權推理、BOLA/IDOR 綁定、HITL 判斷無法由靜態規則涵蓋）。`;
+            const {owner, repo} = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.rest.issues.listComments({owner, repo, issue_number});
+            const existing = comments.data.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body});
+            } else {
+              await github.rest.issues.createComment({owner, repo, issue_number, body});
+            }
+
+  # Summary —— 彙整各閘門結果；enforce 且有 blocking 或 blocking 閘門 incomplete → 失敗
+  summary:
+    name: VibeSec Summary
+    needs: [g1-supply-chain, g2-secrets, g3-sast-iac, g3-iac, g4-access-control]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下載所有 reports artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: _artifacts
+
+      - name: 彙整 gate-status 矩陣
+        shell: bash
+        run: |
+          MODE=$(grep -E '^\s*mode\s*:' vibesec.yaml | head -1 | sed -E 's/.*:\s*([^\s#]+).*/\1/')
+          mkdir -p reports
+          find _artifacts -name 'g*-gate.json' -exec cp {} reports/ \; 2>/dev/null || true
+          python3 - "$MODE" <<'EOF'
+          import json, glob, os, sys, pathlib
+          MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
+          BLOCKING_GATES = {"G1", "G2", "G3"}  # blocking 閘門：其 incomplete → exit 2
+          rows = []; fail = False; incomplete_block = False
+          seen = {}
+          for p in sorted(glob.glob("reports/*-gate.json")):
+              try: g = json.load(open(p, encoding="utf-8"))
+              except Exception: continue
+              seen[g.get("gate")] = g
+          out = ["# VibeSec 閘門狀態", "", f"模式：`{MODE}`", "",
+                 "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
+          for gid in ["G1", "G2", "G3", "G4"]:
+              g = seen.get(gid)
+              if not g:
+                  out.append(f"| {gid} | `untested` | - | - | 未產生 gate 結果 |")
+                  continue
+              st = g.get("status", "untested")
+              fc = g.get("findings_count", {})
+              reason = g.get("status_reason") or ""
+              out.append(f"| {gid} | `{st}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {reason} |")
+              if MODE == "enforce":
+                  if st == "fail" or (fc.get("blocking", 0) or 0) > 0:
+                      fail = True
+                  if st == "incomplete" and gid in BLOCKING_GATES:
+                      incomplete_block = True
+          out += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。"]
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          text = "\n".join(out)
+          if summary_path:
+              open(summary_path, "a", encoding="utf-8").write(text + "\n")
+          print(text)
+          pathlib.Path("reports/gate-status.md").write_text(text + "\n", encoding="utf-8")
+          if MODE == "enforce" and incomplete_block:
+              print("::error::enforce 模式下 blocking 閘門 incomplete → exit 2"); sys.exit(2)
+          if MODE == "enforce" and fail:
+              print("::error::enforce 模式下存在 blocking 發現 → exit 1"); sys.exit(1)
+          EOF
+
+      - name: Upload 彙整 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibesec-pr-summary
+          path: reports/
+          if-no-files-found: ignore

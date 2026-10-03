@@ -1,0 +1,723 @@
+# VibeSec 自訂 Semgrep 規則（G2 / G3 / G4）
+# 用法：
+#   PR（diff-aware）：semgrep ci --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit
+#   本機：          semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $(git merge-base HEAD origin/main) --sarif -o reports/semgrep.sarif .
+# 命名：id = vibesec.g<N>.<kebab-name>；metadata.vibesec_rule_id 與 id 相同，供 cwe-map.yaml 查表。
+# policy_tier 只是預設建議；是否阻擋以 config/policy/blocking-policy.yaml 為準。
+# 污點來源刻意同時納入「HTTP 請求參數」與「LLM 輸出」：對 Vibe Coding 應用而言，模型輸出與使用者輸入一樣不可信。
+
+rules:
+  # ===========================================================================
+  # G3 — SQL Injection（taint，Python）
+  # ===========================================================================
+  - id: vibesec.g3.sql-string-concat
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      [G3] 不可信資料（HTTP 參數或 LLM 輸出）經字串拼接 / f-string / format 流入 SQL 執行點 `$SINK`。
+      請改用參數化查詢（cursor.execute("... WHERE id = %s", (id,)) 或 SQLAlchemy bindparam / ORM）。
+    metadata:
+      cwe: "CWE-89"
+      control_ids: ["ASVS5-V1.2"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.sql-string-concat
+      owasp_llm: ["LLM05:2025"]
+      category: security
+      technology: [flask, fastapi, django, sqlalchemy, psycopg2, openai, anthropic]
+    pattern-sources:
+      # --- HTTP 請求（Flask / Django 風格） ---
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.form.get(...)
+      - pattern: request.form[...]
+      - pattern: request.json
+      - pattern: request.get_json(...)
+      - pattern: request.values.get(...)
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+      - pattern: request.headers.get(...)
+      - pattern: request.cookies.get(...)
+      # --- FastAPI / Flask 路由函式參數 ---
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $FUNC(..., $PARAM, ...):
+                ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(get|post|put|patch|delete|route|api_route|websocket)$
+          - focus-metavariable: $PARAM
+          - pattern: $PARAM
+      # --- LLM 輸出（OpenAI / Anthropic / LangChain / LiteLLM 風格） ---
+      - pattern: $RESP.choices[$I].message.content
+      - pattern: $RESP.choices[$I].text
+      - pattern: $MSG.content[$I].text
+      - pattern: $CLIENT.chat.completions.create(...)
+      - pattern: $CLIENT.messages.create(...)
+      - pattern: $CLIENT.responses.create(...)
+      - pattern: completion(...)
+      - pattern: $LLM.invoke(...)
+      - pattern: $LLM.predict(...)
+      - pattern: $CHAIN.run(...)
+      - pattern: $AGENT.run(...)
+      - pattern: $MODEL.generate_content(...)
+    pattern-sanitizers:
+      - pattern: int(...)
+      - pattern: float(...)
+      - pattern: uuid.UUID(...)
+      - pattern: sqlalchemy.bindparam(...)
+      - pattern: bindparam(...)
+      - pattern: psycopg2.sql.Identifier(...)
+      - pattern: sql.Identifier(...)
+      - pattern: sql.Literal(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $CUR.execute($Q, ...)
+              - pattern: $CUR.executemany($Q, ...)
+              - pattern: $CUR.executescript($Q, ...)
+              - pattern: $SESSION.execute(text($Q), ...)
+              - pattern: $SESSION.execute(sqlalchemy.text($Q), ...)
+              - pattern: text($Q)
+              - pattern: $DB.raw($Q, ...)
+              - pattern: $MODEL.objects.raw($Q, ...)
+              - pattern: $CONN.query($Q, ...)
+              - pattern: $ENGINE.execute($Q, ...)
+              - pattern: '$SB.rpc($F, {..., "query": $Q, ...})'
+          - focus-metavariable: $Q
+
+  # ===========================================================================
+  # G3 — SQL Injection（taint，JavaScript / TypeScript）
+  # ===========================================================================
+  - id: vibesec.g3.sql-string-concat-js
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      [G3] 不可信資料（req.* 或 LLM 輸出）經樣板字串 / 拼接流入 SQL 執行點。
+      請改用參數化查詢（db.query("... WHERE id = $1", [id]) / knex 綁定 / Prisma $queryRaw 樣板標籤）。
+    metadata:
+      cwe: "CWE-89"
+      control_ids: ["ASVS5-V1.2"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.sql-string-concat
+      owasp_llm: ["LLM05:2025"]
+      category: security
+      technology: [express, nextjs, pg, mysql, knex, prisma, sequelize, openai, anthropic]
+    pattern-sources:
+      - pattern: req.query
+      - pattern: req.body
+      - pattern: req.params
+      - pattern: req.headers
+      - pattern: req.cookies
+      - pattern: request.nextUrl.searchParams
+      - pattern: $REQ.nextUrl.searchParams.get(...)
+      - pattern: await $REQ.json()
+      - pattern: await $REQ.formData()
+      - pattern: $RESP.choices[$I].message.content
+      - pattern: $MSG.content[$I].text
+      - pattern: await $CLIENT.chat.completions.create(...)
+      - pattern: await $CLIENT.messages.create(...)
+      - pattern: await $CLIENT.responses.create(...)
+      - pattern: await generateText(...)
+      - pattern: await $LLM.invoke(...)
+      - pattern: await $MODEL.generateContent(...)
+    pattern-sanitizers:
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+      - pattern: $SQL.identifier(...)
+      - pattern: $SQL.literal(...)
+      - pattern: $KNEX.raw("...", [...])
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.query($Q, ...)
+              - pattern: $DB.execute($Q, ...)
+              - pattern: $DB.raw($Q, ...)
+              - pattern: $PRISMA.$queryRawUnsafe($Q, ...)
+              - pattern: $PRISMA.$executeRawUnsafe($Q, ...)
+              - pattern: $SEQ.query($Q, ...)
+              - pattern: $DB.all($Q, ...)
+              - pattern: $DB.get($Q, ...)
+              - pattern: $DB.run($Q, ...)
+              - pattern: $DB.exec($Q, ...)
+              - pattern: $DB.prepare($Q, ...)
+          - focus-metavariable: $Q
+
+  # ===========================================================================
+  # G3 — SQL f-string / format / % / + 直接進 execute（pattern；無需污點來源）
+  # ===========================================================================
+  - id: vibesec.g3.sql-fstring-execute
+    languages: [python]
+    severity: ERROR
+    message: >-
+      [G3] SQL 執行點直接使用 f-string / % / .format / + 組字串，這正是 AI 生成程式碼最常見的注入型態。
+      即使變數目前看似安全，仍必須改為參數化查詢。
+    metadata:
+      cwe: "CWE-89"
+      control_ids: ["ASVS5-V1.2"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.sql-fstring-execute
+      category: security
+    patterns:
+      - pattern-either:
+          - pattern: $CUR.execute(f"...", ...)
+          - pattern: $CUR.execute("..." % ..., ...)
+          - pattern: $CUR.execute("...".format(...), ...)
+          - pattern: $CUR.execute("..." + ..., ...)
+          - pattern: $CUR.execute(... + "...", ...)
+          - pattern: $CUR.executemany(f"...", ...)
+          - pattern: $CUR.executemany("..." % ..., ...)
+          - pattern: $CUR.executemany("...".format(...), ...)
+          - pattern: $CUR.executemany("..." + ..., ...)
+          - pattern: text(f"...")
+          - pattern: text("..." % ...)
+          - pattern: text("...".format(...))
+          - pattern: text("..." + ...)
+          - pattern: $DB.raw(f"...", ...)
+          - pattern: $DB.raw("..." % ..., ...)
+          - pattern: $DB.raw("...".format(...), ...)
+          - pattern: $DB.raw("..." + ..., ...)
+      - metavariable-regex:
+          metavariable: $CUR
+          regex: ^(?!re$|regex$|logger$|log$|logging$).*$
+
+  # ===========================================================================
+  # G3 — Command Injection（taint，Python）
+  # ===========================================================================
+  - id: vibesec.g3.command-injection
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      [G3] 不可信資料流入 shell 指令執行（subprocess shell=True / os.system / os.popen）。
+      請改為 subprocess.run([...], shell=False) 傳陣列參數，並以 allow-list 驗證。
+    metadata:
+      cwe: "CWE-78"
+      control_ids: ["ASVS5-V1.2"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.command-injection
+      owasp_llm: ["LLM05:2025"]
+      category: security
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.form.get(...)
+      - pattern: request.form[...]
+      - pattern: request.json
+      - pattern: request.get_json(...)
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $FUNC(..., $PARAM, ...):
+                ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(get|post|put|patch|delete|route|api_route|websocket)$
+          - focus-metavariable: $PARAM
+          - pattern: $PARAM
+      - pattern: $RESP.choices[$I].message.content
+      - pattern: $MSG.content[$I].text
+      - pattern: $CLIENT.chat.completions.create(...)
+      - pattern: $CLIENT.messages.create(...)
+      - pattern: completion(...)
+      - pattern: $LLM.invoke(...)
+      - pattern: $AGENT.run(...)
+      - pattern: $TOOL_CALL.function.arguments
+      - pattern: $TOOL_CALL.input
+    pattern-sanitizers:
+      - pattern: shlex.quote(...)
+      - pattern: int(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+              - pattern: subprocess.$F($CMD, ..., shell=True)
+              - pattern: os.system($CMD)
+              - pattern: os.popen($CMD, ...)
+              - pattern: commands.getoutput($CMD)
+          - focus-metavariable: $CMD
+
+  - id: vibesec.g3.command-injection-js
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      [G3] 不可信資料流入 child_process.exec / execSync。請改用 execFile / spawn 傳陣列參數並以 allow-list 驗證。
+    metadata:
+      cwe: "CWE-78"
+      control_ids: ["ASVS5-V1.2"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.command-injection
+      owasp_llm: ["LLM05:2025"]
+      category: security
+    pattern-sources:
+      - pattern: req.query
+      - pattern: req.body
+      - pattern: req.params
+      - pattern: req.headers
+      - pattern: await $REQ.json()
+      - pattern: $RESP.choices[$I].message.content
+      - pattern: $MSG.content[$I].text
+      - pattern: await $CLIENT.chat.completions.create(...)
+      - pattern: await $CLIENT.messages.create(...)
+      - pattern: await generateText(...)
+      - pattern: await $LLM.invoke(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: exec($CMD, ...)
+              - pattern: execSync($CMD, ...)
+              - pattern: $CP.exec($CMD, ...)
+              - pattern: $CP.execSync($CMD, ...)
+              - pattern: $SHELL.exec($CMD, ...)
+          - focus-metavariable: $CMD
+
+  # ===========================================================================
+  # G3 — XSS via innerHTML / dangerouslySetInnerHTML（taint，JS/TS，含 LLM 輸出）
+  # ===========================================================================
+  - id: vibesec.g3.xss-innerhtml
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      [G3] 不可信資料（含 LLM 回覆）未經編碼即寫入 innerHTML / dangerouslySetInnerHTML / document.write。
+      AI 輸出是 LLM05 Improper Output Handling 的典型來源；請改用 textContent 或先以 DOMPurify.sanitize() 淨化。
+    metadata:
+      cwe: "CWE-79"
+      control_ids: ["ASVS5-V1.1", "LLM05:2025"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.xss-innerhtml
+      owasp_llm: ["LLM05:2025"]
+      category: security
+      technology: [react, nextjs, browser, openai, anthropic]
+    pattern-sources:
+      - pattern: req.query
+      - pattern: req.body
+      - pattern: req.params
+      - pattern: location.hash
+      - pattern: location.search
+      - pattern: window.location.hash
+      - pattern: window.location.search
+      - pattern: new URLSearchParams(...).get(...)
+      - pattern: document.referrer
+      - pattern: $RESP.choices[$I].message.content
+      - pattern: $MSG.content[$I].text
+      - pattern: await $CLIENT.chat.completions.create(...)
+      - pattern: await $CLIENT.messages.create(...)
+      - pattern: await $CLIENT.responses.create(...)
+      - pattern: await generateText(...)
+      - pattern: await $LLM.invoke(...)
+      - pattern: (await fetch(...)).json()
+      - pattern: await $R.json()
+      - pattern: $DATA.reply
+      - pattern: $DATA.answer
+      - pattern: $DATA.completion
+      - pattern: $DATA.ai_response
+    pattern-sanitizers:
+      - pattern: DOMPurify.sanitize(...)
+      - pattern: sanitizeHtml(...)
+      - pattern: escapeHtml(...)
+      - pattern: encodeURIComponent(...)
+      - pattern: $X.textContent = ...
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $EL.innerHTML = $HTML
+              - pattern: $EL.outerHTML = $HTML
+              - pattern: $EL.insertAdjacentHTML($POS, $HTML)
+              - pattern: document.write($HTML)
+              - pattern: document.writeln($HTML)
+              - pattern: $$($HTML)
+              - pattern: $EL.html($HTML)
+              - pattern: $EL.append($HTML)
+          - focus-metavariable: $HTML
+      - patterns:
+          - pattern-either:
+              - pattern: '<$EL dangerouslySetInnerHTML={{__html: $HTML}} />'
+              - pattern: '<$EL dangerouslySetInnerHTML={{__html: $HTML}}>...</$EL>'
+              - pattern: 'React.createElement($T, {..., dangerouslySetInnerHTML: {__html: $HTML}, ...}, ...)'
+          - focus-metavariable: $HTML
+
+  - id: vibesec.g3.xss-unescaped-render-py
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      [G3] 不可信資料（含 LLM 回覆）未經編碼即以 Markup / render_template_string / HTMLResponse 輸出成 HTML。
+      請以 markupsafe.escape() 或 bleach.clean() 處理，或改回傳 JSON 由前端以 textContent 顯示。
+    metadata:
+      cwe: "CWE-79"
+      control_ids: ["ASVS5-V1.1", "LLM05:2025"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.xss-innerhtml
+      owasp_llm: ["LLM05:2025"]
+      category: security
+      technology: [flask, fastapi, jinja2, openai, anthropic]
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.form.get(...)
+      - pattern: request.json
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $FUNC(..., $PARAM, ...):
+                ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(get|post|put|patch|delete|route|api_route|websocket)$
+          - focus-metavariable: $PARAM
+          - pattern: $PARAM
+      - pattern: $RESP.choices[$I].message.content
+      - pattern: $MSG.content[$I].text
+      - pattern: $CLIENT.chat.completions.create(...)
+      - pattern: $CLIENT.messages.create(...)
+      - pattern: completion(...)
+      - pattern: $LLM.invoke(...)
+    pattern-sanitizers:
+      - pattern: escape(...)
+      - pattern: markupsafe.escape(...)
+      - pattern: html.escape(...)
+      - pattern: bleach.clean(...)
+      - pattern: nh3.clean(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Markup($HTML)
+              - pattern: markupsafe.Markup($HTML)
+              - pattern: render_template_string($HTML, ...)
+              - pattern: HTMLResponse($HTML, ...)
+              - pattern: HTMLResponse(content=$HTML, ...)
+              - pattern: Response($HTML, ..., media_type="text/html", ...)
+              - pattern: Response(content=$HTML, ..., media_type="text/html", ...)
+          - focus-metavariable: $HTML
+
+  # ===========================================================================
+  # G3 — JWT alg:none / 停用簽章驗證 / 演算法混淆（pattern）
+  # ===========================================================================
+  - id: vibesec.g3.jwt-alg-none
+    languages: [python]
+    severity: ERROR
+    message: >-
+      [G3] jwt.decode 允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）。
+      任何人都能偽造 Token。請固定 algorithms=["RS256"]（或單一 HS256）並保留簽章驗證。
+    metadata:
+      cwe: "CWE-347"
+      control_ids: ["ASVS5-V9.1"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.jwt-alg-none
+      category: security
+      technology: [pyjwt, python-jose]
+    pattern-either:
+      - pattern: jwt.decode($T, ..., algorithms=[..., "none", ...], ...)
+      - pattern: jwt.decode($T, ..., algorithms=[..., "None", ...], ...)
+      - pattern: jwt.decode($T, ..., verify=False, ...)
+      - pattern: 'jwt.decode($T, ..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: 'jwt.decode($T, ..., options={..., "verify_signature": False, ...})'
+      - pattern: 'jose.jwt.decode($T, ..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: jwt.get_unverified_claims($T)
+
+  - id: vibesec.g3.jwt-alg-none-js
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      [G3] jsonwebtoken.verify 允許 "none" 演算法，或以 jwt.decode()（不驗簽）結果做授權判斷。
+      請使用 jwt.verify(token, key, { algorithms: ["RS256"] })。
+    metadata:
+      cwe: "CWE-347"
+      control_ids: ["ASVS5-V9.1"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.jwt-alg-none
+      category: security
+      technology: [jsonwebtoken, jose]
+    pattern-either:
+      - pattern: '$JWT.verify($T, $K, {..., algorithms: [..., "none", ...], ...}, ...)'
+      - pattern: '$JWT.verify($T, $K, {..., algorithms: [..., "none", ...], ...})'
+      - patterns:
+          - pattern-inside: |
+              $USER = $JWT.decode($T, ...);
+              ...
+          - pattern-either:
+              - pattern: if ($USER.$ROLE == "admin") { ... }
+              - pattern: if ($USER.$ROLE === "admin") { ... }
+              - pattern: if ($USER.$FLAG) { ... }
+
+  - id: vibesec.g3.jwt-alg-confusion
+    languages: [python]
+    severity: ERROR
+    message: >-
+      [G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。
+      請只允許單一非對稱演算法，例如 algorithms=["RS256"]。
+    metadata:
+      cwe: "CWE-347"
+      control_ids: ["ASVS5-V9.1"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.jwt-alg-confusion
+      category: security
+      technology: [pyjwt, python-jose]
+    patterns:
+      - pattern-either:
+          - pattern: jwt.decode($T, ..., algorithms=$ALGS, ...)
+          - pattern: jose.jwt.decode($T, ..., algorithms=$ALGS, ...)
+      - metavariable-pattern:
+          metavariable: $ALGS
+          patterns:
+            - pattern: '[..., "HS256", ...]'
+            - pattern: '[..., "RS256", ...]'
+
+  - id: vibesec.g3.jwt-alg-confusion-js
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      [G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。
+      請只允許單一非對稱演算法，例如 { algorithms: ["RS256"] }。
+    metadata:
+      cwe: "CWE-347"
+      control_ids: ["ASVS5-V9.1"]
+      policy_tier: blocking
+      gate: G3
+      vibesec_rule_id: vibesec.g3.jwt-alg-confusion
+      category: security
+      technology: [jsonwebtoken, jose]
+    patterns:
+      - pattern-either:
+          - pattern: '$JWT.verify($T, $K, {..., algorithms: $ALGS, ...}, ...)'
+          - pattern: '$JWT.verify($T, $K, {..., algorithms: $ALGS, ...})'
+          - pattern: 'jwtVerify($T, $K, {..., algorithms: $ALGS, ...})'
+      - metavariable-pattern:
+          metavariable: $ALGS
+          patterns:
+            - pattern: '[..., "HS256", ...]'
+            - pattern: '[..., "RS256", ...]'
+
+  # ===========================================================================
+  # G4 — 缺 owner binding（pattern，advisory，Python SQLAlchemy）
+  # ===========================================================================
+  - id: vibesec.g4.missing-owner-filter
+    languages: [python]
+    severity: WARNING
+    message: >-
+      [G4] 路由處理函式中的查詢只以資源 id 篩選（$MODEL），未綁定 owner_id / user_id / tenant_id = 當前已驗證主體。
+      這是 BOLA / IDOR 的典型形態（前端防禦假象）。請加上 `.filter($MODEL.owner_id == current_user.id)` 或改走資料層 RLS。
+      本規則為 advisory：若該資源本來就是公開資源，請在 PR 說明並由 identity-authz reviewer 確認。
+    metadata:
+      cwe: "CWE-639"
+      control_ids: ["ASVS5-V8.2"]
+      policy_tier: advisory
+      gate: G4
+      vibesec_rule_id: vibesec.g4.missing-owner-filter
+      category: security
+      technology: [sqlalchemy, fastapi, flask]
+    patterns:
+      - pattern-inside: |
+          @$DECO(...)
+          def $FUNC(...):
+            ...
+      - pattern-either:
+          - pattern: $DB.query($MODEL).filter($MODEL.id == $ID)
+          - pattern: $DB.query($MODEL).filter_by(id=$ID)
+          - pattern: $DB.query($MODEL).get($ID)
+          - pattern: $DB.get($MODEL, $ID)
+          - pattern: select($MODEL).where($MODEL.id == $ID)
+          - pattern: $MODEL.query.get($ID)
+          - pattern: $MODEL.query.filter_by(id=$ID)
+          - pattern: $MODEL.query.filter($MODEL.id == $ID)
+      - pattern-not-inside: $Q.filter(..., $MODEL.owner_id == ..., ...)
+      - pattern-not-inside: $Q.filter(..., $MODEL.user_id == ..., ...)
+      - pattern-not-inside: $Q.filter(..., $MODEL.tenant_id == ..., ...)
+      - pattern-not-inside: $Q.filter(..., $MODEL.org_id == ..., ...)
+      - pattern-not-inside: $Q.filter_by(..., owner_id=..., ...)
+      - pattern-not-inside: $Q.filter_by(..., user_id=..., ...)
+      - pattern-not-inside: $Q.where(..., $MODEL.owner_id == ..., ...)
+      - pattern-not-inside: $Q.where(..., $MODEL.user_id == ..., ...)
+      - pattern-not-inside: $Q.where(..., $MODEL.tenant_id == ..., ...)
+
+  - id: vibesec.g4.missing-owner-filter-supabase-js
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      [G4] Supabase 查詢只以 id 篩選，未加 user_id / owner_id 條件。若該表未啟用 RLS，任何持有 anon key 的人都能讀寫他人資料。
+      請確認：(1) 該表已 `enable row level security` 且有 policy；或 (2) 查詢加上 `.eq('user_id', session.user.id)`。
+    metadata:
+      cwe: "CWE-639"
+      control_ids: ["ASVS5-V8.2"]
+      policy_tier: advisory
+      gate: G4
+      vibesec_rule_id: vibesec.g4.missing-owner-filter
+      category: security
+      technology: [supabase]
+    patterns:
+      - pattern-either:
+          - pattern: $SB.from($TABLE). ... .eq("id", $ID)
+          - pattern: $SB.from($TABLE). ... .eq('id', $ID)
+      - pattern-not-inside: $Q.eq("user_id", ...)
+      - pattern-not-inside: $Q.eq('user_id', ...)
+      - pattern-not-inside: $Q.eq("owner_id", ...)
+      - pattern-not-inside: $Q.eq('owner_id', ...)
+      - pattern-not-inside: $Q.eq("tenant_id", ...)
+      - pattern-not-inside: $Q.eq('tenant_id', ...)
+
+  # ===========================================================================
+  # G4 — Supabase RLS 停用 / 建表未啟用（generic + regex，best-effort）
+  # ===========================================================================
+  - id: vibesec.g4.supabase-rls-disabled
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      [G4] SQL migration 停用 Row Level Security（$1）。Supabase 以 anon key 直連資料庫時，RLS 是唯一的資料層授權；
+      停用等於全表對所有使用者開放（MAESTRO-L2）。
+    metadata:
+      cwe: "CWE-284"
+      control_ids: ["ASVS5-V8.2", "MAESTRO-L2"]
+      policy_tier: blocking
+      gate: G4
+      vibesec_rule_id: vibesec.g4.supabase-rls-disabled
+      category: security
+      technology: [supabase, postgres]
+    paths:
+      include:
+        - "**/*.sql"
+        - "**/migrations/**"
+        - "**/supabase/**"
+    pattern-regex: (?i)alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?("?[\w.]+"?)\s+disable\s+row\s+level\s+security
+
+  - id: vibesec.g4.supabase-table-without-rls
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      [G4] 在同一 migration 檔中建立資料表 $TABLE 但找不到對應的 `alter table ... enable row level security`。
+      Supabase 新建表預設不啟用 RLS；請於同一 migration 內啟用並建立至少一條 policy（best-effort 檢查，跨檔啟用請在 PR 註明）。
+    metadata:
+      cwe: "CWE-284"
+      control_ids: ["ASVS5-V8.2", "MAESTRO-L2"]
+      policy_tier: advisory
+      gate: G4
+      vibesec_rule_id: vibesec.g4.supabase-rls-disabled
+      category: security
+      technology: [supabase, postgres]
+    paths:
+      include:
+        - "**/supabase/migrations/**"
+        - "**/migrations/**/*.sql"
+    # 建表後（同檔任何位置）找不到 `alter table [public.]<TABLE> enable row level security` 才命中
+    pattern-regex: (?is)create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?"?(?P<TABLE>\w+)"?\s*\((?!.*alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:public\.)?"?(?P=TABLE)"?\s+enable\s+row\s+level\s+security)
+
+  # ===========================================================================
+  # G4 — Agent 工具過度暴露（pattern，Python + JS）
+  # ===========================================================================
+  - id: vibesec.g4.agent-tool-overexposure
+    languages: [python]
+    severity: ERROR
+    message: >-
+      [G4] Agent 工具清單或工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。
+      通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency；Replit 刪庫案例）。
+      請改為 allow-list 內的細粒度工具，並對高影響動作加 Human-in-the-Loop。
+    metadata:
+      cwe: "CWE-250"
+      control_ids: ["VS-G4-AGENT-TOOL-ALLOWLIST", "LLM06:2025", "MAESTRO-L3"]
+      policy_tier: blocking
+      gate: G4
+      vibesec_rule_id: vibesec.g4.agent-tool-overexposure
+      category: security
+      technology: [langchain, openai-agents, anthropic, mcp, crewai]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @tool
+              def $NAME(...):
+                ...
+          - pattern: |
+              @tool(...)
+              def $NAME(...):
+                ...
+          - pattern: |
+              @$MCP.tool()
+              def $NAME(...):
+                ...
+          - pattern: |
+              @$MCP.tool(...)
+              def $NAME(...):
+                ...
+          - pattern: |
+              @function_tool
+              def $NAME(...):
+                ...
+          - pattern: tools=[..., $NAME, ...]
+          - pattern: 'tools=[..., {..., "name": $NAME, ...}, ...]'
+          - pattern: 'tools=[..., {..., "function": {..., "name": $NAME, ...}, ...}, ...]'
+          - pattern: Tool(name=$NAME, ...)
+          - pattern: StructuredTool.from_function(..., name=$NAME, ...)
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^["']?(delete_user|delete_users|drop_table|drop_database|execute_sql|run_sql|exec_sql|raw_sql|rm_rf|rm -rf|shell_exec|run_shell|execute_command|exec_command|run_command|sudo|transfer_funds|delete_all)["']?$
+
+  - id: vibesec.g4.agent-tool-overexposure-js
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      [G4] Agent 工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。
+      通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency）。請改為 allow-list 內的細粒度工具並加 Human-in-the-Loop。
+    metadata:
+      cwe: "CWE-250"
+      control_ids: ["VS-G4-AGENT-TOOL-ALLOWLIST", "LLM06:2025", "MAESTRO-L3"]
+      policy_tier: blocking
+      gate: G4
+      vibesec_rule_id: vibesec.g4.agent-tool-overexposure
+      category: security
+      technology: [vercel-ai, langchain, mcp, openai]
+    patterns:
+      - pattern-either:
+          - pattern: $SERVER.tool($NAME, ...)
+          - pattern: $SERVER.registerTool($NAME, ...)
+          - pattern: 'tool({..., name: $NAME, ...})'
+          - pattern: 'tools: [..., {..., name: $NAME, ...}, ...]'
+          - pattern: 'tools: [..., {..., function: {..., name: $NAME, ...}, ...}, ...]'
+          - pattern: 'tools: {..., $NAME: ..., ...}'
+          - pattern: 'new DynamicTool({..., name: $NAME, ...})'
+          - pattern: 'new DynamicStructuredTool({..., name: $NAME, ...})'
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^["'`]?(delete_user|delete_users|deleteUser|drop_table|dropTable|drop_database|execute_sql|executeSql|run_sql|runSql|exec_sql|raw_sql|rm_rf|rm -rf|shell_exec|run_shell|runShell|execute_command|executeCommand|exec_command|run_command|sudo|transfer_funds|transferFunds|delete_all)["'`]?$
+
+  # ===========================================================================
+  # G2 — 硬編碼 LLM 金鑰（regex；gitleaks 之外的第二道，涵蓋 PR diff 階段）
+  # ===========================================================================
+  - id: vibesec.g2.hardcoded-llm-key
+    languages: [generic]   # generic 模式對任何檔案做正則比對（.py/.js/.ts/.json/.yaml/.env …）
+    severity: ERROR
+    message: >-
+      [G2] 原始碼含疑似 LLM 供應商金鑰（OpenAI sk-… / sk-proj-…、Anthropic sk-ant-api03-…、GLM id.secret）。
+      請立即到供應商後台撤銷並輪替，改由環境變數或祕密管理服務注入；報告只保留遮罩與指紋。
+    metadata:
+      cwe: "CWE-798"
+      control_ids: ["ASVS5-V13.3", "MAESTRO-L3"]
+      policy_tier: blocking
+      gate: G2
+      vibesec_rule_id: vibesec.g2.hardcoded-llm-key
+      category: security
+    paths:
+      exclude:
+        - "config/gitleaks.toml"
+        - "config/semgrep/vibesec-rules.yaml"
+        - "docs/**"
+        - "**/*.md"
+        - "evals/**/fixtures/**"
+    pattern-either:
+      - pattern-regex: \bsk-ant-api03-[A-Za-z0-9_\-]{80,}\b
+      - pattern-regex: \bsk-proj-[A-Za-z0-9_\-]{40,}\b
+      - pattern-regex: \bsk-[A-Za-z0-9]{32,}\b
+      - pattern-regex: \b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b
