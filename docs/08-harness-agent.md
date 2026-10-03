@@ -26,7 +26,7 @@ harness agent **不做**的事：不寫修補程式碼、不改任何設定讓�
 | 目錄 | `catalogs_dir` → `config/catalogs/` | 所有 `control_id` / `cwe` 填 `null` 並在 `notes` 說明；審查結論不得引用 ID |
 | 威脅模型 | `project.threat_model`（符合 `schemas/threat-model.schema.json`） | G0 `incomplete`，`status_reason: "threat model file missing"`；`risk_tier` 退回 `vibesec.yaml` 所寫值並在報告標註「未經 G0 核對」 |
 | Git diff base | 參數 `--diff <base>`；CI 中為 `github.event.pull_request.base.sha` | `diff_aware: true` 的閘門退為 `scope: full`，並在 gate result 記 `diff_base: null` |
-| 靶場 URL | 環境變數 `VIBESEC_TARGET_URL`（`gates.g5_dast_api.target_url_env`） | G5、G6 `incomplete`，`status_reason: "VIBESEC_TARGET_URL not set"` |
+| 靶場 URL | 環境變數 `VIBESEC_TARGET_URL`（`gates.g5_dast_api.target_url_env`）；CI 中來自 repo Actions 變數 `vars.VIBESEC_TARGET_URL`，不接受手動觸發輸入 | G5、G6 `incomplete`，`status_reason: "VIBESEC_TARGET_URL not set"` |
 | 雙帳號 Token | `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` | G5 的 `bola_idor` 控制 `untested`，G5 整體 `incomplete`（`two_account_test: required`） |
 | 模型金鑰 | `config/providers.yaml` 各 provider 的 `api_key_env` | 該 provider 不可用；若導致高風險控制不足兩個 family → 相關發現 `pending`、閘門 `incomplete` |
 

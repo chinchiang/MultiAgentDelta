@@ -7,7 +7,7 @@
 | 設定 | `vibesec.yaml` → `gates.g5_dast_api`（`stage: staging`、`target_url_env: VIBESEC_TARGET_URL`、`tools: [zap-baseline, zap-api-scan, api-probes]`、`two_account_test: required`、`account_a_token_env: VIBESEC_TOKEN_A`、`account_b_token_env: VIBESEC_TOKEN_B`、`checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit]`、`timeout_seconds: 1800`） |
 | 設定檔 | `config/zap/api-scan.conf`、`config/zap/two-account-context.yaml` |
 | 負責 | Red Team |
-| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8） |
+| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流不接受手動輸入的目標 |
 
 ## 對抗成因
 

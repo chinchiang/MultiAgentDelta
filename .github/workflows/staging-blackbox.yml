@@ -5,12 +5,9 @@
 name: VibeSec Staging Blackbox
 
 on:
+  # 不接受手動輸入參數（Checkov CKV_GHA_7 / SLSA）：攻擊目標只能由管理者設定的
+  # Actions 變數 vars.VIBESEC_TARGET_URL 指定；未設定則只打 job 內啟動的靶場。
   workflow_dispatch:
-    inputs:
-      target_url:
-        description: "已授權的測試目標 URL（留空則在 job 內啟動 examples/vulnapp 靶場）"
-        required: false
-        type: string
   schedule:
     - cron: "0 20 * * 0"   # 每週日 20:00 UTC
 
@@ -34,11 +31,11 @@ jobs:
         continue-on-error: true
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      - name: 啟動靶場 examples/vulnapp（當未提供 target_url）
+      - name: 啟動靶場 examples/vulnapp（當未設定 vars.VIBESEC_TARGET_URL）
         id: target
         shell: bash
         env:
-          INPUT_TARGET_URL: ${{ github.event.inputs.target_url }}
+          INPUT_TARGET_URL: ${{ vars.VIBESEC_TARGET_URL }}
         run: |
           mkdir -p reports
           INPUT_URL="${INPUT_TARGET_URL}"
@@ -47,7 +44,7 @@ jobs:
             echo "url=$INPUT_URL" >> "$GITHUB_OUTPUT"
             echo "is_vulnapp=false" >> "$GITHUB_OUTPUT"
           else
-            echo "未提供 target_url → 啟動 examples/vulnapp 靶場（僅打靶場）"
+            echo "未設定 vars.VIBESEC_TARGET_URL → 啟動 examples/vulnapp 靶場（僅打靶場）"
             export PATH="$HOME/.local/bin:$PATH"
             nohup uv run --project examples/vulnapp uvicorn app.main:app --host 0.0.0.0 --port 8000 > reports/_vulnapp.log 2>&1 &
             echo "url=http://127.0.0.1:8000" >> "$GITHUB_OUTPUT"

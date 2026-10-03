@@ -32,7 +32,7 @@ AI 生成程式碼有四大典型病徵：**幻覺套件（Slopsquatting）**、
 ## 快速上手
 
 1. 複製 `docs/templates/threat-model.yaml` 填寫 G0，決定 `risk_tier`（L1 / L2 / L3）並寫入 `vibesec.yaml`。
-2. 把 `.github/workflows/` 三條工作流、`.pre-commit-config.yaml`、`config/` 複製到目標專案；在 repo secrets 設定 `VIBESEC_TARGET_URL`、`VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` 與模型金鑰（見 `config/providers.yaml`）。
+2. 把 `.github/workflows/` 三條工作流、`.pre-commit-config.yaml`、`config/` 複製到目標專案；在 repo 的 Actions variables 設定已授權測試目標 `VIBESEC_TARGET_URL`（未設定則只打內建靶場），在 secrets 設定 `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` 與模型金鑰（見 `config/providers.yaml`）。
 3. 在 Claude Code 中執行 `/vibesec-harness`：harness agent 會依 `vibesec.yaml` 執行閘門、呼叫四個 reviewer sub-agent，並把報告寫到 `reports/`。
 4. 試點期維持 `mode: shadow`（只報告）；驗收後改 `mode: enforce`，命中 `config/policy/blocking-policy.yaml` 的發現即擋 PR。
 5. 要驗證黑箱閘門，先啟動靶場：`uv run --project examples/vulnapp uvicorn app.main:app --port 8000`。
