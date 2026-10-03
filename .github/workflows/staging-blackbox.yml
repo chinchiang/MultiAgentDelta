@@ -32,14 +32,16 @@ jobs:
 
       - name: Install uv
         continue-on-error: true
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: 啟動靶場 examples/vulnapp（當未提供 target_url）
         id: target
         shell: bash
+        env:
+          INPUT_TARGET_URL: ${{ github.event.inputs.target_url }}
         run: |
           mkdir -p reports
-          INPUT_URL="${{ github.event.inputs.target_url }}"
+          INPUT_URL="${INPUT_TARGET_URL}"
           if [ -n "$INPUT_URL" ]; then
             echo "使用外部已授權目標：$INPUT_URL"
             echo "url=$INPUT_URL" >> "$GITHUB_OUTPUT"
@@ -65,15 +67,17 @@ jobs:
         env:
           SECRET_TOKEN_A: ${{ secrets.VIBESEC_TOKEN_A }}
           SECRET_TOKEN_B: ${{ secrets.VIBESEC_TOKEN_B }}
+          TARGET_URL: ${{ steps.target.outputs.url }}
+          IS_VULNAPP: ${{ steps.target.outputs.is_vulnapp }}
         run: |
-          URL="${{ steps.target.outputs.url }}"
+          URL="${TARGET_URL}"
           extract() { python3 -c "import sys,json;
           try:
               d=json.load(sys.stdin)
           except Exception:
               print(''); sys.exit()
           print(d.get('access_token') or d.get('token') or d.get('jwt') or '')"; }
-          if [ "${{ steps.target.outputs.is_vulnapp }}" = "true" ]; then
+          if [ "${IS_VULNAPP}" = "true" ]; then
             TA=$(curl -s -X POST "$URL/login" -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice-pass"}' | extract)
             TB=$(curl -s -X POST "$URL/login" -H 'Content-Type: application/json' -d '{"username":"bob","password":"bob-pass"}' | extract)
           else

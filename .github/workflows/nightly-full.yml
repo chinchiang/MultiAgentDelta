@@ -79,11 +79,25 @@ jobs:
           restore-keys: |
             vibesec-enrich-
 
-      - name: 安裝 Syft 與 Grype（best-effort）
+      - name: 安裝 Syft（官方 action，釘選 SHA）
+        id: syft
         continue-on-error: true
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: 安裝 Grype（官方 action，釘選 SHA）
+        id: grype
+        continue-on-error: true
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+
+      - name: 將 Syft / Grype 加入 PATH
+        continue-on-error: true
+        env:
+          SYFT_CMD: ${{ steps.syft.outputs.cmd }}
+          GRYPE_CMD: ${{ steps.grype.outputs.cmd }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin || echo "syft install failed"
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin || echo "grype install failed"
+          [ -n "$SYFT_CMD" ] && dirname "$SYFT_CMD" >> "$GITHUB_PATH"
+          [ -n "$GRYPE_CMD" ] && dirname "$GRYPE_CMD" >> "$GITHUB_PATH"
+          true
 
       - name: Syft SBOM（全庫）+ Grype（SARIF + JSON）
         continue-on-error: true

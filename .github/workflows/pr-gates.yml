@@ -58,11 +58,13 @@ jobs:
       - name: 偵測變更的 manifest 檔
         id: diff
         shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           mkdir -p reports
-          BASE="origin/${{ github.base_ref }}"
-          if [ -z "${{ github.base_ref }}" ]; then BASE="HEAD~1"; fi
-          git fetch origin "${{ github.base_ref }}" --depth=0 2>/dev/null || true
+          BASE="origin/${BASE_REF}"
+          if [ -z "${BASE_REF}" ]; then BASE="HEAD~1"; fi
+          [ -n "${BASE_REF}" ] && git fetch origin "${BASE_REF}" 2>/dev/null || true
           CHANGED=$(git diff --name-only "${BASE}...HEAD" 2>/dev/null || git diff --name-only HEAD~1...HEAD)
           echo "$CHANGED" > reports/_changed-files.txt
           echo "base=${BASE}" >> "$GITHUB_OUTPUT"
@@ -411,11 +413,25 @@ jobs:
           sarif_file: reports/g1-slopcheck.sarif
           category: vibesec-g1-slopcheck
 
-      - name: 安裝 Syft 與 Grype（官方 install script，best-effort）
+      - name: 安裝 Syft（官方 action，釘選 SHA）
+        id: syft
         continue-on-error: true
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: 安裝 Grype（官方 action，釘選 SHA）
+        id: grype
+        continue-on-error: true
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+
+      - name: 將 Syft / Grype 加入 PATH
+        continue-on-error: true
+        env:
+          SYFT_CMD: ${{ steps.syft.outputs.cmd }}
+          GRYPE_CMD: ${{ steps.grype.outputs.cmd }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin || echo "syft install failed"
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin || echo "grype install failed"
+          [ -n "$SYFT_CMD" ] && dirname "$SYFT_CMD" >> "$GITHUB_PATH"
+          [ -n "$GRYPE_CMD" ] && dirname "$GRYPE_CMD" >> "$GITHUB_PATH"
+          true
 
       - name: 產生 SBOM（Syft CycloneDX）與漏洞掃描（Grype → SARIF）
         id: sbom
@@ -498,6 +514,8 @@ jobs:
       - name: 檢查 .env 是否在 .gitignore 且無已追蹤的 .env 檔
         continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
         shell: bash
+        env:
+          VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
         run: |
           mkdir -p reports
           fail=0
@@ -513,7 +531,7 @@ jobs:
             echo "OK: 無已追蹤的 .env 檔"
           fi
           echo "{\"gate\":\"G2\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
-          if [ "${{ steps.cfg.outputs.mode }}" = "enforce" ] && [ "$fail" = "1" ]; then exit 1; fi
+          if [ "${VIBESEC_MODE}" = "enforce" ] && [ "$fail" = "1" ]; then exit 1; fi
 
       - name: Upload Gitleaks SARIF（若產生）
         if: always() && hashFiles('results.sarif') != ''
@@ -548,13 +566,14 @@ jobs:
         continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
         shell: bash
         env:
+          BASE_REF: ${{ github.base_ref }}
           SEMGREP_BASELINE_REF: origin/${{ github.base_ref }}
         run: |
           mkdir -p reports
           BASELINE=""
-          if [ -n "${{ github.base_ref }}" ]; then
-            git fetch origin "${{ github.base_ref }}" --depth=0 2>/dev/null || true
-            BASELINE="--baseline-commit origin/${{ github.base_ref }}"
+          if [ -n "${BASE_REF}" ]; then
+            git fetch origin "${BASE_REF}" 2>/dev/null || true
+            BASELINE="--baseline-commit origin/${BASE_REF}"
           fi
           semgrep ci \
             --config config/semgrep/vibesec-rules.yaml \
