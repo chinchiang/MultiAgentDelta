@@ -1,0 +1,36 @@
+# VibeSec 自訂 Checkov YAML 政策：強制 AWS IMDSv2
+# 對應 vibesec.g3.imdsv1-allowed（CWE-918、ASVS5-V13.2、MAESTRO-L4）
+# 為什麼：IMDSv1 允許任何 SSRF（例如「URL 匯入」端點）直接 GET http://169.254.169.254/latest/meta-data/iam/security-credentials/
+#         取得實例角色憑證；IMDSv2 要求先 PUT 取得 session token，SSRF 通常做不到。
+# 修法（Terraform）：
+#   resource "aws_instance" "app" {
+#     metadata_options {
+#       http_endpoint               = "enabled"
+#       http_tokens                 = "required"   # ← 關鍵
+#       http_put_response_hop_limit = 1
+#     }
+#   }
+metadata:
+  id: "CKV2_VIBESEC_1"
+  name: "Ensure EC2 instances and launch templates require IMDSv2 (metadata_options.http_tokens = required)"
+  category: "NETWORKING"
+  severity: "HIGH"
+  guideline: "docs/04-g3-sast-iac.md#imdsv2"
+definition:
+  and:
+    - cond_type: "attribute"
+      resource_types:
+        - "aws_instance"
+        - "aws_launch_template"
+        - "aws_launch_configuration"
+      attribute: "metadata_options.http_tokens"
+      operator: "equals"
+      value: "required"
+    - cond_type: "attribute"
+      resource_types:
+        - "aws_instance"
+        - "aws_launch_template"
+        - "aws_launch_configuration"
+      attribute: "metadata_options.http_endpoint"
+      operator: "not_equals"
+      value: "disabled"

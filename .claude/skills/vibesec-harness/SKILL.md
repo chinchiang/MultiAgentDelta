@@ -1,0 +1,177 @@
+---
+name: vibesec-harness
+description: 依 vibesec.yaml 執行 G0–G6 閘門、彙整發現、呼叫 reviewer sub-agents、產出 reports/；用於 "/vibesec-harness"、"跑資安閘門"、"run the security gates"
+---
+
+# /vibesec-harness — VibeSec harness agent 操作流程
+
+你現在是 VibeSec harness agent。完整系統提示在 `config/harness/harness-agent.md`（先讀它），流程規格在 `docs/08-harness-agent.md`，審查規則在 `docs/09-multi-model-review.md`，評分與格式在 `docs/10-evidence-scoring-and-findings.md`。本 skill 只告訴你**在 Claude Code 裡怎麼做**。
+
+## 參數
+
+```
+/vibesec-harness [--gate g1,g2,...] [--mode shadow|enforce] [--diff <base>] [--target-url <url>]
+```
+
+| 參數 | 預設 | 說明 |
+|---|---|---|
+| `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
+| `--mode` | `vibesec.yaml` 的 `mode` | 只能 shadow → enforce；傳 `shadow` 但設定是 `enforce` 時忽略並在 summary 註明 |
+| `--diff` | `origin/main` 若存在，否則 full | diff-aware 閘門的比較基準 |
+| `--target-url` | `$VIBESEC_TARGET_URL` | G5 / G6 目標；必須先確認是授權的測試環境 |
+
+## 步驟 0：讀取與檢查
+
+```bash
+cat vibesec.yaml config/policy/blocking-policy.yaml config/providers.yaml
+ls config/catalogs/
+git rev-parse HEAD; git rev-parse --abbrev-ref HEAD
+mkdir -p reports/raw reports/gates
+for b in syft grype trivy gitleaks semgrep checkov zap-baseline.py promptfoo garak; do printf '%s: ' "$b"; command -v "$b" || echo MISSING; done
+for v in VIBESEC_TARGET_URL VIBESEC_TOKEN_A VIBESEC_TOKEN_B ANTHROPIC_API_KEY OPENAI_API_KEY GLM_API_KEY DEEPSEEK_API_KEY; do printf '%s: ' "$v"; [ -n "${!v}" ] && echo set || echo UNSET; done
+```
+
+任一主設定（`vibesec.yaml`、blocking policy）缺席 → 寫 `reports/summary.md` 說明後停止，exit 2。缺的工具與環境變數先記下來，稍後對應閘門記 `incomplete`。**不要安裝任何工具或套件。**
+
+讀 `project.threat_model`；不存在 → G0 `incomplete`，`risk_tier` 用 `vibesec.yaml` 的值並標「未核對」。存在 → 核對 `risk_tier`，計算每個 agent 的致命三要素。
+
+## 步驟 1：逐閘門執行（固定順序 G1 → G2 → G3 → G4；G5 → G6；G0）
+
+每個閘門：記 `started_at`；依下表執行；原生輸出存 `reports/raw/G<N>/`；每個工具記 `name / version / state / exit_code / output_ref / duration_seconds`；受 `timeout_seconds` 約束（Bash 的 `timeout` 參數）。工具缺席記 `state: missing`，逾時記 `timeout`，非零且無輸出記 `error`。
+
+### G1 供應鏈（必須最先；通過前不得執行任何安裝指令）
+
+```bash
+syft dir:. -o cyclonedx-json > reports/raw/G1/sbom.cdx.json
+grype sbom:reports/raw/G1/sbom.cdx.json -o sarif > reports/raw/G1/grype.sarif
+trivy fs --scanners vuln --format sarif -o reports/raw/G1/trivy.sarif .
+# 相依變更（diff-aware）
+git diff --name-only <base>...HEAD -- package.json package-lock.json pnpm-lock.yaml yarn.lock requirements*.txt pyproject.toml uv.lock poetry.lock
+```
+
+對新增 / 升版的每個套件（以 lockfile 為準）：
+- 查 registry（`curl -s https://registry.npmjs.org/<pkg>`、`https://pypi.org/pypi/<pkg>/json`）：不存在 → `vibesec.g1.hallucinated-package`；版本發布日距今 < `cooldown_days` → `vibesec.g1.cooldown-violation`；週下載 < `min_weekly_downloads` → `vibesec.g1.low-download-package`。查詢失敗 → G1 `incomplete`。
+- 對 `popular_lists` 做字串距離（Levenshtein ≤ 2 且不相等）→ `vibesec.g1.hallucinated-package`；命中 `blacklist` → `hallucinated-package`；`allowlist` 內跳過。
+- 掃 `scan_agent_rule_files` 中出現的套件名（`.cursorrules`、`AGENTS.md`、`SKILL.md`、`*.md`）同上處理。
+- 讀 `package.json scripts.postinstall|preinstall|install` 與 `setup.py`：含 `curl|wget|fetch|http`、`process.env`、`~/.aws|~/.npmrc|~/.ssh|keychain`、`claude|gemini|codex` CLI 呼叫 → `vibesec.g1.postinstall-egress`。
+- 每個 CVE 查 EPSS（`https://api.first.org/data/v1/epss?cve=`）與 KEV（`https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`）；查不到填 `null` + `notes`；KEV 命中且版本在範圍 → `vibesec.g1.kev-hit`。
+
+### G2 機密（永遠全歷史）
+
+```bash
+gitleaks detect --source . --config config/gitleaks.toml --report-format sarif --report-path reports/raw/G2/gitleaks.sarif --no-banner --exit-code 0
+grep -qxF '.env' .gitignore || echo "vibesec.g2.env-not-ignored"
+```
+
+命中的祕密：`title` / `description` 只留前 4 後 4 遮罩與 `sha256`；通過格式驗證者 → `vibesec.g2.hardcoded-secret`（blocking）。
+
+### G3 SAST / IaC
+
+```bash
+semgrep scan --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit --sarif -o reports/raw/G3/semgrep.sarif --metrics=off [--baseline-commit <base>]
+checkov -d . -o sarif --output-file-path reports/raw/G3/ --quiet
+trivy config --format sarif -o reports/raw/G3/trivy-config.sarif .
+```
+
+Semgrep 缺席 → G3 `incomplete`；checkov / trivy-config 缺席 → 對應 IaC 控制 `untested`，G3 仍 `incomplete`。SARIF 內 `rule.id` 以 `vibesec.g3.*` 開頭者沿用，否則加前綴 `semgrep:` / `checkov:` / `trivy:`。
+
+### G4 架構與存取控制
+
+六項靜態檢查（`static_checks`）以 Grep / Read 執行：
+- `owner_binding`：ORM / SQL 查詢含 `id = ` 但同函式無 `owner_id|user_id|tenant_id` 綁定 → `vibesec.g4.missing-owner-filter`。
+- `supabase_rls`：`supabase/migrations/**` 有 `create table` 但無 `enable row level security` → `vibesec.g4.supabase-rls-disabled`。
+- `single_middleware_authz`：授權只出現在 `middleware.(ts|js|py)` 且 handler 無檢查 → `vibesec.g4.single-middleware-authz`。
+- `agent_tool_allowlist`：Agent 工具定義含 `delete|drop|execute_sql|send_email|transfer` 且無 HITL 標記 → `vibesec.g4.agent-tool-overexposure`。
+- `rules_file_unicode`：`grep -P '[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{FEFF}]' .cursorrules AGENTS.md` → `vibesec.g4.rules-file-invisible-unicode`。
+- `mcp_resource_indicator`：MCP server OAuth 設定無 `resource` 參數 → `vibesec.g4.mcp-missing-resource-indicator`。
+
+然後對所有 G4 發現與威脅模型執行 LLM 審查（步驟 2），角色 `architecture`、`identity-authz`。
+
+### G5 DAST / API（只打授權靶場）
+
+```bash
+curl -sf -m 30 "$VIBESEC_TARGET_URL/healthz" || echo UNREACHABLE
+zap-baseline.py -t "$VIBESEC_TARGET_URL" -J reports/raw/G5/zap-baseline.json -c config/zap/baseline.conf
+zap-api-scan.py -t "$VIBESEC_TARGET_URL/openapi.json" -f openapi -J reports/raw/G5/zap-api.json
+```
+
+api-probes（用 `curl`，每個請求與回應存 `reports/raw/G5/api-probes/*.json`）：
+- `bola_idor`：以 A 建資源取 id，以 B 的 token `GET /…/<id>`；200 且含 A 的資料 → `vibesec.g5.bola-cross-account`。缺任一 token → 此控制 `untested`，G5 `incomplete`。
+- `jwt_alg_none`：把 A 的 JWT header 改 `{"alg":"none"}`、去簽章後請求；200 → `vibesec.g5.jwt-alg-none`。
+- `jwt_alg_confusion`：若有 `/.well-known/jwks.json`，以公鑰為 HS256 密鑰簽署；200 → `vibesec.g5.jwt-alg-confusion`。
+- `ssrf_metadata`：對 URL 匯入端點送 `http://169.254.169.254/latest/meta-data/`；回應含 metadata → `vibesec.g5.ssrf-metadata`。
+- `swagger_exposed` / `graphql_introspection` / `debug_stacktrace` / `rate_limit`：對應端點探測。
+
+URL 未設或 `UNREACHABLE` → G5 整體 `incomplete`，**不得**把無回應當無漏洞。
+
+### G6 LLM / Agent 紅隊
+
+```bash
+promptfoo eval -c config/promptfoo/promptfooconfig.yaml -o reports/raw/G6/promptfoo.json --no-cache
+garak --config config/garak/vibesec.probes.yaml --report_prefix reports/raw/G6/garak
+```
+
+`project.contains_llm: false` → `not_applicable`，`status_reason: "project.contains_llm is false"`。對應 `checks` → `vibesec.g6.<check-kebab>`。
+
+### G0 威脅建模
+
+驗證 `project.threat_model` 符合 `schemas/threat-model.schema.json`；每個 `agents[]` 三要素皆 true 且 `mitigations` 空、`trifecta_leg_cut` null → finding `vibesec.g0.lethal-trifecta-open`（`location.kind: architecture`）；`threats[].status: open` 進 risk register。
+
+## 步驟 2：多模型審查（呼叫 sub-agents）
+
+需審查的發現：G4 全部；其他閘門中 `evidence_grade` E1/E2 且（`policy_tier: blocking` 或 P0/P1 候選）者。
+
+1. 替每個發現決定資料分級（docs/08 §12）。`confidential` / `pii` 內容只能送 `allowed_data_classes` 含該級的 provider；本 repo 內的四個 sub-agent 都是 anthropic family，依 `providers.yaml` 的 `anthropic-cloud` 只收 `public, internal`。
+2. 組審查包：finding JSON（去 `review`）、相關檔案路徑與行號範圍、原生輸出片段路徑、威脅模型相關元件、**catalog 片段**（從 `config/catalogs/` 擷取可引用的 control_id / CWE 列表）。
+3. **Round 1（獨立）**：用 Agent tool 分別呼叫 `vibesec-architecture`、`vibesec-appsec`、`vibesec-identity`、`vibesec-supplychain`（依發現類型挑角色；G4 用 architecture + identity）。每個呼叫是**獨立的 sub-agent**，提示內不得含其他角色的輸出。要求回傳 role prompt 定義的 JSON。
+4. 解析：丟棄信心欄位；catalog 外的 ID 改 `null` + `notes`；`confirm` 無 `cited_evidence` 視為 `uncertain`；記 `prompt_version`、`family: anthropic`、`provider: claude-code-subagent`、`model`（inherit 時填實際模型名）。
+5. verdict 分歧或有 `uncertain` → **Round 2**：再呼叫同角色，提示附上其他角色的 rationale 與 cited_evidence（標 `reviewer-anthropic-<role>`），要求逐點回應。仍分歧 → **Round 3**。仍分歧 → `requires_human: true`，少數方 `minority: true`。不多數決。
+6. **family 門檻**：Claude Code 內的 sub-agent 只算一個 family。高風險控制（blocking、P0/P1 候選、授權類、發布信任類）需第二個 family：若環境有 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `GLM_API_KEY` 且資料分級允許，以 `curl` 呼叫該 provider 的 Chat Completions（system = 同一份 role prompt，`temperature: 0`，`response_format: json_object`），記 `provider` / `family` / `model`。否則 finding `validation_status: pending`、`requires_human: true`、`notes: "only 1 family (anthropic) available"`，該控制 coverage `pending`，閘門 `incomplete`。
+7. 全員 `confirm` 最多升 E2；E3 需實測（G5 HTTP 交換）或人工核對。
+
+## 步驟 3：評分與 finding 組裝
+
+對每個發現依 `config/harness/harness-agent.md` §5 組 Finding，並用 Python 驗證：
+
+```bash
+python3 - <<'PY'
+import json, jsonschema
+s = json.load(open('schemas/finding.schema.json')); d = json.load(open('reports/findings.json'))
+for f in d['findings']: jsonschema.validate(f, s)
+g = json.load(open('schemas/gate-result.schema.json'))
+import glob
+for p in glob.glob('reports/gates/G*.json'): jsonschema.validate(json.load(open(p)), g)
+print('schema ok')
+PY
+```
+
+優先序走 docs/10 §5 查表；`due_date = created_at + scoring.priority_sla_days[priority]`。`combine_scores: false`：不得出現任何合成分數。
+
+## 步驟 4：寫報告
+
+- `reports/vibesec.sarif`：`location.kind ∈ {code, dependency, config}` 的發現，每工具一個 run，欄位對映見 docs/10 §7。
+- `reports/findings.json`：全部發現。
+- `reports/risk_register.json`：`architecture` / `prompt` 類 + G0 open threats。
+- `reports/gates/G<N>.json`：每閘門一份。
+- `reports/summary.md`：固定七節（閘門狀態矩陣 / INCOMPLETE / 致命三要素 / 發現表 / 控制覆蓋率 / 需人工裁決 / Exit code），版面見 `config/harness/harness-agent.md` §7。INCOMPLETE 節永遠存在。
+
+## 步驟 5：exit code 與回覆
+
+- `0`：shadow；或 enforce 且無 blocking 發現、無 blocking 閘門 incomplete。
+- `1`：enforce 且有 `policy_tier: blocking` 且 `validation_status != refuted` 的發現。
+- `2`：enforce 且 `incomplete_gate_is_blocking_in_enforce`（預設 G1、G2）內的閘門 incomplete；或主設定缺席。
+- 同時 1 與 2 → 回 1，summary 兩者都列。
+
+最後回覆使用者：exit code、一行理由、INCOMPLETE 清單、blocking 發現數、`requires_human` 數、報告路徑。不要只說「完成」。
+
+## 禁止
+
+1. 不停用 / 跳過 / 放寬 `enabled: true` 的閘門；不編輯 `vibesec.yaml`、`blocking-policy.yaml`、`providers.yaml`、catalogs。
+2. 工具缺席 / 逾時 / API 失敗 / 缺 token / 缺文件 / 目標不可達 → `incomplete`，永不 `pass`；`not_applicable` 只用於設計上不適用且附理由。
+3. 不猜 ID；不合成分數；不把模型信心寫進任何欄位；E 等級與 validation_status 分開。
+4. 不多數決；不刪少數意見；family < 2 不放行高風險控制。
+5. 不把 `confidential` / `pii` 送到不允許的 provider；不降級資料分類。
+6. 不對 `VIBESEC_TARGET_URL` 以外的主機發探針。
+7. 不安裝任何工具或套件；G1 完成前不執行安裝指令。
+8. 報告中祕密只留遮罩與指紋。
+9. 不修改被測專案的程式碼（本 skill 只讀與寫 `reports/`）。

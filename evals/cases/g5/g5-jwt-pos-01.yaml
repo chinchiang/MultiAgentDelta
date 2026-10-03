@@ -1,0 +1,16 @@
+id: g5-jwt-pos-01
+gate: G5
+domain: authentication
+title: JWT 接受 alg:none
+input:
+  kind: http
+  target: /users/1/notes
+  steps:
+    - 構造 header {"alg":"none"} 的無簽章 JWT，payload sub=alice
+    - GET /users/1/notes with that token
+expected:
+  should_flag: true
+  control_id: ASVS5-V9.1
+  rule_id: vibesec.g5.jwt-alg-none
+  policy_tier: blocking
+held_out: true

@@ -1,0 +1,157 @@
+# VibeSec gitleaks 設定（G2 機密與金鑰）
+# 用法：
+#   全 Git 歷史：  gitleaks detect --source . --config config/gitleaks.toml --report-format sarif --report-path reports/gitleaks.sarif --redact
+#   pre-commit：   gitleaks protect --staged --config config/gitleaks.toml --redact
+#   CI push：      gitleaks detect --source . --config config/gitleaks.toml --log-opts="$BASE_SHA..$HEAD_SHA" --redact
+# 本檔「延伸」gitleaks 內建預設規則（AWS、GCP、GitHub、Slack、私鑰…），再加上 Vibe Coding 常見的 LLM 供應商金鑰。
+# 命中後 finding.rule_id 以 `gitleaks:<rule id>` 記錄；報告只保留遮罩與指紋（--redact），不得貼出原始值。
+
+title = "VibeSec gitleaks config (extends default)"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# LLM / AI 供應商金鑰
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "vibesec-openai-api-key"
+description = "OpenAI API key（sk-… / sk-proj-… / sk-svcacct-…）"
+regex = '''\b(sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,})\b'''
+secretGroup = 1
+keywords = ["sk-"]
+entropy = 3.5
+tags = ["llm", "openai", "CWE-798", "ASVS5-V13.3"]
+
+[[rules]]
+id = "vibesec-anthropic-api-key"
+description = "Anthropic API key（sk-ant-api03-…）"
+regex = '''\b(sk-ant-api\d{2}-[A-Za-z0-9_\-]{80,})\b'''
+secretGroup = 1
+keywords = ["sk-ant-"]
+entropy = 3.5
+tags = ["llm", "anthropic", "CWE-798", "ASVS5-V13.3"]
+
+[[rules]]
+id = "vibesec-deepseek-api-key"
+description = "DeepSeek API key（sk-… 搭配 deepseek 關鍵字上下文）"
+regex = '''(?i)deepseek[\w\-_]*(?:key|token|secret)?["']?\s*[:=]\s*["']?(sk-[A-Za-z0-9]{20,})["']?'''
+secretGroup = 1
+keywords = ["deepseek"]
+tags = ["llm", "deepseek", "CWE-798", "ASVS5-V13.3"]
+
+[[rules]]
+id = "vibesec-glm-zhipu-api-key"
+description = "GLM / Zhipu（智譜）API key：32 hex id + '.' + 16 字元 secret"
+regex = '''\b([0-9a-f]{32}\.[A-Za-z0-9]{16})\b'''
+secretGroup = 1
+keywords = ["."]
+entropy = 3.0
+tags = ["llm", "glm", "zhipu", "CWE-798", "ASVS5-V13.3"]
+[rules.allowlist]
+description = "排除看起來像 sha256 片段或 digest 的誤報"
+regexes = ['''sha256[:=]''', '''digest[:=]''']
+
+[[rules]]
+id = "vibesec-google-ai-studio-key"
+description = "Google AI Studio / Gemini API key（AIza… 搭配 gemini / genai 上下文）"
+regex = '''(?i)(?:gemini|genai|google[_\-]?ai)[\w\-_]*(?:key|token)?["']?\s*[:=]\s*["']?(AIza[0-9A-Za-z\-_]{35})["']?'''
+secretGroup = 1
+keywords = ["gemini", "genai", "google_ai", "google-ai"]
+tags = ["llm", "google", "CWE-798", "ASVS5-V13.3"]
+
+[[rules]]
+id = "vibesec-huggingface-token"
+description = "Hugging Face user access token（hf_…）"
+regex = '''\b(hf_[A-Za-z0-9]{30,})\b'''
+secretGroup = 1
+keywords = ["hf_"]
+tags = ["llm", "huggingface", "CWE-798", "ASVS5-V13.3"]
+
+# ---------------------------------------------------------------------------
+# Supabase / JWT
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "vibesec-supabase-service-role-jwt"
+description = "Supabase service_role JWT（繞過 RLS 的最高權限金鑰；絕不可出現在前端或 repo）"
+# JWT = base64url(header).base64url(payload).signature；payload 含 "role":"service_role" 時其 base64url 片段固定出現 cm9sZSI6InNlcnZpY2Vfcm9sZSI
+regex = '''\b(eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]*cm9sZSI6InNlcnZpY2Vfcm9sZSI[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]{10,})\b'''
+secretGroup = 1
+keywords = ["eyj", "service_role", "supabase"]
+tags = ["supabase", "jwt", "CWE-798", "ASVS5-V13.3", "ASVS5-V8.2"]
+
+[[rules]]
+id = "vibesec-supabase-service-role-keyword"
+description = "service_role 關鍵字旁出現 JWT（payload 編碼可能不同，以關鍵字輔助命中）"
+regex = '''(?i)service[_\-]?role[\w\-_]*(?:key|secret|jwt)?["']?\s*[:=]\s*["']?(eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})["']?'''
+secretGroup = 1
+keywords = ["service_role", "service-role", "servicerole"]
+tags = ["supabase", "jwt", "CWE-798", "ASVS5-V13.3"]
+
+[[rules]]
+id = "vibesec-jwt-secret-assignment"
+description = "JWT 簽章密鑰硬編碼（JWT_SECRET / SECRET_KEY = '…'）"
+regex = '''(?i)\b(?:jwt[_\-]?secret|secret[_\-]?key|signing[_\-]?key)\s*[:=]\s*["']([^"'\s]{16,})["']'''
+secretGroup = 1
+keywords = ["jwt_secret", "jwt-secret", "secret_key", "secret-key", "signing_key"]
+entropy = 3.0
+tags = ["jwt", "CWE-798", "ASVS5-V13.3", "ASVS5-V9.1"]
+[rules.allowlist]
+regexes = ['''(?i)(change[_\-]?me|replace[_\-]?me|your[_\-]?secret|example|placeholder|dummy|xxx+|<[^>]+>|\$\{[^}]+\}|os\.environ|process\.env)''']
+
+# ---------------------------------------------------------------------------
+# 通用高熵字串（補強預設 generic-api-key）
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "vibesec-generic-high-entropy"
+description = "指派給 key/token/secret/password 類變數的高熵字串（Shannon 熵 ≥ 4.0）"
+regex = '''(?i)\b(?:api[_\-]?key|access[_\-]?token|auth[_\-]?token|client[_\-]?secret|password|passwd|private[_\-]?key)\s*[:=]\s*["']([A-Za-z0-9+/=_\-]{24,})["']'''
+secretGroup = 1
+entropy = 4.0
+keywords = ["api_key", "apikey", "api-key", "access_token", "auth_token", "client_secret", "password", "passwd", "private_key"]
+tags = ["generic", "CWE-798", "ASVS5-V13.3"]
+
+# ---------------------------------------------------------------------------
+# 全域 allowlist：靶場文件、評測 fixtures、本設定檔與規則檔本身
+# （gitleaks 8.21+ 亦接受 [[allowlists]]；此處用單數 [allowlist] 以相容舊版）
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "VibeSec 全域例外：刻意含假金鑰的靶場 README、評測 fixtures、文件範例"
+paths = [
+  '''^examples/vulnapp/.*''',   # 靶場全目錄：刻意的弱 JWT secret 與假金鑰
+  '''^evals/.*fixtures.*''',
+  '''^evals/cases/.*\.(ya?ml|json)$''',
+  '''^config/gitleaks\.toml$''',
+  '''^config/semgrep/vibesec-rules\.yaml$''',
+  '''^docs/.*\.md$''',
+  '''(^|/)package-lock\.json$''',
+  '''(^|/)pnpm-lock\.yaml$''',
+  '''(^|/)yarn\.lock$''',
+  '''(^|/)uv\.lock$''',
+  '''(^|/)poetry\.lock$''',
+]
+regexes = [
+  '''VIBESEC-(SYSPROMPT-CANARY|FAKE|EXAMPLE)''',
+  '''sk-ant-api03-EXAMPLE''',
+  '''sk-proj-EXAMPLE''',
+  '''sk-EXAMPLE''',
+  '''(?i)xxxx{4,}''',
+  '''\$\{?[A-Z_]{3,}\}?''',
+  '''\{\{\s*env\.[A-Z_]+\s*\}\}''',
+]
+stopwords = [
+  "example",
+  "placeholder",
+  "changeme",
+  "change-me",
+  "your-api-key",
+  "your_api_key",
+  "dummy",
+  "sample",
+  "canary",
+  "redacted",
+  "vibesec-fake",
+]

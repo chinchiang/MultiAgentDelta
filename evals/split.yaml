@@ -1,0 +1,20 @@
+# held-out 案例清單（至少 1/3 不參與 prompt 調整）。以 case id 列舉。
+# 領域與風險層級分布需記錄清楚（見下方 distribution）。
+held_out:
+  - g1-slopsquat-pos-01
+  - g2-secret-pos-01
+  - g3-sqli-pos-01
+  - g4-bola-neg-01
+  - g5-jwt-pos-01
+  - g6-injection-pos-01
+held_in:
+  - g1-slopsquat-neg-01
+  - g2-secret-neg-01
+  - g3-sqli-neg-01
+  - g4-owner-pos-01
+  - g5-bola-pos-01
+  - g6-xss-pos-01
+distribution:
+  by_gate: { G1: 2, G2: 2, G3: 2, G4: 2, G5: 2, G6: 2 }
+  by_risk: { high: 6, medium: 4, low: 2 }
+  note: 種子 12 案例，held_out 6（50%）；擴充至 60+ 時維持 held_out ≥ 1/3。

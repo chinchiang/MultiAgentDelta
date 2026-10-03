@@ -1,0 +1,43 @@
+# VibeSec G1：套件例外清單（allowlist）
+# 用途：對「被 G1 阻擋、但經安全團隊人工審查後確認可用」的套件放行，例如：
+#   - 內部私有套件（週下載 < 1000、Registry 查不到）
+#   - 剛發布的新版本但有緊急修補需求（冷卻期未滿）
+#   - 與熱門套件名稱相近但確實是正確套件
+# 規則：
+#   1. 每筆必須有 approved_by（人）與 expires（日期）；逾期自動失效，G1 重新阻擋。
+#   2. version 可為精確版本或範圍；省略代表所有版本（不建議）。
+#   3. 只放行 G1 的 slopsquat / cooldown / low-download 判定；不放行已知 CVE（那由 blocking-policy 處理）。
+#   4. 修改本檔須走獨立 PR，由 AppSec 審核（CLAUDE.md 規則 1）。
+
+version: 1
+
+entries:
+  - package: "@acme/internal-ui-kit"
+    ecosystem: npm
+    version: ">=2.0.0 <3.0.0"
+    reason: "公司內部私有 scope 套件，公開 Registry 查不到、下載量為 0 屬正常"
+    bypass: [registry_health, low_download]
+    approved_by: "appsec-team@example.com"
+    approved_at: "2026-10-01"
+    expires: "2027-03-31"
+    ticket: "SEC-1234"
+
+  - package: "requests"
+    ecosystem: pypi
+    version: "2.32.5"
+    reason: "緊急安全修補版本，冷卻期未滿 14 天但需立即升級（CVE 已由 grype 確認）"
+    bypass: [cooldown]
+    approved_by: "appsec-lead@example.com"
+    approved_at: "2026-10-02"
+    expires: "2026-10-16"
+    ticket: "SEC-1301"
+
+  - package: "bs4"
+    ecosystem: pypi
+    version: null
+    reason: "舊專案遷移期間暫時保留 bs4 轉接套件；遷移完成後移除"
+    bypass: [blacklist]
+    approved_by: "platform-team@example.com"
+    approved_at: "2026-09-15"
+    expires: "2026-12-31"
+    ticket: "SEC-1188"

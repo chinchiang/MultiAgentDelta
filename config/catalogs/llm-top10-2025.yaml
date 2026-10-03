@@ -1,0 +1,88 @@
+# OWASP Top 10 for LLM Applications 2025（genai.owasp.org）
+# ID：LLM01:2025 … LLM10:2025（符合 finding.control_id pattern）
+# g6_checks：對應 vibesec.yaml gates.g6_ai_red_team.checks；other_gates：非 G6 的對應閘門。
+# 標題為官方英文名與 vibesec 中文譯名；描述為 vibesec 摘要，非官方全文。
+
+version: "2025"
+source: "OWASP GenAI Security Project — Top 10 for LLM Applications 2025"
+items:
+  - id: "LLM01:2025"
+    title_en: Prompt Injection
+    title_zh: 提示注入
+    description: "直接或間接（RAG / 文件 / 網頁）輸入改變模型行為、繞過指令或觸發工具"
+    g6_checks: [direct_prompt_injection, indirect_prompt_injection]
+    other_gates: [G4]
+    promptfoo_plugins: [prompt-extraction, indirect-prompt-injection, hijacking, system-prompt-override]
+    garak_probes: [promptinject, dan, encoding, latentinjection]
+  - id: "LLM02:2025"
+    title_en: Sensitive Information Disclosure
+    title_zh: 敏感資訊洩漏
+    description: "模型輸出 PII、商業機密、System Prompt 內嵌金鑰或訓練資料"
+    g6_checks: [system_prompt_extraction]
+    other_gates: [G2]
+    promptfoo_plugins: [pii, "harmful:privacy", cross-session-leak]
+    garak_probes: [leakreplay]
+  - id: "LLM03:2025"
+    title_en: Supply Chain
+    title_zh: 供應鏈
+    description: "模型、資料集、套件、外掛與 MCP 工具來源不可信"
+    g6_checks: []
+    other_gates: [G1]
+    promptfoo_plugins: []
+    garak_probes: []
+  - id: "LLM04:2025"
+    title_en: Data and Model Poisoning
+    title_zh: 資料與模型投毒
+    description: "訓練 / 微調 / RAG 資料被竄改"
+    g6_checks: [indirect_prompt_injection]
+    other_gates: [G4]
+    promptfoo_plugins: []
+    garak_probes: []
+  - id: "LLM05:2025"
+    title_en: Improper Output Handling
+    title_zh: 不當輸出處理
+    description: "模型輸出未經驗證 / 編碼即交給瀏覽器、Shell、SQL 或下游系統"
+    g6_checks: [stored_xss_via_ai_output]
+    other_gates: [G3]
+    promptfoo_plugins: [sql-injection, shell-injection, ssrf]
+    garak_probes: [xss]
+  - id: "LLM06:2025"
+    title_en: Excessive Agency
+    title_zh: 過度代理
+    description: "Agent 擁有過多功能、權限或自主性（Replit 刪庫案例）"
+    g6_checks: [indirect_prompt_injection]
+    other_gates: [G0, G4]
+    promptfoo_plugins: [excessive-agency, rbac, bola, bfla, tool-discovery]
+    garak_probes: []
+  - id: "LLM07:2025"
+    title_en: System Prompt Leakage
+    title_zh: 系統提示洩漏
+    description: "System Prompt 被提取，暴露內部規則、金鑰或繞過條件"
+    g6_checks: [system_prompt_extraction]
+    other_gates: [G2]
+    promptfoo_plugins: [prompt-extraction]
+    garak_probes: [leakreplay, promptinject]
+  - id: "LLM08:2025"
+    title_en: Vector and Embedding Weaknesses
+    title_zh: 向量與嵌入弱點
+    description: "向量庫存取控制、跨租戶洩漏、嵌入反演"
+    g6_checks: [indirect_prompt_injection]
+    other_gates: [G4]
+    promptfoo_plugins: [cross-session-leak]
+    garak_probes: []
+  - id: "LLM09:2025"
+    title_en: Misinformation
+    title_zh: 錯誤資訊
+    description: "幻覺（含幻覺套件）、過度依賴模型輸出"
+    g6_checks: []
+    other_gates: [G1]
+    promptfoo_plugins: [hallucination, overreliance]
+    garak_probes: [packagehallucination]
+  - id: "LLM10:2025"
+    title_en: Unbounded Consumption
+    title_zh: 無界資源消耗
+    description: "高併發 / 超長輸入造成 Denial of Service / Denial of Wallet，缺速率限制、Token 配額、熔斷"
+    g6_checks: [denial_of_wallet]
+    other_gates: [G5]
+    promptfoo_plugins: [divergent-repetition]
+    garak_probes: []

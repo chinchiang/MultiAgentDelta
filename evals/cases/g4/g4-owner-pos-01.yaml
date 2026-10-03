@@ -1,0 +1,17 @@
+id: g4-owner-pos-01
+gate: G4
+domain: authorization
+title: 查詢未綁定當前主體（缺 owner 過濾）
+input:
+  kind: code
+  language: python
+  snippet: |
+    note = session.query(Note).filter(Note.id == note_id).first()
+    return note
+expected:
+  should_flag: true
+  control_id: ASVS5-V8.1
+  rule_id: vibesec.g4.missing-owner-filter
+  policy_tier: advisory      # L3 下升為 blocking（見 blocking-policy.yaml）
+held_out: false
+notes: 應為 .filter(Note.id == note_id, Note.owner_id == current_user.id)。

@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-10-03T12:05:00Z",
+  "project": "example-project",
+  "mode": "shadow",
+  "risk_tier": "L2",
+  "commit": "0abc123",
+  "summary": { "blocking": 2, "advisory": 3, "incomplete_gates": ["G6"] },
+  "entries": [
+    {
+      "finding_id": "VS-20261003-1a2b3c4d",
+      "gate": "G5",
+      "control_id": "ASVS5-V8.1",
+      "title": "帳號 B 可讀帳號 A 的筆記（BOLA / IDOR）",
+      "policy_tier": "blocking",
+      "priority": "P1",
+      "severity": "high",
+      "evidence_grade": "E2",
+      "validation_status": "confirmed",
+      "owner": "appsec-team",
+      "due_date": "2026-10-10",
+      "retest_result": "not_retested"
+    },
+    {
+      "finding_id": "VS-20261003-9f8e7d6c",
+      "gate": "G0",
+      "control_id": "MAESTRO-L3",
+      "title": "客服 Agent 具致命三要素，架構缺口待確認",
+      "policy_tier": "advisory",
+      "priority": null,
+      "severity": null,
+      "evidence_grade": "E1",
+      "validation_status": "pending",
+      "owner": "architecture",
+      "due_date": null,
+      "retest_result": "not_retested",
+      "note": "架構類發現不硬編 CVSS 分數；記錄攻擊情境、影響與缺失控制。"
+    }
+  ]
+}

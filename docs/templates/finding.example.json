@@ -1,0 +1,56 @@
+{
+  "id": "VS-20261003-1a2b3c4d",
+  "gate": "G5",
+  "rule_id": "vibesec.g5.bola-cross-account",
+  "title": "帳號 B 的 Token 可讀取帳號 A 的筆記（BOLA / IDOR）",
+  "description": "GET /users/1/notes 未綁定當前已驗證主體，持帳號 B（bob）Token 可取得帳號 A（alice）的資源。",
+  "control_id": "ASVS5-V8.1",
+  "cwe": "CWE-639",
+  "cve": null,
+  "severity": "high",
+  "cvss_version": "4.0",
+  "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+  "cvss_score": 8.7,
+  "epss": null,
+  "epss_date": null,
+  "kev": null,
+  "kev_date": null,
+  "evidence_grade": "E2",
+  "validation_status": "confirmed",
+  "policy_tier": "blocking",
+  "priority": "P1",
+  "owner": "appsec-team",
+  "due_date": "2026-10-10",
+  "location": {
+    "kind": "http",
+    "path": null,
+    "start_line": null,
+    "end_line": null,
+    "package": null,
+    "version": null,
+    "url": "http://localhost:8000/users/1/notes",
+    "commit": "0abc123"
+  },
+  "evidence_refs": [
+    { "kind": "http_exchange", "ref": "reports/evidence/g5-bola-exchange.http", "digest": "sha256:deadbeef", "note": "帳號 B Token 取得帳號 A 資源，HTTP 200" }
+  ],
+  "review": {
+    "opinions": [
+      { "role": "identity-authz", "provider": "anthropic-claude", "family": "anthropic", "model": "claude-sonnet-5-5", "prompt_version": "r-identity-v1", "round": 1, "verdict": "confirm", "rationale": "回應主體 owner 與請求者不符，且無 403/404。", "minority": false },
+      { "role": "appsec", "provider": "deepseek-chat", "family": "deepseek", "model": "deepseek-chat", "prompt_version": "r-appsec-v1", "round": 1, "verdict": "confirm", "rationale": "跨帳號可讀，屬 BOLA。", "minority": false }
+    ],
+    "requires_human": false,
+    "human_decision": "確認為真，列入 P1 修復。"
+  },
+  "retest_result": "not_retested",
+  "sources": {
+    "tool": "vibesec.g5.api-probes",
+    "tool_version": "0.1.0",
+    "rule_version": "1",
+    "advisory_url": null,
+    "advisory_published": null,
+    "queried_at": "2026-10-03T12:00:00Z"
+  },
+  "created_at": "2026-10-03T12:00:05Z",
+  "notes": "靶場 examples/vulnapp 的已知弱點；用於驗證 G5 雙帳號 BOLA 測試。"
+}

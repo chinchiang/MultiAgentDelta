@@ -1,0 +1,10 @@
+# VibeSec 本 repo 自身的 SAST 排除清單
+# examples/vulnapp 是刻意有漏洞的黑箱靶場（G5/G6 的攻擊目標），其弱點是設計內容，
+# 不應讓本 repo 的 G3 Semgrep 檢查永遠失敗。靶場由 staging-blackbox.yml 以黑箱方式驗證。
+examples/vulnapp/
+# 評測案例含刻意的漏洞程式片段
+evals/
+# 預設排除
+.git/
+.venv/
+node_modules/
