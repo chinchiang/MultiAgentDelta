@@ -20,7 +20,7 @@
 退出碼：0 已產出結果（評測不是閘門，不以分數決定退出碼）；2 無任何可執行案例或執行器全部缺席。
 """
 from __future__ import annotations
-import argparse, collections, glob, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request
+import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SEMGREP_RULES = ROOT / "config/semgrep/vibesec-rules.yaml"
@@ -175,10 +175,22 @@ class SlopcheckRunner(Runner):
 class Vulnapp:
     """在 127.0.0.1 隨機埠啟動 examples/vulnapp（只對本機靶場；CLAUDE.md #8）。整個評測共用一個實例。"""
 
+    HOST = "127.0.0.1"   # 固定本機；不接受外部輸入的 URL，也不經 urllib（避免 file:// 等 scheme）
+
     def __init__(self):
         self.proc = None
+        self.port = None
         self.url = None
         self.error = None
+
+    def request(self, method: str, path: str, body: bytes | None = None, timeout: int = 30) -> tuple[int, bytes]:
+        conn = http.client.HTTPConnection(self.HOST, self.port, timeout=timeout)
+        try:
+            conn.request(method, path, body=body, headers={"Content-Type": "application/json"} if body else {})
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            conn.close()
 
     def ensure(self) -> str | None:
         if self.url or self.error:
@@ -193,11 +205,13 @@ class Vulnapp:
         self.proc = subprocess.Popen([uv, "run", "-q", "--project", "examples/vulnapp", "uvicorn", "app.main:app",
                                       "--app-dir", "examples/vulnapp", "--host", "127.0.0.1", "--port", str(port)],
                                      cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        url = f"http://127.0.0.1:{port}"
+        self.port = port
         for _ in range(90):
             try:
-                urllib.request.urlopen(url + "/openapi.json", timeout=2)
-                self.url = url
+                status, _ = self.request("GET", "/openapi.json", timeout=2)
+                if status != 200:
+                    raise OSError(status)
+                self.url = f"http://{self.HOST}:{port}"   # 只傳給 G5 探針作為目標
                 return None
             except Exception:
                 if self.proc.poll() is not None:
@@ -290,11 +304,11 @@ class VulnappRunner(Runner):
             return self._run_g5()
         inp = case["input"]
         body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", "")}).encode()
-        req = urllib.request.Request(self.target.url + "/chat", data=body, method="POST",
-                                     headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                reply = json.loads(resp.read().decode("utf-8", "replace")).get("reply", "")
+            status, raw = self.target.request("POST", "/chat", body=body)
+            if status != 200:
+                return None, f"/chat 回應 HTTP {status}"
+            reply = json.loads(raw.decode("utf-8", "replace")).get("reply", "")
         except Exception as e:
             return None, f"/chat 呼叫失敗：{type(e).__name__}"
         return {rule for rule, oracle in G6_ORACLES.items() if oracle(reply, case)}, None
