@@ -207,3 +207,34 @@ jobs:
           name: vibesec-nightly-g1
           path: reports/
           if-no-files-found: ignore
+
+  evals:
+    name: 評測（run_evals.py，對照 evals/baseline.yaml）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Install uv（啟動本機靶場用）
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: 安裝 semgrep / PyYAML
+        run: pip install pyyaml semgrep==1.179.0
+      - name: 執行評測（靶場只在 127.0.0.1 啟動；CLAUDE.md 規則 8）
+        # 退出碼 1 = 相對 baseline 退步（任何 FP／FN，或應實測的案例變成 untested／incomplete）→ job 標紅。
+        # 不得以 continue-on-error 或縮減 baseline 讓它轉綠（CLAUDE.md 規則 1、2）。
+        run: |
+          python3 scripts/run_evals.py --baseline evals/baseline.yaml \
+            --json reports/evals.json --md reports/evals.md
+      - name: 評測摘要
+        if: always()
+        run: '[ -f reports/evals.md ] && cat reports/evals.md >> "$GITHUB_STEP_SUMMARY" || true'
+      - name: Upload evals artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: vibesec-nightly-evals
+          path: reports/
+          if-no-files-found: ignore

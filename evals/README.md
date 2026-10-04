@@ -57,3 +57,14 @@ python3 scripts/run_evals.py --no-network                                       
 - 其餘案例（`http`、`prompt`、`config`、需 gitleaks／G4 內嵌檢查的規則、`gate_status: incomplete` 情境）記為 **untested** 並列出原因；執行器失敗記 **incomplete**。兩者都不計入召回率／精確率，也不算通過。
 - 金鑰類 fixture 用佔位符（`{{FAKE_ANTHROPIC_KEY}}`、`{{FAKE_OPENAI_KEY}}`），由執行器在暫存檔中展開，repo 內不放金鑰形字串。
 - 程式碼 fixture 需包含規則的適用脈絡（例如 `missing-owner-filter` 只在路由處理函式內生效），否則反例會「空洞地」通過。
+
+## Nightly 退步偵測
+
+`nightly-full.yml` 的 `evals` job 每晚執行 `run_evals.py --baseline evals/baseline.yaml`。以下任一情況會讓 job 失敗（退出碼 1）：
+
+- 出現任何 FP 或 FN；
+- `evals/baseline.yaml` 列出的案例變成 `untested` 或 `incomplete`，例如 semgrep 沒裝好、靶場起不來、registry 查詢失敗。
+
+這些情況都是「沒測到」，不算通過。結果會寫進 job summary，並上傳成 `vibesec-nightly-evals` artifact。
+
+新增可執行的案例後，先跑 `python3 scripts/run_evals.py --write-baseline evals/baseline.yaml` 重新產生 baseline，人工檢查差異後再提交。從 baseline 移除案例等於放寬檢查，必須由人類在獨立 PR 中決定。

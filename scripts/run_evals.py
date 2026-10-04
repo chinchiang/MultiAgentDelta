@@ -17,7 +17,9 @@
 用法：
   python3 scripts/run_evals.py [--cases 'evals/cases/**/*.yaml'] [--split held_out|held_in|all]
                                [--json reports/evals.json] [--md reports/evals.md] [--no-network] [--no-target]
-退出碼：0 已產出結果（評測不是閘門，不以分數決定退出碼）；2 無任何可執行案例或執行器全部缺席。
+                               [--baseline evals/baseline.yaml] [--write-baseline evals/baseline.yaml]
+退出碼：0 已產出結果；2 無任何可執行案例或執行器全部缺席；
+        1 指定 --baseline 且退步：任何 FP／FN，或 baseline 中應實測的案例變成 untested／incomplete（nightly 用）。
 """
 from __future__ import annotations
 import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time
@@ -407,6 +409,8 @@ def main(argv=None) -> int:
     ap.add_argument("--md")
     ap.add_argument("--no-network", action="store_true")
     ap.add_argument("--no-target", action="store_true", help="不啟動本機靶場（G5／G6 案例記 untested）")
+    ap.add_argument("--baseline", help="退步比對：列於 executed 的案例必須仍實測且判定正確")
+    ap.add_argument("--write-baseline", help="以本次 TP／TN 案例寫出 baseline（人工審閱後提交）")
     a = ap.parse_args(argv)
 
     cases = [load_yaml(pathlib.Path(f)) for f in sorted(glob.glob(a.cases, recursive=True))]
@@ -429,8 +433,34 @@ def main(argv=None) -> int:
     if a.md:
         pathlib.Path(a.md).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(a.md).write_text(md, encoding="utf-8")
+    if a.write_baseline:
+        ids = sorted(r["id"] for r in rows if r["outcome"] in ("TP", "TN"))
+        pathlib.Path(a.write_baseline).write_text(
+            "# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN）。\n"
+            "# 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。\n"
+            + "executed:\n" + "".join(f"  - {i}\n" for i in ids), encoding="utf-8")
+    regressions = regressions_vs_baseline(rows, load_yaml(pathlib.Path(a.baseline)) or {}) if a.baseline else []
+    if regressions:
+        md += "\n\n## 相對 baseline 的退步\n\n" + "\n".join(f"- {x}" for x in regressions) + "\n"
+        if a.md:
+            pathlib.Path(a.md).write_text(md, encoding="utf-8")
     print(md)
+    if regressions:
+        return 1
     return 0 if summary.get("ALL", {}).get("executed") else 2
+
+
+def regressions_vs_baseline(rows: list[dict], baseline: dict) -> list[str]:
+    """任何 FP／FN 都是退步；baseline 列出的案例若未實測（untested／incomplete）或不見了也是退步。"""
+    by_id = {r["id"]: r for r in rows}
+    out = [f"{r['id']}：{r['outcome']}（{r['rule_id']}）" for r in rows if r["outcome"] in ("FP", "FN")]
+    for cid in baseline.get("executed") or []:
+        r = by_id.get(cid)
+        if r is None:
+            out.append(f"{cid}：baseline 案例不存在")
+        elif r["outcome"] in ("untested", "incomplete"):
+            out.append(f"{cid}：應實測但為 {r['outcome']}（{r['reason']}）")
+    return out
 
 
 if __name__ == "__main__":
