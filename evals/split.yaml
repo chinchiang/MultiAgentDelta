@@ -25,6 +25,7 @@ held_out:
 - g6-injection-pos-01
 - g6-noprovider-incomplete-01
 - g6-sysprompt-pos-01
+- g6-promptfoo-fail-not-incomplete-01
 held_in:
 - g0-trifecta-neg-01
 - g0-trifecta-neg-02
@@ -69,8 +70,8 @@ held_in:
 - g6-injection-neg-01
 - g6-xss-pos-01
 distribution:
-  total: 66
-  held_out_ratio: 0.36
+  total: 67
+  held_out_ratio: 0.37
   by_gate:
     G0: 4
     G1: 10
@@ -78,9 +79,9 @@ distribution:
     G3: 15
     G4: 12
     G5: 11
-    G6: 8
+    G6: 9
   by_domain:
-    ai_agent_security: 14
+    ai_agent_security: 15
     application_architecture: 3
     authentication: 5
     authorization: 7
@@ -96,7 +97,7 @@ distribution:
     xss: 2
   by_polarity:
     neg: 25
-    pos: 41
+    pos: 42
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-ssrf-incomplete-01
