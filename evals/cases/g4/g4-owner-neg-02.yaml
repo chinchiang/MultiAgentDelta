@@ -5,7 +5,10 @@ title: 查詢以 owner_id 綁定當前主體
 input:
   kind: code
   path: app/repo.py
-  snippet: db.query(Note).filter(Note.id == nid, Note.owner_id == user.id).one()
+  snippet: |
+    @app.get("/notes/{nid}")
+    def get_note(nid: int, user=Depends(current_user), db=Depends(get_db)):
+        return db.query(Note).filter(Note.id == nid, Note.owner_id == user.id).one()
 expected:
   should_flag: false
   control_id: ASVS5-V8.2

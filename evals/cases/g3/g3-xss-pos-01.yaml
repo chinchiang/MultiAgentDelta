@@ -5,7 +5,9 @@ title: innerHTML 寫入未跳脫的使用者輸入
 input:
   kind: code
   path: web/app.js
-  snippet: el.innerHTML = params.get('q');
+  snippet: |
+    const params = new URLSearchParams(location.search);
+    el.innerHTML = params.get('q');
 expected:
   should_flag: true
   control_id: ASVS5-V1.1

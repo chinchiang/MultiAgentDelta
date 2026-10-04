@@ -41,3 +41,18 @@ notes: 靶場 examples/vulnapp 可重現。
 ## 三組比較
 
 以 `evals/split.yaml` 的 held-in 子集調整 prompt，held-out 子集量測：召回率、精確率、共同漏報、每模型新增有效發現、人工確認時間、成本。三組為：工具+單模型、工具+同模型多代理、工具+不同模型多代理。
+
+## 執行評測（`scripts/run_evals.py`）
+
+```bash
+python3 scripts/run_evals.py --md reports/evals.md --json reports/evals.json          # 全部案例
+python3 scripts/run_evals.py --split held_out                                          # 只量測 held-out
+python3 scripts/run_evals.py --no-network                                              # 不查 registry（G1 案例記 untested）
+```
+
+- 只有「預期規則確實由本機執行器實作」的案例才執行並計分：
+  - `semgrep`：`kind: code|iac` 且 `rule_id` 存在於 `config/semgrep/vibesec-rules.yaml`（`-js` 等語言變體歸回同一規則）。
+  - `slopcheck`：G1 manifest 案例，且只用 `ecosystem` / `added`（含 `published_hours_ago` 等合成 fixture 的案例記 untested）。
+- 其餘案例（`http`、`prompt`、`config`、需 gitleaks／G4 內嵌檢查的規則、`gate_status: incomplete` 情境）記為 **untested** 並列出原因；執行器失敗記 **incomplete**。兩者都不計入召回率／精確率，也不算通過。
+- 金鑰類 fixture 用佔位符（`{{FAKE_ANTHROPIC_KEY}}`、`{{FAKE_OPENAI_KEY}}`），由執行器在暫存檔中展開，repo 內不放金鑰形字串。
+- 程式碼 fixture 需包含規則的適用脈絡（例如 `missing-owner-filter` 只在路由處理函式內生效），否則反例會「空洞地」通過。
