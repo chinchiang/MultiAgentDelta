@@ -381,46 +381,106 @@ jobs:
           category: vibesec-g5-api-probes
 
       # ---------- G6：LLM / Agent 紅隊 ----------
-      - name: G6 promptfoo（對照 OWASP LLM Top 10）
+      - name: G6 promptfoo eval（決定性測試，不需模型金鑰）
+        id: pfeval
+        continue-on-error: true
+        shell: bash
+        env:
+          VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
+          PROMPTFOO_DISABLE_TELEMETRY: "1"
+        run: |
+          mkdir -p reports
+          # 退出碼 100 = 有測試失敗（正常結果，交給 g6_gate.py 判定 fail）；其他非零 = 工具錯誤
+          set +e
+          npx --yes promptfoo@latest eval -c config/promptfoo/tests.yaml --no-cache \
+            --output reports/g6-promptfoo.json </dev/null >reports/_promptfoo.log 2>&1
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "promptfoo eval exit=$code"
+
+      # 生成層：只有設定 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret 時執行。
+      # 靶場回應屬 internal，依 config/providers.yaml 只允許 anthropic-cloud / openai-cloud（CLAUDE.md 規則 7）；
+      # GLM / DeepSeek 只允許 public，不在此使用。金鑰只經 env 傳入，不寫入 log。
+      - name: G6 promptfoo redteam（選用；需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret）
+        id: pfred
+        continue-on-error: true
+        shell: bash
+        env:
+          VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
+          PROMPTFOO_DISABLE_TELEMETRY: "1"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          mkdir -p reports
+          if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "skipped=未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret" >> "$GITHUB_OUTPUT"
+            echo "::notice::redteam 生成層未執行：未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret（記為 untested）"
+            exit 0
+          fi
+          # 依可用金鑰，從 config/providers.yaml 取模型名稱，產生臨時設定（不修改 repo 內設定檔）
+          python3 - <<'PY'
+          import os, yaml, pathlib
+          prov = yaml.safe_load(open("config/providers.yaml"))["providers"]
+          if os.environ.get("ANTHROPIC_API_KEY"):
+              pid = f"anthropic:messages:{prov['anthropic-cloud']['model']}"
+          else:
+              pid = f"openai:chat:{prov['openai-cloud']['model']}"
+          cfg = yaml.safe_load(open("config/promptfoo/promptfooconfig.yaml"))
+          cfg.setdefault("redteam", {})["provider"] = pid
+          cfg.setdefault("defaultTest", {}).setdefault("options", {})["provider"] = pid
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "promptfoo-redteam.yaml"
+          out.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+          print(f"redteam provider: {pid.split(':')[0]}")
+          PY
+          set +e
+          timeout 1800 npx --yes promptfoo@latest redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml" --no-cache \
+            --output reports/g6-promptfoo-redteam.json </dev/null >reports/_promptfoo-redteam.log 2>&1
+          code=$?
+          set -e
+          echo "redteam exit=$code"
+          if [ ! -s reports/g6-promptfoo-redteam.json ]; then
+            echo "skipped=promptfoo redteam 執行失敗（exit=$code），未產生結果；見 _promptfoo-redteam.log" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: G6 garak（LLM 漏洞掃描）
         continue-on-error: true
         shell: bash
         env:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
           mkdir -p reports
-          if npx --yes promptfoo@latest eval -c config/promptfoo/promptfooconfig.yaml \
-               --output reports/g6-promptfoo.json 2>reports/_promptfoo.log; then
-            echo "promptfoo 完成"
-          else
-            echo "::warning::promptfoo 執行失敗或缺 provider 金鑰 → G6 promptfoo incomplete"
-            python3 - <<'PY'
-          import json, datetime, pathlib
-          NOW = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
-          pathlib.Path("reports/g6-promptfoo-gate.json").write_text(json.dumps({
-              "gate": "G6", "status": "incomplete",
-              "status_reason": "promptfoo 執行失敗或缺模型 provider 金鑰（incomplete ≠ pass）",
-              "mode": "shadow", "scope": "full", "diff_base": None, "commit": None,
-              "started_at": NOW, "finished_at": NOW,
-              "tools": [{"name": "promptfoo", "version": None, "state": "error", "exit_code": 1,
-                         "output_ref": "reports/_promptfoo.log", "duration_seconds": None}],
-              "findings_count": {"blocking": 0, "advisory": 0},
-              "coverage": [{"control_id": "LLM01:2025", "state": "untested", "reason": None}]
-          }, ensure_ascii=False, indent=2), encoding="utf-8")
-          PY
+          pip install garak >reports/_garak-install.log 2>&1 || echo "::warning::garak 安裝失敗（記為 untested）"
+          if command -v garak >/dev/null 2>&1; then
+            # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
+            sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
+            garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
+              echo "::warning::garak 回傳非零 → 依報告內容判定"
+            # garak 預設把報告寫在 ~/.local/share/garak/garak_runs/
+            find "$HOME/.local/share/garak" . -name 'g6-garak*.jsonl' -not -path './reports/*' -exec cp {} reports/ \; 2>/dev/null || true
           fi
 
-      - name: G6 garak（LLM 漏洞掃描）
-        continue-on-error: true
+      - name: G6 彙整（promptfoo eval + redteam + garak → reports/g6-gate.json）
+        if: always()
         shell: bash
+        env:
+          PF_EXIT: ${{ steps.pfeval.outputs.exit_code }}
+          PF_RED_SKIPPED: ${{ steps.pfred.outputs.skipped }}
         run: |
-          mkdir -p reports
-          pip install garak 2>reports/_garak-install.log || echo "garak 安裝失敗"
-          if command -v garak >/dev/null 2>&1; then
-            garak --config config/garak/vibesec.probes.yaml --report_prefix reports/g6-garak 2>reports/_garak.log || \
-              echo "::warning::garak 執行回傳非零 → 視輸出判定"
-          else
-            echo "::warning::garak 缺席 → G6 garak incomplete（incomplete ≠ pass）"
-          fi
+          args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl'
+                --gate reports/g6-gate.json --sarif reports/g6.sarif --mode shadow)
+          [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
+          if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
+          else args+=(--redteam reports/g6-promptfoo-redteam.json); fi
+          python3 scripts/g6_gate.py "${args[@]}"
+
+      - name: Upload G6 SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/g6.sarif
+          category: vibesec-g6-ai-red-team
 
       - name: Upload 黑箱 reports（artifact）
         if: always()
@@ -438,7 +498,7 @@ jobs:
           import json, glob, os, pathlib
           rows = ["# VibeSec 黑箱閘門狀態（G5 / G6）", "",
                   "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
-          for p in sorted(glob.glob("reports/g5-gate.json") + glob.glob("reports/g6-*gate.json")):
+          for p in sorted(glob.glob("reports/g5-gate.json") + glob.glob("reports/g6-gate.json")):
               try: g = json.load(open(p, encoding="utf-8"))
               except Exception: continue
               fc = g.get("findings_count", {})

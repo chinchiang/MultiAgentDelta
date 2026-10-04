@@ -107,8 +107,12 @@ URL 未設或 `UNREACHABLE` → G5 整體 `incomplete`，**不得**把無回應�
 ### G6 LLM / Agent 紅隊
 
 ```bash
-promptfoo eval -c config/promptfoo/promptfooconfig.yaml -o reports/raw/G6/promptfoo.json --no-cache
-garak --config config/garak/vibesec.probes.yaml --report_prefix reports/raw/G6/garak
+promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json --no-cache   # 不需金鑰；退出碼 100 = 有測試失敗（≠ incomplete）
+# 選用生成層（需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY；只允許 internal 資料可送的 provider）：
+# promptfoo redteam run -c config/promptfoo/promptfooconfig.yaml -o reports/raw/G6/promptfoo-redteam.json
+garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
+python3 scripts/g6_gate.py --eval reports/raw/G6/promptfoo.json --redteam-skipped "<原因>" \
+  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --gate reports/raw/G6/g6-gate.json
 ```
 
 `project.contains_llm: false` → `not_applicable`，`status_reason: "project.contains_llm is false"`。對應 `checks` → `vibesec.g6.<check-kebab>`。

@@ -85,7 +85,8 @@ gates:
     timeout_seconds: 1800
     stage: staging
     tools: [promptfoo, garak]
-    promptfoo_config: config/promptfoo/promptfooconfig.yaml
+    promptfoo_config: config/promptfoo/promptfooconfig.yaml      # redteam 生成層（需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY）
+    promptfoo_tests_config: config/promptfoo/tests.yaml          # 決定性測試（不需金鑰）
     garak_config: config/garak/vibesec.probes.yaml
     checks: [direct_prompt_injection, indirect_prompt_injection, system_prompt_extraction, stored_xss_via_ai_output, denial_of_wallet]
 

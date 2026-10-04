@@ -55,7 +55,7 @@ role: harness
 | G3 | `semgrep scan --config <rules> --sarif`（diff 時加 `--baseline-commit <base>`）→ `checkov -d . -o sarif` → `trivy config . --format sarif` | semgrep 缺席（checkov / trivy-config 缺席只標 untested 對應控制） |
 | G4 | 六項靜態檢查（`static_checks`）+ LLM 審查（`roles: [architecture, identity-authz]`） | 靜態檢查腳本缺席；或審查 family < 2 |
 | G5 | 健康檢查 `GET $VIBESEC_TARGET_URL/healthz` → `zap-baseline.py -t $URL -J` → `zap-api-scan.py` → 自製 api-probes（雙帳號 BOLA、JWT、SSRF、設定外溢、rate limit） | URL 未設 / 不可達；缺任一 token（`two_account_test: required`） |
-| G6 | `promptfoo eval -c config/promptfoo/promptfooconfig.yaml -o reports/raw/G6/promptfoo.json` → `garak --config config/garak/vibesec.probes.yaml` | URL 未設 / 不可達；promptfoo 與 garak 全缺 |
+| G6 | `promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json`（不需金鑰；redteam 生成層另用 `promptfooconfig.yaml`）→ `python3 scripts/g6_gate.py` → `garak --config config/garak/vibesec.probes.yaml` | URL 未設 / 不可達；promptfoo 與 garak 全缺 |
 
 工具是否存在以 `command -v <bin>` 判定；缺席記 `state: missing`，**不要**嘗試安裝工具（安裝本身就是 G1 要防的事）。
 
