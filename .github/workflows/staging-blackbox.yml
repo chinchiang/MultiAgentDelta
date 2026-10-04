@@ -92,7 +92,7 @@ jobs:
       # ---------- G5：ZAP ----------
       - name: ZAP API Scan（OpenAPI）
         continue-on-error: true
-        uses: zaproxy/action-api-scan@f34b07497d46a84e06d71ad4f304311634c24137 # v0.7.0
+        uses: zaproxy/action-api-scan@5158fe4d9d8fcc75ea204db81317cce7f9e5453d # v0.10.0
         with:
           target: ${{ steps.target.outputs.url }}/openapi.json
           format: openapi
@@ -103,7 +103,7 @@ jobs:
 
       - name: ZAP Baseline Scan
         continue-on-error: true
-        uses: zaproxy/action-baseline@66042c8e7e24680119199a017e5b0e8603bf4dae # v0.12.0
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
         with:
           target: ${{ steps.target.outputs.url }}
           rules_file_name: config/zap/baseline.conf
@@ -145,8 +145,9 @@ jobs:
                                          "defaultConfiguration": {"level": level},
                                          "properties": {"policy_tier": tier}})
               results.append({"ruleId": rule_id, "level": level, "message": {"text": msg},
-                              "locations": [{"physicalLocation": {"artifactLocation": {"uri": URL}}}],
-                              "properties": {"policy_tier": tier}})
+                              # Code Scanning 只收 file 型 URI：位置指向執行探針的 workflow，目標放 properties
+                              "locations": [{"physicalLocation": {"artifactLocation": {"uri": ".github/workflows/staging-blackbox.yml"}}}],
+                              "properties": {"policy_tier": tier, "target_url": URL}})
 
           def req(path, method="GET", token=None, data=None, headers=None, timeout=15):
               url = path if path.startswith("http") else URL + path
@@ -253,35 +254,71 @@ jobs:
                       base = listp
                       for rid in ids[:3]:
                           discovered.append((base, rid))
-                  # 單一資源形式
-              confirmed = False
+              # 主體 ID 策略：以 A 的 /me 取得自身 id，再試「以使用者 id 為路徑」的資源
+              for mep in ["/me", "/api/me"]:
+                  s, body = req(mep, token=TA)
+                  if s == 200 and body:
+                      m = re.search(r'"id"\s*:\s*"?([A-Za-z0-9\-]+)"?', body)
+                      if m:
+                          for tpl in ["/users/{}/notes", "/users/{}", "/api/users/{}"]:
+                              discovered.append((None, tpl.format(m.group(1))))
+                          break
+              confirmed = False; checked = False
               for base, rid in discovered:
-                  resource = f"{base}/{rid}"
+                  resource = rid if base is None else f"{base}/{rid}"
                   s_a, _ = req(resource, token=TA)
+                  if s_a != 200:
+                      continue  # A 自己都讀不到 → 此路徑不構成證據
                   s_b, _ = req(resource, token=TB)
-                  if s_a == 200 and s_b == 200:
-                      add("vibesec.g5.bola-idor", "error",
+                  if s_b in (401, 403, 404):
+                      checked = True
+                  if s_b == 200:
+                      add("vibesec.g5.bola-cross-account", "error",
                           f"雙帳號 BOLA 實證：帳號 B 可存取帳號 A 的資源 {resource}（HTTP 200）", "blocking")
                       confirmed = True; break
-              coverage["bola_idor"] = "fail" if confirmed else ("pass" if discovered else "untested")
+              # 只有「A 可讀、B 被明確拒絕」才算 pass；其餘一律 untested（incomplete ≠ pass）
+              coverage["bola_idor"] = "fail" if confirmed else ("pass" if checked else "untested")
           else:
               coverage["bola_idor"] = "untested"
 
           # ---- ssrf_metadata ----
+          # 判定原則（incomplete ≠ pass）：命中才 fail；端點以 400/403 明確拒絕內部 URL 才 pass；其餘 untested。
+          # 回應常回顯送出的 URL，比對前先移除，避免把回顯誤判為命中。
           if reachable:
-              tried = False; ssrf_hit = False
+              import urllib.parse
+              META = "http://169.254.169.254/latest/meta-data/"
+              tp = urllib.parse.urlsplit(URL)
+              CANARY = f"http://127.0.0.1:{tp.port or (443 if tp.scheme == 'https' else 80)}/openapi.json"
+              def ssrf_try(ep, key, target):
+                  out = []
+                  q = urllib.parse.urlencode({key: target})
+                  out.append(req(f"{ep}?{q}", "GET", token=TA or None))
+                  out.append(req(ep, "POST", token=TA or None, data={key: target}))
+                  return [(s, (b or "").replace(target, "")) for s, b in out]
+              ssrf_hit = False; internal_hit = False; refused = False; reached = False
               for ep in ["/fetch", "/api/fetch", "/import", "/api/import", "/proxy", "/url"]:
                   for key in ["url", "uri", "target", "endpoint"]:
-                      s, body = req(ep, "POST", token=TA or None, data={key: "http://169.254.169.254/latest/meta-data/"})
-                      if s is not None and s != 404:
-                          tried = True
-                          if body and ("ami-id" in body or "iam" in body.lower() or "meta-data" in body.lower() or "169.254.169.254" in body):
+                      for s, body in ssrf_try(ep, key, META):
+                          if s == 200: reached = True
+                          if s in (400, 403): refused = True
+                          if s == 200 and any(m in body for m in ("ami-id", "instance-id", "iam/security-credentials", '"compute"')):
                               add("vibesec.g5.ssrf-metadata", "error",
                                   f"SSRF：端點 {ep}（{key}）可讀取雲端 metadata 169.254.169.254", "blocking")
-                              ssrf_hit = True
+                              ssrf_hit = True; break
+                      if not internal_hit:
+                          for s, body in ssrf_try(ep, key, CANARY):
+                              if s == 200 and "openapi" in body:  # 已移除回顯的 canary URL；內容可能被 JSON 轉義
+                                  add("vibesec.g5.ssrf-internal-fetch", "error",
+                                      f"SSRF：端點 {ep}（{key}）會替使用者抓取內部位址 127.0.0.1（loopback canary 命中）", "blocking")
+                                  internal_hit = True; break
                       if ssrf_hit: break
                   if ssrf_hit: break
-              coverage["ssrf_metadata"] = "fail" if ssrf_hit else ("pass" if tried else "untested")
+              if ssrf_hit or internal_hit:
+                  coverage["ssrf_metadata"] = "fail"
+              elif refused and not reached:
+                  coverage["ssrf_metadata"] = "pass"
+              else:
+                  coverage["ssrf_metadata"] = "untested"
 
           # ---- rate_limit ----
           if reachable:

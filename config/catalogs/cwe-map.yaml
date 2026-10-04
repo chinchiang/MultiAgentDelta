@@ -257,6 +257,12 @@ rules:
     control_ids: [ASVS5-V1.3, ASVS5-V13.2]
     gate: G5
     policy_tier: blocking
+  vibesec.g5.ssrf-internal-fetch:
+    cwe: CWE-918
+    title: "URL 抓取端點會替使用者存取內部位址（loopback canary 實證）"
+    control_ids: [ASVS5-V1.3, ASVS5-V13.2]
+    gate: G5
+    policy_tier: blocking
   vibesec.g5.swagger-exposed:
     cwe: CWE-200
     title: "正式 / staging 環境可匿名存取 Swagger UI 或 OpenAPI 文件"
