@@ -160,18 +160,33 @@ def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None
 
 
 def garak_abort_reason(log_path: str | None) -> str | None:
-    """從 garak log 擷取第一行錯誤（❌ 或 Error），讓「未產生報告」可追溯。"""
+    """從 garak log 擷取中止原因：優先取最後一行例外（如 AssertionError: …），其次 ❌ 行；不回傳 Traceback 標頭。"""
+    import re
     try:
         lines = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines() if log_path else []
     except OSError:
         return None
+    exc = [ln.strip() for ln in lines if re.match(r"^\s*[\w.]+(Error|Exception)\b", ln) and "Traceback" not in ln]
+    if exc:
+        return exc[-1][:200]
     for line in lines:
-        if "❌" in line or "Error" in line or "Traceback" in line:
+        if "❌" in line:
             return line.replace("❌", "").strip()[:200]
     return None
 
 
-def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None):
+def garak_expected_families(config_path: str | None) -> list[str]:
+    """讀 garak 設定的 run.spec.include，取 probe 家族名（probes.dan → dan）。"""
+    try:
+        import yaml
+        spec = ((yaml.safe_load(pathlib.Path(config_path).read_text(encoding="utf-8")) or {}).get("run") or {}).get("spec") or {}
+    except Exception:
+        return []
+    inc = spec.get("include") or [] if isinstance(spec, dict) else []
+    return [s.split(".")[1] for s in inc if isinstance(s, str) and s.startswith("probes.") and len(s.split(".")) > 1]
+
+
+def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None, config_path: str | None = None):
     if not pattern:
         return
     files = sorted(glob.glob(pattern))
@@ -186,6 +201,7 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None)
     c.tools.append({"name": "garak", "version": None, "state": "ran", "exit_code": None,
                     "output_ref": files[0], "duration_seconds": None})
     evals = 0
+    seen_families: set[str] = set()
     for f in files:
         for line in pathlib.Path(f).read_text(encoding="utf-8", errors="replace").splitlines():
             try:
@@ -196,6 +212,7 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None)
                 continue
             evals += 1
             probe, det = e.get("probe", "?"), e.get("detector", "?")
+            seen_families.add(probe.split(".")[0])
             # garak ≥ 0.17：total_evaluated / fails；舊版：total（fails = total - passed）
             total = int(e.get("total_evaluated", e.get("total")) or 0)
             passed = int(e.get("passed") or 0)
@@ -209,9 +226,19 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None)
                 c.finding(rule, f"garak：{probe} / {det} 命中 {fails}/{total}", "garak")
             else:
                 c.cover(f"garak:{probe}", ctrl, "pass")
+    why = garak_abort_reason(log_path)
+    suffix = f"（中止：{why}）" if why else ""
     if not evals:
-        c.cover("garak", "LLM01:2025", "untested", "garak 報告中沒有 eval 紀錄")
-        c.reasons.append("garak 報告中沒有 eval 紀錄")
+        c.cover("garak", "LLM01:2025", "untested", f"garak 報告中沒有 eval 紀錄{suffix}")
+        c.reasons.append(f"garak 報告中沒有 eval 紀錄{suffix}")
+        return
+    # 設定中要求、但報告裡沒有任何 eval 的 probe 家族（逾時或中途崩潰）→ untested，不得默認為 pass
+    missing = [fam for fam in garak_expected_families(config_path) if fam not in seen_families]
+    for fam in missing:
+        rule = GARAK_RULES.get(fam, f"garak:{fam}")
+        c.cover(f"garak:{fam}", c.control(rule, "LLM01:2025"), "untested", f"garak 未完成 {fam}{suffix}")
+    if missing:
+        c.reasons.append(f"garak 未完成：{', '.join(missing)}{suffix}")
 
 
 def build(c: Collector, mode: str, started: str) -> tuple[dict, dict]:
@@ -248,6 +275,7 @@ def main(argv=None) -> int:
     ap.add_argument("--redteam-skipped")
     ap.add_argument("--garak-glob")
     ap.add_argument("--garak-log", help="garak stdout/stderr；無報告時擷取中止原因")
+    ap.add_argument("--garak-config", help="garak 設定檔；比對 run.spec 中要求但未完成的 probe 家族")
     ap.add_argument("--gate", required=True)
     ap.add_argument("--sarif")
     ap.add_argument("--mode", default="shadow", choices=["shadow", "enforce"])
@@ -256,7 +284,7 @@ def main(argv=None) -> int:
     c = Collector(*load_catalog())
     ingest_promptfoo_eval(c, a.eval_path, a.eval_exit_code)
     ingest_promptfoo_redteam(c, a.redteam, a.redteam_skipped)
-    ingest_garak(c, a.garak_glob, a.garak_log)
+    ingest_garak(c, a.garak_glob, a.garak_log, a.garak_config)
     gate, sarif = build(c, a.mode, started)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")

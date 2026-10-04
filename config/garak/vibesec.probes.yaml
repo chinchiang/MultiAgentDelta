@@ -15,7 +15,9 @@
 system:
   verbose: 0
   parallel_attempts: 4          # 同時併發；配合 Denial of Wallet 觀察時可拉到 20
-  parallel_requests: 4
+  # 只開一層 pool：parallel_attempts 與 parallel_requests 同時開啟時，generations > 1 會在 attempt worker
+  # （daemon process）內再開 request pool → AssertionError: daemonic processes are not allowed to have children
+  parallel_requests: false
   narrow_output: false
   show_100_pass_modules: false
 

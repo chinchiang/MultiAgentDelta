@@ -467,7 +467,7 @@ jobs:
           PF_EXIT: ${{ steps.pfeval.outputs.exit_code }}
           PF_RED_SKIPPED: ${{ steps.pfred.outputs.skipped }}
         run: |
-          args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log
+          args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config config/garak/vibesec.probes.yaml
                 --gate reports/g6-gate.json --sarif reports/g6.sarif --mode shadow)
           [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
           if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
