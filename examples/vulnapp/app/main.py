@@ -7,6 +7,8 @@
 seeded 帳號：alice/alice-pass（id 1）、bob/bob-pass（id 2）
 """
 import base64
+import hashlib
+import hmac
 import html
 import json
 import os
@@ -15,12 +17,18 @@ import traceback
 import urllib.request
 
 import jwt  # PyJWT
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-# 刻意寫死的弱 secret（G2/示範用；真實系統絕不可如此）
-JWT_SECRET = "vibesec-vulnapp-insecure-secret"
-JWT_ALG = "HS256"
+# RS256 簽章金鑰：每次啟動在記憶體產生，不落地。公鑰經 /.well-known/jwks.json 公開（正常做法）；
+# 漏洞版的問題在驗章端：接受 HS256 並把公鑰 PEM 當 HMAC 金鑰（G5 jwt_alg_confusion）。
+_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+PUBLIC_KEY = _PRIVATE_KEY.public_key()
+PUBLIC_PEM = PUBLIC_KEY.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+JWT_ALG = "RS256"
+JWT_KID = "vibesec-vulnapp-1"
 
 # VIBESEC_VULNAPP_MODE=patched → 已修補模式：同一份程式碼切換到安全行為，用來證明閘門在修補後不誤報。
 # 預設（未設定）維持刻意有漏洞，CI 的 staging 演練行為不變。
@@ -48,11 +56,11 @@ async def debug_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": str(exc), "traceback": tb})
 
 
-# ---- 認證弱點：接受真實 HS256，也接受 alg:none 未簽章 token（G5 jwt_alg_none / jwt_alg_confusion）----
+# ---- 認證弱點：alg 取自 header；接受 alg:none 未簽章 token，以及以公鑰當 HMAC 金鑰的 HS256（G5 jwt_alg_none / jwt_alg_confusion）----
 def _decode_token(token: str) -> dict:
     if PATCHED:
         # 修補：固定演算法並驗證簽章；alg:none 與演算法混淆一律拒絕
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        return jwt.decode(token, PUBLIC_KEY, algorithms=[JWT_ALG])
     # 先嘗試讀 header 的 alg；若為 none 則完全不驗簽（典型漏洞）
     try:
         header_b64 = token.split(".")[0]
@@ -68,8 +76,16 @@ def _decode_token(token: str) -> dict:
         payload_b64 += "=" * (-len(payload_b64) % 4)
         return json.loads(base64.urlsafe_b64decode(payload_b64))
 
-    # 漏洞：verify_signature=False，等同不驗簽（RS256/HS256 混淆也能過）
-    return jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+    if alg == "hs256":
+        # 漏洞：演算法取自 header；HS256 時拿「公鑰 PEM」當 HMAC 金鑰驗章 → 任何人都能用公開的公鑰偽造 token。
+        # （PyJWT 會拒絕以非對稱金鑰做 HMAC，這裡以 stdlib 重現存在此缺陷的函式庫行為。）
+        h, p, sig = token.split(".")
+        expect = base64.urlsafe_b64encode(hmac.new(PUBLIC_PEM, f"{h}.{p}".encode(), hashlib.sha256).digest()).rstrip(b"=")
+        if not hmac.compare_digest(expect, sig.encode()):
+            raise ValueError("bad signature")
+        p += "=" * (-len(p) % 4)
+        return json.loads(base64.urlsafe_b64decode(p))
+    return jwt.decode(token, PUBLIC_KEY, algorithms=[JWT_ALG])
 
 
 def current_user(authorization: str = Header(default="")) -> dict:
@@ -105,8 +121,16 @@ def login(body: dict = Body(...)):
     if not user or user["password"] != password:
         # 漏洞：無 rate limiting / 無 captcha（G5 rate_limit、G6 DoW 的相鄰面）
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-    token = jwt.encode({"sub": user["username"], "uid": user["id"]}, JWT_SECRET, algorithm=JWT_ALG)
+    token = jwt.encode({"sub": user["username"], "uid": user["id"]}, _PRIVATE_KEY, algorithm=JWT_ALG,
+                       headers={"kid": JWT_KID})
     return {"access_token": token, "token_type": "bearer"}
+
+
+@app.get("/.well-known/jwks.json")
+def jwks():
+    nums = PUBLIC_KEY.public_numbers()
+    b64 = lambda i: base64.urlsafe_b64encode(i.to_bytes((i.bit_length() + 7) // 8, "big")).decode().rstrip("=")
+    return {"keys": [{"kty": "RSA", "use": "sig", "alg": JWT_ALG, "kid": JWT_KID, "n": b64(nums.n), "e": b64(nums.e)}]}
 
 
 @app.get("/me")

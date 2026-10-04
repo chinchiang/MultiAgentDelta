@@ -1,0 +1,19 @@
+id: g5-jwt-pos-02
+gate: G5
+domain: authentication
+title: JWT 演算法混淆（RS256→HS256，以公鑰當 HMAC 金鑰）
+input:
+  kind: http
+  target_app: vulnapp   # 靶場以 RS256 簽發並公開 JWKS；驗章端接受 HS256 → 可混淆
+  target: /me
+  steps:
+    - 從 /.well-known/jwks.json 取 RSA 公鑰並轉為 PEM
+    - 以 PEM 當 HMAC 金鑰、header alg=HS256 重簽同一 payload
+    - GET /me with 偽造 token -> 200（授權繞過）
+expected:
+  should_flag: true
+  control_id: ASVS5-V9.1
+  rule_id: vibesec.g5.jwt-alg-confusion
+  policy_tier: blocking
+held_out: false
+notes: examples/vulnapp 預設（漏洞）模式；探針以 stdlib 從 JWKS 組 PEM，與伺服器公鑰逐位元組一致才能命中。

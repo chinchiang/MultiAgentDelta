@@ -139,6 +139,7 @@ jobs:
 
           results = []; rules = {}
           coverage = {}  # control_id -> state
+          coverage_reasons = {}  # control_id -> reason（not_applicable 必填，untested 可選）
           def add(rule_id, level, msg, tier="advisory"):
               rules.setdefault(rule_id, {"id": rule_id, "name": rule_id,
                                          "shortDescription": {"text": rule_id},
@@ -238,10 +239,91 @@ jobs:
               coverage["jwt_alg_none"] = "untested"
 
           # ---- jwt_alg_confusion（RS256→HS256）----
-          # 無目標公鑰時無法可靠實證 → 誠實記為 untested（incomplete ≠ pass）
-          coverage["jwt_alg_confusion"] = "untested"
-          add("vibesec.g5.jwt-alg-confusion", "note",
-              "RS256/HS256 混淆需目標公鑰方能實證；本探針未持有公鑰 → untested，建議人工/Burp 驗證", "advisory")
+          # 從目標公開的 JWKS 取 RSA 公鑰，轉成 PEM（stdlib 手組 SubjectPublicKeyInfo DER），
+          # 以 PEM 當 HMAC 金鑰重簽同一 payload 送出：接受 → fail；明確 401/403 → pass。
+          # token 使用對稱演算法（無公鑰可混淆）→ not_applicable；取不到公鑰 → untested（incomplete ≠ pass）。
+          import hashlib, hmac
+          def _b64u_dec(x): return base64.urlsafe_b64decode(x + "=" * (-len(x) % 4))
+          def _der_len(n):
+              if n < 0x80: return bytes([n])
+              b = n.to_bytes((n.bit_length() + 7) // 8, "big"); return bytes([0x80 | len(b)]) + b
+          def _der_tlv(tag, body): return bytes([tag]) + _der_len(len(body)) + body
+          def _der_uint(i):
+              b = i.to_bytes((i.bit_length() + 7) // 8 or 1, "big")
+              if b[0] & 0x80: b = b"\x00" + b
+              return _der_tlv(0x02, b)
+          def _spki_pem(n, e):
+              rsa_oid = bytes.fromhex("300d06092a864886f70d0101010500")            # AlgorithmIdentifier: rsaEncryption + NULL
+              pubkey = _der_tlv(0x30, _der_uint(n) + _der_uint(e))                   # RSAPublicKey SEQUENCE
+              spki = _der_tlv(0x30, rsa_oid + _der_tlv(0x03, b"\x00" + pubkey))      # SubjectPublicKeyInfo
+              # 須與 cryptography 的 PEM 輸出逐位元組一致（HMAC 金鑰即 PEM bytes）：base64 每 64 字元換行
+              b64 = base64.b64encode(spki).decode()
+              body = "".join(b64[i:i + 64] + "\n" for i in range(0, len(b64), 64))
+              return ("-----BEGIN PUBLIC KEY-----\n" + body + "-----END PUBLIC KEY-----\n").encode()
+
+          def _token_alg(tok):
+              try: return (json.loads(_b64u_dec(tok.split(".")[0])).get("alg") or "").upper()
+              except Exception: return ""
+          def _fetch_pem():
+              # 依 token 的 kid 從常見 JWKS 位置取 RSA 公鑰
+              try: kid = json.loads(_b64u_dec(TA.split(".")[0])).get("kid")
+              except Exception: kid = None
+              uris = ["/.well-known/jwks.json", "/jwks.json"]
+              s_oidc, body_oidc = req("/.well-known/openid-configuration")
+              if body_oidc:
+                  try:
+                      ju = json.loads(body_oidc).get("jwks_uri")
+                      if ju: uris.insert(0, ju)
+                  except Exception: pass
+              for u in uris:
+                  s_j, body_j = req(u)
+                  if not body_j: continue
+                  try: keys = json.loads(body_j).get("keys", [])
+                  except Exception: continue
+                  rsa_keys = [k for k in keys if k.get("kty") == "RSA" and k.get("n") and k.get("e")]
+                  if not rsa_keys: continue
+                  k = next((k for k in rsa_keys if kid and k.get("kid") == kid), rsa_keys[0])
+                  n = int.from_bytes(_b64u_dec(k["n"]), "big"); e = int.from_bytes(_b64u_dec(k["e"]), "big")
+                  return _spki_pem(n, e)
+              return None
+
+          alg = _token_alg(TA) if (reachable and HAS_A and TA.count(".") == 2) else ""
+          if not reachable or not HAS_A or TA.count(".") != 2:
+              coverage["jwt_alg_confusion"] = "untested"
+          elif alg.startswith("HS"):
+              coverage["jwt_alg_confusion"] = "not_applicable"
+              coverage_reasons["jwt_alg_confusion"] = "token 使用對稱演算法（HS*），無公鑰可混淆"
+          else:
+              pem = _fetch_pem()
+              if not pem:
+                  coverage["jwt_alg_confusion"] = "untested"
+                  add("vibesec.g5.jwt-alg-confusion", "note",
+                      "未能從 JWKS 取得 RSA 公鑰 → untested，建議人工/Burp 驗證", "advisory")
+              else:
+                  try:
+                      h_b64, p_b64, _ = TA.split(".")
+                      header = {"alg": "HS256", "typ": "JWT"}
+                      new_h = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+                      signing_input = f"{new_h}.{p_b64}".encode()
+                      sig = base64.urlsafe_b64encode(hmac.new(pem, signing_input, hashlib.sha256).digest()).decode().rstrip("=")
+                      forged = f"{new_h}.{p_b64}.{sig}"
+                      accepted = None; rejected = False
+                      for p in ["/me", "/api/me", "/profile", "/users/me", "/account"]:
+                          s_auth, _ = req(p, token=TA)
+                          if s_auth != 200: continue
+                          s_forged, _ = req(p, token=forged)
+                          if s_forged == 200: accepted = p; break
+                          if s_forged in (401, 403): rejected = True
+                      if accepted:
+                          add("vibesec.g5.jwt-alg-confusion", "error",
+                              f"受保護端點 {accepted} 接受以公鑰 PEM 當 HMAC 金鑰的 HS256 偽造 JWT（RS256→HS256 混淆）", "blocking")
+                          coverage["jwt_alg_confusion"] = "fail"
+                      elif rejected:
+                          coverage["jwt_alg_confusion"] = "pass"
+                      else:
+                          coverage["jwt_alg_confusion"] = "untested"
+                  except Exception:
+                      coverage["jwt_alg_confusion"] = "untested"
 
           # ---- bola_idor（雙帳號實測）----
           if reachable and HAS_A and HAS_B:
@@ -360,7 +442,12 @@ jobs:
           else:
               gstatus = "pass"
 
-          cov = [{"control_id": k, "state": v, "reason": ("缺 token 或目標限制，未能實測" if v == "untested" else None)}
+          def _cov_reason(k, v):
+              if k in coverage_reasons: return coverage_reasons[k]
+              if v == "untested": return "缺 token 或目標限制，未能實測"
+              if v == "not_applicable": return "此目標不適用該檢查"
+              return None
+          cov = [{"control_id": k, "state": v, "reason": _cov_reason(k, v)}
                  for k, v in coverage.items()]
           # schema：not_applicable 才強制 reason；untested 可無 reason，但附上更佳
           gate = {"gate": "G5", "status": gstatus, "status_reason": status_reason,

@@ -33,7 +33,7 @@ curl -s -X POST http://127.0.0.1:8000/login \
 
 | 端點 / 行為 | 弱點 | 閘門 | rule_id |
 |---|---|---|---|
-| JWT 以寫死弱 secret HS256 簽發；`_decode_token` 使用 `verify_signature=False` 並接受 `alg:none` | Broken Authentication（接受未簽章 / 混淆 token） | G5 | `vibesec.g5.jwt-alg-none`、`vibesec.g5.jwt-alg-confusion` |
+| JWT 以 RS256 簽發、公鑰於 `/.well-known/jwks.json` 公開；`_decode_token` 的 `alg` 取自 header，接受 `alg:none`（未簽章），也接受 `HS256` 並拿公鑰 PEM 當 HMAC 金鑰 | Broken Authentication（接受未簽章 / RS256→HS256 混淆 token） | G5 | `vibesec.g5.jwt-alg-none`、`vibesec.g5.jwt-alg-confusion` |
 | `GET /users/{id}/notes` 未將 `{id}` 綁定當前已驗證主體 | BOLA / IDOR（bob 讀 alice 私密筆記） | G5 | `vibesec.g5.bola-idor` |
 | `GET /fetch?url=` 對任意 URL 發 server-side GET，無 allow-list、未封私網 | SSRF（可讀 `169.254.169.254` metadata） | G5 | `vibesec.g5.ssrf-metadata` |
 | `/docs`、`/redoc`、`/openapi.json` 全對外 | 開發便利設定外溢 | G5 | `vibesec.g5.swagger-exposed` |
@@ -57,7 +57,7 @@ VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:
 
 | 已修補 | 作法 |
 |---|---|
-| JWT alg:none / 未驗簽 | `jwt.decode` 驗章並限定 `HS256` |
+| JWT alg:none / RS256→HS256 混淆 | `jwt.decode(token, PUBLIC_KEY, algorithms=["RS256"])`，固定非對稱演算法並驗章 |
 | BOLA / IDOR | `/users/{id}/notes` 僅允許本人，否則 403 |
 | SSRF | `/fetch` 一律 400（無允許清單即拒絕） |
 | Stack trace 外洩 | 例外回傳一般化 `{"error":"internal error"}` |
@@ -65,7 +65,9 @@ VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:
 | AI 輸出 XSS | 回覆經 HTML 編碼 |
 | Denial of Wallet | `/chat` 超過 4000 字元回 413 |
 
-**刻意未修補**：Swagger/OpenAPI 對外、GraphQL introspection、缺 rate limit、寫死的弱 JWT secret（故 `jwt_alg_confusion` 仍可能為 untested／命中）。這些在 patched 模式下仍會被回報，G5 狀態因此為 `incomplete` 或 advisory，而非 pass。
+JWKS 端點：`GET /.well-known/jwks.json` 公開 RS256 公鑰（n/e）；RSA 金鑰每次啟動在記憶體產生，不落地。
+
+**刻意未修補**：Swagger/OpenAPI 對外、GraphQL introspection、缺 rate limit。這些在 patched 模式下仍會被回報，因此 G5 的 advisory 不為零；但在 patched 模式下所有 blocking 檢查（含 `jwt_alg_confusion`）都應為 `pass`，整體 G5 狀態為 `pass`。
 
 ## 安全界線（對應 CLAUDE.md #8）
 

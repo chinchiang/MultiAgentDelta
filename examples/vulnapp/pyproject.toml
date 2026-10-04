@@ -8,6 +8,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pyjwt",
+    "cryptography",
 ]
 
 [build-system]
