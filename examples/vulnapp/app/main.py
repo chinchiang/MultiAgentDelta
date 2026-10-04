@@ -7,7 +7,9 @@
 seeded 帳號：alice/alice-pass（id 1）、bob/bob-pass（id 2）
 """
 import base64
+import html
 import json
+import os
 import pathlib
 import traceback
 import urllib.request
@@ -19,6 +21,10 @@ from fastapi.responses import JSONResponse
 # 刻意寫死的弱 secret（G2/示範用；真實系統絕不可如此）
 JWT_SECRET = "vibesec-vulnapp-insecure-secret"
 JWT_ALG = "HS256"
+
+# VIBESEC_VULNAPP_MODE=patched → 已修補模式：同一份程式碼切換到安全行為，用來證明閘門在修補後不誤報。
+# 預設（未設定）維持刻意有漏洞，CI 的 staging 演練行為不變。
+PATCHED = os.environ.get("VIBESEC_VULNAPP_MODE", "").lower() == "patched"
 
 _DATA = json.loads((pathlib.Path(__file__).parent.parent / "seed_users.json").read_text(encoding="utf-8"))
 USERS_BY_NAME = {u["username"]: u for u in _DATA["users"]}
@@ -35,12 +41,18 @@ app = FastAPI(
 # ---- Debug 模式錯誤回應：未處理例外回吐 stack trace（G5 debug_stacktrace）----
 @app.exception_handler(Exception)
 async def debug_exception_handler(request: Request, exc: Exception):
+    if PATCHED:
+        # 修補：只回通用訊息，不外洩 stack trace
+        return JSONResponse(status_code=500, content={"error": "internal error"})
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     return JSONResponse(status_code=500, content={"error": str(exc), "traceback": tb})
 
 
 # ---- 認證弱點：接受真實 HS256，也接受 alg:none 未簽章 token（G5 jwt_alg_none / jwt_alg_confusion）----
 def _decode_token(token: str) -> dict:
+    if PATCHED:
+        # 修補：固定演算法並驗證簽章；alg:none 與演算法混淆一律拒絕
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     # 先嘗試讀 header 的 alg；若為 none 則完全不驗簽（典型漏洞）
     try:
         header_b64 = token.split(".")[0]
@@ -106,6 +118,9 @@ def me(user: dict = Depends(current_user)):
 def get_notes(user_id: int, user: dict = Depends(current_user)):
     # 漏洞（BOLA / IDOR）：只驗證「有合法 token」，完全未綁定 user_id == 當前主體。
     # bob（id 2）的 token 可讀 alice（id 1）的私密筆記。這是 G5 bola_idor 主要目標。
+    if PATCHED and user_id != user["id"]:
+        # 修補：資源 owner 必須等於當前主體
+        raise HTTPException(status_code=403, detail="無權存取他人資源")
     target = USERS_BY_ID.get(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="查無此使用者")
@@ -122,6 +137,9 @@ def list_users(user: dict = Depends(current_user)):
 def fetch(url: str = Query(...), user: dict = Depends(current_user)):
     # 漏洞（SSRF）：對使用者提供的 URL 直接發出 server-side GET，無 allow-list、無私網封鎖。
     # 可讀 http://169.254.169.254/latest/meta-data/（雲端 metadata）。G5 ssrf_metadata 目標。
+    if PATCHED:
+        # 修補：allow-list（靶場不需要對外抓取，清單為空）→ 一律明確拒絕，含私網與 metadata 位址
+        raise HTTPException(status_code=400, detail="URL 不在允許清單（blocked）")
     req = urllib.request.Request(url, headers={"User-Agent": "vibesec-vulnapp-fetch"})
     with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 刻意漏洞
         body = resp.read(65536).decode("utf-8", "replace")
@@ -134,6 +152,11 @@ def chat(body: dict = Body(...)):
     from app.llm_stub import generate_reply
 
     message = body.get("message", "")
+    if PATCHED:
+        # 修補：長度上限（Denial of Wallet）、不洩漏 system prompt、輸出 HTML 編碼
+        if len(message) > 4000:
+            raise HTTPException(status_code=413, detail="訊息過長")
+        return {"reply": html.escape(generate_reply(message, patched=True))}
     reply = generate_reply(message)
     return {"reply": reply}
 

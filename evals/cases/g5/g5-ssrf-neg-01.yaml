@@ -4,6 +4,7 @@ domain: input_validation
 title: URL 抓取端點以 400 拒絕私網位址
 input:
   kind: http
+  target_app: vulnapp-patched   # VIBESEC_VULNAPP_MODE=patched 可重現；run_evals.py 以本機已修補靶場實測
   target: /fetch?url=
   steps:
   - GET /fetch?url=http://169.254.169.254/ -> 400 blocked

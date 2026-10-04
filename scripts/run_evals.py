@@ -177,7 +177,8 @@ class Vulnapp:
 
     HOST = "127.0.0.1"   # 固定本機；不接受外部輸入的 URL，也不經 urllib（避免 file:// 等 scheme）
 
-    def __init__(self):
+    def __init__(self, mode: str = ""):
+        self.mode = mode          # "" = 刻意有漏洞（預設）；"patched" = 已修補模式
         self.proc = None
         self.port = None
         self.url = None
@@ -202,9 +203,10 @@ class Vulnapp:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
+        env = {**os.environ, "VIBESEC_VULNAPP_MODE": self.mode}
         self.proc = subprocess.Popen([uv, "run", "-q", "--project", "examples/vulnapp", "uvicorn", "app.main:app",
                                       "--app-dir", "examples/vulnapp", "--host", "127.0.0.1", "--port", str(port)],
-                                     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                     cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.port = port
         for _ in range(90):
             try:
@@ -249,19 +251,21 @@ G6_ORACLES = {
 }
 
 
+TARGET_MODES = {"vulnapp": "", "vulnapp-patched": "patched"}
+
+
 class VulnappRunner(Runner):
     name = "vulnapp"
 
-    def __init__(self, target: Vulnapp | None):
-        self.target = target
-        self._g5_hits: set[str] | None = None
-        self._g5_err: str | None = None
+    def __init__(self, targets: dict[str, Vulnapp] | None):
+        self.targets = targets
+        self._g5: dict[str, tuple[set[str] | None, str | None]] = {}
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
-        if inp.get("target_app") != "vulnapp":
-            return "案例未標記 target_app: vulnapp（描述的不是靶場可重現的行為）"
-        if self.target is None:
+        if inp.get("target_app") not in TARGET_MODES:
+            return "案例未標記 target_app: vulnapp / vulnapp-patched（描述的不是靶場可重現的行為）"
+        if self.targets is None:
             return "--no-target：不啟動靶場"
         if case["gate"] == "G6" and exp.get("rule_id") not in G6_ORACLES:
             return f"{exp.get('rule_id')} 沒有決定性斷言"
@@ -269,16 +273,18 @@ class VulnappRunner(Runner):
             return "target_app 只支援 G5 / G6"
         return None
 
-    def _run_g5(self) -> tuple[set[str] | None, str | None]:
-        if self._g5_hits is not None or self._g5_err:
-            return self._g5_hits, self._g5_err
+    def _run_g5(self, target: Vulnapp) -> tuple[set[str] | None, str | None]:
+        if target.mode not in self._g5:
+            self._g5[target.mode] = self._probe_g5(target)
+        return self._g5[target.mode]
+
+    def _probe_g5(self, target: Vulnapp) -> tuple[set[str] | None, str | None]:
         tok_sh, probe_sh = _workflow_step("取得雙帳號 token"), _workflow_step("G5 api-probes")
         if not tok_sh or not probe_sh:
-            self._g5_err = "staging workflow 中找不到 token／api-probes 步驟"
-            return None, self._g5_err
+            return None, "staging workflow 中找不到 token／api-probes 步驟"
         with tempfile.TemporaryDirectory() as d:
-            env = {**os.environ, "RUNNER_TEMP": d, "GITHUB_OUTPUT": f"{d}/out", "TARGET_URL": self.target.url,
-                   "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": self.target.url, "VIBESEC_MODE": "shadow"}
+            env = {**os.environ, "RUNNER_TEMP": d, "GITHUB_OUTPUT": f"{d}/out", "TARGET_URL": target.url,
+                   "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": target.url, "VIBESEC_MODE": "shadow"}
             try:
                 subprocess.run(["bash", "-e", "-c", tok_sh], env=env, cwd=d, check=True,
                                capture_output=True, text=True, timeout=60)
@@ -289,23 +295,24 @@ class VulnappRunner(Runner):
                                capture_output=True, text=True, timeout=300)
                 sarif = json.loads(pathlib.Path(f"{d}/reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
-                self._g5_err = f"G5 api-probes 執行失敗：{type(e).__name__}"
-                return None, self._g5_err
+                return None, f"G5 api-probes 執行失敗：{type(e).__name__}"
         # level=note 是探針的「未能實測」提示（例如缺公鑰的 alg-confusion），不算偵測到
-        self._g5_hits = {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])
-                         if r.get("level") != "note"}
-        return self._g5_hits, None
+        return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])
+                if r.get("level") != "note"}, None
 
     def run(self, case):
-        err = self.target.ensure()
+        target = self.targets[case["input"]["target_app"]]
+        err = target.ensure()
         if err:
             return None, err
         if case["gate"] == "G5":
-            return self._run_g5()
+            return self._run_g5(target)
         inp = case["input"]
         body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", "")}).encode()
         try:
-            status, raw = self.target.request("POST", "/chat", body=body)
+            status, raw = target.request("POST", "/chat", body=body)
+            if status == 413:
+                return set(), None   # 修補模式的長度上限拒絕 → 沒有任何斷言命中
             if status != 200:
                 return None, f"/chat 回應 HTTP {status}"
             reply = json.loads(raw.decode("utf-8", "replace")).get("reply", "")
@@ -406,13 +413,13 @@ def main(argv=None) -> int:
     if a.split != "all":
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
-    target = None if a.no_target else Vulnapp()
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), VulnappRunner(target)]
+    targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
+    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), VulnappRunner(targets)]
     try:
         rows = evaluate(cases, runners)
     finally:
-        if target:
-            target.close()
+        for tgt in (targets or {}).values():
+            tgt.close()
     summary = summarize(rows)
     md = to_markdown(summary, rows, a.split)
     if a.json:
