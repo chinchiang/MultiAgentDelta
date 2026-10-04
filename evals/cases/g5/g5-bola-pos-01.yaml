@@ -4,6 +4,7 @@ domain: authorization
 title: 雙帳號 BOLA — 帳號 B Token 讀帳號 A 資源
 input:
   kind: http
+  target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測
   target: /users/{id}/notes
   steps:
     - POST /login {"username":"bob","password":"bob-pass"} -> token_b

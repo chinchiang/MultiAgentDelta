@@ -53,6 +53,7 @@ python3 scripts/run_evals.py --no-network                                       
 - 只有「預期規則確實由本機執行器實作」的案例才執行並計分：
   - `semgrep`：`kind: code|iac` 且 `rule_id` 存在於 `config/semgrep/vibesec-rules.yaml`（`-js` 等語言變體歸回同一規則）。
   - `slopcheck`：G1 manifest 案例，且只用 `ecosystem` / `added`（含 `published_hours_ago` 等合成 fixture 的案例記 untested）。
+  - `vulnapp`：標記 `input.target_app: vulnapp` 的 G5／G6 案例。執行器在 127.0.0.1 隨機埠啟動 `examples/vulnapp`；G5 執行 staging workflow 中**同一份** api-probes 程式碼（level=note 的「未能實測」結果不算偵測），G6 把 prompt 送到 `/chat`，以與 `config/promptfoo/tests.yaml` 相同的決定性斷言判定。只有靶場確實可重現該行為的案例才可標記；描述假想目標（例如期望 403 的反例、靶場沒有的端點）的案例維持 untested。`--no-target` 可跳過。
 - 其餘案例（`http`、`prompt`、`config`、需 gitleaks／G4 內嵌檢查的規則、`gate_status: incomplete` 情境）記為 **untested** 並列出原因；執行器失敗記 **incomplete**。兩者都不計入召回率／精確率，也不算通過。
 - 金鑰類 fixture 用佔位符（`{{FAKE_ANTHROPIC_KEY}}`、`{{FAKE_OPENAI_KEY}}`），由執行器在暫存檔中展開，repo 內不放金鑰形字串。
 - 程式碼 fixture 需包含規則的適用脈絡（例如 `missing-owner-filter` 只在路由處理函式內生效），否則反例會「空洞地」通過。
