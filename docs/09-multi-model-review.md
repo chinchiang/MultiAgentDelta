@@ -178,3 +178,30 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 | 審查預算用盡 | 剩餘高風險發現 `pending` + 閘門 `incomplete`；低風險發現保留工具結果、不送審，`notes` 記原因 |
 
 任何情況下，審查失敗都不會把 finding 變成 `refuted`，也不會把閘門變成 `pass`。
+
+## 12. 人工裁決（requires_human 的收斂）
+
+分歧或 family 不足的發現停在 `pending` + `requires_human: true`，直到有人用**固定格式**裁決。格式見 `schemas/human-ruling.schema.json`，範例見 `docs/templates/human-ruling.example.yaml`，工具是 `scripts/ruling.py`。
+
+**流程**
+
+1. harness 產出 `reports/findings.json` 與 `summary.md` 的「需人工裁決」區塊。
+2. `python3 scripts/ruling.py request <finding_id>` 產生一則可直接貼在 PR 的「請求裁決」留言：列出全部意見（含少數方）與裁決者要做的事。
+3. 裁決者重放或人工核對證據，複製範例為 `rulings/<finding_id>.yaml` 填寫，**逐一回應每則少數意見**。
+4. `python3 scripts/ruling.py check rulings/<finding_id>.yaml` 通過後開 PR，**由另一位人員審查**；PR 就是稽核軌跡（誰、何時、依據什麼）。
+5. 合併後 harness 執行 `ruling.py apply`，把結果寫回 findings.json。
+
+**規則（`ruling.py` 強制，違反即退出碼 1）**
+
+| 規則 | 理由 |
+|---|---|
+| `decided_by.type` 必須是 `human`，handle／role 不得是模型或 bot | 模型不能裁決模型（CLAUDE.md #6） |
+| `confirm` 的 basis 只能是 `reproduced` 或 `manual_review`，且附 ≥ 1 筆非 `model_review` 的證據 | 模型共識不是依據；一致最多 E2（§4 第 5 點） |
+| 每則 `minority` 意見都必須在 `minority_acknowledged[]` 回應（`accepted`／`rejected` + 說明），也不能列出不存在的 | 少數意見不得被默默忽略 |
+| `refute` 不得以 `insufficient_evidence` 為依據；證據不足請 `defer` | 沒證據不等於誤報 |
+| `defer` 必填 `next_review_by`，結果維持 `pending` + `requires_human: true` | defer 不是通過；incomplete ≠ pass |
+| 只有 `requires_human: true` 的 finding 可被裁決；同一 finding 不可重複 apply | 避免覆蓋既有裁決 |
+| `apply` 只改 `validation_status`、`evidence_grade`（confirm → E3）、`review.requires_human`、`review.human_decision`、`review.ruling_ref`，並追加裁決證據 | 不改嚴重度、CVSS、policy_tier、priority，也不刪除或改寫任何模型意見 |
+
+裁決不能降低 `policy_tier`。要把 blocking 降為 advisory 屬於政策變更，須由人類在獨立 PR 修改 `config/policy/blocking-policy.yaml`（CLAUDE.md #1）。
+

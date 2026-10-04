@@ -41,7 +41,7 @@
 | 支持證據 | `evidence_refs[]`（tool_output / code_excerpt / http_exchange / advisory / sbom / trace） |
 | 反證 | `evidence_refs[]` 加 `note: "counter-evidence: ..."`；reviewer `refute` 意見 |
 | 缺漏 | `notes`（「未確認是否部署於公開網段」） |
-| 人工裁決依據 | `review.human_decision` |
+| 人工裁決依據 | `review.human_decision`（摘要）與 `review.ruling_ref`（指向 `rulings/<id>.yaml`，格式見 docs/09 §12） |
 
 **同一公告多站轉載只算一個來源**：`sources.advisory_url` 填官方（NVD / GHSA / 供應商 advisory）；轉載不加入 `evidence_refs`，不因此提升 E 等級。官方公告確認漏洞範圍；本系統程式與部署證據確認適用性。
 

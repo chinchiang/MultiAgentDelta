@@ -205,7 +205,7 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 ## 驗證方式
 
 1. **靜態 fixture**：`db.query(Todo).filter(Todo.id == id)` 在路由內 → advisory；加 `Todo.owner_id == user.id` → 無。`alter table … disable row level security` → blocking。`@tool def execute_sql` → blocking。`.cursorrules` 含 U+200B → blocking。
-2. **審查流程**：抽樣 PR 檢查 `finding.review.opinions[]`：≥ 2 家族、round 1 無互引、分歧有 `requires_human: true` 與 `human_decision`。
+2. **審查流程**：抽樣 PR 檢查 `finding.review.opinions[]`：≥ 2 家族、round 1 無互引、分歧有 `requires_human: true`，裁決後有 `human_decision` 與 `review.ruling_ref`（指向 `rulings/<id>.yaml`，每則少數意見都有回應；格式見 docs/09 §12）。
 3. **白箱 → 黑箱**：每個 G4 advisory 的 BOLA 候選都在 G5 `two-account-context.yaml` 有對應 resource；G5 結果回填 `validation_status`。
 4. **OPA 單元測試**：`opa test config/policy/` 含「general_assistant 呼叫 execute_sql → deny」「ops_agent restart_service 無 approval → deny、有 approval → allow」。
 5. **MCP**：以缺 `resource` 參數的授權請求測試 MCP server → 必須拒絕（401 / invalid_target）。

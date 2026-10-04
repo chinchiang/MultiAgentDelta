@@ -181,6 +181,32 @@ if yaml is not None:
             warn(f"evals 共 {len(cases)} 案例，未達目標 60")
         ok(f"evals {len(cases)} 案例、held_out {len(ho)}、{len(polarity)} 領域")
 
+# --- 人工裁決：schema、範例、規則自我測試、rulings/*.yaml ---
+try:
+    from jsonschema import Draft202012Validator as _V
+    rs = ROOT / "schemas/human-ruling.schema.json"
+    if rs.exists() and yaml is not None:
+        _s = json.load(open(rs)); _V.check_schema(_s); ok("schema 合法: human-ruling")
+        _val = _V(_s, format_checker=_V.FORMAT_CHECKER)
+        _files = [ROOT / "docs/templates/human-ruling.example.yaml"] + sorted((ROOT / "rulings").glob("*.yaml"))
+        for _f in _files:
+            if not _f.exists():
+                err(f"缺 {_f.relative_to(ROOT)}"); continue
+            _d = load_yaml(_f)
+            _es = sorted(_val.iter_errors(_d), key=str)
+            if _es:
+                for e in _es: err(f"{_f.relative_to(ROOT)} 不符 schema: {e.message} @ {list(e.path)}")
+            elif _f.parent.name == "rulings" and _f.stem != _d.get("finding_id"):
+                err(f"{_f.relative_to(ROOT)}: 檔名與 finding_id {_d.get('finding_id')} 不一致")
+            else:
+                ok(f"人工裁決 ok: {_f.relative_to(ROOT)}")
+        import subprocess
+        _r = subprocess.run([sys.executable, str(ROOT / "scripts/ruling.py"), "selftest"], capture_output=True, text=True)
+        if _r.returncode == 0: ok("ruling.py selftest")
+        else: err("ruling.py selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
+except ImportError:
+    warn("jsonschema 未安裝，略過人工裁決驗證")
+
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
 for w in warns: print(f"  WARN {w}")

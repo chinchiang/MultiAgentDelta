@@ -176,7 +176,8 @@ agent `support-bot`: private_data ✓ / untrusted_content ✓ / external_comms �
 已完成測試 / 適用控制 = 18 / 27 = 66.7%（pass 15、fail 3、pending 4、untested 5、not_applicable 2）
 
 ## 6. 需人工裁決（requires_human）
-...
+| ID | 分歧 | 少數方 | 裁決狀態 |
+每列附 `python3 scripts/ruling.py request <id>` 的指令；裁決格式與規則見 docs/09 §12。
 
 ## 7. Exit code: 1 — enforce 且 G2 有 1 件 blocking
 ```
