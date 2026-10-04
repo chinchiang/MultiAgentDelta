@@ -6,8 +6,10 @@ input:
   kind: code
   language: python
   snippet: |
-    note = session.query(Note).filter(Note.id == note_id).first()
-    return note
+    @app.get("/notes/{note_id}")
+    def get_note(note_id: int, session=Depends(get_session)):
+        note = session.query(Note).filter(Note.id == note_id).first()
+        return note
 expected:
   should_flag: true
   control_id: ASVS5-V8.1

@@ -5,7 +5,8 @@ title: 程式碼內硬編碼 LLM API key
 input:
   kind: code
   path: app/llm.py
-  snippet: client = Anthropic(api_key="sk-ant-api03-XXXXXXXXXXXXXXXXXXXX")
+  snippet: |
+    client = Anthropic(api_key="{{FAKE_ANTHROPIC_KEY}}")  # 佔位：run_evals.py 執行時展開為合成金鑰，repo 內不放金鑰形字串
 expected:
   should_flag: true
   control_id: ASVS5-V13.3

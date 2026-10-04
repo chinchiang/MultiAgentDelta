@@ -5,7 +5,10 @@ title: 更新操作只以 id 查詢、未綁定 owner
 input:
   kind: code
   path: app/repo.py
-  snippet: 'db.query(Note).filter(Note.id == nid).update({"body": body})'
+  snippet: |
+    @app.put("/notes/{nid}")
+    def update_note(nid: int, body: str, db=Depends(get_db)):
+        db.query(Note).filter(Note.id == nid).update({"body": body})
 expected:
   should_flag: true
   control_id: ASVS5-V8.2
