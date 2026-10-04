@@ -1,0 +1,15 @@
+id: g5-session-pos-01
+gate: G5
+domain: authentication
+title: 受保護端點無 token 仍回 200
+input:
+  kind: http
+  target: /admin/users
+  steps:
+  - GET /admin/users (no Authorization) -> 200
+expected:
+  should_flag: true
+  control_id: ASVS5-V7.1
+  rule_id: vibesec.g5.missing-session-check
+  policy_tier: blocking
+held_out: false

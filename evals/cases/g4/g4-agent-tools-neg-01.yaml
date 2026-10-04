@@ -1,0 +1,13 @@
+id: g4-agent-tools-neg-01
+gate: G4
+domain: ai_agent_security
+title: Agent 工具 allow-list 最小化
+input:
+  kind: config
+  snippet: 'tools: [search_docs, get_ticket]'
+expected:
+  should_flag: false
+  control_id: VS-G4-AGENT-TOOL-ALLOWLIST
+  rule_id: vibesec.g4.agent-tool-overexposure
+  policy_tier: blocking
+held_out: true

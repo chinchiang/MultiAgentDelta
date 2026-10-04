@@ -1,0 +1,14 @@
+id: g4-unicode-neg-01
+gate: G4
+domain: ai_agent_security
+title: 規則檔僅含可見 ASCII 與正體中文
+input:
+  kind: code
+  path: .github/copilot-instructions.md
+  snippet: 使用 TypeScript；所有 API 需授權檢查。
+expected:
+  should_flag: false
+  control_id: VS-G4-RULES-FILE-UNICODE
+  rule_id: vibesec.g4.rules-file-invisible-unicode
+  policy_tier: blocking
+held_out: false

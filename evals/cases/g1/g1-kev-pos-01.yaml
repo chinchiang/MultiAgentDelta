@@ -1,0 +1,16 @@
+id: g1-kev-pos-01
+gate: G1
+domain: dependency
+title: 相依套件含 CISA KEV 收錄的 CVE
+input:
+  kind: manifest
+  ecosystem: maven
+  added:
+  - org.apache.logging.log4j:log4j-core:2.14.1
+expected:
+  should_flag: true
+  control_id: ASVS5-V15.2
+  rule_id: vibesec.g1.kev-hit
+  policy_tier: blocking
+held_out: false
+notes: CVE-2021-44228 收錄於 KEV；CVSS、EPSS、KEV 分欄記錄，不相乘。

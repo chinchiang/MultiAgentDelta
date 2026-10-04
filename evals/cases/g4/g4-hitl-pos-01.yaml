@@ -1,0 +1,13 @@
+id: g4-hitl-pos-01
+gate: G4
+domain: ai_agent_security
+title: Agent 可直接付款、無人工核准
+input:
+  kind: config
+  snippet: 'tools: [refund_payment]  # 無 confirm 步驟'
+expected:
+  should_flag: true
+  control_id: ASVS5-V2.3
+  rule_id: vibesec.g4.missing-hitl
+  policy_tier: advisory
+held_out: true

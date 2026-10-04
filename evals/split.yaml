@@ -1,20 +1,104 @@
 # held-out 案例清單（至少 1/3 不參與 prompt 調整）。以 case id 列舉。
-# 領域與風險層級分布需記錄清楚（見下方 distribution）。
+# 各案例的 held_out 欄位須與本清單一致（scripts/validate.py 檢查）。
 held_out:
-  - g1-slopsquat-pos-01
-  - g2-secret-pos-01
-  - g3-sqli-pos-01
-  - g4-bola-neg-01
-  - g5-jwt-pos-01
-  - g6-injection-pos-01
+- g0-trifecta-pos-02
+- g1-cooldown-pos-01
+- g1-postinstall-neg-01
+- g1-slopsquat-incomplete-01
+- g1-slopsquat-pos-01
+- g2-envignore-pos-01
+- g2-secret-pos-01
+- g3-actions-unpinned-neg-01
+- g3-cmdi-neg-01
+- g3-csp-pos-01
+- g3-imds-neg-01
+- g3-sqli-pos-01
+- g4-agent-tools-neg-01
+- g4-bola-neg-01
+- g4-hitl-pos-01
+- g4-owner-pos-02
+- g4-rls-pos-01
+- g5-cors-pos-01
+- g5-jwt-pos-01
+- g5-session-neg-01
+- g5-ssrf-neg-01
+- g6-injection-pos-01
+- g6-noprovider-incomplete-01
+- g6-sysprompt-pos-01
 held_in:
-  - g1-slopsquat-neg-01
-  - g2-secret-neg-01
-  - g3-sqli-neg-01
-  - g4-owner-pos-01
-  - g5-bola-pos-01
-  - g6-xss-pos-01
+- g0-trifecta-neg-01
+- g0-trifecta-neg-02
+- g0-trifecta-pos-01
+- g1-cooldown-neg-01
+- g1-kev-pos-01
+- g1-postinstall-pos-01
+- g1-rulesfile-pos-01
+- g1-slopsquat-neg-01
+- g1-slopsquat-pos-02
+- g2-envignore-neg-01
+- g2-llmkey-neg-01
+- g2-llmkey-pos-01
+- g2-secret-neg-01
+- g3-actions-prt-pos-01
+- g3-actions-unpinned-pos-01
+- g3-cmdi-pos-01
+- g3-csp-neg-01
+- g3-imds-pos-01
+- g3-jwt-none-neg-01
+- g3-jwt-none-pos-01
+- g3-sqli-neg-01
+- g3-xss-neg-01
+- g3-xss-pos-01
+- g4-agent-tools-pos-01
+- g4-owner-neg-02
+- g4-owner-pos-01
+- g4-rls-neg-01
+- g4-single-mw-pos-01
+- g4-unicode-neg-01
+- g4-unicode-pos-01
+- g5-bola-neg-01
+- g5-bola-pos-01
+- g5-session-pos-01
+- g5-ssrf-incomplete-01
+- g5-ssrf-pos-01
+- g5-stacktrace-neg-01
+- g5-stacktrace-pos-01
+- g6-agency-pos-01
+- g6-dow-pos-01
+- g6-indirect-pos-01
+- g6-injection-neg-01
+- g6-xss-pos-01
 distribution:
-  by_gate: { G1: 2, G2: 2, G3: 2, G4: 2, G5: 2, G6: 2 }
-  by_risk: { high: 6, medium: 4, low: 2 }
-  note: 種子 12 案例，held_out 6（50%）；擴充至 60+ 時維持 held_out ≥ 1/3。
+  total: 66
+  held_out_ratio: 0.36
+  by_gate:
+    G0: 4
+    G1: 10
+    G2: 6
+    G3: 15
+    G4: 12
+    G5: 11
+    G6: 8
+  by_domain:
+    ai_agent_security: 14
+    application_architecture: 3
+    authentication: 5
+    authorization: 7
+    build_supply_chain: 3
+    csp: 2
+    data_integrity: 2
+    dependency: 7
+    error_handling: 2
+    general_vulnerabilities: 5
+    github_actions: 3
+    input_validation: 5
+    secret_exposure: 6
+    xss: 2
+  by_polarity:
+    neg: 25
+    pos: 41
+  incomplete_cases:
+  - g1-slopsquat-incomplete-01
+  - g5-ssrf-incomplete-01
+  - g6-noprovider-incomplete-01
+  note: 14 審查領域皆有正例與反例；incomplete_cases 驗證 incomplete ≠ pass。

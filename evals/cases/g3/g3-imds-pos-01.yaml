@@ -1,0 +1,14 @@
+id: g3-imds-pos-01
+gate: G3
+domain: general_vulnerabilities
+title: EC2 允許 IMDSv1
+input:
+  kind: iac
+  path: infra/main.tf
+  snippet: metadata_options { http_tokens = "optional" }
+expected:
+  should_flag: true
+  control_id: ASVS5-V13.2
+  rule_id: vibesec.g3.imdsv1-allowed
+  policy_tier: blocking
+held_out: false

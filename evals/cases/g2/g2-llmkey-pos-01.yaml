@@ -1,0 +1,15 @@
+id: g2-llmkey-pos-01
+gate: G2
+domain: secret_exposure
+title: 程式碼內硬編碼 LLM API key
+input:
+  kind: code
+  path: app/llm.py
+  snippet: client = Anthropic(api_key="sk-ant-api03-XXXXXXXXXXXXXXXXXXXX")
+expected:
+  should_flag: true
+  control_id: ASVS5-V13.3
+  rule_id: vibesec.g2.hardcoded-llm-key
+  policy_tier: blocking
+held_out: false
+notes: 報告只保留遮罩與指紋。

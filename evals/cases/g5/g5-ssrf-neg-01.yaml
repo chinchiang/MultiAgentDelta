@@ -1,0 +1,16 @@
+id: g5-ssrf-neg-01
+gate: G5
+domain: input_validation
+title: URL 抓取端點以 400 拒絕私網位址
+input:
+  kind: http
+  target: /fetch?url=
+  steps:
+  - GET /fetch?url=http://169.254.169.254/ -> 400 blocked
+expected:
+  should_flag: false
+  control_id: ASVS5-V1.3
+  rule_id: vibesec.g5.ssrf-metadata
+  policy_tier: blocking
+held_out: true
+notes: 明確拒絕才可判 pass。

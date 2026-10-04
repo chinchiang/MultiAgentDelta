@@ -1,0 +1,14 @@
+id: g0-trifecta-neg-01
+gate: G0
+domain: application_architecture
+title: 只讀內部文件、無外部輸出通道的 agent 不構成致命三要素
+input:
+  kind: config
+  snippet: 'agent: {tools: [read_internal_docs], untrusted_input: false, egress: none}'
+expected:
+  should_flag: false
+  control_id: VS-G0-LETHAL-TRIFECTA
+  rule_id: vibesec.g0.lethal-trifecta-open
+  policy_tier: blocking
+held_out: false
+notes: 三要素缺二（無不可信輸入、無外傳通道），不應標記。

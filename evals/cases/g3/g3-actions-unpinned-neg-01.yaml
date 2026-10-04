@@ -1,0 +1,15 @@
+id: g3-actions-unpinned-neg-01
+gate: G3
+domain: github_actions
+title: Action 釘選完整 commit SHA
+input:
+  kind: iac
+  path: .github/workflows/ci.yml
+  snippet: 'uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0'
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.1
+  rule_id: vibesec.g3.actions-unpinned-action
+  policy_tier: advisory
+held_out: true
+notes: '本 repo PR #7、#11 的實際作法。'
