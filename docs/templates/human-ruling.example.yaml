@@ -1,0 +1,28 @@
+# 人工裁決紀錄範例（schemas/human-ruling.schema.json）。
+# 實際裁決存為 rulings/<finding_id>.yaml，經 PR 審查後合併；PR 本身就是稽核軌跡。
+ruling_version: 1
+finding_id: VS-20261003-1a2b3c4d
+decided_by:
+  type: human
+  handle: appsec-lead
+  role: appsec-lead
+decided_at: "2026-10-03T09:30:00Z"
+decision: confirm            # confirm | refute | defer
+basis: reproduced            # reproduced | manual_review | scope_exclusion | compensating_control | insufficient_evidence
+evidence_refs:
+  - kind: http_exchange
+    ref: reports/raw/G5/api-probes/bola-1001.json
+    note: 人工以 bob 的 token 重放 GET /users/1/notes，得 200 並回 alice 的筆記
+rationale: >-
+  人工重放確認 bob 可讀 alice 的資源；architecture 的 refute 論點（「有 gateway 層授權」）
+  經查 gateway 只驗證 token 有效，並未綁定 owner，故不成立。
+minority_acknowledged:
+  - role: architecture
+    provider: openai-cloud
+    response: rejected
+    comment: gateway 僅驗 token 有效性，未做 owner 綁定（見 evidence_refs）
+next_review_by: null
+follow_up:
+  owner: backend-team
+  due_date: "2026-10-10"
+  ticket: null

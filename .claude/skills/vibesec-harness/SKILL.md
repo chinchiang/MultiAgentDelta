@@ -129,7 +129,7 @@ python3 scripts/g6_gate.py --eval reports/raw/G6/promptfoo.json --redteam-skippe
 2. 組審查包：finding JSON（去 `review`）、相關檔案路徑與行號範圍、原生輸出片段路徑、威脅模型相關元件、**catalog 片段**（從 `config/catalogs/` 擷取可引用的 control_id / CWE 列表）。
 3. **Round 1（獨立）**：用 Agent tool 分別呼叫 `vibesec-architecture`、`vibesec-appsec`、`vibesec-identity`、`vibesec-supplychain`（依發現類型挑角色；G4 用 architecture + identity）。每個呼叫是**獨立的 sub-agent**，提示內不得含其他角色的輸出。要求回傳 role prompt 定義的 JSON。
 4. 解析：丟棄信心欄位；catalog 外的 ID 改 `null` + `notes`；`confirm` 無 `cited_evidence` 視為 `uncertain`；記 `prompt_version`、`family: anthropic`、`provider: claude-code-subagent`、`model`（inherit 時填實際模型名）。
-5. verdict 分歧或有 `uncertain` → **Round 2**：再呼叫同角色，提示附上其他角色的 rationale 與 cited_evidence（標 `reviewer-anthropic-<role>`），要求逐點回應。仍分歧 → **Round 3**。仍分歧 → `requires_human: true`，少數方 `minority: true`。不多數決。
+5. verdict 分歧或有 `uncertain` → **Round 2**：再呼叫同角色，提示附上其他角色的 rationale 與 cited_evidence（標 `reviewer-anthropic-<role>`），要求逐點回應。仍分歧 → **Round 3**。仍分歧 → `requires_human: true`，少數方 `minority: true`。不多數決。裁決交人，格式與規則見 docs/09 §12（`scripts/ruling.py request <id>` 產生請求留言；你不得自行裁決或代填 `rulings/`）。
 6. **family 門檻**：Claude Code 內的 sub-agent 只算一個 family。高風險控制（blocking、P0/P1 候選、授權類、發布信任類）需第二個 family：若環境有 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `GLM_API_KEY` 且資料分級允許，以 `curl` 呼叫該 provider 的 Chat Completions（system = 同一份 role prompt，`temperature: 0`，`response_format: json_object`），記 `provider` / `family` / `model`。否則 finding `validation_status: pending`、`requires_human: true`、`notes: "only 1 family (anthropic) available"`，該控制 coverage `pending`，閘門 `incomplete`。
 7. 全員 `confirm` 最多升 E2；E3 需實測（G5 HTTP 交換）或人工核對。
 
