@@ -196,13 +196,18 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None)
                 continue
             evals += 1
             probe, det = e.get("probe", "?"), e.get("detector", "?")
-            total, passed = int(e.get("total") or 0), int(e.get("passed") or 0)
+            # garak ≥ 0.17：total_evaluated / fails；舊版：total（fails = total - passed）
+            total = int(e.get("total_evaluated", e.get("total")) or 0)
+            passed = int(e.get("passed") or 0)
+            fails = int(e["fails"]) if e.get("fails") is not None else max(total - passed, 0)
             rule = GARAK_RULES.get(probe.split(".")[0], f"garak:{probe}.{det}")
             ctrl = c.control(rule, "LLM01:2025")
-            if total and passed < total:
+            if not total:
+                c.cover(f"garak:{probe}", ctrl, "untested", f"{probe} / {det} 沒有可評估的輸出")
+            elif fails:
                 c.cover(f"garak:{probe}", ctrl, "fail")
-                c.finding(rule, f"garak：{probe} / {det} 命中 {total - passed}/{total}", "garak")
-            elif total:
+                c.finding(rule, f"garak：{probe} / {det} 命中 {fails}/{total}", "garak")
+            else:
                 c.cover(f"garak:{probe}", ctrl, "pass")
     if not evals:
         c.cover("garak", "LLM01:2025", "untested", "garak 報告中沒有 eval 紀錄")
