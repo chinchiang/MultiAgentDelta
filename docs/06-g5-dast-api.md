@@ -77,6 +77,13 @@ curl -s -o /dev/null -w '%{http_code}\n' "$VIBESEC_TARGET_URL/api/admin/users" \
 
 判定：`alg:none` 被接受 → `vibesec.g5.jwt-alg-none`；公鑰簽的 HS256 被接受 → `vibesec.g5.jwt-alg-confusion`（皆 blocking，CWE-347，E3）。白箱對應 `vibesec.g3.jwt-alg-*`。
 
+`jwt_alg_confusion` 的四種狀態（incomplete ≠ pass）：探針讀登入 token 的 header `alg` →
+- 對稱演算法（`HS*`）：無公鑰可混淆 → `not_applicable`（附理由）。
+- 非對稱（`RS*`/`PS*`/`ES*`）：依序從 `/.well-known/jwks.json`、`/jwks.json`、`/.well-known/openid-configuration` 的 `jwks_uri` 取 `kid` 相符的 RSA 公鑰，以 stdlib 組出 SubjectPublicKeyInfo DER → PEM（須與伺服器公鑰逐位元組一致），再以 PEM 當 HMAC 金鑰、`alg=HS256` 重簽同一 payload 送至受保護端點：接受（200）→ `fail`（blocking）；明確 401/403 → `pass`；其餘 → `untested`。
+- 取不到公鑰 → `untested`，附 advisory note，建議人工／Burp 驗證。
+
+靶場 `examples/vulnapp` 預設以 RS256 簽發並於 `/.well-known/jwks.json` 公開公鑰；漏洞版驗章端接受 `HS256` 並拿公鑰 PEM 當 HMAC 金鑰（命中 `fail`），`VIBESEC_VULNAPP_MODE=patched` 則固定 `algorithms=[RS256]`（`pass`）。
+
 ### 3. SSRF 讀雲端中繼資料（`ssrf_metadata`）
 
 針對「網址匯入 / 預覽 / webhook 設定 / 頭像 URL」等讓伺服器代為發出請求的端點：
