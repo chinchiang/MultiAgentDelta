@@ -10,8 +10,8 @@
 用法：python3 scripts/g1_slopcheck.py [--staged] [--manifest <path> ...]
 """
 from __future__ import annotations
-import sys, json, re, difflib, urllib.request, urllib.error, subprocess
-from datetime import datetime, timezone
+import sys, json, re, difflib, fnmatch, urllib.request, urllib.error, subprocess
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -258,6 +258,53 @@ def parse_added(paths):
             seen.add(k); uniq.append((eco, n, v))
     return uniq
 
+POLICY_FILE = ROOT / "config" / "policy" / "blocking-policy.yaml"
+
+def load_exceptions(today=None):
+    """讀 blocking-policy.yaml 的 exceptions，只保留欄位完整且未過期者（fail closed）。
+
+    回傳 (有效例外清單, 被忽略的例外說明清單)。
+    """
+    today = today or date.today()
+    data = load_yaml(POLICY_FILE) or {}
+    valid, ignored = [], []
+    for ex in data.get("exceptions") or []:
+        if not isinstance(ex, dict):
+            continue
+        missing = [k for k in ("rule_id", "path_glob", "reason", "approved_by", "expires") if not ex.get(k)]
+        if missing:
+            ignored.append(f"{ex.get('rule_id', '?')}：缺少欄位 {', '.join(missing)}")
+            continue
+        exp = ex["expires"]
+        try:
+            exp = exp if isinstance(exp, date) else date.fromisoformat(str(exp))
+        except ValueError:
+            ignored.append(f"{ex['rule_id']}：expires 格式無效（{ex['expires']}）")
+            continue
+        if exp < today:
+            ignored.append(f"{ex['rule_id']} @ {ex['path_glob']}：已於 {exp} 過期")
+            continue
+        valid.append(dict(ex, expires=str(exp)))
+    return valid, ignored
+
+def rel_path(path):
+    """manifest 路徑轉成相對 repo 根目錄的 POSIX 路徑；repo 外的檔案保持原樣。"""
+    p = Path(path).resolve()
+    try:
+        return p.relative_to(ROOT).as_posix()
+    except ValueError:
+        return Path(path).as_posix()
+
+def apply_exceptions(finding, exceptions):
+    """命中 rule_id 與 path_glob 的例外時把 blocking 降為 advisory；例外不刪除發現。"""
+    for ex in exceptions:
+        if finding["rule_id"] == ex["rule_id"] and fnmatch.fnmatchcase(finding.get("manifest") or "", ex["path_glob"]):
+            if finding["policy_tier"] == "blocking":
+                finding["policy_tier"] = "advisory"
+            finding["exception"] = {k: ex[k] for k in ("path_glob", "reason", "approved_by", "expires")}
+            break
+    return finding
+
 def staged_files():
     try:
         r = subprocess.run(["git", "diff", "--cached", "--name-only"],
@@ -285,19 +332,28 @@ def main(argv):
     blacklist = load_list("blacklist.yaml")
     allowlist = load_list("allowlist.yaml")
 
+    exceptions, ignored_exceptions = load_exceptions()
+
     findings, incomplete = [], []
-    for eco, name, ver in parse_added(manifests):
-        sim = similarity_check(name, popular, blacklist, allowlist, c)
-        if sim:
-            findings.append(sim)
-        if name.lower() in allowlist:
-            continue
-        fs, reason = (npm_check(name, ver, c) if eco == "npm" else pypi_check(name, ver, c))
-        findings.extend(fs)
-        if reason:
-            incomplete.append(reason)
+    for manifest in manifests:
+        manifest_rel = rel_path(manifest)
+        for eco, name, ver in parse_added([manifest]):
+            found = []
+            sim = similarity_check(name, popular, blacklist, allowlist, c)
+            if sim:
+                found.append(sim)
+            if name.lower() not in allowlist:
+                fs, reason = (npm_check(name, ver, c) if eco == "npm" else pypi_check(name, ver, c))
+                found.extend(fs)
+                if reason:
+                    incomplete.append(reason)
+            for f in found:
+                f["manifest"] = manifest_rel
+                findings.append(apply_exceptions(f, exceptions))
 
     out = {"gate": "G1", "findings": findings}
+    if ignored_exceptions:
+        out["ignored_exceptions"] = ignored_exceptions
     if incomplete:
         out["status"] = "incomplete"
         out["status_reason"] = "；".join(incomplete)
@@ -310,7 +366,7 @@ def main(argv):
     if blocking:
         print(f"\n⛔ G1 阻擋：{len(blocking)} 筆 blocking 供應鏈發現。", file=sys.stderr)
         return 1
-    print("\n✅ G1 快篩通過。")
+    print("\n✅ G1 快篩通過。", file=sys.stderr)
     return 0
 
 if __name__ == "__main__":
