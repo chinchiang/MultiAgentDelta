@@ -83,9 +83,11 @@ jobs:
           # 不回顯 token 內容；僅標記是否取得
           [ -n "$TA" ] && echo "has_a=true" >> "$GITHUB_OUTPUT" || echo "has_a=false" >> "$GITHUB_OUTPUT"
           [ -n "$TB" ] && echo "has_b=true" >> "$GITHUB_OUTPUT" || echo "has_b=false" >> "$GITHUB_OUTPUT"
-          echo "TOKEN_A=$TA" >> "$GITHUB_ENV"
-          echo "TOKEN_B=$TB" >> "$GITHUB_ENV"
-          echo "::add-mask::$TA"; echo "::add-mask::$TB"
+          # token 只寫入 runner 暫存檔（0600），不進 GITHUB_ENV、不經 log
+          umask 077
+          TOKDIR="$RUNNER_TEMP/vibesec-tokens"; mkdir -p "$TOKDIR"
+          printf '%s' "$TA" > "$TOKDIR/a"; printf '%s' "$TB" > "$TOKDIR/b"
+          echo "token_dir=$TOKDIR" >> "$GITHUB_OUTPUT"
 
       # ---------- G5：ZAP ----------
       - name: ZAP API Scan（OpenAPI）
@@ -116,6 +118,7 @@ jobs:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
           HAS_A: ${{ steps.tokens.outputs.has_a }}
           HAS_B: ${{ steps.tokens.outputs.has_b }}
+          VIBESEC_TOKEN_DIR: ${{ steps.tokens.outputs.token_dir }}
           VIBESEC_MODE: shadow
         run: |
           python3 - <<'EOF'
@@ -126,7 +129,11 @@ jobs:
           NOW = datetime.datetime.now(datetime.timezone.utc)
           def iso(dt): return dt.replace(microsecond=0).isoformat()
           URL = os.environ["VIBESEC_TARGET_URL"].rstrip("/")
-          TA = os.environ.get("TOKEN_A", ""); TB = os.environ.get("TOKEN_B", "")
+          def _read(name):
+              d = os.environ.get("VIBESEC_TOKEN_DIR", "")
+              f = pathlib.Path(d) / name if d else None
+              return f.read_text().strip() if f and f.is_file() else ""
+          TA = _read("a"); TB = _read("b")
           HAS_A = os.environ.get("HAS_A") == "true"; HAS_B = os.environ.get("HAS_B") == "true"
           REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
 
@@ -405,3 +412,8 @@ jobs:
           if sp: open(sp, "a", encoding="utf-8").write(text + "\n")
           print(text)
           EOF
+
+      - name: 清除 token 暫存檔
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/vibesec-tokens"
