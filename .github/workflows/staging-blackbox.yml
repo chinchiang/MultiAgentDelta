@@ -20,10 +20,10 @@ jobs:
     name: G5 DAST/API + G6 AI 紅隊
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -90,7 +90,7 @@ jobs:
       # ---------- G5：ZAP ----------
       - name: ZAP API Scan（OpenAPI）
         continue-on-error: true
-        uses: zaproxy/action-api-scan@v0.7.0
+        uses: zaproxy/action-api-scan@f34b07497d46a84e06d71ad4f304311634c24137 # v0.7.0
         with:
           target: ${{ steps.target.outputs.url }}/openapi.json
           format: openapi
@@ -101,7 +101,7 @@ jobs:
 
       - name: ZAP Baseline Scan
         continue-on-error: true
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@66042c8e7e24680119199a017e5b0e8603bf4dae # v0.12.0
         with:
           target: ${{ steps.target.outputs.url }}
           rules_file_name: config/zap/baseline.conf
@@ -331,7 +331,7 @@ jobs:
       - name: Upload G5 api-probes SARIF
         if: always()
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3.38.2
         with:
           sarif_file: reports/g5-api-probes.sarif
           category: vibesec-g5-api-probes
@@ -380,7 +380,7 @@ jobs:
 
       - name: Upload 黑箱 reports（artifact）
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vibesec-blackbox-reports
           path: reports/
