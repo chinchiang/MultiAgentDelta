@@ -88,13 +88,13 @@ def npm_check(pkg, ver, c):
     hooks = [h for h in ("preinstall", "install", "postinstall") if h in scripts]
     if hooks:
         findings.append(fnd("vibesec.g1.postinstall-egress", pkg, "npm", target_ver,
-                            f"含安裝階段 hook（{', '.join(hooks)}），需人工審查其行為", "blocking"))
+                            f"含安裝階段 hook（{', '.join(hooks)}），需人工審查是否外連或讀取憑證", "advisory"))
     # 週下載
     try:
         dl = http_json(f"https://api.npmjs.org/downloads/point/last-week/{pkg}").get("downloads", 0)
         if dl < c["min_weekly_downloads"]:
-            findings.append(fnd("vibesec.g1.hallucinated-package", pkg, "npm", target_ver,
-                                f"週下載量 {dl} < {c['min_weekly_downloads']}，信譽不足", "blocking"))
+            findings.append(fnd("vibesec.g1.low-download-package", pkg, "npm", target_ver,
+                                f"週下載量 {dl} < {c['min_weekly_downloads']}，信譽不足，需人工判斷", "advisory"))
     except Exception:
         pass  # 下載量查不到不致命，存在性已確認
     return findings, None
@@ -314,41 +314,180 @@ def staged_files():
         return []
 
 MANIFEST_RE = re.compile(r'(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock)$')
+RULE_FILE_NAMES = (".cursorrules", "AGENTS.md", "SKILL.md")
+INSTALL_RE = {
+    "npm": re.compile(r'\b(?:npm|pnpm|yarn)\s+(?:install|add|i)\s+((?:-{1,2}[A-Za-z-]+\s+)*)([@A-Za-z0-9][@A-Za-z0-9._/-]*)'),
+    "pypi": re.compile(r'\b(?:pip3?|pipx|uv\s+pip)\s+install\s+((?:-{1,2}[A-Za-z-]+\s+)*)([A-Za-z0-9][A-Za-z0-9._-]*)'),
+}
+
+def is_rule_file(path):
+    name = Path(path).name
+    return name in RULE_FILE_NAMES or name.endswith(".md")
+
+def rule_file_mentions(path):
+    """agent 規則檔／markdown 中 `npm install X`、`pip install X` 提及的套件（不含 `from X import`：模組名不等於套件名）。"""
+    try:
+        text = Path(path).read_text(errors="ignore")
+    except OSError:
+        return []
+    out = []
+    for eco, rx in INSTALL_RE.items():
+        for m in rx.finditer(text):
+            name = m.group(2).rstrip(".,;:)`'\"")
+            if name and not name.startswith(("-", ".", "/")):
+                out.append((eco, name, None))
+    return out
+
+def git_show(ref, path):
+    """回傳 ref 版本的檔案內容；不存在（新檔）回傳 None。"""
+    try:
+        r = subprocess.run(["git", "show", f"{ref}:{rel_path(path)}"], capture_output=True, text=True, cwd=ROOT)
+        return r.stdout if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def added_packages(path, base):
+    """diff-aware：只回傳相對 base 新增或改版的 (eco, name, version)。base 為 None 時回傳全部。"""
+    head = parse_added([path])
+    if not base:
+        return head
+    old_text = git_show(base, path)
+    if old_text is None:
+        return head
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        old = Path(d) / Path(path).name
+        old.write_text(old_text)
+        before = {(e, n.lower(), v) for e, n, v in parse_added([old])}
+    return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
+
+LEVEL = {"blocking": "error", "advisory": "warning"}
+
+def write_sarif(path, findings):
+    rules, results = {}, []
+    for f in findings:
+        rules.setdefault(f["rule_id"], {"id": f["rule_id"], "name": f["rule_id"],
+                                        "shortDescription": {"text": f["rule_id"]},
+                                        "properties": {"policy_tier": f["policy_tier"]}})
+        results.append({
+            "ruleId": f["rule_id"],
+            "level": LEVEL.get(f["policy_tier"], "warning"),
+            "message": {"text": f"[{f['ecosystem']}] {f['package']}@{f['version'] or '?'} — {f['reason']}"},
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": f.get("manifest") or "unknown"}}}],
+            "partialFingerprints": {"vibesecPackage": f"{f['rule_id']}|{f['ecosystem']}|{f['package'].lower()}|{f.get('manifest')}"},
+            "properties": {k: f.get(k) for k in ("package", "ecosystem", "version", "policy_tier", "manifest")}
+                          | ({"exception": f["exception"]} if f.get("exception") else {}),
+        })
+    sarif = {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
+             "runs": [{"tool": {"driver": {"name": "vibesec-slopcheck", "version": "2.0.0",
+                                           "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
+                                           "rules": list(rules.values())}},
+                       "results": results}]}
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+
+CONTROL_OF = {
+    "vibesec.g1.hallucinated-package": "VS-G1-SLOPSQUAT",
+    "vibesec.g1.rules-file-unknown-package": "VS-G1-SLOPSQUAT",
+    "vibesec.g1.low-download-package": "VS-G1-SLOPSQUAT",
+    "vibesec.g1.cooldown-violation": "VS-G1-COOLDOWN",
+    "vibesec.g1.postinstall-egress": "VS-G1-INSTALL-HOOK",
+}
+
+def write_gate(path, findings, incomplete, started, base, scope, sarif_ref):
+    vb = read_vibesec() or {}
+    mode = vb.get("mode", "shadow"); tier = vb.get("risk_tier", "L2")
+    blocking = sum(f["policy_tier"] == "blocking" for f in findings)
+    advisory = sum(f["policy_tier"] == "advisory" for f in findings)
+    if incomplete:
+        status, reason = "incomplete", "；".join(incomplete)
+    else:
+        status, reason = ("fail" if blocking else "pass"), None
+    coverage = []
+    for ctl in ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK"):
+        hit = [f for f in findings if CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
+        coverage.append({"control_id": ctl, "state": "untested" if incomplete else ("fail" if hit else "pass"), "reason": None})
+    coverage.append({"control_id": "VS-G1-SBOM", "state": "pending", "reason": None})
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=ROOT).stdout.strip() or None
+    except Exception:
+        commit = None
+    gate = {"gate": "G1", "status": status, "status_reason": reason, "mode": mode, "risk_tier": tier,
+            "scope": scope, "diff_base": base, "commit": commit,
+            "started_at": started, "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "tools": [{"name": "vibesec-slopcheck", "version": "2.0.0", "state": "ran", "exit_code": None,
+                       "output_ref": sarif_ref, "duration_seconds": None}],
+            "findings_count": {"blocking": blocking, "advisory": advisory},
+            "coverage": coverage}
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _opt(args, name):
+    """收集重複出現的 `--name value` 參數。"""
+    return [args[i + 1] for i, a in enumerate(args[:-1]) if a == name]
 
 def main(argv):
     args = argv[1:]
-    manifests = []
+    started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    manifests = list(_opt(args, "--manifest"))
+    rule_files = list(_opt(args, "--rules-file"))
+    base = (_opt(args, "--base") or [None])[-1]
+    sarif_out = (_opt(args, "--sarif") or [None])[-1]
+    gate_out = (_opt(args, "--gate") or [None])[-1]
+    changed = []
     if "--staged" in args:
-        manifests = [f for f in staged_files() if MANIFEST_RE.search(f)]
-    for i, a in enumerate(args):
-        if a == "--manifest" and i + 1 < len(args):
-            manifests.append(args[i + 1])
-    if not manifests:
-        print("G1 slopcheck：無相依清單變更，略過。")
+        changed += staged_files()
+    for lst in _opt(args, "--changed-files"):
+        try:
+            changed += [l.strip() for l in Path(lst).read_text().splitlines() if l.strip()]
+        except OSError:
+            pass
+    for f in changed:
+        if MANIFEST_RE.search(f):
+            manifests.append(f)
+        elif is_rule_file(f) and not f.startswith("config/slopsquat/"):
+            rule_files.append(f)
+    manifests = [m for m in dict.fromkeys(manifests) if Path(m).exists() or (ROOT / m).exists()]
+    rule_files = [r for r in dict.fromkeys(rule_files) if Path(r).exists() or (ROOT / r).exists()]
+    scope = "diff" if base else "full"
+
+    if not manifests and not rule_files:
+        print(json.dumps({"gate": "G1", "findings": []}, ensure_ascii=False, indent=2))
+        if sarif_out:
+            write_sarif(sarif_out, [])
+        if gate_out:
+            write_gate(gate_out, [], [], started, base, scope, sarif_out)
+        print("G1 slopcheck：無相依清單或規則檔變更，略過。", file=sys.stderr)
         return 0
 
     c = cfg()
     popular = load_popular("popular-npm.txt") | load_popular("popular-pypi.txt")
     blacklist = load_list("blacklist.yaml")
     allowlist = load_list("allowlist.yaml")
-
     exceptions, ignored_exceptions = load_exceptions()
 
+    targets = [(m, added_packages(m, base), False) for m in manifests]
+    targets += [(r, rule_file_mentions(r), True) for r in rule_files]
+
     findings, incomplete = [], []
-    for manifest in manifests:
-        manifest_rel = rel_path(manifest)
-        for eco, name, ver in parse_added([manifest]):
+    for source, packages, from_rules in targets:
+        source_rel = rel_path(source)
+        for eco, name, ver in packages:
             found = []
             sim = similarity_check(name, popular, blacklist, allowlist, c)
             if sim:
                 found.append(sim)
             if name.lower() not in allowlist:
                 fs, reason = (npm_check(name, ver, c) if eco == "npm" else pypi_check(name, ver, c))
+                if from_rules:
+                    for f in fs:
+                        if f["rule_id"] == "vibesec.g1.hallucinated-package":
+                            f["rule_id"] = "vibesec.g1.rules-file-unknown-package"
                 found.extend(fs)
                 if reason:
                     incomplete.append(reason)
             for f in found:
-                f["manifest"] = manifest_rel
+                f["manifest"] = source_rel
                 findings.append(apply_exceptions(f, exceptions))
 
     out = {"gate": "G1", "findings": findings}
@@ -358,14 +497,18 @@ def main(argv):
         out["status"] = "incomplete"
         out["status_reason"] = "；".join(incomplete)
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    if sarif_out:
+        write_sarif(sarif_out, findings)
+    if gate_out:
+        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out)
 
-    if incomplete and not findings:
-        print("\n⚠️ G1 無法完成檢查（網路/registry 失敗）→ incomplete，絕不視為通過。", file=sys.stderr)
-        return 2
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     if blocking:
         print(f"\n⛔ G1 阻擋：{len(blocking)} 筆 blocking 供應鏈發現。", file=sys.stderr)
         return 1
+    if incomplete:
+        print("\n⚠️ G1 無法完成檢查（網路/registry 失敗）→ incomplete，絕不視為通過。", file=sys.stderr)
+        return 2
     print("\n✅ G1 快篩通過。", file=sys.stderr)
     return 0
 
