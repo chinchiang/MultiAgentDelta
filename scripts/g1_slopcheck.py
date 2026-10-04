@@ -167,7 +167,59 @@ def fnd(rule, pkg, eco, ver, reason, tier):
             "reason": reason, "policy_tier": tier}
 
 PKG_RE_NPM = re.compile(r'"([@a-z0-9._/-]+)"\s*:\s*"([~^]?[0-9][^"]*)"')
-PKG_RE_PY = re.compile(r'^\s*([A-Za-z0-9._-]+)\s*(?:[=<>!~]=?\s*([0-9][^\s;#]*))?', re.M)
+
+# PEP 508 需求字串：名稱、可選 extras、版本規格；忽略環境標記（; 之後）
+REQ_RE = re.compile(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(?:===?\s*([0-9][^,;\s]*))?')
+
+def _pep508(req):
+    """從 PEP 508 需求字串取出 (名稱, 鎖定版本或 None)；無法解析回傳 None。"""
+    if not isinstance(req, str):
+        return None
+    req = req.split(";", 1)[0].strip()
+    if not req or req.startswith(("-", "#", "git+", "http:", "https:", "file:", ".", "/")) or " @ " in req:
+        return None
+    m = REQ_RE.match(req)
+    return (m.group(1), m.group(2)) if m else None
+
+def _toml(path):
+    try:
+        import tomllib
+    except ImportError:  # Python < 3.11
+        return None
+    try:
+        return tomllib.loads(path.read_text(errors="ignore"))
+    except Exception:
+        return None
+
+def _pyproject_deps(data):
+    """PEP 621 [project]、[dependency-groups]（PEP 735）與 Poetry 的相依。不含 build-system。"""
+    reqs = []
+    proj = data.get("project") or {}
+    reqs += proj.get("dependencies") or []
+    for group in (proj.get("optional-dependencies") or {}).values():
+        reqs += group or []
+    for group in (data.get("dependency-groups") or {}).values():
+        reqs += [r for r in (group or []) if isinstance(r, str)]   # 略過 {include-group = ...}
+    out = [x for x in map(_pep508, reqs) if x]
+    poetry = (data.get("tool") or {}).get("poetry") or {}
+    tables = [poetry.get("dependencies") or {}, poetry.get("dev-dependencies") or {}]
+    tables += [(g or {}).get("dependencies") or {} for g in (poetry.get("group") or {}).values()]
+    for table in tables:
+        for name in table:
+            if name.lower() != "python":
+                out.append((name, None))
+    return out
+
+def _lock_packages(data):
+    """uv.lock / poetry.lock 的 [[package]]；略過本地（editable / virtual / directory）套件。"""
+    out = []
+    for pkg in data.get("package") or []:
+        src = pkg.get("source") or {}
+        if any(k in src for k in ("editable", "virtual", "directory", "path")) or src.get("type") in ("directory", "file"):
+            continue
+        if pkg.get("name"):
+            out.append((pkg["name"], pkg.get("version")))
+    return out
 
 def parse_added(paths):
     """回傳 [(ecosystem, name, version)]。"""
@@ -185,12 +237,19 @@ def parse_added(paths):
                         out.append(("npm", name, re.sub(r'^[~^]', '', str(ver))))
             except Exception:
                 pass
-        elif p.name.startswith("requirements") or p.name in ("pyproject.toml", "poetry.lock", "uv.lock"):
-            for m in PKG_RE_PY.finditer(text):
-                name = m.group(1)
-                if name.lower() in ("python", "name", "version", "description", "requires-python"):
-                    continue
-                out.append(("pypi", name, m.group(2)))
+        elif p.name == "pyproject.toml":
+            data = _toml(p)
+            if data is not None:
+                out += [("pypi", n, v) for n, v in _pyproject_deps(data)]
+        elif p.name in ("uv.lock", "poetry.lock"):
+            data = _toml(p)
+            if data is not None:
+                out += [("pypi", n, v) for n, v in _lock_packages(data)]
+        elif p.name.startswith("requirements"):
+            for line in text.splitlines():
+                x = _pep508(line.split(" #", 1)[0])
+                if x:
+                    out.append(("pypi", x[0], x[1]))
     # 去重
     seen, uniq = set(), []
     for eco, n, v in out:
