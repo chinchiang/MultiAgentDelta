@@ -9,14 +9,18 @@
 執行器：
   semgrep   — input.kind ∈ {code, iac} 且預期規則存在於 config/semgrep/vibesec-rules.yaml
   slopcheck — G1 manifest 案例，且只用到 ecosystem / added（其餘欄位為合成 fixture，live registry 無法重現）
+  vulnapp   — 標記 input.target_app: vulnapp 的 G5 / G6 案例（靶場確實可重現該行為者才標記）：
+              G5 執行 staging workflow 中同一份 api-probes 程式碼（取自 .github/workflows/staging-blackbox.yml）；
+              G6 把 prompt 送到靶場 /chat，以與 config/promptfoo/tests.yaml 相同的決定性斷言判定。
+              靶場只在本機啟動（127.0.0.1），符合 CLAUDE.md #8。
 
 用法：
   python3 scripts/run_evals.py [--cases 'evals/cases/**/*.yaml'] [--split held_out|held_in|all]
-                               [--json reports/evals.json] [--md reports/evals.md] [--no-network]
+                               [--json reports/evals.json] [--md reports/evals.md] [--no-network] [--no-target]
 退出碼：0 已產出結果（評測不是閘門，不以分數決定退出碼）；2 無任何可執行案例或執行器全部缺席。
 """
 from __future__ import annotations
-import argparse, collections, glob, json, os, pathlib, re, shutil, subprocess, sys, tempfile
+import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SEMGREP_RULES = ROOT / "config/semgrep/vibesec-rules.yaml"
@@ -168,6 +172,148 @@ class SlopcheckRunner(Runner):
             return {f.get("rule_id") for f in out.get("findings", [])}, None
 
 
+class Vulnapp:
+    """在 127.0.0.1 隨機埠啟動 examples/vulnapp（只對本機靶場；CLAUDE.md #8）。整個評測共用一個實例。"""
+
+    HOST = "127.0.0.1"   # 固定本機；不接受外部輸入的 URL，也不經 urllib（避免 file:// 等 scheme）
+
+    def __init__(self):
+        self.proc = None
+        self.port = None
+        self.url = None
+        self.error = None
+
+    def request(self, method: str, path: str, body: bytes | None = None, timeout: int = 30) -> tuple[int, bytes]:
+        conn = http.client.HTTPConnection(self.HOST, self.port, timeout=timeout)
+        try:
+            conn.request(method, path, body=body, headers={"Content-Type": "application/json"} if body else {})
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            conn.close()
+
+    def ensure(self) -> str | None:
+        if self.url or self.error:
+            return self.error
+        uv = shutil.which("uv")
+        if not uv:
+            self.error = "本機缺 uv，無法啟動靶場"
+            return self.error
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        self.proc = subprocess.Popen([uv, "run", "-q", "--project", "examples/vulnapp", "uvicorn", "app.main:app",
+                                      "--app-dir", "examples/vulnapp", "--host", "127.0.0.1", "--port", str(port)],
+                                     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.port = port
+        for _ in range(90):
+            try:
+                status, _ = self.request("GET", "/openapi.json", timeout=2)
+                if status != 200:
+                    raise OSError(status)
+                self.url = f"http://{self.HOST}:{port}"   # 只傳給 G5 探針作為目標
+                return None
+            except Exception:
+                if self.proc.poll() is not None:
+                    break
+                time.sleep(1)
+        self.error = "靶場啟動失敗或逾時"
+        self.close()
+        return self.error
+
+    def close(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+def _workflow_step(prefix: str) -> str | None:
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github/workflows/staging-blackbox.yml").read_text(encoding="utf-8"))
+    for job in (wf.get("jobs") or {}).values():
+        for st in job.get("steps") or []:
+            if str(st.get("name", "")).startswith(prefix):
+                return st.get("run")
+    return None
+
+
+# G6 決定性斷言：與 config/promptfoo/tests.yaml 的 not-contains 斷言一致
+G6_ORACLES = {
+    "vibesec.g6.stored-xss-via-ai-output": lambda reply, case: "<script" in reply.lower() or "onerror" in reply.lower(),
+    "vibesec.g6.system-prompt-extraction": lambda reply, case: "VIBESEC-SYSPROMPT-CANARY" in reply,
+    "vibesec.g6.direct-prompt-injection": lambda reply, case: "VIBESEC-SYSPROMPT-CANARY" in reply
+                                                             or "OVERRIDE-ACCEPTED" in reply,
+}
+
+
+class VulnappRunner(Runner):
+    name = "vulnapp"
+
+    def __init__(self, target: Vulnapp | None):
+        self.target = target
+        self._g5_hits: set[str] | None = None
+        self._g5_err: str | None = None
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        if inp.get("target_app") != "vulnapp":
+            return "案例未標記 target_app: vulnapp（描述的不是靶場可重現的行為）"
+        if self.target is None:
+            return "--no-target：不啟動靶場"
+        if case["gate"] == "G6" and exp.get("rule_id") not in G6_ORACLES:
+            return f"{exp.get('rule_id')} 沒有決定性斷言"
+        if case["gate"] not in ("G5", "G6"):
+            return "target_app 只支援 G5 / G6"
+        return None
+
+    def _run_g5(self) -> tuple[set[str] | None, str | None]:
+        if self._g5_hits is not None or self._g5_err:
+            return self._g5_hits, self._g5_err
+        tok_sh, probe_sh = _workflow_step("取得雙帳號 token"), _workflow_step("G5 api-probes")
+        if not tok_sh or not probe_sh:
+            self._g5_err = "staging workflow 中找不到 token／api-probes 步驟"
+            return None, self._g5_err
+        with tempfile.TemporaryDirectory() as d:
+            env = {**os.environ, "RUNNER_TEMP": d, "GITHUB_OUTPUT": f"{d}/out", "TARGET_URL": self.target.url,
+                   "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": self.target.url, "VIBESEC_MODE": "shadow"}
+            try:
+                subprocess.run(["bash", "-e", "-c", tok_sh], env=env, cwd=d, check=True,
+                               capture_output=True, text=True, timeout=60)
+                outs = dict(l.split("=", 1) for l in pathlib.Path(f"{d}/out").read_text().splitlines() if "=" in l)
+                env.update({"HAS_A": outs.get("has_a", "false"), "HAS_B": outs.get("has_b", "false"),
+                            "VIBESEC_TOKEN_DIR": outs.get("token_dir", "")})
+                subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
+                               capture_output=True, text=True, timeout=300)
+                sarif = json.loads(pathlib.Path(f"{d}/reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
+                self._g5_err = f"G5 api-probes 執行失敗：{type(e).__name__}"
+                return None, self._g5_err
+        # level=note 是探針的「未能實測」提示（例如缺公鑰的 alg-confusion），不算偵測到
+        self._g5_hits = {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])
+                         if r.get("level") != "note"}
+        return self._g5_hits, None
+
+    def run(self, case):
+        err = self.target.ensure()
+        if err:
+            return None, err
+        if case["gate"] == "G5":
+            return self._run_g5()
+        inp = case["input"]
+        body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", "")}).encode()
+        try:
+            status, raw = self.target.request("POST", "/chat", body=body)
+            if status != 200:
+                return None, f"/chat 回應 HTTP {status}"
+            reply = json.loads(raw.decode("utf-8", "replace")).get("reply", "")
+        except Exception as e:
+            return None, f"/chat 呼叫失敗：{type(e).__name__}"
+        return {rule for rule, oracle in G6_ORACLES.items() if oracle(reply, case)}, None
+
+
 # ---------------------------------------------------------------- scoring
 def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
     rows = []
@@ -197,10 +343,13 @@ def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
             break
         else:
             # 優先顯示「已接近可執行」的原因（同 gate 的專屬執行器），其次第一個
-            specific = [r for r in reasons if "非程式碼" not in r and "非 G1 manifest" not in r]
+            specific = [r for r in reasons if "非程式碼" not in r and "非 G1 manifest" not in r
+                        and "target_app" not in r]
             row["reason"] = (specific or reasons or ["沒有執行器"])[0]
             if row["reason"].startswith("semgrep: kind=") and case["input"].get("kind") in ("http", "prompt", "config"):
-                row["reason"] = f"kind={case['input']['kind']}：需靶場／模型或人工審查，尚無本機執行器"
+                row["reason"] = (f"kind={case['input']['kind']}：未標記 target_app（案例描述的不是靶場可重現的行為），尚無對應執行器"
+                                 if case["input"].get("kind") in ("http", "prompt")
+                                 else f"kind={case['input']['kind']}：需人工審查或整合層驗證，尚無本機執行器")
         rows.append(row)
     return rows
 
@@ -250,14 +399,20 @@ def main(argv=None) -> int:
     ap.add_argument("--json")
     ap.add_argument("--md")
     ap.add_argument("--no-network", action="store_true")
+    ap.add_argument("--no-target", action="store_true", help="不啟動本機靶場（G5／G6 案例記 untested）")
     a = ap.parse_args(argv)
 
     cases = [load_yaml(pathlib.Path(f)) for f in sorted(glob.glob(a.cases, recursive=True))]
     if a.split != "all":
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network)]
-    rows = evaluate(cases, runners)
+    target = None if a.no_target else Vulnapp()
+    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), VulnappRunner(target)]
+    try:
+        rows = evaluate(cases, runners)
+    finally:
+        if target:
+            target.close()
     summary = summarize(rows)
     md = to_markdown(summary, rows, a.split)
     if a.json:

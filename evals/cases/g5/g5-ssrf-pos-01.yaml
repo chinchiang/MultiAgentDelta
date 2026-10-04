@@ -4,6 +4,7 @@ domain: input_validation
 title: URL 抓取端點會讀取 loopback（canary）
 input:
   kind: http
+  target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測
   target: /fetch?url=
   steps:
   - GET /fetch?url=http://127.0.0.1:<port>/openapi.json with token_a -> 200 含 openapi

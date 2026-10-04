@@ -4,6 +4,7 @@ domain: authentication
 title: JWT 接受 alg:none
 input:
   kind: http
+  target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測
   target: /users/1/notes
   steps:
     - 構造 header {"alg":"none"} 的無簽章 JWT，payload sub=alice
