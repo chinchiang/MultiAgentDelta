@@ -48,14 +48,25 @@ def load_popular(name):
         return set()
     return {l.strip().lower() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")}
 
-def load_list(name, key="package"):
+def load_list(name):
+    """讀 blacklist / allowlist：鍵為 (ecosystem, 名稱小寫)；ecosystem 缺省時記為 None（適用所有生態系）。
+
+    條目名稱可用 `name`（blacklist.yaml）或 `package`（allowlist.yaml）欄位。
+    """
     data = load_yaml(CFG_DIR / name) or {}
     items = data.get("packages", data if isinstance(data, list) else [])
     out = {}
     for it in (items or []):
-        if isinstance(it, dict) and it.get(key):
-            out[it[key].lower()] = it
+        if not isinstance(it, dict):
+            continue
+        pkg = it.get("name") or it.get("package")
+        if pkg:
+            out[((it.get("ecosystem") or None), str(pkg).lower())] = it
     return out
+
+def lookup(entries, eco, pkg):
+    """依生態系查清單；先找同生態系，再找未指定生態系的條目。"""
+    return entries.get((eco, pkg.lower())) or entries.get((None, pkg.lower()))
 
 def http_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1/0.1"})
@@ -141,13 +152,15 @@ def _levenshtein(a: str, b: str) -> int:
         prev = cur
     return prev[-1]
 
-def similarity_check(pkg, popular, blacklist, allowlist, c):
-    if pkg.lower() in allowlist:
+def similarity_check(pkg, eco, popular, blacklist, allowlist, c):
+    if lookup(allowlist, eco, pkg):
         return None
-    if pkg.lower() in blacklist:
-        it = blacklist[pkg.lower()]
-        return fnd("vibesec.g1.hallucinated-package", pkg, it.get("ecosystem", "?"), None,
-                   f"命中幻覺/搶註黑名單：{it.get('reason','known typosquat')}", "blocking")
+    it = lookup(blacklist, eco, pkg)
+    if it:
+        hint = f"；正確名稱應為 {it['looks_like']}" if it.get("looks_like") else ""
+        tier = "advisory" if it.get("action") == "warn" else "blocking"
+        return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
+                   f"命中黑名單（{it.get('status', '?')}）：{it.get('reason', 'known typosquat')}{hint}", tier)
     if pkg.lower() in popular:
         return None
     pl = pkg.lower()
@@ -158,7 +171,7 @@ def similarity_check(pkg, popular, blacklist, allowlist, c):
         dist = _levenshtein(pl, good)
         # 兩路判定：ratio 門檻，或編輯距離 <=2（補 difflib 對字母易位的低估，如 axois vs axios）
         if (ratio >= c["similarity"] or (len(pl) >= 4 and dist <= 2 and dist > 0)):
-            return fnd("vibesec.g1.hallucinated-package", pkg, "?", None,
+            return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
                        f"名稱與熱門套件 '{good}' 高度相似（ratio={ratio:.2f}, edit={dist}），疑似 typosquat", "blocking")
     return None
 
@@ -461,7 +474,8 @@ def main(argv):
         return 0
 
     c = cfg()
-    popular = load_popular("popular-npm.txt") | load_popular("popular-pypi.txt")
+    # 相似度只比對同生態系的熱門清單（npm 的 request 不該被比成 PyPI 的 requests）
+    popular = {"npm": load_popular("popular-npm.txt"), "pypi": load_popular("popular-pypi.txt")}
     blacklist = load_list("blacklist.yaml")
     allowlist = load_list("allowlist.yaml")
     exceptions, ignored_exceptions = load_exceptions()
@@ -474,10 +488,10 @@ def main(argv):
         source_rel = rel_path(source)
         for eco, name, ver in packages:
             found = []
-            sim = similarity_check(name, popular, blacklist, allowlist, c)
+            sim = similarity_check(name, eco, popular.get(eco, set()), blacklist, allowlist, c)
             if sim:
                 found.append(sim)
-            if name.lower() not in allowlist:
+            if not lookup(allowlist, eco, name):
                 fs, reason = (npm_check(name, ver, c) if eco == "npm" else pypi_check(name, ver, c))
                 if from_rules:
                     for f in fs:
