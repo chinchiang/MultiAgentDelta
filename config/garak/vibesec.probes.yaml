@@ -1,7 +1,8 @@
 # VibeSec G6 — garak（NVIDIA，Apache-2.0，「LLM 界的 Nmap」）設定
 # 用法（只能打 VIBESEC_TARGET_URL 指向的、已授權的測試環境）：
-#   python -m garak --config config/garak/vibesec.probes.yaml
-#   # 或覆寫 probe：python -m garak --config config/garak/vibesec.probes.yaml --probes promptinject,dan
+#   garak --config config/garak/vibesec.probes.yaml
+#   # 或覆寫 probe：garak --config config/garak/vibesec.probes.yaml --spec probes.promptinject,probes.dan
+# 對應 garak 0.17 schema：probe 選擇用 run.spec（include/exclude），target 用 plugins.target_type / target_name。
 # 報告：reports/garak/<report_prefix>.report.jsonl 與 .hitlog.jsonl；harness 把每個 hit → finding（rule_id = garak:<probe>.<detector>）
 #
 # ★ 必須依環境修改的欄位（標 EDIT）：
@@ -23,19 +24,25 @@ run:
   deprefix: true
   eval_threshold: 0.5
   generations: 3                # EDIT：正式複測建議 5–10
-  probe_tags: null
+  # garak ≥ 0.15：probe 選擇改用 run.spec（舊的 plugins.probe_spec / run.probe_tags 已棄用）
+  spec:
+    include:
+      - probes.promptinject
+      - probes.dan
+      - probes.encoding
+      - probes.leakreplay
+      - probes.web_injection
 
 plugins:
-  model_type: rest
-  model_name: vibesec-chat      # 只是報告中的標籤
+  target_type: rest
+  target_name: vibesec-chat     # 只是報告中的標籤
   # 對應 vibesec.yaml gates.g6_ai_red_team.checks：
   #   promptinject  → direct_prompt_injection（LLM01）
   #   dan           → direct_prompt_injection / 越獄（LLM01）
   #   encoding      → direct_prompt_injection 的編碼繞法（base64 / rot13 等）
   #   leakreplay    → system_prompt_extraction / 訓練資料洩漏（LLM02 / LLM07）
-  #   xss           → stored_xss_via_ai_output（LLM05）
+  #   web_injection → stored_xss_via_ai_output（LLM05；garak 0.17 起 xss probe 併入此模組：TaskXSS、MarkdownXSS、MarkdownImageExfil…）
   # 可加：latentinjection（間接注入）、packagehallucination（LLM09；幻覺套件）、divergence（LLM10）
-  probe_spec: promptinject,dan,encoding,leakreplay,xss
   detector_spec: auto
   extended_detectors: false
   buff_spec: null
@@ -65,12 +72,9 @@ plugins:
   probes:
     encoding:
       payloads: ["default", "xss"]
-    xss:
-      # 預設含 MarkdownImageExfil（誘導輸出帶外部圖片 URL 的 Markdown 以外洩資料）
-      payload_name: "default"
 
 reporting:
   report_dir: reports/garak
-  report_prefix: vibesec-g6
+  report_prefix: g6-garak       # staging workflow 以此前綴蒐集報告
   taxonomy: owasp                # 報告中附 OWASP LLM Top 10 標籤
   show_100_pass_modules: false

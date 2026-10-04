@@ -30,7 +30,8 @@ GARAK_RULES = {
     "encoding": "vibesec.g6.direct-prompt-injection",
     "latentinjection": "vibesec.g6.indirect-prompt-injection",
     "leakreplay": "vibesec.g6.system-prompt-extraction",
-    "xss": "vibesec.g6.stored-xss-via-ai-output",
+    "xss": "vibesec.g6.stored-xss-via-ai-output",            # garak < 0.17
+    "web_injection": "vibesec.g6.stored-xss-via-ai-output",  # garak ≥ 0.17（TaskXSS、MarkdownXSS…）
 }
 
 
@@ -158,15 +159,29 @@ def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None
         c.cover("promptfoo-redteam", "LLM01:2025", "pass")
 
 
-def ingest_garak(c: Collector, pattern: str | None):
+def garak_abort_reason(log_path: str | None) -> str | None:
+    """從 garak log 擷取第一行錯誤（❌ 或 Error），讓「未產生報告」可追溯。"""
+    try:
+        lines = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines() if log_path else []
+    except OSError:
+        return None
+    for line in lines:
+        if "❌" in line or "Error" in line or "Traceback" in line:
+            return line.replace("❌", "").strip()[:200]
+    return None
+
+
+def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None):
     if not pattern:
         return
     files = sorted(glob.glob(pattern))
     if not files:
-        c.tools.append({"name": "garak", "version": None, "state": "missing", "exit_code": None,
-                        "output_ref": None, "duration_seconds": None})
-        c.cover("garak", "LLM01:2025", "untested", "garak 未產生報告（未安裝、無法連線靶場或執行失敗）")
-        c.reasons.append("garak 未產生報告")
+        why = garak_abort_reason(log_path)
+        c.tools.append({"name": "garak", "version": None, "state": "error" if why else "missing", "exit_code": None,
+                        "output_ref": log_path if why else None, "duration_seconds": None})
+        detail = f"garak 中止：{why}" if why else "garak 未產生報告（未安裝、無法連線靶場或執行失敗）"
+        c.cover("garak", "LLM01:2025", "untested", detail)
+        c.reasons.append(detail)
         return
     c.tools.append({"name": "garak", "version": None, "state": "ran", "exit_code": None,
                     "output_ref": files[0], "duration_seconds": None})
@@ -227,6 +242,7 @@ def main(argv=None) -> int:
     ap.add_argument("--redteam")
     ap.add_argument("--redteam-skipped")
     ap.add_argument("--garak-glob")
+    ap.add_argument("--garak-log", help="garak stdout/stderr；無報告時擷取中止原因")
     ap.add_argument("--gate", required=True)
     ap.add_argument("--sarif")
     ap.add_argument("--mode", default="shadow", choices=["shadow", "enforce"])
@@ -235,7 +251,7 @@ def main(argv=None) -> int:
     c = Collector(*load_catalog())
     ingest_promptfoo_eval(c, a.eval_path, a.eval_exit_code)
     ingest_promptfoo_redteam(c, a.redteam, a.redteam_skipped)
-    ingest_garak(c, a.garak_glob)
+    ingest_garak(c, a.garak_glob, a.garak_log)
     gate, sarif = build(c, a.mode, started)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
