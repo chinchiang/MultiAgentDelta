@@ -47,6 +47,26 @@ curl -s -X POST http://127.0.0.1:8000/login \
 
 > rule_id 以 `.github/workflows/staging-blackbox.yml` 的 api-probes 與 `config/promptfoo`、`config/garak`（由其他元件提供）實際發出者為準；本表為對應索引。
 
+## 已修補模式（`VIBESEC_VULNAPP_MODE=patched`）
+
+```bash
+VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:app --port 8000
+```
+
+用來提供**反例**（should_flag: false）：同一套 G5/G6 探針打在已修補版本上不應命中，以量測誤報。預設（未設定）仍是有漏洞的版本，staging workflow 行為不變。
+
+| 已修補 | 作法 |
+|---|---|
+| JWT alg:none / 未驗簽 | `jwt.decode` 驗章並限定 `HS256` |
+| BOLA / IDOR | `/users/{id}/notes` 僅允許本人，否則 403 |
+| SSRF | `/fetch` 一律 400（無允許清單即拒絕） |
+| Stack trace 外洩 | 例外回傳一般化 `{"error":"internal error"}` |
+| Prompt injection / system prompt 外洩 | `llm_stub` 拒絕擷取與夾帶指令，不回吐輸入 |
+| AI 輸出 XSS | 回覆經 HTML 編碼 |
+| Denial of Wallet | `/chat` 超過 4000 字元回 413 |
+
+**刻意未修補**：Swagger/OpenAPI 對外、GraphQL introspection、缺 rate limit、寫死的弱 JWT secret（故 `jwt_alg_confusion` 仍可能為 untested／命中）。這些在 patched 模式下仍會被回報，G5 狀態因此為 `incomplete` 或 advisory，而非 pass。
+
 ## 安全界線（對應 CLAUDE.md #8）
 
 此靶場是 VibeSec 唯一允許被 G5/G6 攻擊性探針打擊的目標，且**只能**在 `VIBESEC_TARGET_URL` 指向本靶場、於已授權的隔離環境時執行。切勿將本 app 對外暴露。

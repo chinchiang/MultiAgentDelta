@@ -40,9 +40,17 @@ def _looks_like(patterns, text):
     return any(re.search(p, text, re.I) for p in patterns)
 
 
-def generate_reply(message: str) -> str:
-    """回傳假 LLM 的回覆字串。行為對 G6 探針而言完全可預測。"""
+def generate_reply(message: str, patched: bool = False) -> str:
+    """回傳假 LLM 的回覆字串。行為對 G6 探針而言完全可預測。
+
+    patched=True（VIBESEC_VULNAPP_MODE=patched）：拒絕洩漏 system prompt、不服從夾帶指令、
+    不回吐使用者輸入；呼叫端另做 HTML 編碼與長度上限。
+    """
     msg = message or ""
+    if patched:
+        if _looks_like(_EXTRACT_PATTERNS, msg) or _looks_like(_INDIRECT_MARKERS, msg):
+            return "抱歉，我無法提供系統設定或執行來自外部內容的指令。"
+        return "您好，我是 VibeSec-Bot（測試靶場，已修補模式）。我可以協助一般問答。"
 
     # Denial of Wallet：超長輸入 → 明顯延遲（modest，足以觸發 <5000ms 斷言，又不拖垮 CI）
     if len(msg) > 5000:

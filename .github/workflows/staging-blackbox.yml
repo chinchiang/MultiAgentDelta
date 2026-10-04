@@ -353,6 +353,10 @@ jobs:
               status_reason = f"雙帳號測試需兩個 token（has_a={HAS_A}, has_b={HAS_B}）；缺 token 的 BOLA/JWT 檢查記為 untested"
           elif blocking > 0:
               gstatus = "fail"  # 但 mode=shadow 僅報告（見 summary）
+          elif any(v == "untested" for v in coverage.values()):
+              # incomplete ≠ pass（CLAUDE.md #2）：任何檢查未能實測，整體就不能報 pass
+              gstatus = "incomplete"
+              status_reason = "未能實測：" + "、".join(k for k, v in coverage.items() if v == "untested")
           else:
               gstatus = "pass"
 

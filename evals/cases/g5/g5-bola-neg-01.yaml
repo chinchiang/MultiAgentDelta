@@ -4,6 +4,7 @@ domain: authorization
 title: 帳號 B 讀取帳號 A 資源被 403 拒絕
 input:
   kind: http
+  target_app: vulnapp-patched   # VIBESEC_VULNAPP_MODE=patched 可重現；run_evals.py 以本機已修補靶場實測
   target: /users/{id}/notes
   steps:
   - login bob -> token_b
