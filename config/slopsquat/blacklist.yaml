@@ -2,12 +2,12 @@
 # status 說明：
 #   confirmed_malicious   — 曾被 Registry 下架或由安全廠商 / 國家級 CERT 證實為惡意（來源見 source）
 #   hallucination_prone   — LLM 常輸出但不存在、已被搶註為空殼、或與真實套件混淆的名稱（可能無害，但一律阻擋並要求人工確認）
-#   confusable_legit      — 真實存在但極易與另一套件混淆（例如 huggingface-cli）；阻擋並提示正確名稱
+#   confusable_legit      — 真實存在但極易與另一套件混淆（例如 sklearn 應為 scikit-learn）；依 action 阻擋或警示並提示正確名稱
 # action：block（阻擋）/ warn（advisory，列印正確名稱）
 # 本清單是最後一道備援；主要防線是 cooldown.yaml 的 Registry 健康度與相似度檢查。更新時附來源與日期。
 
 version: 1
-updated: "2026-10-03"
+updated: "2026-10-04"
 
 packages:
   # ------------------------------------------------------------------ npm
@@ -201,7 +201,7 @@ packages:
     reason: "requests 拼錯"
   - name: request
     ecosystem: pypi
-    status: confusable_legit
+    status: hallucination_prone
     looks_like: requests
     action: block
     reason: "單數 request 曾被搶註；正確為 requests"
@@ -226,7 +226,7 @@ packages:
     source: "Medium / PyPI 2018-10"
   - name: huggingface-cli
     ecosystem: pypi
-    status: confusable_legit
+    status: hallucination_prone
     looks_like: huggingface-hub
     action: block
     reason: "LLM 常推薦 pip install huggingface-cli；真正提供 huggingface-cli 指令的是 huggingface-hub。研究者曾註冊此幻覺名稱做空殼實驗並獲得數萬次下載"
