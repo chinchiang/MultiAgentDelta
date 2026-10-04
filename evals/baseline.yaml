@@ -1,0 +1,35 @@
+# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN）。
+# 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。
+executed:
+  - g1-slopsquat-neg-01
+  - g1-slopsquat-pos-01
+  - g1-slopsquat-pos-02
+  - g2-llmkey-neg-01
+  - g2-llmkey-pos-01
+  - g3-cmdi-neg-01
+  - g3-cmdi-pos-01
+  - g3-jwt-none-neg-01
+  - g3-jwt-none-pos-01
+  - g3-sqli-neg-01
+  - g3-sqli-pos-01
+  - g3-xss-neg-01
+  - g3-xss-pos-01
+  - g4-bola-neg-01
+  - g4-owner-neg-02
+  - g4-owner-pos-01
+  - g4-owner-pos-02
+  - g4-rls-neg-01
+  - g4-rls-pos-01
+  - g5-bola-neg-01
+  - g5-bola-pos-01
+  - g5-jwt-neg-01
+  - g5-jwt-pos-01
+  - g5-ssrf-neg-01
+  - g5-ssrf-neg-02
+  - g5-ssrf-pos-01
+  - g6-injection-neg-01
+  - g6-injection-pos-01
+  - g6-sysprompt-neg-01
+  - g6-sysprompt-pos-01
+  - g6-xss-neg-01
+  - g6-xss-pos-01
