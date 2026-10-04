@@ -121,6 +121,33 @@ python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6
 3. 只接這兩家：redteam 會把靶場回應送給評分模型，資料分級為 `internal`；`config/providers.yaml` 中只有 `anthropic-cloud`、`openai-cloud` 的 `allowed_data_classes` 含 `internal`。`glm-cloud`、`deepseek-cloud` 只允許 `public`，**不得**用於 redteam（CLAUDE.md 規則 7）。
 4. 金鑰只經 step `env` 傳入，不寫入 `${{ }}` 插值的 run 內容、不 echo；secret 值由 Actions 自動遮罩。
 5. promptfoo redteam 可能要求一次性 email 驗證；若 CI 中因此失敗，該層記 `untested` 並在 `_promptfoo-redteam.log` 留下原因，不會產生 pass。
+6. workflow 設定 `PROMPTFOO_DISABLE_REMOTE_GENERATION=true`：攻擊一律由上述 provider 在本地生成，不送往 promptfoo 雲端服務（它不在 `config/providers.yaml`）。少數僅支援遠端生成的 plugin／strategy 因此可能報錯，該項記 `untested`，不會被當成 pass。
+
+#### 金鑰申請與權限（最小權限）
+
+- **專用金鑰**：為 CI 另建一把，不與個人或正式服務共用；命名例如 `vibesec-ci-redteam`，外洩時可單獨撤銷。
+- **花費上限**：在供應商後台為該金鑰所在 workspace／project 設每月預算上限。每次 redteam 約為 plugin 數 × `numTests`（目前 20 × 5 = 100 個基礎案例，再乘上 5 種 strategy 的變形），加上同量的評分呼叫；以 `numTests` 控制規模，不以關閉 plugin 省錢。
+- **限縮可呼叫模型**：若供應商支援，只允許 `providers.yaml` 列出的那個模型。
+- **（建議）以 GitHub Environment 保護**：把金鑰放在名為 `staging` 的 Environment secrets 並設 required reviewers，只有核准過的執行才拿得到金鑰。如採此做法，須在 job 加上 `environment: staging`；該變更屬 workflow 權限調整，另開 PR 由人類審核。
+- **輪替**：至少每 90 天，或在人員異動、疑似外洩時立即輪替；輪替步驟：建新金鑰 → 更新 secret → 手動觸發一次 staging 確認 → 撤銷舊金鑰。
+
+#### 設定後如何確認
+
+1. Actions → **staging-blackbox** → Run workflow（`main`）。
+2. 在 step「G6 promptfoo redteam」的 log 應看到 `redteam provider: anthropic`（或 `openai`），而**不是** `redteam 生成層未執行` 的 notice。
+3. 下載 artifact 中的 `reports/g6-gate.json`：redteam 層不再是 `untested`；`status_reason` 不再出現「未設定 … secret」。
+4. 若仍為 `untested`，依下表排查（原因寫在 `reports/_promptfoo-redteam.log`）：
+
+| 現象 | 可能原因 | 處理 |
+|---|---|---|
+| notice「未設定 … secret」 | secret 名稱打錯、設在 Environment 但 job 未宣告 `environment` | 確認名稱完全為 `ANTHROPIC_API_KEY`／`OPENAI_API_KEY` |
+| log 出現 401／`invalid x-api-key` | 金鑰錯誤或已撤銷 | 重新產生並更新 secret |
+| log 出現 404／`model not found` | `providers.yaml` 的模型名稱不可用 | 另開 PR 更新 `model` 欄位（需人類審核） |
+| log 出現 429／`rate limit`／預算超過 | 花費上限或速率限制 | 調高上限或降低 `numTests`；不得改成 advisory 或跳過 |
+| 要求 email 驗證 | promptfoo 首次使用驗證 | 於本機以相同版本執行一次 `promptfoo redteam` 完成驗證 |
+| 個別 plugin「requires remote generation」 | 已停用遠端生成 | 預期行為，該項維持 `untested` |
+
+> 不得為了讓 redteam 跑起來而改用 `glm-cloud`／`deepseek-cloud`、啟用遠端生成，或把 G6 降為 advisory；這些都需人類在獨立 PR 中決定（CLAUDE.md 規則 1、7）。
 
 ### 結果如何對映到 findings
 
