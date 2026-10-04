@@ -1,0 +1,14 @@
+id: g3-xss-neg-01
+gate: G3
+domain: xss
+title: textContent 寫入使用者輸入
+input:
+  kind: code
+  path: web/app.js
+  snippet: el.textContent = params.get('q');
+expected:
+  should_flag: false
+  control_id: ASVS5-V1.1
+  rule_id: vibesec.g3.xss-innerhtml
+  policy_tier: blocking
+held_out: false

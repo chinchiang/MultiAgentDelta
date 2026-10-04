@@ -1,0 +1,14 @@
+id: g0-trifecta-pos-02
+gate: G0
+domain: application_architecture
+title: 讀 email + 讀私有 repo + 可發 HTTP 的 agent
+input:
+  kind: config
+  snippet: 'agent: {tools: [read_inbox, read_private_repo, http_fetch]}'
+expected:
+  should_flag: true
+  control_id: VS-G0-LETHAL-TRIFECTA
+  rule_id: vibesec.g0.lethal-trifecta-open
+  policy_tier: blocking
+held_out: true
+notes: email 為不可信輸入、repo 為私有資料、http_fetch 為外傳通道。

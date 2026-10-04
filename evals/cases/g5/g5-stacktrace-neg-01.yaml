@@ -1,0 +1,15 @@
+id: g5-stacktrace-neg-01
+gate: G5
+domain: error_handling
+title: 錯誤回應只含通用訊息與 request id
+input:
+  kind: http
+  target: /items/abc
+  steps:
+  - GET /items/abc -> 400 {"error":"invalid id","request_id":"..."}
+expected:
+  should_flag: false
+  control_id: ASVS5-V13.4
+  rule_id: vibesec.g5.debug-stacktrace
+  policy_tier: advisory
+held_out: false

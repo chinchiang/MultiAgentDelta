@@ -1,0 +1,14 @@
+id: g3-csp-neg-01
+gate: G3
+domain: csp
+title: 設定嚴格 CSP
+input:
+  kind: config
+  headers:
+    Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'
+expected:
+  should_flag: false
+  control_id: ASVS5-V3.2
+  rule_id: vibesec.g3.missing-csp
+  policy_tier: advisory
+held_out: false

@@ -1,0 +1,15 @@
+id: g2-llmkey-neg-01
+gate: G2
+domain: secret_exposure
+title: 從環境變數讀取 LLM key
+input:
+  kind: code
+  path: app/llm.py
+  snippet: client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+expected:
+  should_flag: false
+  control_id: ASVS5-V13.3
+  rule_id: vibesec.g2.hardcoded-llm-key
+  policy_tier: blocking
+held_out: false
+notes: 無祕密字面值。

@@ -1,0 +1,14 @@
+id: g3-jwt-none-neg-01
+gate: G3
+domain: authentication
+title: JWT decode 固定單一演算法
+input:
+  kind: code
+  path: app/auth.py
+  snippet: jwt.decode(tok, key, algorithms=["HS256"])
+expected:
+  should_flag: false
+  control_id: ASVS5-V9.1
+  rule_id: vibesec.g3.jwt-alg-none
+  policy_tier: blocking
+held_out: false

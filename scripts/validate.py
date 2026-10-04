@@ -140,6 +140,47 @@ if yaml is not None:
         if d.get("control_id") and d["control_id"] not in known_controls:
             warn(f"finding.example.json control_id {d['control_id']} 不在 catalogs")
 
+# --- evals 結構：id／檔名、split 一致、held_out ≥ 1/3、每領域正反例 ---
+if yaml is not None:
+    case_files = sorted(glob.glob(str(ROOT / "evals/cases/**/*.yaml"), recursive=True))
+    cases = {}
+    for f in case_files:
+        p = pathlib.Path(f); rel = p.relative_to(ROOT)
+        c = load_yaml(p) or {}
+        cid = c.get("id")
+        if cid != p.stem:
+            err(f"{rel}: id {cid!r} 與檔名不一致")
+        if (c.get("gate") or "").lower() != p.parent.name:
+            err(f"{rel}: gate {c.get('gate')!r} 與目錄 {p.parent.name} 不一致")
+        gs = (c.get("expected") or {}).get("gate_status")
+        if gs is not None and gs not in ("pass", "fail", "incomplete", "not_applicable"):
+            err(f"{rel}: expected.gate_status {gs!r} 不合法")
+        if cid in cases:
+            err(f"{rel}: 重複的 case id {cid}")
+        cases[cid] = c
+    split_p = ROOT / "evals/split.yaml"
+    if cases and split_p.exists():
+        split = load_yaml(split_p) or {}
+        ho, hi = set(split.get("held_out") or []), set(split.get("held_in") or [])
+        if ho & hi:
+            err(f"evals/split.yaml: 同時列於 held_out 與 held_in：{sorted(ho & hi)}")
+        if (ho | hi) != set(cases):
+            err(f"evals/split.yaml 與案例不一致：缺 {sorted(set(cases) - ho - hi)}，多 {sorted((ho | hi) - set(cases))}")
+        for cid, c in cases.items():
+            if bool(c.get("held_out")) != (cid in ho):
+                err(f"{cid}: held_out 欄位與 evals/split.yaml 不一致")
+        if len(ho) * 3 < len(cases):
+            err(f"held_out {len(ho)}/{len(cases)} 少於 1/3")
+        polarity = {}
+        for c in cases.values():
+            polarity.setdefault(c.get("domain"), set()).add(bool((c.get("expected") or {}).get("should_flag")))
+        lacking = sorted(d for d, s in polarity.items() if s != {True, False})
+        if lacking:
+            warn(f"evals 領域缺正例或反例：{lacking}")
+        if len(cases) < 60:
+            warn(f"evals 共 {len(cases)} 案例，未達目標 60")
+        ok(f"evals {len(cases)} 案例、held_out {len(ho)}、{len(polarity)} 領域")
+
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
 for w in warns: print(f"  WARN {w}")
