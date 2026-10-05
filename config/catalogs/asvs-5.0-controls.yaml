@@ -382,6 +382,9 @@ vibesec_controls:
   - id: VS-G4-RULES-FILE-UNICODE
     title_zh: Agent 規則檔不得含隱形 Unicode（Rules File Backdoor）
     gates: [G1, G4]
+  - id: VS-G4-LLM-REVIEW
+    title_zh: 授權類發現經多模型審查（≥ 2 family）；分歧交人工裁決（docs/09）
+    gates: [G4]
   - id: VS-G4-MCP-RESOURCE-INDICATOR
     title_zh: MCP 伺服器 OAuth 使用 RFC 8707 Resource Indicators
     gates: [G4]

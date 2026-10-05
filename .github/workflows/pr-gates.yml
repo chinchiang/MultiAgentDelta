@@ -366,13 +366,23 @@ jobs:
                               "properties": {"policy_tier": tier}})
 
           # 1) 隱形 Unicode 掃描
-          INVISIBLE = ["​", "‌", "‍", "⁠", "﻿"]
+          INVISIBLE = ["​", "‌", "‍", "⁠", "﻿", "\u00ad"]  # 零寬、WJ、BOM、soft hyphen
           INVISIBLE += [chr(c) for c in range(0x202A, 0x202F)]  # U+202A-U+202E bidi
           INVISIBLE += [chr(c) for c in range(0x2066, 0x206A)]  # U+2066-U+2069 isolates
+          INVISIBLE += [chr(c) for c in range(0x2061, 0x2065)]  # U+2061-U+2064 invisible operators
+          INVISIBLE += [chr(c) for c in range(0xE0000, 0xE0080)]  # Unicode Tag 字元（可藏 ASCII 指令）
+          # 範圍依 docs/05 §6：所有 Markdown（含 .github/copilot-instructions.md、CLAUDE.md、AGENTS.md、SKILL.md）
+          # 加上無副檔名的 AI 助理規則檔（Cursor / Windsurf / Cline）
+          # 用 os.walk 而非 glob：glob 的 ** 會跳過 .github/、.cursor/ 等隱藏目錄
+          RULE_NAMES = {".cursorrules", ".windsurfrules", ".clinerules"}
           rule_files = []
-          for pat in [".cursorrules", "AGENTS.md", "SKILL.md"]:
-              rule_files += glob.glob(pat)
-          rule_files += glob.glob(".claude/**/*.md", recursive=True)
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [x for x in dirs if x not in (".git", "node_modules")]
+              rel_root = os.path.relpath(root, ".")
+              in_rules_dir = rel_root.startswith((".cursor/rules", ".clinerules"))
+              for fn in files:
+                  if fn.endswith((".md", ".mdc")) or fn in RULE_NAMES or in_rules_dir:
+                      rule_files.append(os.path.normpath(os.path.join(rel_root, fn)))
           for p in sorted(set(rule_files)):
               fp = pathlib.Path(p)
               if not fp.exists(): continue
@@ -381,20 +391,21 @@ jobs:
               for i, ln in enumerate(lines, 1):
                   hits = [hex(ord(ch)) for ch in ln if ch in INVISIBLE]
                   if hits:
-                      add("vibesec.g4.rules-file-unicode", "error",
+                      add("vibesec.g4.rules-file-invisible-unicode", "error",
                           f"Rules File Backdoor：{p} 第 {i} 行含隱形 Unicode {hits}", p, i, "blocking")
 
           # 2) Supabase migrations RLS
-          for p in glob.glob("supabase/migrations/**/*.sql", recursive=True) + glob.glob("**/migrations/**/*.sql", recursive=True):
+          # 兩個 glob 會重疊（supabase/migrations 也符合 **/migrations）→ 去重，避免同一檔案重複回報
+          for p in sorted(set(glob.glob("supabase/migrations/**/*.sql", recursive=True) + glob.glob("**/migrations/**/*.sql", recursive=True))):
               fp = pathlib.Path(p)
               if not fp.exists(): continue
               body = fp.read_text(encoding="utf-8", errors="replace")
               if re.search(r'disable\s+row\s+level\s+security', body, re.I):
-                  add("vibesec.g4.rls-disabled", "error", f"{p} 明確停用 RLS（全表暴露風險）", p, 1, "blocking")
+                  add("vibesec.g4.supabase-rls-disabled", "error", f"{p} 明確停用 RLS（全表暴露風險）", p, 1, "blocking")
               for m in re.finditer(r'create\s+table\s+(?:if\s+not\s+exists\s+)?["`]?([A-Za-z0-9_.]+)', body, re.I):
                   tbl = m.group(1)
                   if not re.search(rf'alter\s+table\s+["`]?{re.escape(tbl)}["`]?\s+enable\s+row\s+level\s+security', body, re.I):
-                      add("vibesec.g4.rls-not-enabled", "warning",
+                      add("vibesec.g4.supabase-table-without-rls", "warning",
                           f"{p}：資料表 {tbl} 未見 enable row level security", p, 1, "advisory")
 
           # 3) Agent 工具 allow-list lint（高危工具暴露）
@@ -407,7 +418,7 @@ jobs:
               if re.search(r'(tool|register_tool|tools\s*=|@tool)', body) and re.search(DANGEROUS, body, re.I):
                   for i, ln in enumerate(body.splitlines(), 1):
                       if re.search(DANGEROUS, ln, re.I):
-                          add("vibesec.g4.agent-tool-allowlist", "warning",
+                          add("vibesec.g4.agent-tool-overexposure", "warning",
                               f"{p} 第 {i} 行疑似向 Agent 註冊高危工具（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i, "advisory")
                           break
 
@@ -426,7 +437,9 @@ jobs:
 
           blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
           advisory = len(results) - blocking
-          status = "fail" if (MODE == "enforce" and blocking) else "pass"
+          # 狀態反映發現本身；shadow 只決定是否擋下 merge（見下方 exit 與 job 的 continue-on-error），不把 fail 改寫成 pass
+          status = "fail" if blocking else "pass"
+          def _state(*ids): return "fail" if any(r["ruleId"] in ids for r in results) else "pass"
           gate = {"gate": "G4", "status": status, "status_reason": None, "mode": MODE, "scope": "diff",
                   "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
                   "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
@@ -434,9 +447,9 @@ jobs:
                              "output_ref": "reports/g4-static.sarif", "duration_seconds": None}],
                   "findings_count": {"blocking": blocking, "advisory": advisory},
                   "coverage": [
-                      {"control_id": "VS-G4-RULES-UNICODE", "state": "fail" if any(r["ruleId"]=="vibesec.g4.rules-file-unicode" for r in results) else "pass", "reason": None},
-                      {"control_id": "VS-G4-RLS", "state": "pass", "reason": None},
-                      {"control_id": "VS-G4-AGENT-ALLOWLIST", "state": "pass", "reason": None},
+                      {"control_id": "VS-G4-RULES-FILE-UNICODE", "state": _state("vibesec.g4.rules-file-invisible-unicode"), "reason": None},
+                      {"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls"), "reason": None},
+                      {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure"), "reason": None},
                       {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
                   ]}
           (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")

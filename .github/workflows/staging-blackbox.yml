@@ -409,7 +409,7 @@ jobs:
                   s, _ = req("/login", "POST", data={"username": "alice", "password": "wrong"})
                   codes.append(s)
               if 429 not in codes:
-                  add("vibesec.g5.rate-limit-missing", "warning",
+                  add("vibesec.g5.missing-rate-limit", "warning",
                       "登入端點 25 次連續請求未見 429（缺 Rate Limiting / Captcha）", "advisory")
                   coverage["rate_limit"] = "fail"
               else:

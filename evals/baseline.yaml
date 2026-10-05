@@ -20,6 +20,9 @@ executed:
   - g4-owner-pos-02
   - g4-rls-neg-01
   - g4-rls-pos-01
+  - g4-single-mw-pos-01
+  - g4-unicode-neg-01
+  - g4-unicode-pos-01
   - g5-bola-neg-01
   - g5-bola-pos-01
   - g5-jwt-neg-01

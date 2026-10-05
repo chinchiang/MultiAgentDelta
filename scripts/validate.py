@@ -140,6 +140,21 @@ if yaml is not None:
         if d.get("control_id") and d["control_id"] not in known_controls:
             warn(f"finding.example.json control_id {d['control_id']} 不在 catalogs")
 
+# --- 實際發出的規則 ID／控制 ID 必須在 catalogs（CLAUDE.md #3）---
+# workflow 與 scripts 中寫死的 vibesec.gN.* 與 VS-G*-* 若不在目錄，該發現就查不到 CWE 與阻擋政策（等於被靜默降級）。
+if yaml is not None and known_rules:
+    _VARIANT = re.compile(r"-(supabase-)?js$")
+    _emitters = sorted(glob.glob(str(ROOT / ".github/workflows/*.yml"))) + \
+                sorted(f for f in glob.glob(str(ROOT / "scripts/*.py")) if not f.endswith("validate.py"))
+    for f in _emitters:
+        rel = pathlib.Path(f).relative_to(ROOT); txt = pathlib.Path(f).read_text(encoding="utf-8")
+        bad_r = sorted({r for r in re.findall(r"vibesec\.g[0-6]\.[a-z0-9-]+", txt)
+                        if r not in known_rules and _VARIANT.sub("", r) not in known_rules})
+        bad_c = sorted({c for c in re.findall(r"VS-G[0-6]-[A-Z0-9-]*[A-Z0-9]", txt) if c not in known_controls})
+        for r in bad_r: err(f"{rel}: 規則 ID {r} 不在 config/catalogs/cwe-map.yaml")
+        for c in bad_c: err(f"{rel}: 控制 ID {c} 不在 config/catalogs")
+        if not bad_r and not bad_c: ok(f"ID 一致: {rel}")
+
 # --- evals 結構：id／檔名、split 一致、held_out ≥ 1/3、每領域正反例 ---
 if yaml is not None:
     case_files = sorted(glob.glob(str(ROOT / "evals/cases/**/*.yaml"), recursive=True))

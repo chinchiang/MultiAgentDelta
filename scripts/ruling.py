@@ -139,7 +139,7 @@ def request_comment(finding: dict) -> str:
 
 
 def _synthetic() -> tuple[dict, dict]:
-    finding = {"id": "VS-20261003-1a2b3c4d", "gate": "G4", "rule_id": "vibesec.g4.bola", "title": "t",
+    finding = {"id": "VS-20261003-1a2b3c4d", "gate": "G4", "rule_id": "vibesec.g4.missing-owner-filter", "title": "t",
                "evidence_grade": "E2", "validation_status": "pending", "policy_tier": "blocking", "severity": "high",
                "priority": None, "evidence_refs": [{"kind": "model_review", "ref": "x", "digest": None}],
                "review": {"requires_human": True, "human_decision": None, "opinions": [

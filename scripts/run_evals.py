@@ -9,6 +9,7 @@
 執行器：
   semgrep   — input.kind ∈ {code, iac} 且預期規則存在於 config/semgrep/vibesec-rules.yaml
   slopcheck — G1 manifest 案例，且只用到 ecosystem / added（其餘欄位為合成 fixture，live registry 無法重現）
+  g4-static — G4 code／iac 案例且預期規則由 pr-gates.yml 的 G4 靜態檢查實作：把 fixture 寫回原路徑後執行同一份程式碼
   vulnapp   — 標記 input.target_app: vulnapp 的 G5 / G6 案例（靶場確實可重現該行為者才標記）：
               G5 執行 staging workflow 中同一份 api-probes 程式碼（取自 .github/workflows/staging-blackbox.yml）；
               G6 把 prompt 送到靶場 /chat，以與 config/promptfoo/tests.yaml 相同的決定性斷言判定。
@@ -234,14 +235,67 @@ class Vulnapp:
                 self.proc.kill()
 
 
-def _workflow_step(prefix: str) -> str | None:
+def _workflow_step(prefix: str, workflow: str = "staging-blackbox.yml") -> str | None:
     import yaml
-    wf = yaml.safe_load((ROOT / ".github/workflows/staging-blackbox.yml").read_text(encoding="utf-8"))
+    wf = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8"))
     for job in (wf.get("jobs") or {}).values():
         for st in job.get("steps") or []:
             if str(st.get("name", "")).startswith(prefix):
                 return st.get("run")
     return None
+
+
+def _fixture_path(inp: dict) -> str | None:
+    """案例 input.path 的第一個實際路徑（保留目錄，掃描器靠目錄 glob 找檔）；「a + b」取 a。"""
+    m = re.search(r"[\w.\-/]+\.(py|js|ts|tsx|jsx|sql|tf|ya?ml|json|md|mdc|toml)\b|\.(cursorrules|windsurfrules|clinerules)\b",
+                  inp.get("path") or "")
+    if not m:
+        return None
+    rel = pathlib.PurePosixPath(m.group(0))
+    return None if rel.is_absolute() or ".." in rel.parts else str(rel)
+
+
+class G4StaticRunner(Runner):
+    """執行 pr-gates.yml 中同一份 G4 靜態檢查程式碼：把 fixture 寫到暫存 repo 的原路徑，再跑該步驟。
+    所有 SARIF 等級都算偵測（G4 的 single-middleware 本來就以 note 等級回報 advisory）。"""
+    name = "g4-static"
+    STEP = "G4 靜態檢查"
+
+    def __init__(self):
+        self.code = _workflow_step(self.STEP, "pr-gates.yml")
+        self.rules = set(re.findall(r'add\("(vibesec\.g4\.[a-z0-9-]+)"', self.code or ""))
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        if case["gate"] != "G4":
+            return "非 G4 案例"
+        if not self.code:
+            return "pr-gates.yml 找不到 G4 靜態檢查步驟"
+        if exp.get("rule_id") not in self.rules:
+            return f"{exp.get('rule_id')} 不由 G4 靜態檢查實作"
+        if inp.get("kind") not in ("code", "iac") or not inp.get("snippet"):
+            return "需要 code／iac snippet"
+        if not _fixture_path(inp):
+            return "input.path 無法對應單一檔案路徑"
+        return None
+
+    def run(self, case):
+        inp = case["input"]
+        snippet = str(inp["snippet"])
+        for k, v in PLACEHOLDERS.items():
+            snippet = snippet.replace(k, v)
+        with tempfile.TemporaryDirectory() as d:
+            target = pathlib.Path(d) / _fixture_path(inp)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(snippet, encoding="utf-8")
+            env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": ""}
+            try:
+                subprocess.run(["bash", "-e", "-c", self.code], env=env, cwd=d, check=True,
+                               capture_output=True, text=True, timeout=120)
+                sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
+                return None, f"G4 靜態檢查執行失敗：{type(e).__name__}"
+        return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}, None
 
 
 # G6 決定性斷言：與 config/promptfoo/tests.yaml 的 not-contains 斷言一致
@@ -418,7 +472,8 @@ def main(argv=None) -> int:
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), VulnappRunner(targets)]
+    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), G4StaticRunner(),
+                             VulnappRunner(targets)]
     try:
         rows = evaluate(cases, runners)
     finally:
