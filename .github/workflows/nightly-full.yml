@@ -249,3 +249,39 @@ jobs:
           name: vibesec-nightly-evals
           path: reports/
           if-no-files-found: ignore
+
+  # 失敗通知：任一 job 失敗或取消 → 開（或在既有的追蹤 issue 留言）；恢復全綠 → 留言並關閉。
+  # 只在 main 執行，避免分支上手動觸發的試跑開 issue。邏輯與單元測試在 .github/scripts/nightly-issue{,.test}.js。
+  notify:
+    name: 失敗通知（追蹤 issue）
+    needs: [codeql, semgrep-full, g1-full, evals]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          sparse-checkout: .github/scripts
+      - name: 下載 evals 結果（可能不存在：evals job 失敗時）
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: vibesec-nightly-evals
+          path: _evals
+      - name: 開／更新／關閉追蹤 issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { run } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/nightly-issue.js`);
+            const needs = JSON.parse(process.env.NEEDS_JSON);
+            let evals = null;
+            try { evals = JSON.parse(fs.readFileSync('_evals/evals.json', 'utf8')); } catch (e) { core.info(`無 evals.json：${e.message}`); }
+            const r = await run({ github, context, core, needs, evals });
+            core.info(`結果：${JSON.stringify(r)}`);
