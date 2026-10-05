@@ -7,8 +7,12 @@ executed:
   - g0-trifecta-pos-02
   - g1-cooldown-neg-01
   - g1-cooldown-pos-01
+  - g1-kev-neg-01
+  - g1-kev-pos-01
   - g1-postinstall-neg-01
   - g1-postinstall-pos-01
+  - g1-rulesfile-neg-01
+  - g1-rulesfile-pos-01
   - g1-slopsquat-neg-01
   - g1-slopsquat-pos-01
   - g1-slopsquat-pos-02

@@ -29,6 +29,8 @@ held_out:
 - g6-promptfoo-fail-not-incomplete-01
 - g6-sysprompt-pos-01
 held_in:
+- g1-kev-neg-01
+- g1-rulesfile-neg-01
 - g0-trifecta-neg-01
 - g0-trifecta-neg-02
 - g0-trifecta-pos-01
