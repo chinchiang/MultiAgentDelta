@@ -75,22 +75,74 @@ agents:
       human_in_the_loop:
         - kind: claude_permission
           ref: .claude/settings.json
-          rules:                         # high_impact_tools 對應的工具呼叫：每次都需人確認
-            - mcp__github__merge_pull_request          # merge_pull_request
-            - Bash(gh pr merge *)
-            - Bash(git push --force *)                 # force_push_own_branch
-            - Bash(git push -f *)
-            - Bash(git push --force-with-lease *)
-            - Bash(git push * --force*)                # 旗標在 remote／branch 之後
-            - Bash(git push * -f *)
-            - Bash(git push * -f)                      # -f 在最後（第四次 harness 審查 N4）
-            - Bash(git push *+*)                       # refspec 以 + 強制更新（git push origin +branch）
-            - Bash(gh api *)                           # REST 直接呼叫（merge、dispatch、改 ref）
-            - Bash(gh pr ready *)
-            - mcp__github__actions_run_trigger         # dispatch_workflow
-            - Bash(gh workflow run *)
-            - mcp__claude-code-remote__create_trigger  # create_or_delete_trigger
+          rules:                         # 每條都必須在 .claude/settings.json 的 ask／deny（g0 驗證）
+            - mcp__github__merge_pull_request
+            - mcp__github__enable_pr_auto_merge
+            - "Bash(gh pr merge *)"
+            - "Bash(gh -R * pr merge*)"
+            - "Bash(gh --repo * pr merge*)"
+            - "Bash(gh api *)"
+            - "Bash(curl *api.github.com*)"
+            - "Bash(gh pr ready *)"
+            - "Bash(git push --force *)"
+            - "Bash(git push -f *)"
+            - "Bash(git push --force-with-lease *)"
+            - "Bash(git push * --force*)"
+            - "Bash(git push * -f *)"
+            - "Bash(git push * -f)"
+            - "Bash(git push *+*)"
+            - "Bash(git push --mirror*)"
+            - "Bash(git push * --mirror*)"
+            - "Bash(git push --delete *)"
+            - "Bash(git push * --delete *)"
+            - "Bash(git -C * push *)"
+            - mcp__github__push_files
+            - mcp__github__create_or_update_file
+            - mcp__github__delete_file
+            - mcp__github__update_pull_request_branch
+            - mcp__github__actions_run_trigger
+            - "Bash(gh workflow run *)"
+            - "Bash(gh -R * workflow run*)"
+            - mcp__claude-code-remote__create_trigger
+            - mcp__claude-code-remote__update_trigger
             - mcp__claude-code-remote__delete_trigger
+            - mcp__claude-code-remote__fire_trigger
+          covers:                        # high_impact_tools → 擋住它的規則；每個工具至少一條（g0 驗證，N1）
+            merge_pull_request:
+              - mcp__github__merge_pull_request
+              - mcp__github__enable_pr_auto_merge  # auto-merge 等同延後合併
+              - "Bash(gh pr merge *)"
+              - "Bash(gh -R * pr merge*)"  # gh 全域旗標在子命令前
+              - "Bash(gh --repo * pr merge*)"
+              - "Bash(gh api *)"  # REST／GraphQL 直接呼叫
+              - "Bash(curl *api.github.com*)"  # curl 直接呼叫 REST
+              - "Bash(gh pr ready *)"
+            force_push_own_branch:
+              - "Bash(git push --force *)"
+              - "Bash(git push -f *)"
+              - "Bash(git push --force-with-lease *)"
+              - "Bash(git push * --force*)"  # 旗標在 remote／branch 之後
+              - "Bash(git push * -f *)"
+              - "Bash(git push * -f)"  # -f 在最後（N4）
+              - "Bash(git push *+*)"  # refspec 以 + 強制更新
+              - "Bash(git push --mirror*)"
+              - "Bash(git push * --mirror*)"
+              - "Bash(git push --delete *)"  # 刪除遠端分支
+              - "Bash(git push * --delete *)"
+              - "Bash(git -C * push *)"  # git 全域旗標在子命令前
+              - mcp__github__push_files  # 以 API 寫入分支
+              - mcp__github__create_or_update_file
+              - mcp__github__delete_file
+              - mcp__github__update_pull_request_branch
+            dispatch_workflow:
+              - mcp__github__actions_run_trigger
+              - "Bash(gh workflow run *)"
+              - "Bash(gh -R * workflow run*)"
+            create_or_delete_trigger:
+              - mcp__claude-code-remote__create_trigger
+              - mcp__claude-code-remote__update_trigger
+              - mcp__claude-code-remote__delete_trigger
+              - mcp__claude-code-remote__fire_trigger
           note: 只約束在本 repo 執行的 Claude Code；以 bypassPermissions 或更高層設定（managed／user）放行時不受此約束，殘留風險見 t-hitl-bypass
     trifecta_leg_cut: null
   - id: c-reviewers
@@ -141,7 +193,7 @@ threats:
   - id: t-hitl-bypass
     category: MAESTRO-L3
     target: c-claude
-    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 bash -c 包裝、curl 直接呼叫 REST API、腳本內呼叫）執行高影響操作時，HITL 不生效。ask 規則是前綴比對，只能縮小缺口，不能完整枚舉。
+    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 bash -c／sh -c 包裝、env 前綴、shell alias、寫成腳本再執行、以 python／node 直接呼叫 API）執行高影響操作時，HITL 不生效。g0 只驗證每個 high_impact_tools 至少有一條規則（covers），不驗證等價呼叫全被涵蓋。ask 規則是前綴比對，只能縮小缺口，不能完整枚舉。
     mitigation: ask 規則涵蓋已知的 merge／force push／dispatch／trigger 入口；branch protection 應禁止 force push 到 main 並要求 code owner review（GitHub 設定，靜態無法驗證）。
     status: accepted
     gate: G4

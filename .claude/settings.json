@@ -18,7 +18,21 @@
       "mcp__claude-code-remote__create_trigger",
       "mcp__claude-code-remote__update_trigger",
       "mcp__claude-code-remote__delete_trigger",
-      "mcp__claude-code-remote__fire_trigger"
+      "mcp__claude-code-remote__fire_trigger",
+      "mcp__github__enable_pr_auto_merge",
+      "Bash(gh -R * pr merge*)",
+      "Bash(gh --repo * pr merge*)",
+      "Bash(curl *api.github.com*)",
+      "Bash(git push --mirror*)",
+      "Bash(git push * --mirror*)",
+      "Bash(git push --delete *)",
+      "Bash(git push * --delete *)",
+      "Bash(git -C * push *)",
+      "mcp__github__push_files",
+      "mcp__github__create_or_update_file",
+      "mcp__github__delete_file",
+      "mcp__github__update_pull_request_branch",
+      "Bash(gh -R * workflow run*)"
     ]
   }
 }

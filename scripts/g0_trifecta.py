@@ -30,8 +30,10 @@ def _permission_rules(path: Path) -> set[str] | None:
     return {str(r) for k in ("ask", "deny") for r in perms.get(k) or []}
 
 
-def verify_mitigation(name: str, evidence: list[dict], root: Path) -> tuple[bool, str]:
-    """mitigation 是否有可驗證的落實：至少一筆證據，且每筆證據列出的規則都在對應設定檔的 ask／deny 中。"""
+def verify_mitigation(name: str, evidence: list[dict], root: Path, high_impact: list[str] | tuple = ()) -> tuple[bool, str]:
+    """mitigation 是否有可驗證的落實：至少一筆證據，且每筆證據列出的規則都在對應設定檔的 ask／deny 中。
+    human_in_the_loop 另須涵蓋 agent 的每個 high_impact_tools：證據的 covers 把工具對到規則（第四次 harness 審查 N1）。
+    只驗證「每個工具至少有一條規則」，不驗證規則能擋住該工具的所有等價呼叫（前綴比對的限制見 t-hitl-bypass）。"""
     if not evidence:
         return False, f"{name}：沒有 mitigation_evidence"
     for ev in evidence:
@@ -46,6 +48,14 @@ def verify_mitigation(name: str, evidence: list[dict], root: Path) -> tuple[bool
         missing = [r for r in ev.get("rules") or [] if r not in have]
         if not ev.get("rules") or missing:
             return False, f"{name}：{rel} 的 ask／deny 缺 " + ("、".join(missing) if missing else "（未列規則）")
+        stray = [r for rs in (ev.get("covers") or {}).values() for r in rs or [] if r not in (ev.get("rules") or [])]
+        if stray:
+            return False, f"{name}：covers 引用了 rules 以外的規則 " + "、".join(stray)
+    if name == "human_in_the_loop" and high_impact:
+        covered = {t for ev in evidence for t, rs in (ev.get("covers") or {}).items() if rs}
+        uncovered = [t for t in high_impact if t not in covered]
+        if uncovered:
+            return False, f"{name}：high_impact_tools 未被任何規則涵蓋 " + "、".join(uncovered)
     return True, f"{name}：已由 " + "、".join(str(e.get("ref")) for e in evidence) + " 落實"
 
 
@@ -68,7 +78,8 @@ def trifecta_findings(threat_model: dict, root: Path | None = None) -> list[dict
         if not all(a.get(k) is True for k in LEGS) or a.get("trifecta_leg_cut") is not None:
             continue
         evid = a.get("mitigation_evidence") or {}
-        results = [verify_mitigation(m, evid.get(m) or [], root) for m in a.get("mitigations") or []]
+        results = [verify_mitigation(m, evid.get(m) or [], root, a.get("high_impact_tools") or [])
+                   for m in a.get("mitigations") or []]
         if any(ok for ok, _ in results):
             continue
         why = "；".join(msg for _, msg in results) if results else "沒有 mitigation"
@@ -84,6 +95,8 @@ def selftest() -> list[str]:
     agent = lambda **kw: {"agents": [{"id": "a", "accesses_private_data": True, "exposed_to_untrusted_content": True,
                                       "can_communicate_externally": True, "trifecta_leg_cut": None, **kw}]}
     ev = lambda rules, ref=".claude/settings.json": {"human_in_the_loop": [{"kind": "claude_permission", "ref": ref, "rules": rules}]}
+    cov = lambda rules, covers: {"human_in_the_loop": [{"kind": "claude_permission", "ref": ".claude/settings.json",
+                                                        "rules": rules, "covers": covers}]}
     with tempfile.TemporaryDirectory() as d:
         root = Path(d); (root / ".claude").mkdir()
         (root / ".claude/settings.json").write_text(json.dumps({"permissions": {"ask": ["mcp__x__merge"], "deny": ["Bash(rm *)"]}}))
@@ -96,6 +109,14 @@ def selftest() -> list[str]:
             ("ask＋deny 皆涵蓋", agent(mitigations=["human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge", "Bash(rm *)"])), False),
             ("已切腳", agent(mitigations=[], trifecta_leg_cut="external_comms"), False),
             ("一項可驗證即可", agent(mitigations=["tool_allowlist", "human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge"])), False),
+            ("high_impact_tools 全涵蓋", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge", "rm"],
+                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"], "rm": ["Bash(rm *)"]})), False),
+            ("high_impact_tools 有未涵蓋者", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge", "rm"],
+                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"]})), True),
+            ("high_impact_tools 但沒有 covers", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge"],
+                mitigation_evidence=ev(["mcp__x__merge"])), True),
+            ("covers 引用 rules 以外的規則", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge"],
+                mitigation_evidence=cov(["mcp__x__merge"], {"merge": ["mcp__x__other"]})), True),
         ]
         for label, tm, expect in cases:
             if bool(trifecta_findings(tm, root)) != expect:
