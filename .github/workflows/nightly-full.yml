@@ -113,7 +113,7 @@ jobs:
 
       - name: Trivy 全庫掃描（SARIF）
         continue-on-error: true
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0（v0.0.1–v0.34.2 受 CVE-2026-33634 影響）
         with:
           scan-type: fs
           scan-ref: .
@@ -184,8 +184,9 @@ jobs:
           print(f"寫出 reports/enrichment.json（{len(enrichment)} 筆）")
           EOF
 
-      # KEV 命中 → vibesec.g1.kev-hit（blocking）。不設 continue-on-error：缺 grype 結果或 KEV feed（下載失敗且無快取）
-      # 時 scripts/g1_kev.py 退出碼 2，讓 job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
+      # KEV 命中 → vibesec.g1.kev-hit（blocking）。不設 continue-on-error：有命中時 scripts/g1_kev.py 退出碼 1、
+      # 缺 grype 結果或 KEV feed（下載失敗且無快取）時退出碼 2（incomplete ≠ pass，CLAUDE.md #2），兩者都讓 job 變紅並由 notify 開 issue。
+      # SARIF 照常上傳（下一步 if: always()）。
       - name: G1 KEV 命中（vibesec.g1.kev-hit）
         run: |
           python3 scripts/g1_kev.py --grype reports/grype-full.json --kev-feed .cache/kev.json \

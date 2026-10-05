@@ -140,7 +140,7 @@ jobs:
 
       - name: Trivy 檔案系統掃描（vuln → SARIF）
         continue-on-error: true
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0（v0.0.1–v0.34.2 受 CVE-2026-33634 影響）
         with:
           scan-type: fs
           scan-ref: .
@@ -305,7 +305,7 @@ jobs:
 
       - name: Trivy config 掃描（IaC misconfig → SARIF）
         continue-on-error: true
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0（v0.0.1–v0.34.2 受 CVE-2026-33634 影響）
         with:
           scan-type: config
           scan-ref: .
