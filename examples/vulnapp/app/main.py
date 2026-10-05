@@ -46,6 +46,21 @@ app = FastAPI(
 )
 
 
+# ---- CORS 錯誤設定：反射任意 Origin 並允許 credentials（G5 cors_reflect_origin）----
+# 修補版只允許固定白名單（靶場沒有前端，清單只放示意網域），不反射、也不對陌生 Origin 帶 credentials。
+CORS_ALLOWED_ORIGINS = {"https://app.vulnapp.example"}
+
+
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
+    if origin and (not PATCHED or origin in CORS_ALLOWED_ORIGINS):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Vary"] = "Origin"
+    return response
+
 # ---- Debug 模式錯誤回應：未處理例外回吐 stack trace（G5 debug_stacktrace）----
 @app.exception_handler(Exception)
 async def debug_exception_handler(request: Request, exc: Exception):

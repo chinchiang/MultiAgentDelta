@@ -62,6 +62,7 @@ held_in:
 - g4-unicode-neg-01
 - g4-unicode-pos-01
 - g5-bola-neg-01
+- g5-cors-neg-01
 - g5-bola-pos-01
 - g5-jwt-pos-02
 - g5-session-pos-01
