@@ -205,13 +205,14 @@ jobs:
           else
             echo "::error::.env* 未列入 .gitignore（require_env_in_gitignore: true）"; fail=1
           fi
-          TRACKED=$(git ls-files | grep -E '(^|/)\.env(\..*)?$' || true)
+          # docs/03 §4：範本 .env.example 不算（只放佔位值、本來就該提交）；其餘 .env* 被追蹤即失敗
+          TRACKED=$(git ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -Ev '(^|/)\.env\.example$' || true)
           if [ -n "$TRACKED" ]; then
             echo "::error::偵測到已追蹤的 .env 檔："; echo "$TRACKED"; fail=1
           else
             echo "OK: 無已追蹤的 .env 檔"
           fi
-          echo "{\"gate\":\"G2\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
+          echo "{\"gate\":\"G2\",\"rule_id\":\"vibesec.g2.env-not-ignored\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
           if [ "${VIBESEC_MODE}" = "enforce" ] && [ "$fail" = "1" ]; then exit 1; fi
 
       - name: Upload Gitleaks SARIF（若產生）

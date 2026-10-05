@@ -4,10 +4,16 @@ executed:
   - g1-slopsquat-neg-01
   - g1-slopsquat-pos-01
   - g1-slopsquat-pos-02
+  - g2-envignore-neg-01
+  - g2-envignore-pos-01
   - g2-llmkey-neg-01
   - g2-llmkey-pos-01
+  - g2-secret-neg-01
+  - g2-secret-pos-01
   - g3-cmdi-neg-01
   - g3-cmdi-pos-01
+  - g3-imds-neg-01
+  - g3-imds-pos-01
   - g3-jwt-none-neg-01
   - g3-jwt-none-pos-01
   - g3-sqli-neg-01

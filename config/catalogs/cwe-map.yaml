@@ -5,6 +5,8 @@
 # 外部工具規則（gitleaks:、semgrep:、checkov:、zap: …）若未列於此，harness 以工具自帶的 CWE 標籤為準，
 # 並在 notes 標記「cwe_source: tool」。
 # policy_tier 僅為預設建議；正式阻擋與否以 config/policy/blocking-policy.yaml 為準。
+# implemented_by（選填）：實際偵測此規則的外部工具規則，格式 <tool>:<規則 ID>（gitleaks:…、checkov:…）。
+#   scripts/validate.py 檢查它們確實存在且會在 CI 執行；scripts/run_evals.py 用它把工具命中對回 vibesec 規則。
 
 version: 1
 updated: "2026-10-03"
@@ -99,12 +101,19 @@ rules:
     control_ids: [ASVS5-V13.3, MAESTRO-L3]
     gate: G2
     policy_tier: blocking
+    # 由哪些外部工具規則實作（<tool>:<規則 ID>）；run_evals.py 據此把工具命中對回 vibesec 規則，validate.py 檢查這些 ID 確實存在
+    implemented_by: [gitleaks:vibesec-openai-api-key, gitleaks:vibesec-anthropic-api-key, gitleaks:vibesec-deepseek-api-key,
+                     gitleaks:vibesec-glm-zhipu-api-key, gitleaks:vibesec-google-ai-studio-key, gitleaks:vibesec-huggingface-token,
+                     gitleaks:vibesec-supabase-service-role-jwt, gitleaks:vibesec-supabase-service-role-keyword,
+                     gitleaks:vibesec-jwt-secret-assignment, gitleaks:vibesec-generic-high-entropy]
   vibesec.g2.hardcoded-llm-key:
     cwe: CWE-798
     title: "硬編碼 LLM 供應商金鑰（sk-…、sk-ant-api03-…、sk-proj-…、GLM id.secret）"
     control_ids: [ASVS5-V13.3, MAESTRO-L3]
     gate: G2
     policy_tier: blocking
+    implemented_by: [gitleaks:vibesec-openai-api-key, gitleaks:vibesec-anthropic-api-key, gitleaks:vibesec-deepseek-api-key,
+                     gitleaks:vibesec-glm-zhipu-api-key, gitleaks:vibesec-google-ai-studio-key]
   vibesec.g2.env-not-ignored:
     cwe: CWE-538
     title: ".env 存在但未列入 .gitignore，或 .env 已被提交"
@@ -149,6 +158,7 @@ rules:
     control_ids: [ASVS5-V13.2, MAESTRO-L4]
     gate: G3
     policy_tier: blocking
+    implemented_by: [checkov:CKV2_VIBESEC_1, checkov:CKV_AWS_79]
   vibesec.g3.cors-wildcard:
     cwe: CWE-942
     title: "CORS allow_origins 含 * 或反射任意 Origin（IaC 或程式層）"
