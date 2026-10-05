@@ -595,8 +595,11 @@ jobs:
               last.set(r.user.login.toLowerCase(), r);
             }
             const author = pr.user.login.toLowerCase();
+            // 只採計有 repo 寫入關係者的核准：公開 repo 上任何帳號都能 approve（第三次 harness 審查 N2）
+            const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
             const ok = [...last.entries()]
-              .filter(([login, r]) => login !== author && r.state === 'APPROVED' && r.commit_id === pr.head.sha)
+              .filter(([login, r]) => login !== author && r.state === 'APPROVED' && r.commit_id === pr.head.sha
+                && TRUSTED.has(r.author_association))
               .map(([login]) => login);
             core.info(`head ${pr.head.sha} 上的非作者 approve：${ok.join(', ') || '（無）'}`);
             core.setOutput('approvers', ok.join(','));
