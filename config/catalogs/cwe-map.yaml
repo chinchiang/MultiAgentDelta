@@ -376,14 +376,12 @@ rules:
     control_ids: [ASVS5-V15.1]
     gate: G3
     policy_tier: advisory
-    not_implemented: "沒有任何工具或步驟發出此規則；.checkov.yaml 註解所稱的 CKV_GHA_7 實為 workflow_dispatch inputs 檢查"
   vibesec.g3.actions-unpinned-action:
     cwe: CWE-829
     title: "第三方 Action 未釘選完整 commit SHA（供應鏈竄改風險）"
     control_ids: [ASVS5-V15.1]
     gate: G3
     policy_tier: advisory
-    not_implemented: "沒有任何工具或步驟發出此規則；checkov 的 CKV_GHA_* 不含此檢查"
   vibesec.g3.missing-csp:
     cwe: CWE-693
     title: "缺少 Content-Security-Policy 標頭（XSS 縱深防禦缺口；非程式缺陷）"

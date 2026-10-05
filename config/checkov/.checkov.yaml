@@ -81,7 +81,7 @@ check:
   - CKV_GHA_2       # No run: with injectable context（script injection）
   - CKV_GHA_7       # workflow_dispatch 不得有 inputs（建置輸出不受使用者參數影響，SLSA）
   - CKV2_GHA_1      # Workflow 頂層 permissions 不得為 write-all
-  # 注意：checkov 沒有「pull_request_target + checkout PR head」的檢查；該風險對應 vibesec.g3.actions-pull-request-target，目前未實作（見 cwe-map.yaml not_implemented）
+  # 注意：checkov 沒有「pull_request_target + checkout PR head」的檢查；該風險對應 vibesec.g3.actions-pull-request-target，由 semgrep 規則 vibesec.g3.actions-pull-request-target 實作（config/semgrep/vibesec-rules.yaml）
   # ---- Secrets（Checkov 內建；G2 的第二道）----
   - CKV_SECRET_6    # Base64 high entropy string
   - CKV_SECRET_2    # AWS access key
