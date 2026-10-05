@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """VibeSec G1：相依套件的 CVE 若收錄於 CISA KEV → 發出 vibesec.g1.kev-hit（blocking，見 config/policy/blocking-policy.yaml）。
+其餘 grype 命中的已知漏洞 → vibesec.g1.vulnerable-dependency（advisory）；同一漏洞只歸一條規則（KEV 優先）。
 
 輸入：grype JSON（`grype ... -o json`）與 CISA KEV feed（known_exploited_vulnerabilities.json）。
 輸出：SARIF（上傳 Code Scanning）與 JSON 摘要。
@@ -21,6 +22,7 @@ from __future__ import annotations
 import argparse, datetime, json, pathlib, re, sys
 
 RULE = "vibesec.g1.kev-hit"
+VULN_RULE = "vibesec.g1.vulnerable-dependency"
 CVE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
 # Code Scanning 只收 repo 內檔案：套件位置取不到時，指向產生此結果的 workflow（與 G5 探針一致）
 FALLBACK_URI = ".github/workflows/nightly-full.yml"
@@ -68,7 +70,39 @@ def find_hits(grype: dict, kev: dict[str, str | None]) -> list[dict]:
     return sorted(hits, key=lambda h: (h["cve"], h["package"] or "", h["version"] or ""))
 
 
-def to_sarif(hits: list[dict]) -> dict:
+def best_cvss(v: dict) -> dict | None:
+    """取 grype 提供的 CVSS：v4.0 優先，其次 v3.x。只照抄向量與分數，不換算、不與 EPSS／KEV 相乘（CLAUDE.md #4）。"""
+    entries = [c for c in v.get("cvss") or [] if isinstance(c, dict) and c.get("vector")]
+    def rank(c):
+        ver = str(c.get("version") or "")
+        return (ver.startswith("4"), ver)
+    if not entries:
+        return None
+    c = max(entries, key=rank)
+    return {"version": c.get("version"), "vector": c.get("vector"),
+            "base_score": (c.get("metrics") or {}).get("baseScore")}
+
+
+def find_vulns(grype: dict, kev: dict[str, str | None]) -> list[dict]:
+    """KEV 以外的已知漏洞。任一關聯 CVE 在 KEV 中 → 交給 kev-hit，不重複列為 advisory。"""
+    out, seen = [], set()
+    for m in grype.get("matches") or []:
+        art, v = m.get("artifact") or {}, m.get("vulnerability") or {}
+        vid, cves = v.get("id"), match_cves(m)
+        if not vid or any(c in kev for c in cves):
+            continue
+        key = (vid, art.get("name"), art.get("version"))
+        if key in seen:
+            continue
+        seen.add(key)
+        fix = v.get("fix") or {}
+        out.append({"id": vid, "cves": cves, "severity": v.get("severity"), "cvss": best_cvss(v),
+                    "package": art.get("name"), "version": art.get("version"), "ecosystem": art.get("type"),
+                    "fixed_versions": fix.get("versions") or [], "uri": repo_uri(art)})
+    return sorted(out, key=lambda h: (h["id"], h["package"] or "", h["version"] or ""))
+
+
+def to_sarif(hits: list[dict], vulns: list[dict] | None = None) -> dict:
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "相依套件 CVE 收錄於 CISA KEV（已遭實際利用）"},
             "defaultConfiguration": {"level": "error"}, "properties": {"policy_tier": "blocking"}}
     results = [{
@@ -80,11 +114,23 @@ def to_sarif(hits: list[dict]) -> dict:
         "properties": {"policy_tier": "blocking", "cve": h["cve"], "kev": True, "kev_date": h["kev_date"],
                        "package": h["package"], "version": h["version"], "ecosystem": h["ecosystem"]},
     } for h in hits]
+    vrule = {"id": VULN_RULE, "name": VULN_RULE, "shortDescription": {"text": "相依套件含已知漏洞（未收錄於 KEV）"},
+             "defaultConfiguration": {"level": "warning"}, "properties": {"policy_tier": "advisory"}}
+    results += [{
+        "ruleId": VULN_RULE, "level": "warning",
+        "message": {"text": f"{h['package']}@{h['version']} 含 {h['id']}（{h['severity'] or '嚴重度未知'}）"
+                            + (f"；可升級至 {', '.join(h['fixed_versions'])}" if h["fixed_versions"] else "；尚無修正版")},
+        "locations": [{"physicalLocation": {"artifactLocation": {"uri": h["uri"]}}}],
+        # CVSS 原樣分欄；EPSS 由 nightly 富化另記（enrichment.json），這裡不混算
+        "properties": {"policy_tier": "advisory", "vuln_id": h["id"], "cves": h["cves"], "kev": False,
+                       "grype_severity": h["severity"], "cvss": h["cvss"],
+                       "package": h["package"], "version": h["version"], "ecosystem": h["ecosystem"]},
+    } for h in (vulns or [])]
     return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
             "version": "2.1.0",
             "runs": [{"tool": {"driver": {"name": "vibesec-g1-kev", "version": "1.0.0",
                                           "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                          "rules": [rule]}}, "results": results}]}
+                                          "rules": [rule, vrule]}}, "results": results}]}
 
 
 def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[dict]]:
@@ -100,10 +146,10 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
         grype = json.loads(grype_path.read_text(encoding="utf-8"))
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
         return {**base, "status": "incomplete", "status_reason": f"輸入無法解析：{type(e).__name__}: {e}"}, []
-    hits = find_hits(grype, kev)
+    hits, vulns = find_hits(grype, kev), find_vulns(grype, kev)
     return {**base, "status": "fail" if hits else "pass", "status_reason": None, "kev_catalog_size": len(kev),
             "kev_catalog_released": released,
-            "matches_checked": len(grype.get("matches") or []), "hits": hits}, hits
+            "matches_checked": len(grype.get("matches") or []), "hits": hits, "vulnerable": vulns}, hits
 
 
 KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
@@ -126,6 +172,7 @@ def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | Non
     g["status_reason"] = "；".join(reasons) or None
     fc = g.setdefault("findings_count", {"blocking": 0, "advisory": 0})
     fc["blocking"] = int(fc.get("blocking") or 0) + len(hits)
+    fc["advisory"] = int(fc.get("advisory") or 0) + len(summary.get("vulnerable") or [])
     g.setdefault("tools", []).append({"name": "vibesec-g1-kev", "version": "1.0.0", "state": "ran",
                                       "exit_code": {"pass": 0, "fail": 1, "incomplete": 2}[kev_status],
                                       "output_ref": sarif_ref, "duration_seconds": None})
@@ -147,7 +194,10 @@ def selftest() -> list[str]:
         # GHSA 主 ID、CVE 在 relatedVulnerabilities
         {"vulnerability": {"id": "GHSA-jfh8-c2jp-5v3q"}, "relatedVulnerabilities": [{"id": "CVE-2021-44228"}],
          "artifact": {"name": "log4j-api", "version": "2.14.1", "locations": [{"path": "/../../etc/passwd"}]}},
-        {"vulnerability": {"id": "CVE-2099-0001"}, "artifact": {"name": "safe", "version": "1.0"}},
+        {"vulnerability": {"id": "CVE-2099-0001", "severity": "High",
+                           "cvss": [{"version": "3.1", "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "metrics": {"baseScore": 9.8}},
+                                    {"version": "4.0", "vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N", "metrics": {"baseScore": 9.3}}]},
+         "artifact": {"name": "safe", "version": "1.0"}},
     ]}
     with tempfile.TemporaryDirectory() as d:
         g, k = pathlib.Path(d, "g.json"), pathlib.Path(d, "k.json")
@@ -163,6 +213,19 @@ def selftest() -> list[str]:
         r0 = sarif["runs"][0]["results"][0] if hits else {}
         if r0.get("ruleId") != RULE or r0.get("properties", {}).get("kev_date") != "2021-12-10" or "cvss" in json.dumps(r0).lower():
             fails.append("SARIF 結果應為 kev-hit、帶 kev_date，且不混入 CVSS")
+        # vulnerable-dependency：KEV 關聯（含 GHSA→CVE）不重複列；CVE-2099-0001 列為 advisory、帶 CVSS v4 優先
+        vulns = s.get("vulnerable") or []
+        if [v["id"] for v in vulns] != ["CVE-2099-0001"]:
+            fails.append(f"非 KEV 漏洞應只有 CVE-2099-0001：{vulns}")
+        elif (vulns[0]["cvss"] or {}).get("version") != "4.0":
+            fails.append(f"CVSS 應優先取 v4.0：{vulns[0]['cvss']}")
+        vs = to_sarif(hits, vulns)["runs"][0]
+        vr = [r for r in vs["results"] if r["ruleId"] == VULN_RULE]
+        if len(vr) != 1 or vr[0]["level"] != "warning" or vr[0]["properties"]["policy_tier"] != "advisory" \
+                or "epss" in json.dumps(vr[0]).lower():
+            fails.append("vulnerable-dependency 應為 advisory warning，且不混入 EPSS")
+        if {r["id"] for r in vs["tool"]["driver"]["rules"]} != {RULE, VULN_RULE}:
+            fails.append("SARIF 應宣告兩條規則")
         # 沒有命中：pass（不是 incomplete）
         g.write_text(json.dumps({"matches": [grype["matches"][3]]}))
         if run(g, k)[0]["status"] != "pass":
@@ -182,8 +245,8 @@ def selftest() -> list[str]:
     base = {"gate": "G1", "status": "pass", "status_reason": None, "findings_count": {"blocking": 0, "advisory": 2},
             "tools": [], "coverage": []}
     hit = [{"cve": "CVE-2021-44228"}]
-    m = merge_gate(base, {"status": "fail"}, hit, "r.sarif")
-    if m["status"] != "fail" or m["findings_count"] != {"blocking": 1, "advisory": 2} or m["coverage"][-1]["state"] != "fail":
+    m = merge_gate(base, {"status": "fail", "vulnerable": [{"id": "x"}]}, hit, "r.sarif")
+    if m["status"] != "fail" or m["findings_count"] != {"blocking": 1, "advisory": 3} or m["coverage"][-1]["state"] != "fail":
         fails.append(f"KEV 命中應讓 G1 fail 並加 1 筆 blocking：{m}")
     m = merge_gate(base, {"status": "incomplete", "status_reason": "缺 KEV feed"}, [], None)
     if m["status"] != "incomplete" or "缺 KEV feed" not in (m["status_reason"] or "") or m["coverage"][-1]["state"] != "untested":
@@ -226,7 +289,9 @@ def main(argv=None) -> int:
     if summary["status"] == "incomplete":
         print(f"::error::KEV 檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
         return 2
-    pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits), ensure_ascii=False, indent=2), encoding="utf-8")
+    vulns = summary.get("vulnerable") or []
+    pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits, vulns), ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"已知漏洞（非 KEV，advisory）：{len(vulns)} 筆")
     print(f"KEV：檢查 {summary['matches_checked']} 筆 grype 結果，命中 {len(hits)} 筆"
           + "".join(f"\n  {h['cve']} {h['package']}@{h['version']}（KEV {h['kev_date']}）" for h in hits))
     if hits:
