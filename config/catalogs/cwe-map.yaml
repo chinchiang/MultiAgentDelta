@@ -7,6 +7,9 @@
 # policy_tier 僅為預設建議；正式阻擋與否以 config/policy/blocking-policy.yaml 為準。
 # implemented_by（選填）：實際偵測此規則的外部工具規則，格式 <tool>:<規則 ID>（gitleaks:…、checkov:…）。
 #   scripts/validate.py 檢查它們確實存在且會在 CI 執行；scripts/run_evals.py 用它把工具命中對回 vibesec 規則。
+#   支援 gitleaks:、checkov:、promptfoo:<plugin>、zap:<alert id>；review:G0-threat-model／review:G4-llm-review 表示由人工／LLM 審查涵蓋（非自動）。
+# not_implemented（選填）："<理由>"——目前沒有任何偵測。validate.py 要求每條規則都有實作或其一標記；
+#   blocking 規則（blocking-policy.yaml）只接受自動實作，review／not_implemented 都不算（否則政策會擋、實際不會擋）。
 
 version: 1
 updated: "2026-10-03"
@@ -74,12 +77,14 @@ rules:
     control_ids: [ASVS5-V15.2, VS-G1-SBOM]
     gate: G1
     policy_tier: advisory
+    not_implemented: "grype／trivy 以原生 CVE ID（grype:、trivy:）回報，尚未對回此規則"
   vibesec.g1.unmaintained-dependency:
     cwe: CWE-1104
     title: "套件已停止維護或被標記 deprecated"
     control_ids: [ASVS5-V15.2]
     gate: G1
     policy_tier: advisory
+    not_implemented: "slopcheck 不查維護狀態（最後發布日、封存）"
   vibesec.g1.rules-file-unknown-package:
     cwe: CWE-1357
     title: ".cursorrules / AGENTS.md / SKILL.md / Markdown 中出現未知或黑名單套件安裝指令"
@@ -93,6 +98,7 @@ rules:
     control_ids: [VS-G0-LETHAL-TRIFECTA, LLM06:2025, MAESTRO-L7]
     gate: G0
     policy_tier: blocking
+    implemented_by: [review:G0-threat-model]   # 威脅模型審查（docs/01）；非自動偵測
 
   # ---------------- G2 機密與金鑰 ----------------
   vibesec.g2.hardcoded-secret:
@@ -165,12 +171,14 @@ rules:
     control_ids: [ASVS5-V3.3]
     gate: G3
     policy_tier: advisory
+    implemented_by: [checkov:CKV2_VIBESEC_2]
   vibesec.g3.dockerfile-root-user:
     cwe: CWE-250
     title: "Dockerfile 未宣告非 root USER（對應 checkov:CKV_DOCKER_3 / CKV_DOCKER_8）"
     control_ids: [ASVS5-V13.2, MAESTRO-L4]
     gate: G3
     policy_tier: advisory
+    implemented_by: [checkov:CKV_DOCKER_3, checkov:CKV_DOCKER_8]
   vibesec.g3.jwt-alg-none:
     cwe: CWE-347
     title: "程式層允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）"
@@ -222,6 +230,7 @@ rules:
     control_ids: [ASVS5-V2.3, LLM06:2025, MAESTRO-L3]
     gate: G4
     policy_tier: advisory
+    implemented_by: [review:G4-llm-review]   # 多模型審查（docs/09）；非自動偵測
   vibesec.g4.rules-file-invisible-unicode:
     cwe: CWE-94
     title: "Agent 規則檔含零寬 / bidi / BOM 等隱形 Unicode（Rules File Backdoor）"
@@ -235,6 +244,7 @@ rules:
     control_ids: [ASVS5-V10.1, VS-G4-MCP-RESOURCE-INDICATOR, MAESTRO-L3]
     gate: G4
     policy_tier: advisory
+    implemented_by: [review:G4-llm-review]
 
   # ---------------- G5 DAST 與 API ----------------
   vibesec.g5.bola-cross-account:
@@ -249,6 +259,7 @@ rules:
     control_ids: [ASVS5-V7.1]
     gate: G5
     policy_tier: blocking
+    not_implemented: "G5 api-probes 沒有工作階段失效檢查"
   vibesec.g5.jwt-alg-none:
     cwe: CWE-347
     title: "伺服器接受 alg:none 且無簽章的 JWT"
@@ -303,6 +314,7 @@ rules:
     control_ids: [ASVS5-V3.3]
     gate: G5
     policy_tier: blocking
+    implemented_by: [zap:40040]
 
   # ---------------- G6 LLM / Agent 紅隊 ----------------
   vibesec.g6.direct-prompt-injection:
@@ -342,6 +354,7 @@ rules:
     control_ids: [LLM06:2025, VS-G4-AGENT-TOOL-ALLOWLIST, MAESTRO-L3]
     gate: G6
     policy_tier: blocking
+    implemented_by: [promptfoo:excessive-agency]   # 生成層需模型金鑰；無金鑰時該層記 untested
 
   # ---------------- 補充：policy 引用但先前未列的規則 ----------------
   vibesec.g1.kev-hit:
@@ -356,24 +369,28 @@ rules:
     control_ids: [ASVS5-V15.1, VS-G1-SBOM]
     gate: G1
     policy_tier: advisory
+    not_implemented: "nightly 產生 SBOM，但沒有檢查 provenance／attestation"
   vibesec.g3.actions-pull-request-target:
     cwe: CWE-94
     title: "GitHub Actions 以 pull_request_target 處理不可信輸入，具腳本注入 / 權限外洩風險"
     control_ids: [ASVS5-V15.1]
     gate: G3
     policy_tier: advisory
+    not_implemented: "沒有任何工具或步驟發出此規則；.checkov.yaml 註解所稱的 CKV_GHA_7 實為 workflow_dispatch inputs 檢查"
   vibesec.g3.actions-unpinned-action:
     cwe: CWE-829
     title: "第三方 Action 未釘選完整 commit SHA（供應鏈竄改風險）"
     control_ids: [ASVS5-V15.1]
     gate: G3
     policy_tier: advisory
+    not_implemented: "沒有任何工具或步驟發出此規則；checkov 的 CKV_GHA_* 不含此檢查"
   vibesec.g3.missing-csp:
     cwe: CWE-693
     title: "缺少 Content-Security-Policy 標頭（XSS 縱深防禦缺口；非程式缺陷）"
     control_ids: [ASVS5-V3.2]
     gate: G3
     policy_tier: advisory
+    implemented_by: [zap:10038]
 
 # 外部工具規則前綴對照（harness 用來推斷 gate 與預設 CWE 來源）
 external_prefixes:

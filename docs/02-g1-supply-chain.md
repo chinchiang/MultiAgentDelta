@@ -132,7 +132,7 @@ curl -s "https://api.first.org/data/v1/epss?cve=CVE-2025-XXXXX"      # → epss,
 curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json | jq '.vulnerabilities[] | select(.cveID=="CVE-2025-XXXXX")'
 ```
 
-每個 CVE 的 finding 分欄記 `cvss_vector / cvss_score / epss / epss_date / kev / kev_date`（CLAUDE.md 規則 4）。KEV 命中 → 升 blocking 且 priority P1；EPSS 只用來排序修補順序，不改嚴重度。SBOM 保存於 artifact（EU CRA 要求可提供 SBOM 與無已知漏洞證明）。
+每個 CVE 的 finding 分欄記 `cvss_vector / cvss_score / epss / epss_date / kev / kev_date`（CLAUDE.md 規則 4）。KEV 命中 → 升 blocking 且 priority P1；EPSS 只用來排序修補順序，不改嚴重度。實作：nightly 的 `scripts/g1_kev.py` 比對 grype 結果與 CISA KEV feed，命中即發出 `vibesec.g1.kev-hit`（SARIF，Code Scanning 分類 `vibesec-nightly-kev`）；缺 grype 結果或 KEV feed 無法取得時退出碼 2、nightly 轉紅並由 notify 開 issue（incomplete ≠ pass）。摘要記錄所用 KEV feed 的發布時間，看得出是否用了舊快取。SBOM 保存於 artifact（EU CRA 要求可提供 SBOM 與無已知漏洞證明）。
 
 ## 自動化作法
 
