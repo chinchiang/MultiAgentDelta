@@ -77,7 +77,6 @@ rules:
     control_ids: [ASVS5-V15.2, VS-G1-SBOM]
     gate: G1
     policy_tier: advisory
-    not_implemented: "grype／trivy 以原生 CVE ID（grype:、trivy:）回報，尚未對回此規則"
   vibesec.g1.unmaintained-dependency:
     cwe: CWE-1104
     title: "套件已停止維護或被標記 deprecated"
