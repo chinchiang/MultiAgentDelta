@@ -1,0 +1,22 @@
+# Dependabot：讓已釘選 SHA 的 GitHub Actions 自動收到升級 PR。
+# 背景：trivy-action 停在 v0.33.1，落入 CVE-2026-33634（CISA KEV）範圍，直到 nightly 的 KEV 檢查才發現。
+# Dependabot 會維持「完整 SHA + # 版本」的釘選格式，與 vibesec.g3.actions-unpinned-action 相容。
+# 升級 PR 照常跑 pr-gates（G1–G4）；不得因為是機器人 PR 就跳過閘門（CLAUDE.md 規則 1）。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Taipei
+    # 與 vibesec.yaml G1 cooldown_days（14）一致：新版本發布滿 14 天才提版本升級，
+    # 降低「剛發布就被竄改的版本」流入的機會。安全性更新（Dependabot security updates）不受 cooldown 限制。
+    cooldown:
+      default-days: 14
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(actions)"
+    open-pull-requests-limit: 5

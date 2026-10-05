@@ -91,6 +91,8 @@ USER app             # ← 最後一個 USER 不得為 root
 | `vibesec.g3.xss-innerhtml`（js）、`vibesec.g3.xss-unescaped-render-py` | 污點（含 LLM 輸出）→ HTML sink | CWE-79 | blocking |
 | `vibesec.g3.jwt-alg-none`（py / js） | `algorithms=["none"]`、`verify=False`、`verify_signature: False`、以 `jwt.decode()` 結果做授權 | CWE-347 | blocking |
 | `vibesec.g3.jwt-alg-confusion`（py / js） | `algorithms` 同時含 HS256 與 RS256 | CWE-347 | blocking |
+| `vibesec.g3.actions-unpinned-action` | `uses: owner/repo@ref`，ref 非 40 位 commit SHA（workflow 與 composite `action.yml`；`./` 與 `docker://` 除外） | CWE-829 | advisory |
+| `vibesec.g3.actions-pull-request-target` | `pull_request_target` 觸發卻引用 PR head／title／body／`head_ref` | CWE-94 | advisory |
 | `vibesec.g2.hardcoded-llm-key` | 同一規則檔內的 G2 第二道 | CWE-798 | blocking |
 | `vibesec.g4.*` | G4 的靜態部分（owner filter、RLS、agent tool）也由這支規則檔執行，但結果歸 G4 | — | — |
 
@@ -133,6 +135,7 @@ checkov -d . --config-file config/checkov/.checkov.yaml --check ''   # 清空 al
 | CodeQL | 夜間跨檔跨函式 | `nightly-full.yml` |
 | Checkov | Terraform / Dockerfile / K8s / GHA / secrets | `config/checkov/.checkov.yaml`、`config/checkov/custom/*.yaml` |
 | Trivy（`trivy config`） | IaC 第二意見 | — |
+| Dependabot（github-actions） | 已釘 SHA 的 Actions 自動升級 PR（每週、cooldown 14 天，與 G1 一致）；升級 PR 照常跑閘門 | `.github/dependabot.yml` |
 | KICS（可選） | IaC 第三意見；Terraform / CloudFormation / Ansible | — |
 
 ## 阻擋政策
