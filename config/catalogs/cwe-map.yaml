@@ -257,7 +257,6 @@ rules:
     control_ids: [ASVS5-V7.1]
     gate: G5
     policy_tier: blocking
-    not_implemented: "G5 api-probes 沒有工作階段失效檢查"
   vibesec.g5.jwt-alg-none:
     cwe: CWE-347
     title: "伺服器接受 alg:none 且無簽章的 JWT"

@@ -488,7 +488,8 @@ class VulnappRunner(Runner):
             return None, "staging workflow 中找不到 token／api-probes 步驟"
         with tempfile.TemporaryDirectory() as d:
             env = {**os.environ, "RUNNER_TEMP": d, "GITHUB_OUTPUT": f"{d}/out", "TARGET_URL": target.url,
-                   "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": target.url, "VIBESEC_MODE": "shadow"}
+                   "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": target.url, "VIBESEC_MODE": "shadow",
+                   "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
             try:
                 subprocess.run(["bash", "-e", "-c", tok_sh], env=env, cwd=d, check=True,
                                capture_output=True, text=True, timeout=60)

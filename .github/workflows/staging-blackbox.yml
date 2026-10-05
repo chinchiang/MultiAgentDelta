@@ -124,7 +124,7 @@ jobs:
           python3 - <<'EOF'
           # G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（CLAUDE.md #8）。
           # checks: bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata,
-          #         swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit
+          #         swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check
           import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.error
           NOW = datetime.datetime.now(datetime.timezone.utc)
           def iso(dt): return dt.replace(microsecond=0).isoformat()
@@ -401,6 +401,44 @@ jobs:
                   coverage["ssrf_metadata"] = "pass"
               else:
                   coverage["ssrf_metadata"] = "untested"
+
+          # ---- session_check ----
+          # 受保護路徑由 vibesec.yaml gates.g5_dast_api.protected_paths 列出（探針無法從外部推斷哪些端點該受保護）。
+          # 判定：無 token 或無效 token 取得 2xx → fail（blocking）；兩者皆 401/403 → pass；其餘（404、5xx、連線失敗）→ untested。
+          def _protected_paths():
+              try:
+                  txt = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).read_text(encoding="utf-8")
+              except OSError:
+                  return []
+              m = re.search(r"^\s*protected_paths\s*:\s*\[([^\]]*)\]", txt, re.M)
+              return [x.strip().strip("'\"") for x in m.group(1).split(",") if x.strip()] if m else []
+          PROTECTED = _protected_paths()
+          if not reachable:
+              coverage["session_check"] = "untested"
+          elif not PROTECTED:
+              coverage["session_check"] = "untested"
+              coverage_reasons["session_check"] = "vibesec.yaml 未設定 gates.g5_dast_api.protected_paths"
+          else:
+              leaked, unknown = [], []
+              for pth in PROTECTED:
+                  s_anon, _ = req(pth)
+                  s_bad, _ = req(pth, token="vibesec.invalid.token")
+                  open_codes = [c for c in (s_anon, s_bad) if c is not None and 200 <= c < 300]
+                  if open_codes:
+                      leaked.append(f"{pth}（無 token→{s_anon}、無效 token→{s_bad}）")
+                  elif s_anon in (401, 403) and s_bad in (401, 403):
+                      continue
+                  else:
+                      unknown.append(f"{pth}（{s_anon}/{s_bad}）")
+              if leaked:
+                  add("vibesec.g5.missing-session-check", "error",
+                      "受保護端點未驗證 token 即回 2xx（前端防禦假象）：" + "；".join(leaked), "blocking")
+                  coverage["session_check"] = "fail"
+              elif unknown:
+                  coverage["session_check"] = "untested"
+                  coverage_reasons["session_check"] = "回應非 401/403，無法判定：" + "；".join(unknown)
+              else:
+                  coverage["session_check"] = "pass"
 
           # ---- rate_limit ----
           if reachable:

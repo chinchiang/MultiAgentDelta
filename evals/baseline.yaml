@@ -42,6 +42,8 @@ executed:
   - g5-jwt-neg-02
   - g5-jwt-pos-01
   - g5-jwt-pos-02
+  - g5-session-neg-01
+  - g5-session-pos-01
   - g5-ssrf-neg-01
   - g5-ssrf-neg-02
   - g5-ssrf-pos-01
