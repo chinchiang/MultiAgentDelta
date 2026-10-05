@@ -192,6 +192,8 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 | `vibesec.g4.mcp-missing-resource-indicator` | advisory | CWE-863 |
 | reviewer 缺席 / provider 失敗 / 分歧未裁決 | `incomplete` 或 `pending`；不得 pass | — |
 
+CI（`pr-gates.yml` 的 G4 job）只跑靜態部分，`VS-G4-LLM-REVIEW` 在 CI 中恆為 `pending`，因此 G4 閘門狀態為：有 blocking 發現 → `fail`；否則 → `incomplete`（`status_reason` 註明 LLM 審查未執行），**不會**是 `pass`。G4 不在 `config/policy/blocking-policy.yaml` 的 `incomplete_gate_is_blocking_in_enforce`，所以 enforce 模式下 G4 `incomplete` 不擋 merge；若要改為阻擋，須由人類在獨立 PR 修改該政策（CLAUDE.md 規則 1）。
+
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
 | 類型 | ID |
