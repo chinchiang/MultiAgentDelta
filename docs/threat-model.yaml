@@ -83,6 +83,7 @@ agents:
             - Bash(git push --force-with-lease *)
             - Bash(git push * --force*)                # 旗標在 remote／branch 之後
             - Bash(git push * -f *)
+            - Bash(git push * -f)                      # -f 在最後（第四次 harness 審查 N4）
             - Bash(git push *+*)                       # refspec 以 + 強制更新（git push origin +branch）
             - Bash(gh api *)                           # REST 直接呼叫（merge、dispatch、改 ref）
             - Bash(gh pr ready *)

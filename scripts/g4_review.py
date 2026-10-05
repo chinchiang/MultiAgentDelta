@@ -19,11 +19,15 @@ reviews/ 由 CODEOWNERS 審核。此工具不呼叫任何模型、不裁決、�
 退出碼：check 0 通過、1 違規；gate 0（shadow 或非 fail）、1（enforce 且 fail）；兩者 2 = 工具缺席（不放行）。
 """
 from __future__ import annotations
-import argparse, copy, datetime, json, pathlib, re, subprocess, sys
+import argparse, copy, datetime, json, os, pathlib, re, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+# 判定邏輯與設定（schema、vibesec.yaml、providers、catalogs、ruling.py）取自本腳本所在的樹；
+# 受審資料（reviews/g4/、rulings/、git 歷史）取自 VIBESEC_PROJECT_ROOT。CI 以 base 分支的腳本跑 PR head 的資料，
+# 讓 PR 不能改寫決定自己結果的程式（第四次 harness 審查 N3）。未設定時兩者相同（本機、harness）。
+PROJECT = pathlib.Path(os.environ.get("VIBESEC_PROJECT_ROOT") or ROOT).resolve()
 SCHEMA = ROOT / "schemas/g4-review.schema.json"
-REVIEWS_DIR = ROOT / "reviews/g4"
+REVIEWS_DIR = PROJECT / "reviews/g4"
 # 審查紀錄與其裁決之外的任何變更都讓紀錄過期（審的不是現在的程式碼）
 FRESH_PREFIXES = ("reviews/g4/", "rulings/")
 # Claude Code 內的 reviewer sub-agent（SKILL.md 步驟 2）不在 providers.yaml，但 family 固定
@@ -69,7 +73,7 @@ def known_controls() -> set[str]:
 
 
 def _load_ruling(ref: str) -> dict | None:
-    p = ROOT / ref
+    p = PROJECT / ref
     return _yaml(p) if p.is_file() else None
 
 
@@ -168,7 +172,7 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
 
 # ------------------------------------------------------------------ git
 def _git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", str(PROJECT), *args], capture_output=True, text=True)
 
 
 def freshness(commit: str, head: str) -> tuple[bool, str, int]:
@@ -244,8 +248,8 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
 
 def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers: list[str]) -> str | None:
     """紀錄能否把 G4 推到 pass。回傳 None = 可信；否則回傳理由（閘門最高 pending）。
-    紀錄由本 PR 新增或修改時不能自證：需要非 PR 作者在目前 head SHA 上 approve，且 recorded_by 不是 PR 作者
-    （比照 rulings/ 的職責分離，CLAUDE.md 規則 6）。已在 base 分支上的紀錄經過另一個 PR 審查合併，視為可信。"""
+    紀錄由本 PR 新增或修改時不能自證：recorded_by 不得是 PR 作者，且必須是在目前 head SHA 上 approve 的
+    非作者之一——確認紀錄的人要親自核准，不能只填別人的帳號（比照 rulings/ 的職責分離，CLAUDE.md 規則 6；N6）。已在 base 分支上的紀錄經過另一個 PR 審查合併，視為可信。"""
     h = str(handle or "").lstrip("@").strip().lower()
     author = str(pr_author or "").lstrip("@").strip().lower()
     if not h:
@@ -257,6 +261,8 @@ def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers
     others = sorted({x.lstrip("@").strip().lower() for x in approvers if x.strip()} - {author, ""})
     if not others:
         return "審查紀錄由本 PR 新增／修改，尚無非 PR 作者在目前 head 上 approve（approve 後再 push 需重新 approve）"
+    if h not in others:
+        return f"recorded_by @{h} 未在目前 head 上 approve（確認紀錄的人必須親自核准；目前核准者：{', '.join('@' + x for x in others)}）"
     return None
 
 
@@ -303,7 +309,7 @@ def find_record(head: str, cfg: dict, controls: set[str]) -> tuple[dict | None, 
     """對 head 有效、距離最近的紀錄。回傳 (record, evaluation, record_ref, 無紀錄時的理由)。"""
     best = None; notes: list[str] = []
     for p in sorted(REVIEWS_DIR.glob("*.yaml")):
-        rel = str(p.relative_to(ROOT))
+        rel = str(p.relative_to(PROJECT))
         try:
             rec = _yaml(p)
         except yaml.YAMLError as e:
@@ -425,8 +431,10 @@ def selftest() -> list[str]:
         fails.append("只有 PR 作者自己 approve → 應不可信")
     if trust_cap(True, "@Author", "author", ["reviewer"]) is None:
         fails.append("recorded_by 是 PR 作者（大小寫、@ 不同）→ 應不可信")
-    if trust_cap(True, "appsec-lead", "author", ["reviewer"]) is not None:
-        fails.append("非作者 approve 且 recorded_by 非作者 → 應可信")
+    if trust_cap(True, "reviewer", "author", ["Reviewer"]) is not None:
+        fails.append("recorded_by 是非作者核准者（大小寫不同）→ 應可信")
+    if trust_cap(True, "appsec-lead", "author", ["reviewer"]) is None:
+        fails.append("recorded_by 不是核准者（只填別人的帳號）→ 應不可信")
     if trust_cap(False, "", "author", ["reviewer"]) is None:
         fails.append("recorded_by.handle 空白 → 應不可信")
     g4p = gate_of(r4, ev4)

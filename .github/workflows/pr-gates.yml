@@ -604,6 +604,21 @@ jobs:
             core.info(`head ${pr.head.sha} 上的非作者 approve：${ok.join(', ') || '（無）'}`);
             core.setOutput('approvers', ok.join(','));
 
+      # 判定程式取自 base 分支（第四次 harness 審查 N3）：PR head 只當資料讀取，PR 不能改寫決定自己結果的腳本與政策。
+      # workflow 檔本身仍取自 PR head，由 CODEOWNERS（/.github/workflows/）與 branch protection 把關。
+      - name: 取出 base 分支的判定程式（_trusted/）
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: _trusted
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            schemas
+            config
+            docs/templates
+            vibesec.yaml
+
       - name: G4 LLM 審查紀錄（reviews/g4/）→ 閘門狀態
         if: always()
         continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
@@ -615,7 +630,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           APPROVERS: ${{ steps.approvals.outputs.approvers }}
         run: |
-          python3 scripts/g4_review.py gate --static reports/g4-gate.json --head "$HEAD_SHA" \
+          VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/g4_review.py gate --static reports/g4-gate.json --head "$HEAD_SHA" \
             --base "$BASE_SHA" --pr-author "$PR_AUTHOR" --approvers "$APPROVERS" \
             --out reports/g4-gate.json --comment reports/g4-comment.md --mode "$VIBESEC_MODE"
 
@@ -741,6 +756,21 @@ jobs:
       - name: 安裝 PyYAML / jsonschema
         run: pip install pyyaml jsonschema
 
+      # 判定程式取自 base 分支（第四次 harness 審查 N3）：PR head 只當資料讀取，PR 不能改寫決定自己結果的腳本與政策。
+      # workflow 檔本身仍取自 PR head，由 CODEOWNERS（/.github/workflows/）與 branch protection 把關。
+      - name: 取出 base 分支的判定程式（_trusted/）
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: _trusted
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            schemas
+            config
+            docs/templates
+            vibesec.yaml
+
       # G2、G3 的工具是第三方 action，本身不寫 gate JSON；由此從各 job 上傳的 SARIF 推導。
       # artifact 或 SARIF 缺席 → 該閘門 incomplete（incomplete ≠ pass），不再顯示為 untested。
       - name: 推導 G2 / G3 gate JSON（scripts/sarif_gate.py）
@@ -748,9 +778,9 @@ jobs:
         run: |
           mkdir -p reports
           A=_artifacts
-          python3 scripts/sarif_gate.py --gate G2 --tool gitleaks=$A/vibesec-g2-reports/gitleaks.sarif \
+          python3 _trusted/scripts/sarif_gate.py --gate G2 --tool gitleaks=$A/vibesec-g2-reports/gitleaks.sarif \
             --envcheck $A/vibesec-g2-reports/g2-envcheck.json --out reports/g2-gate.json
-          python3 scripts/sarif_gate.py --gate G3 --tool semgrep=$A/vibesec-g3-semgrep-reports/semgrep.sarif \
+          python3 _trusted/scripts/sarif_gate.py --gate G3 --tool semgrep=$A/vibesec-g3-semgrep-reports/semgrep.sarif \
             --tool checkov=$A/vibesec-g3-iac-reports/results_sarif.sarif \
             --tool trivy=$A/vibesec-g3-iac-reports/trivy-config.sarif --out reports/g3-gate.json
 
