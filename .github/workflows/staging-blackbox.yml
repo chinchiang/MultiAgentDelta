@@ -26,6 +26,12 @@ jobs:
       g5_blocking: ${{ steps.verdict.outputs.g5_blocking }}
       g6_status: ${{ steps.verdict.outputs.g6_status }}
       g6_blocking: ${{ steps.verdict.outputs.g6_blocking }}
+    # 執行期才從 registry 抓的工具一律釘版（與 actions 釘 SHA 同理）：浮動的 @latest／未釘版 pip 會讓上游被入侵的版本
+    # 直接在持有 LLM 金鑰的步驟裡執行（vibesec-harness G0 發現：供應鏈層致命三要素）。版本須已發布滿
+    # vibesec.yaml cooldown_days（14）天；Dependabot 不管這兩個，升版請手動確認發布日。
+    env:
+      PROMPTFOO_VERSION: "0.123.1"   # npm，2026-09-18 發布；npm 依 registry 的 integrity（sha512）驗證套件
+      GARAK_VERSION: "0.17.0"        # PyPI，2026-09-09 發布
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -516,6 +522,13 @@ jobs:
           sarif_file: reports/g5-api-probes.sarif
           category: vibesec-g5-api-probes
 
+      # G5 是唯一需要帳號 token 的步驟：G5 一結束就刪，之後執行的第三方工具（promptfoo、garak）讀不到。
+      # job 結尾的清除步驟保留，作為失敗時的保險。
+      - name: 清除 token 暫存檔（G5 結束即刪）
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/vibesec-tokens"
+
       # ---------- G6：LLM / Agent 紅隊 ----------
       - name: G6 promptfoo eval（決定性測試，不需模型金鑰）
         id: pfeval
@@ -528,7 +541,7 @@ jobs:
           mkdir -p reports
           # 退出碼 100 = 有測試失敗（正常結果，交給 g6_gate.py 判定 fail）；其他非零 = 工具錯誤
           set +e
-          npx --yes promptfoo@latest eval -c config/promptfoo/tests.yaml --no-cache \
+          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c config/promptfoo/tests.yaml --no-cache \
             --output reports/g6-promptfoo.json </dev/null >reports/_promptfoo.log 2>&1
           code=$?
           set -e
@@ -572,7 +585,7 @@ jobs:
           print(f"redteam provider: {pid.split(':')[0]}")
           PY
           set +e
-          timeout 1800 npx --yes promptfoo@latest redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml" --no-cache \
+          timeout 1800 npx --yes "promptfoo@${PROMPTFOO_VERSION}" redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml" --no-cache \
             --output reports/g6-promptfoo-redteam.json </dev/null >reports/_promptfoo-redteam.log 2>&1
           code=$?
           set -e
@@ -588,7 +601,7 @@ jobs:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
           mkdir -p reports
-          pip install garak >reports/_garak-install.log 2>&1 || echo "::warning::garak 安裝失敗（記為 untested）"
+          pip install "garak==${GARAK_VERSION}" >reports/_garak-install.log 2>&1 || echo "::warning::garak 安裝失敗（記為 untested）"
           if command -v garak >/dev/null 2>&1; then
             # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
             sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"

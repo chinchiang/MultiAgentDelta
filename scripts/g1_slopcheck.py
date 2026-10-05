@@ -10,7 +10,7 @@
 用法：python3 scripts/g1_slopcheck.py [--staged] [--manifest <path> ...]
 """
 from __future__ import annotations
-import sys, json, re, difflib, fnmatch, urllib.request, urllib.error, subprocess
+import sys, os, ssl, json, re, difflib, fnmatch, urllib.parse, urllib.request, urllib.error, subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -68,16 +68,40 @@ def lookup(entries, eco, pkg):
     """依生態系查清單；先找同生態系，再找未指定生態系的條目。"""
     return entries.get((eco, pkg.lower())) or entries.get((None, pkg.lower()))
 
+# 套件名稱來自 PR 內的 manifest（不可信）：先依 registry 命名規則驗證，再 percent-encode 組 URL。
+# 不合法的名稱不送出查詢，記為 incomplete（incomplete ≠ pass）。
+NPM_NAME = re.compile(r"^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$", re.I)
+PYPI_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
+def valid_name(eco, pkg):
+    if not pkg or len(pkg) > 214:
+        return False
+    return bool((NPM_NAME if eco == "npm" else PYPI_NAME).match(pkg))
+
+def _https_only_opener():
+    """只裝 HTTPS（驗證憑證與主機名）、https proxy 與 UnknownHandler：file://、http:// 等一律 URLError。"""
+    opener = urllib.request.OpenerDirector()
+    https_proxy = {k: v for k, v in urllib.request.getproxies().items() if k == "https"}
+    for h in (urllib.request.ProxyHandler(https_proxy),
+              urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)),
+              urllib.request.UnknownHandler(),
+              urllib.request.HTTPDefaultErrorHandler(), urllib.request.HTTPErrorProcessor()):
+        opener.add_handler(h)
+    return opener
+
 def http_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1/0.1"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with _https_only_opener().open(req, timeout=TIMEOUT) as r:
         return json.loads(r.read().decode())
 
 def npm_check(pkg, ver, c):
     """回傳 (findings, incomplete_reason|None)。"""
     findings = []
+    if not valid_name("npm", pkg):
+        return [], f"npm 套件名稱不合法，未查詢 registry：{pkg!r}"
+    q = urllib.parse.quote(pkg, safe="@/")
     try:
-        meta = http_json(f"https://registry.npmjs.org/{pkg}")
+        meta = http_json(f"https://registry.npmjs.org/{q}")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return [fnd("vibesec.g1.hallucinated-package", pkg, "npm", ver,
@@ -102,7 +126,7 @@ def npm_check(pkg, ver, c):
                             f"含安裝階段 hook（{', '.join(hooks)}），需人工審查是否外連或讀取憑證", "advisory"))
     # 週下載
     try:
-        dl = http_json(f"https://api.npmjs.org/downloads/point/last-week/{pkg}").get("downloads", 0)
+        dl = http_json(f"https://api.npmjs.org/downloads/point/last-week/{q}").get("downloads", 0)
         if dl < c["min_weekly_downloads"]:
             findings.append(fnd("vibesec.g1.low-download-package", pkg, "npm", target_ver,
                                 f"週下載量 {dl} < {c['min_weekly_downloads']}，信譽不足，需人工判斷", "advisory"))
@@ -112,8 +136,10 @@ def npm_check(pkg, ver, c):
 
 def pypi_check(pkg, ver, c):
     findings = []
+    if not valid_name("pypi", pkg):
+        return [], f"PyPI 套件名稱不合法，未查詢 registry：{pkg!r}"
     try:
-        meta = http_json(f"https://pypi.org/pypi/{pkg}/json")
+        meta = http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg, safe='')}/json")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return [fnd("vibesec.g1.hallucinated-package", pkg, "pypi", ver,

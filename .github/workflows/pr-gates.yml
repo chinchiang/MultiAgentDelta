@@ -7,10 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 最小權限：workflow 層級只給 read；寫入權限由需要的 job 各自宣告（job 層級會整組取代這裡）。
+# 同 repo 分支的 PR 會拿到可寫的 GITHUB_TOKEN，所以不讓每個 job（含第三方 action）都繼承寫入權。
 permissions:
   contents: read
-  security-events: write
-  pull-requests: write
 
 concurrency:
   group: vibesec-pr-${{ github.ref }}
@@ -20,6 +20,9 @@ jobs:
   # G1 供應鏈與 Slopsquatting —— order: first（惡意 postinstall 於安裝瞬間執行，必須最先跑）
   g1-supply-chain:
     name: G1 供應鏈與 Slopsquatting
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
     runs-on: ubuntu-latest
     steps:
       - name: Checkout（full history for diff）
@@ -207,6 +210,10 @@ jobs:
   # G2 機密與金鑰（全 Git 歷史）
   g2-secrets:
     name: G2 機密與金鑰
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
+      pull-requests: read      # gitleaks-action 列出 PR 的 commit；PR 留言已關閉，不需寫入
     needs: g1-supply-chain
     if: always()
     runs-on: ubuntu-latest
@@ -231,6 +238,8 @@ jobs:
           GITLEAKS_CONFIG: config/gitleaks.toml
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
           GITLEAKS_ENABLE_SUMMARY: "true"
+          # 不在 PR 留言（避免此第三方 action 需要 pull-requests: write）；結果經 SARIF 與 job summary 呈現
+          GITLEAKS_ENABLE_COMMENTS: "false"
 
       - name: 檢查 .env 是否在 .gitignore 且無已追蹤的 .env 檔
         continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
@@ -266,6 +275,9 @@ jobs:
   # G3 SAST 與 IaC（diff-aware；跨檔污點分析 + IaC 設定掃描）
   g3-sast-iac:
     name: G3 SAST 與 IaC
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
     needs: g2-secrets
     if: always()
     runs-on: ubuntu-latest
@@ -314,6 +326,9 @@ jobs:
   # G3 IaC 掃描（Checkov + Trivy config）獨立於 semgrep container 執行
   g3-iac:
     name: G3 IaC（Checkov / Trivy config）
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
     needs: g2-secrets
     if: always()
     runs-on: ubuntu-latest
@@ -363,6 +378,10 @@ jobs:
   # G4 架構與存取控制（靜態檢查 + PR 留言提示 LLM 審查）
   g4-access-control:
     name: G4 架構與存取控制
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
+      pull-requests: write     # 唯一在 PR 留言的步驟（G4 LLM 審查提醒）
     needs: g3-sast-iac
     if: always()
     runs-on: ubuntu-latest
@@ -555,6 +574,41 @@ jobs:
       # nightly／staging 失敗通知的判定邏輯（開／留言／關 issue、靶場預期狀態）。這兩支只在 main 的排程中執行，
       # 壞掉時不會有人發現，所以在每個 PR 跑單元測試。runner 內建 Node（node:test 需 ≥ 18）；
       # 測試檔清單明列：檔案缺漏時 node 直接失敗，不會變成「0 個測試、通過」。
+      # 人工裁決（rulings/*.yaml）的 decided_by 是檔案內自填的，ruling.py 只擋 bot 名稱。PR 作者不得替自己的 PR
+      # 寫裁決：本 PR 新增或修改的 ruling，decided_by.handle 必須不是 PR 作者（職責分離，CLAUDE.md 規則 6）。
+      # 搭配 .github/CODEOWNERS 要求 rulings/ 由 owner 審核；兩者都要在 branch protection 啟用 code owner review 才完整。
+      - name: 人工裁決不得由 PR 作者自填
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          # 只有單一維護者的 repo 無法做到職責分離：由 admin 設 Actions 變數 VIBESEC_SINGLE_MAINTAINER=true，
+          # 違反時改為明確警告並記錄在 log（不是靜默放行）；未設定時一律失敗。
+          SINGLE_MAINTAINER: ${{ vars.VIBESEC_SINGLE_MAINTAINER }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'rulings/*.yaml' > "$RUNNER_TEMP/rulings.txt"
+          python3 - "$RUNNER_TEMP/rulings.txt" <<'PY'
+          import os, sys, yaml
+          author = os.environ["PR_AUTHOR"].strip().lower()
+          files = [l.strip() for l in open(sys.argv[1]) if l.strip()]
+          bad = []
+          for f in files:
+              try:
+                  d = yaml.safe_load(open(f, encoding="utf-8")) or {}
+              except Exception as e:
+                  bad.append(f"{f}: 無法解析（{type(e).__name__}）"); continue
+              handle = str(((d.get("decided_by") or {}).get("handle")) or "").lstrip("@").strip().lower()
+              if not handle or handle == author:
+                  bad.append(f"{f}: decided_by.handle 為空或等於 PR 作者 @{author}")
+          print(f"檢查 {len(files)} 份本 PR 新增／修改的裁決")
+          single = os.environ.get("SINGLE_MAINTAINER", "").strip().lower() == "true"
+          level = "warning" if single else "error"
+          for b in bad:
+              print(f"::{level}::{b}" + ("（VIBESEC_SINGLE_MAINTAINER=true：單一維護者，無法職責分離，僅警告）" if single else ""))
+          sys.exit(1 if bad and not single else 0)
+          PY
+
       - name: 通知腳本單元測試（node --test）
         run: |
           node --version
