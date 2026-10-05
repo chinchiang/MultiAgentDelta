@@ -200,6 +200,23 @@ jobs:
           sarif_file: reports/g1-kev.sarif
           category: vibesec-nightly-kev
 
+      # 維護狀態 → vibesec.g1.unmaintained-dependency（advisory）：SBOM 套件逐一查 deps.dev（deprecated／最新版過舊）。
+      # if: always()：KEV 命中讓前一步失敗時仍要查。不設 continue-on-error：缺 SBOM、API 失敗、查無套件 → 退出碼 2，
+      # job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。advisory 命中本身不讓步驟失敗。
+      - name: G1 維護狀態（vibesec.g1.unmaintained-dependency）
+        if: always()
+        run: |
+          python3 scripts/g1_maintenance.py --sbom reports/sbom.cdx.json \
+            --sarif reports/g1-maintenance.sarif --json reports/g1-maintenance.json
+
+      - name: Upload 維護狀態 SARIF
+        if: always() && hashFiles('reports/g1-maintenance.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/g1-maintenance.sarif
+          category: vibesec-nightly-maintenance
+
       - name: Upload Grype full SARIF
         if: always()
         continue-on-error: true
