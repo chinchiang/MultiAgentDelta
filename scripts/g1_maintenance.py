@@ -20,11 +20,12 @@
 退出碼：0 已完成（有無命中皆是；advisory 不讓步驟失敗）；2 incomplete。
 """
 from __future__ import annotations
-import argparse, datetime, json, pathlib, re, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, base64, datetime, http.client, json, os, pathlib, re, ssl, sys, time, urllib.parse
 
 RULE = "vibesec.g1.unmaintained-dependency"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-API = "https://api.deps.dev/v3/systems/{system}/packages/{name}"
+API_HOST = "api.deps.dev"
+API_PATH = "/v3/systems/{system}/packages/{name}"
 SYSTEMS = {"pypi": "pypi", "npm": "npm", "golang": "go", "maven": "maven", "cargo": "cargo", "nuget": "nuget"}
 DEFAULT_DAYS = 730
 FALLBACK_URI = ".github/workflows/nightly-full.yml"
@@ -101,22 +102,49 @@ def parse_sbom(sbom: dict, own: set[tuple[str, str]] | None = None) -> tuple[lis
     return todo, na
 
 
+class FetchError(Exception):
+    pass
+
+
+def _connection(timeout: int) -> http.client.HTTPSConnection:
+    """固定連線到 API_HOST（HTTPS）。不經 urllib 以字串組 URL：scheme 與主機不受輸入影響（無 file:// 等風險）。
+    有 HTTPS_PROXY 時以 HTTP CONNECT 穿隧（http.client 原生 set_tunnel），TLS 仍驗證 API_HOST 的憑證。"""
+    ctx = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if not proxy:
+        return http.client.HTTPSConnection(API_HOST, 443, timeout=timeout, context=ctx)
+    pu = urllib.parse.urlsplit(proxy)
+    headers = {}
+    if pu.username:
+        cred = f"{urllib.parse.unquote(pu.username)}:{urllib.parse.unquote(pu.password or '')}"
+        headers["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
+    conn = http.client.HTTPSConnection(pu.hostname, pu.port or 80, timeout=timeout, context=ctx)
+    conn.set_tunnel(API_HOST, 443, headers=headers)
+    return conn
+
+
 def fetch_deps_dev(system: str, name: str, retries: int = 3) -> dict | None:
     """回傳套件資料；404 → None（查無此套件）；其他錯誤重試後拋出。"""
-    url = API.format(system=system, name=urllib.parse.quote(name, safe=""))
-    req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1-maintenance"})
+    path = API_PATH.format(system=urllib.parse.quote(system, safe=""), name=urllib.parse.quote(name, safe=""))
     for i in range(retries):
+        conn = None
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
+            conn = _connection(30)
+            conn.request("GET", path, headers={"User-Agent": "vibesec-g1-maintenance", "Accept": "application/json"})
+            r = conn.getresponse()
+            body = r.read()
+            if r.status == 200:
+                return json.loads(body.decode("utf-8"))
+            if r.status == 404:
                 return None
-            if i == retries - 1 or e.code < 500:
-                raise
-        except (urllib.error.URLError, TimeoutError):
+            if r.status < 500 or i == retries - 1:
+                raise FetchError(f"HTTP {r.status}")
+        except (OSError, http.client.HTTPException) as e:
             if i == retries - 1:
-                raise
+                raise FetchError(f"{type(e).__name__}: {e}") from e
+        finally:
+            if conn is not None:
+                conn.close()
         time.sleep(2 ** i)
     return None
 
@@ -226,7 +254,7 @@ def selftest() -> list[str]:
     def fake(system, name):
         calls.append((system, name))
         if name == "boom":
-            raise urllib.error.URLError("down")
+            raise FetchError("down")
         return DB.get((system, name))
     comps = [{"purl": p} for p in ["pkg:pypi/fresh@1.0", "pkg:pypi/old@0.9", "pkg:npm/dep@1.0", "pkg:npm/dep@1.0",
                                    "pkg:maven/org.x/lib@1", "pkg:github/actions/checkout@v7"]]
