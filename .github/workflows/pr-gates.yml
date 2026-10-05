@@ -126,6 +126,7 @@ jobs:
           fi
           if command -v grype >/dev/null 2>&1 && [ -f reports/sbom.cdx.json ]; then
             grype sbom:reports/sbom.cdx.json -o sarif --file reports/grype.sarif || true
+            grype sbom:reports/sbom.cdx.json -o json --file reports/grype.json || true
           else
             echo "grype 缺席或無 SBOM → incomplete"; echo "grype_missing=true" >> "$GITHUB_OUTPUT"
           fi
@@ -137,6 +138,45 @@ jobs:
         with:
           sarif_file: reports/grype.sarif
           category: vibesec-g1-grype
+
+      # KEV feed：先取 nightly 在 main 留下的快取，再嘗試下載最新版；下載失敗就沿用快取
+      # （g1_kev.py 的摘要記錄 feed 發布時間，看得出是否用了舊資料）。兩者皆無 → KEV 檢查 incomplete。
+      - name: Restore KEV 快取（nightly 富化快取）
+        continue-on-error: true
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .cache
+          key: vibesec-enrich-pr-${{ github.run_id }}
+          restore-keys: |
+            vibesec-enrich-
+
+      - name: 下載 CISA KEV feed
+        continue-on-error: true
+        run: |
+          mkdir -p .cache
+          if curl -fsSL --retry 3 --max-time 60 -A vibesec-pr -o .cache/kev.new.json \
+               https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json; then
+            mv .cache/kev.new.json .cache/kev.json
+          else
+            echo "::warning::KEV feed 下載失敗；沿用快取（若有）"
+          fi
+
+      # KEV 命中 → vibesec.g1.kev-hit（blocking），結果併入 g1-gate.json，由 summary 依 mode 決定是否阻擋。
+      # 與 slopcheck 相同：shadow 模式下不讓 job 變紅；enforce 模式下命中（exit 1）或 incomplete（exit 2）都會擋。
+      - name: G1 KEV 命中（vibesec.g1.kev-hit）
+        id: kev
+        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        run: |
+          python3 scripts/g1_kev.py --grype reports/grype.json --kev-feed .cache/kev.json \
+            --sarif reports/g1-kev.sarif --json reports/g1-kev.json --merge-gate reports/g1-gate.json
+
+      - name: Upload KEV SARIF
+        if: always() && hashFiles('reports/g1-kev.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/g1-kev.sarif
+          category: vibesec-g1-kev
 
       - name: Trivy 檔案系統掃描（vuln → SARIF）
         continue-on-error: true
