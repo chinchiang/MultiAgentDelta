@@ -57,7 +57,7 @@ providers:
     max_tokens: 4096
     temperature: 0
     json_mode: true
-    allowed_data_classes: [public, internal]   # 比照 openai-cloud；不得送 confidential / pii（人工決定，見 PR 說明）
+    allowed_data_classes: [public]    # 人工決定：目前只送公開內容；需要送 internal 時改接地端 LLM（onprem_vllm），不放寬此項
     enabled: true
 
   # ---------------------------------------------------------------------- glm
