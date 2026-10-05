@@ -53,9 +53,9 @@ check:
   - CKV_AWS_46      # EC2 user_data: no hard-coded secrets
   - CKV_AWS_49      # IAM policy: no "*" actions
   - CKV_AWS_62      # IAM policy: no full "*:*" admin
-  - CKV_AWS_63      # IAM policy: no "*" resources with "*" actions
+  - CKV_AWS_63      # IAM policy: no "*" actions（checkov 說明與 CKV_AWS_49 相同；兩者並存不影響結果）
   - CKV_AWS_60      # IAM role assume policy not open to all
-  - CKV_AWS_61      # IAM role assume policy: no wildcard principal
+  - CKV_AWS_61      # IAM policy: no assume-role permission across all services
   # ---- Dockerfile（G3） ----
   - CKV_DOCKER_1    # Do not EXPOSE 22
   - CKV_DOCKER_2    # HEALTHCHECK present
@@ -77,9 +77,11 @@ check:
   - CKV_K8S_40      # High UID
   - CKV_K8S_43      # Image digest pinned
   # ---- GitHub Actions ----
-  - CKV_GHA_1       # Workflow top-level permissions are not write-all
+  - CKV_GHA_1       # ACTIONS_ALLOW_UNSECURE_COMMANDS 不得為 true（可注入 set-env／add-path）
   - CKV_GHA_2       # No run: with injectable context（script injection）
-  - CKV_GHA_7       # No pull_request_target with checkout of PR head
+  - CKV_GHA_7       # workflow_dispatch 不得有 inputs（建置輸出不受使用者參數影響，SLSA）
+  - CKV2_GHA_1      # Workflow 頂層 permissions 不得為 write-all
+  # 注意：checkov 沒有「pull_request_target + checkout PR head」的檢查；該風險對應 vibesec.g3.actions-pull-request-target，目前未實作（見 cwe-map.yaml not_implemented）
   # ---- Secrets（Checkov 內建；G2 的第二道）----
   - CKV_SECRET_6    # Base64 high entropy string
   - CKV_SECRET_2    # AWS access key
