@@ -68,6 +68,13 @@ jobs:
   g1-full:
     name: G1 全量供應鏈（Syft/Grype/Trivy + EPSS/KEV 富化）
     runs-on: ubuntu-latest
+    # job 層級權限會整組取代 workflow 層級：保留原有三項，另加簽發 SBOM 來源證明所需的兩項（只給這個 job）
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+      id-token: write        # Sigstore 以 OIDC 身分簽章
+      attestations: write    # 寫入 GitHub attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -216,6 +223,35 @@ jobs:
         with:
           sarif_file: reports/g1-maintenance.sarif
           category: vibesec-nightly-maintenance
+
+      # SBOM 來源證明：以 Sigstore 為 reports/sbom.cdx.json 簽發 SLSA provenance，再以 gh 驗證
+      # 「存在、簽章有效、簽發者是本 workflow」。簽發失敗不在這裡擋：下一步驗證會把它記為缺少證明（advisory）。
+      - name: 簽發 SBOM 來源證明（SLSA provenance）
+        if: always() && hashFiles('reports/sbom.cdx.json') != ''
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: reports/sbom.cdx.json
+
+      # 驗證 → vibesec.g1.sbom-missing-provenance（advisory）。不設 continue-on-error：缺 SBOM、缺 gh、權限／網路錯誤
+      # → 退出碼 2，job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
+      - name: G1 SBOM 來源證明（vibesec.g1.sbom-missing-provenance）
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 scripts/g1_provenance.py --sbom reports/sbom.cdx.json --repo "$REPO" \
+            --signer-workflow "$REPO/.github/workflows/nightly-full.yml" \
+            --sarif reports/g1-provenance.sarif --json reports/g1-provenance.json
+
+      - name: Upload 來源證明 SARIF
+        if: always() && hashFiles('reports/g1-provenance.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/g1-provenance.sarif
+          category: vibesec-nightly-provenance
 
       - name: Upload Grype full SARIF
         if: always()

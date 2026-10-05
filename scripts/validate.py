@@ -298,7 +298,7 @@ try:
             else:
                 ok(f"人工裁決 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        for _tool in ("ruling.py", "g1_kev.py", "g1_maintenance.py"):
+        for _tool in ("ruling.py", "g1_kev.py", "g1_maintenance.py", "g1_provenance.py"):
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])

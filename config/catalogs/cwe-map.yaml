@@ -366,7 +366,6 @@ rules:
     control_ids: [ASVS5-V15.1, VS-G1-SBOM]
     gate: G1
     policy_tier: advisory
-    not_implemented: "nightly 產生 SBOM，但沒有檢查 provenance／attestation"
   vibesec.g3.actions-pull-request-target:
     cwe: CWE-94
     title: "GitHub Actions 以 pull_request_target 處理不可信輸入，具腳本注入 / 權限外洩風險"
