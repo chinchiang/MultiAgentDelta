@@ -81,6 +81,11 @@ agents:
             - Bash(git push --force *)                 # force_push_own_branch
             - Bash(git push -f *)
             - Bash(git push --force-with-lease *)
+            - Bash(git push * --force*)                # 旗標在 remote／branch 之後
+            - Bash(git push * -f *)
+            - Bash(git push *+*)                       # refspec 以 + 強制更新（git push origin +branch）
+            - Bash(gh api *)                           # REST 直接呼叫（merge、dispatch、改 ref）
+            - Bash(gh pr ready *)
             - mcp__github__actions_run_trigger         # dispatch_workflow
             - Bash(gh workflow run *)
             - mcp__claude-code-remote__create_trigger  # create_or_delete_trigger
@@ -135,7 +140,7 @@ threats:
   - id: t-hitl-bypass
     category: MAESTRO-L3
     target: c-claude
-    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 git push origin +branch、REST API 直接呼叫）執行高影響操作時，HITL 不生效。
+    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 bash -c 包裝、curl 直接呼叫 REST API、腳本內呼叫）執行高影響操作時，HITL 不生效。ask 規則是前綴比對，只能縮小缺口，不能完整枚舉。
     mitigation: ask 規則涵蓋已知的 merge／force push／dispatch／trigger 入口；branch protection 應禁止 force push 到 main 並要求 code owner review（GitHub 設定，靜態無法驗證）。
     status: accepted
     gate: G4

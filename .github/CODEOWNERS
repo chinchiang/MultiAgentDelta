@@ -17,6 +17,9 @@
 # Claude Code 權限設定：威脅模型 c-claude 的 HITL 證據（g0_trifecta.py 驗證）
 /.claude/settings.json             @chinchiang
 
+# CI 執行的閘門腳本：pull_request 事件跑 PR head 的版本，改腳本即可改判定（第三次 harness 審查 N3）
+/scripts/                          @chinchiang
+
 # CI 本身與本檔
 /.github/workflows/                @chinchiang
 /.github/CODEOWNERS                @chinchiang
