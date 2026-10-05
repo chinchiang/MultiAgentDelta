@@ -12,7 +12,7 @@ mode: shadow
 #   L1：純內部、不含 LLM、不處理個資       → 只跑 G1、G2
 #   L2：對外或處理業務資料的一般企業應用      → G1–G6 全開
 #   L3：對外＋個資／商業機密＋高權限 Agent    → G1–G6 全開且深度加倍，外加委外滲透與正式威脅建模
-risk_tier: L2
+risk_tier: L3                     # 依 docs/threat-model.yaml 以 docs/01 決策樹推導（public + 祕密 + 具對外通訊與高影響工具的 agent）
 
 project:
   name: multiagentdelta
