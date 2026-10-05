@@ -3,8 +3,17 @@ gate: G4
 domain: ai_agent_security
 title: Agent 可呼叫 shell 與任意檔案寫入
 input:
-  kind: config
-  snippet: 'tools: ["*"]  # 含 bash, fs.write'
+  kind: code
+  language: python
+  path: agent/tools.py
+  snippet: |
+    from agent_sdk import Agent, tool
+
+    @tool
+    def execute_sql(query: str) -> list:
+        return db.execute(query).fetchall()
+
+    agent = Agent(tools=[search_docs, execute_sql])
 expected:
   should_flag: true
   control_id: VS-G4-AGENT-TOOL-ALLOWLIST

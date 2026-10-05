@@ -27,6 +27,8 @@ executed:
   - g3-sqli-pos-01
   - g3-xss-neg-01
   - g3-xss-pos-01
+  - g4-agent-tools-neg-01
+  - g4-agent-tools-pos-01
   - g4-bola-neg-01
   - g4-owner-neg-02
   - g4-owner-pos-01
@@ -47,6 +49,8 @@ executed:
   - g5-ssrf-neg-01
   - g5-ssrf-neg-02
   - g5-ssrf-pos-01
+  - g5-stacktrace-neg-01
+  - g5-stacktrace-pos-01
   - g6-injection-neg-01
   - g6-injection-pos-01
   - g6-sysprompt-neg-01

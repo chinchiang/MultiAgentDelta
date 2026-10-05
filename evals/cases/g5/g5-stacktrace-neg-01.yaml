@@ -4,6 +4,7 @@ domain: error_handling
 title: 錯誤回應只含通用訊息與 request id
 input:
   kind: http
+  target_app: vulnapp-patched
   target: /items/abc
   steps:
   - GET /items/abc -> 400 {"error":"invalid id","request_id":"..."}

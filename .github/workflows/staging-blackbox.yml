@@ -213,9 +213,22 @@ jobs:
 
           # ---- debug_stacktrace ----
           if reachable:
-              s, body = req("/__vibesec_nonexistent__/%ff", "GET")
               markers = ("Traceback (most recent call last)", "File \"", "Exception", "at line")
-              if body and any(m in body for m in markers):
+              leaked = lambda b: bool(b) and any(m in b for m in markers)
+              s, body = req("/__vibesec_nonexistent__/%ff", "GET")
+              if not leaked(body):
+                  # 型別混淆輸入：對 openapi 列出、無 path 參數的 POST 端點（最多 5 個）送數值型欄位，誘發未處理例外
+                  try:
+                      _, spec = req("/openapi.json")
+                      posts = [k for k, v in (json.loads(spec or "{}").get("paths") or {}).items()
+                               if "post" in v and "{" not in k][:5]
+                  except ValueError:
+                      posts = []
+                  for path in posts:
+                      s, body = req(path, "POST", data={"query": 0, "message": 0, "input": 0, "id": 0})
+                      if leaked(body):
+                          break
+              if leaked(body):
                   add("vibesec.g5.debug-stacktrace", "warning",
                       "錯誤回應洩漏 stack trace（Debug Mode 外溢）", "advisory")
                   coverage["debug_stacktrace"] = "fail"

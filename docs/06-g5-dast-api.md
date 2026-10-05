@@ -117,6 +117,8 @@ curl -s -X POST "$VIBESEC_TARGET_URL/graphql" -H 'Content-Type: application/json
 curl -s "$VIBESEC_TARGET_URL/api/todos/not-an-int" -H "$A" | grep -Eqi 'Traceback|at .*\(.*:[0-9]+\)|DEBUG = True|Werkzeug' && echo "stack trace leaked"  # vibesec.g5.debug-stacktrace
 ```
 
+CI 的 api-probes 先請求不存在的路徑；沒有外洩時，再對 `openapi.json` 列出、無 path 參數的 POST 端點（最多 5 個）送型別混淆的 JSON（`{"query": 0, "message": 0, "input": 0, "id": 0}`），只要任一回應含 stack trace 標記就判 `vibesec.g5.debug-stacktrace`。
+
 三者皆 advisory（CWE-200 / CWE-209）；但 Stack Trace 若洩漏原始碼路徑，harness 把該路徑回填為 SARIF 位置（黑箱 → 白箱）。
 
 ### 5. 速率限制與 Captcha（`rate_limit`）
