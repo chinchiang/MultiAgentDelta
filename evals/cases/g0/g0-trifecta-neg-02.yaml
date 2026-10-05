@@ -4,7 +4,16 @@ domain: application_architecture
 title: 三要素齊備但外傳通道受 allow-list 與 HITL 阻斷
 input:
   kind: config
-  snippet: 'agent: {tools: [read_inbox, read_private_repo, http_fetch], http_fetch: {allow_hosts: [api.internal], hitl: required}}'
+  threat_model:
+    agents:
+      - id: c-inbox-agent
+        tools: [read_inbox, read_private_repo, http_fetch]   # http_fetch 只允許 api.internal，且需人工核准
+        accesses_private_data: true
+        exposed_to_untrusted_content: true
+        can_communicate_externally: true
+        high_impact_tools: [http_fetch]
+        mitigations: [egress_allowlist, human_in_the_loop]
+        trifecta_leg_cut: external_comms
 expected:
   should_flag: false
   control_id: VS-G0-LETHAL-TRIFECTA

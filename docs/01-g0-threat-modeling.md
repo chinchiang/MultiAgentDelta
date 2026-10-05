@@ -114,7 +114,7 @@ Simon Willison 定義的三要素，對應 `agents[]` 三個布林欄位：
 G0 本身是人工活動，但 harness 做四件確定性檢查：
 
 1. `project.threat_model` 存在且通過 `schemas/threat-model.schema.json` 驗證（`python3 scripts/validate.py`）。
-2. Lethal Trifecta：對每個 `agents[]` 計算三布林；全 true 且 `mitigations == []` → finding `rule_id: vibesec.g0.lethal-trifecta-open`（`control_id: VS-G0-LETHAL-TRIFECTA`，policy blocking）。
+2. Lethal Trifecta：對每個 `agents[]` 計算三布林；全 true 且 `mitigations == []` → finding `rule_id: vibesec.g0.lethal-trifecta-open`（`control_id: VS-G0-LETHAL-TRIFECTA`，policy blocking）。決定性部分由 `scripts/g0_trifecta.py` 實作，`scripts/validate.py` 對 `project.threat_model` 執行（命中即錯誤、CI 失敗）；它只判斷模型的宣告，宣告是否屬實（mitigation 是否真的生效）仍屬人工／LLM 審查。
 3. `risk_tier` 一致性：threat-model 與 `vibesec.yaml` 相同；且決策樹推導值不低於宣告值（宣告 L1 但有 `public` 暴露 → fail，附推導路徑）。
 4. 覆蓋對照：每條 `threats[].gate` 指向的閘門必須 `enabled: true`；`contains_llm: true` 但 methodologies 無 MAESTRO → advisory。
 

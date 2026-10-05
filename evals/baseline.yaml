@@ -1,6 +1,10 @@
 # run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN）。
 # 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。
 executed:
+  - g0-trifecta-neg-01
+  - g0-trifecta-neg-02
+  - g0-trifecta-pos-01
+  - g0-trifecta-pos-02
   - g1-cooldown-neg-01
   - g1-cooldown-pos-01
   - g1-postinstall-neg-01

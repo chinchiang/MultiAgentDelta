@@ -326,6 +326,10 @@ try:
                 err(f"{_tm_rel} 仍是範本內容（system.name: example-project）")
             else:
                 ok(f"威脅模型 ok: {_tm_rel}")
+                sys.path.insert(0, str(ROOT / "scripts"))
+                from g0_trifecta import trifecta_findings
+                for f in trifecta_findings(_d):
+                    err(f"{_tm_rel}：{f['rule_id']}（blocking）— {f['reason']}")
                 _order = {"L1": 1, "L2": 2, "L3": 3}
                 _decl, _model = _vb.get("risk_tier"), _d.get("risk_tier")
                 if _decl != _model:

@@ -4,7 +4,15 @@ domain: application_architecture
 title: 讀 email + 讀私有 repo + 可發 HTTP 的 agent
 input:
   kind: config
-  snippet: 'agent: {tools: [read_inbox, read_private_repo, http_fetch]}'
+  threat_model:
+    agents:
+      - id: c-inbox-agent
+        tools: [read_inbox, read_private_repo, http_fetch]   # email = 不可信輸入、私有 repo = 私有資料、http_fetch = 外傳
+        accesses_private_data: true
+        exposed_to_untrusted_content: true
+        can_communicate_externally: true
+        mitigations: []
+        trifecta_leg_cut: null
 expected:
   should_flag: true
   control_id: VS-G0-LETHAL-TRIFECTA
