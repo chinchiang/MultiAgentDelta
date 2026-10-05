@@ -138,10 +138,15 @@ jobs:
           # G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（CLAUDE.md #8）。
           # checks: bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata,
           #         swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check
-          import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.error
+          import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.error, sys
           NOW = datetime.datetime.now(datetime.timezone.utc)
           def iso(dt): return dt.replace(microsecond=0).isoformat()
           URL = os.environ["VIBESEC_TARGET_URL"].rstrip("/")
+          # tier 只來自 blocking-policy（含 risk_tier 的 tier_overrides）；VIBESEC_CONFIG 指向 repo 的 vibesec.yaml
+          ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
+          sys.path.insert(0, str(ROOT / "scripts"))
+          from vibesec_policy import Policy
+          POLICY = Policy(ROOT)
           def _read(name):
               d = os.environ.get("VIBESEC_TOKEN_DIR", "")
               f = pathlib.Path(d) / name if d else None
@@ -153,7 +158,8 @@ jobs:
           results = []; rules = {}
           coverage = {}  # control_id -> state
           coverage_reasons = {}  # control_id -> reason（not_applicable 必填，untested 可選）
-          def add(rule_id, level, msg, tier="advisory"):
+          def add(rule_id, level, msg):
+              tier = "advisory" if level == "note" else POLICY.tier(rule_id)   # note = 未能實測的提示，不是發現
               rules.setdefault(rule_id, {"id": rule_id, "name": rule_id,
                                          "shortDescription": {"text": rule_id},
                                          "defaultConfiguration": {"level": level},
@@ -195,7 +201,7 @@ jobs:
                   if s == 200: exposed.append(p)
               if exposed:
                   add("vibesec.g5.swagger-exposed", "warning",
-                      f"API 文件/schema 對外暴露：{', '.join(exposed)}（開發便利設定外溢）", "advisory")
+                      f"API 文件/schema 對外暴露：{', '.join(exposed)}（開發便利設定外溢）")
                   coverage["swagger_exposed"] = "fail"
               else:
                   coverage["swagger_exposed"] = "pass"
@@ -206,7 +212,7 @@ jobs:
               s, body = req("/graphql", "POST", data=q)
               if s == 200 and "__schema" in (body or ""):
                   add("vibesec.g5.graphql-introspection", "warning",
-                      "GraphQL introspection 開啟（洩漏 schema）", "advisory")
+                      "GraphQL introspection 開啟（洩漏 schema）")
                   coverage["graphql_introspection"] = "fail"
               else:
                   coverage["graphql_introspection"] = "pass" if s is not None else "untested"
@@ -228,7 +234,7 @@ jobs:
                   coverage["cors_reflect_origin"] = "untested"
               elif acao == EVIL and str(acac).lower() == "true":
                   add("vibesec.g5.cors-reflect-origin", "error",
-                      "CORS 反射任意 Origin 且 Access-Control-Allow-Credentials: true", "blocking")
+                      "CORS 反射任意 Origin 且 Access-Control-Allow-Credentials: true")
                   coverage["cors_reflect_origin"] = "fail"
               else:
                   coverage["cors_reflect_origin"] = "pass"
@@ -252,7 +258,7 @@ jobs:
                           break
               if leaked(body):
                   add("vibesec.g5.debug-stacktrace", "warning",
-                      "錯誤回應洩漏 stack trace（Debug Mode 外溢）", "advisory")
+                      "錯誤回應洩漏 stack trace（Debug Mode 外溢）")
                   coverage["debug_stacktrace"] = "fail"
               else:
                   coverage["debug_stacktrace"] = "pass"
@@ -277,7 +283,7 @@ jobs:
                               accepted = p; break
                   if accepted:
                       add("vibesec.g5.jwt-alg-none", "error",
-                          f"受保護端點 {accepted} 接受 alg:none 偽造 JWT（授權繞過）", "blocking")
+                          f"受保護端點 {accepted} 接受 alg:none 偽造 JWT（授權繞過）")
                       coverage["jwt_alg_none"] = "fail"
                   else:
                       coverage["jwt_alg_none"] = "pass"
@@ -346,7 +352,7 @@ jobs:
               if not pem:
                   coverage["jwt_alg_confusion"] = "untested"
                   add("vibesec.g5.jwt-alg-confusion", "note",
-                      "未能從 JWKS 取得 RSA 公鑰 → untested，建議人工/Burp 驗證", "advisory")
+                      "未能從 JWKS 取得 RSA 公鑰 → untested，建議人工/Burp 驗證")
               else:
                   try:
                       h_b64, p_b64, _ = TA.split(".")
@@ -364,7 +370,7 @@ jobs:
                           if s_forged in (401, 403): rejected = True
                       if accepted:
                           add("vibesec.g5.jwt-alg-confusion", "error",
-                              f"受保護端點 {accepted} 接受以公鑰 PEM 當 HMAC 金鑰的 HS256 偽造 JWT（RS256→HS256 混淆）", "blocking")
+                              f"受保護端點 {accepted} 接受以公鑰 PEM 當 HMAC 金鑰的 HS256 偽造 JWT（RS256→HS256 混淆）")
                           coverage["jwt_alg_confusion"] = "fail"
                       elif rejected:
                           coverage["jwt_alg_confusion"] = "pass"
@@ -404,7 +410,7 @@ jobs:
                       checked = True
                   if s_b == 200:
                       add("vibesec.g5.bola-cross-account", "error",
-                          f"雙帳號 BOLA 實證：帳號 B 可存取帳號 A 的資源 {resource}（HTTP 200）", "blocking")
+                          f"雙帳號 BOLA 實證：帳號 B 可存取帳號 A 的資源 {resource}（HTTP 200）")
                       confirmed = True; break
               # 只有「A 可讀、B 被明確拒絕」才算 pass；其餘一律 untested（incomplete ≠ pass）
               coverage["bola_idor"] = "fail" if confirmed else ("pass" if checked else "untested")
@@ -433,13 +439,13 @@ jobs:
                           if s in (400, 403): refused = True
                           if s == 200 and any(m in body for m in ("ami-id", "instance-id", "iam/security-credentials", '"compute"')):
                               add("vibesec.g5.ssrf-metadata", "error",
-                                  f"SSRF：端點 {ep}（{key}）可讀取雲端 metadata 169.254.169.254", "blocking")
+                                  f"SSRF：端點 {ep}（{key}）可讀取雲端 metadata 169.254.169.254")
                               ssrf_hit = True; break
                       if not internal_hit:
                           for s, body in ssrf_try(ep, key, CANARY):
                               if s == 200 and "openapi" in body:  # 已移除回顯的 canary URL；內容可能被 JSON 轉義
                                   add("vibesec.g5.ssrf-internal-fetch", "error",
-                                      f"SSRF：端點 {ep}（{key}）會替使用者抓取內部位址 127.0.0.1（loopback canary 命中）", "blocking")
+                                      f"SSRF：端點 {ep}（{key}）會替使用者抓取內部位址 127.0.0.1（loopback canary 命中）")
                                   internal_hit = True; break
                       if ssrf_hit: break
                   if ssrf_hit: break
@@ -480,7 +486,7 @@ jobs:
                       unknown.append(f"{pth}（{s_anon}/{s_bad}）")
               if leaked:
                   add("vibesec.g5.missing-session-check", "error",
-                      "受保護端點未驗證 token 即回 2xx（前端防禦假象）：" + "；".join(leaked), "blocking")
+                      "受保護端點未驗證 token 即回 2xx（前端防禦假象）：" + "；".join(leaked))
                   coverage["session_check"] = "fail"
               elif unknown:
                   coverage["session_check"] = "untested"
@@ -496,7 +502,7 @@ jobs:
                   codes.append(s)
               if 429 not in codes:
                   add("vibesec.g5.missing-rate-limit", "warning",
-                      "登入端點 25 次連續請求未見 429（缺 Rate Limiting / Captcha）", "advisory")
+                      "登入端點 25 次連續請求未見 429（缺 Rate Limiting / Captcha）")
                   coverage["rate_limit"] = "fail"
               else:
                   coverage["rate_limit"] = "pass"

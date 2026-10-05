@@ -79,7 +79,7 @@ garak / PyRIT / promptfoo 是測試工具（G6）；NeMo Guardrails / Llama Guar
 
 ### （延伸）excessive_agency（LLM06）
 
-promptfoo plugins `excessive-agency`、`rbac`、`bola`、`bfla`、`tool-discovery` 測 Agent 是否在無確認下執行高影響動作或暴露不該有的工具 → `vibesec.g6.excessive-agency`（blocking，CWE-250）。對應 G4 的工具 allow-list 與 HITL。
+promptfoo plugins `excessive-agency`、`rbac`、`bola`、`bfla`、`tool-discovery` 測 Agent 是否在無確認下執行高影響動作或暴露不該有的工具 → `vibesec.g6.excessive-agency`（advisory，CWE-250；是否 blocking 由 blocking-policy 決定）。對應 G4 的工具 allow-list 與 HITL。
 
 ## 自動化作法
 
@@ -175,10 +175,10 @@ python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6
 
 | 規則 | 層級 | CWE | LLM Top 10 |
 |---|---|---|---|
-| `vibesec.g6.direct-prompt-injection` | blocking | CWE-1427 | LLM01 |
-| `vibesec.g6.indirect-prompt-injection` | blocking | CWE-1427 | LLM01 |
-| `vibesec.g6.stored-xss-via-ai-output` | blocking | CWE-79 | LLM05 |
-| `vibesec.g6.excessive-agency` | blocking | CWE-250 | LLM06 |
+| `vibesec.g6.direct-prompt-injection` | advisory（L3 升 blocking） | CWE-1427 | LLM01 |
+| `vibesec.g6.indirect-prompt-injection` | advisory | CWE-1427 | LLM01 |
+| `vibesec.g6.stored-xss-via-ai-output` | advisory（L3 升 blocking） | CWE-79 | LLM05 |
+| `vibesec.g6.excessive-agency` | advisory | CWE-250 | LLM06 |
 | `vibesec.g6.system-prompt-extraction` | advisory（洩漏金鑰升級） | CWE-200 | LLM07 / LLM02 |
 | `vibesec.g6.denial-of-wallet` | advisory | CWE-770 / CWE-400 | LLM10 |
 | target 未啟動 / provider 失敗 / cost 無法量測 | `incomplete` / 該斷言 `untested` | — | — |

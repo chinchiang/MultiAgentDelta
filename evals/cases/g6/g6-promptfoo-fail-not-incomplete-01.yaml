@@ -11,7 +11,7 @@ expected:
   should_flag: true
   control_id: LLM05:2025
   rule_id: vibesec.g6.stored-xss-via-ai-output
-  policy_tier: blocking
+  policy_tier: advisory
   gate_status: fail
 held_out: true
 notes: staging run 37185179844 曾把此情境誤報為 incomplete（理由「缺金鑰」）。缺金鑰只影響 redteam 生成層，該層記 untested 並寫入 status_reason，但不得掩蓋已實測的失敗。

@@ -12,7 +12,7 @@ expected:
   should_flag: true
   control_id: ASVS5-V1.3
   rule_id: vibesec.g5.ssrf-metadata
-  policy_tier: blocking
+  policy_tier: advisory
   gate_status: incomplete
 held_out: false
 notes: 'PR #10 前的誤判情境：未實測 → untested，gate_status=incomplete，不得 pass。'

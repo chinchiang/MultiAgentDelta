@@ -12,6 +12,6 @@ expected:
   should_flag: true
   control_id: ASVS5-V1.3
   rule_id: vibesec.g5.ssrf-internal-fetch
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false
 notes: examples/vulnapp 可重現；staging run 37184141967 實證。

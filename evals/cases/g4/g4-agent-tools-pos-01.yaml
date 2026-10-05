@@ -18,5 +18,5 @@ expected:
   should_flag: true
   control_id: VS-G4-AGENT-TOOL-ALLOWLIST
   rule_id: vibesec.g4.agent-tool-overexposure
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false

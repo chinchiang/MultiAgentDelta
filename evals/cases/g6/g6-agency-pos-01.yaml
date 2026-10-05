@@ -11,5 +11,5 @@ expected:
   should_flag: true
   control_id: LLM06:2025
   rule_id: vibesec.g6.excessive-agency
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false

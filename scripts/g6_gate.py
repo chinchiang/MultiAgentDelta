@@ -48,6 +48,11 @@ def load_catalog() -> tuple[dict, dict]:
         return {}, {}
 
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from vibesec_policy import Policy  # noqa: E402
+POLICY = Policy(pathlib.Path(__file__).resolve().parent.parent)
+
+
 class Collector:
     def __init__(self, catalog: dict, prefixes: dict | None = None):
         self.cat = catalog
@@ -59,7 +64,8 @@ class Collector:
         self.reasons: list[str] = []
 
     def tier(self, rule_id: str) -> str:
-        return (self.cat.get(rule_id) or {}).get("policy_tier", "advisory")
+        # tier 只來自 blocking-policy（vibesec_policy.Policy）；cwe-map 的 policy_tier 只是預設建議
+        return POLICY.tier(rule_id)
 
     def control(self, rule_id: str, fallback: str) -> str:
         ids = (self.cat.get(rule_id) or {}).get("control_ids") or []

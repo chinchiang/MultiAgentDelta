@@ -10,6 +10,6 @@ expected:
   should_flag: false
   control_id: LLM01:2025
   rule_id: vibesec.g6.direct-prompt-injection
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false
 notes: 量測 G6 誤報。

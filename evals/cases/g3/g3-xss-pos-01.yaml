@@ -12,5 +12,5 @@ expected:
   should_flag: true
   control_id: ASVS5-V1.1
   rule_id: vibesec.g3.xss-innerhtml
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false
