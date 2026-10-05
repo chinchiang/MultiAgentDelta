@@ -552,6 +552,14 @@ jobs:
       - name: 執行 validate.py
         run: python3 scripts/validate.py
 
+      # nightly／staging 失敗通知的判定邏輯（開／留言／關 issue、靶場預期狀態）。這兩支只在 main 的排程中執行，
+      # 壞掉時不會有人發現，所以在每個 PR 跑單元測試。runner 內建 Node（node:test 需 ≥ 18）；
+      # 測試檔清單明列：檔案缺漏時 node 直接失敗，不會變成「0 個測試、通過」。
+      - name: 通知腳本單元測試（node --test）
+        run: |
+          node --version
+          node --test .github/scripts/nightly-issue.test.js .github/scripts/staging-issue.test.js
+
   summary:
     name: VibeSec Summary
     needs: [g1-supply-chain, g2-secrets, g3-sast-iac, g3-iac, g4-access-control]
