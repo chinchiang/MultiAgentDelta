@@ -46,6 +46,20 @@ providers:
     allowed_data_classes: [public, internal]
     enabled: true
 
+  # ------------------------------------------------------------------- google
+  gemini-cloud:
+    family: google
+    kind: openai_compatible           # Gemini API 的 OpenAI 相容端點（Chat Completions）
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+    model: gemini-2.5-pro             # 確認可用版本
+    timeout_seconds: 120
+    max_tokens: 4096
+    temperature: 0
+    json_mode: true
+    allowed_data_classes: [public, internal]   # 比照 openai-cloud；不得送 confidential / pii（人工決定，見 PR 說明）
+    enabled: true
+
   # ---------------------------------------------------------------------- glm
   glm-cloud:
     family: glm
@@ -97,12 +111,12 @@ providers:
 rotation:
   high_risk_min_families: 2           # 與 vibesec.yaml review.min_families_for_high_risk 一致
   roles:
-    architecture:      [anthropic, openai, deepseek, glm]
-    appsec:            [anthropic, openai, deepseek, glm]
-    identity-authz:    [openai, anthropic, deepseek, glm]
-    supplychain-cicd:  [openai, deepseek, anthropic, glm]
+    architecture:      [anthropic, openai, google, deepseek, glm]
+    appsec:            [anthropic, openai, google, deepseek, glm]
+    identity-authz:    [openai, anthropic, google, deepseek, glm]
+    supplychain-cicd:  [openai, google, deepseek, anthropic, glm]
   # 當偏好 family 全部不可用時的遞補順序（provider 名稱，非 family）
-  fallback_order: [anthropic-cloud, openai-cloud, onprem_vllm, deepseek-cloud, glm-cloud]
+  fallback_order: [anthropic-cloud, openai-cloud, gemini-cloud, onprem_vllm, deepseek-cloud, glm-cloud]
   # 資料分級為 confidential / pii 時，只允許這些 provider（覆寫上面的偏好）
   sensitive_data_providers: [onprem_vllm]
   # 審查預算（每次 harness 執行）；超過 → 剩餘高風險發現 pending、閘門 incomplete（docs/09 §6）

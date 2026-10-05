@@ -15,7 +15,7 @@ def complete(messages: list[Message], json_schema: dict, temperature: float = 0)
 - `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。
 - `temperature` 固定 `0`，讓同一 `prompt_version` 下的輸出可比較。
 
-四個 `family`：`anthropic`、`openai`、`glm`、`deepseek`（`schemas/finding.schema.json` 另允許 `fake` 供 evals 用）。`family` 是「同一基礎模型血統」的標籤；同一 family 的兩個 provider（例如雲端 OpenAI 與地端 vLLM 跑的 OpenAI 系開源模型）**不算**兩個 family。
+五個 `family`：`anthropic`、`openai`、`google`（Gemini）、`glm`、`deepseek`（`schemas/finding.schema.json` 另允許 `fake` 供 evals 用）。`family` 是「同一基礎模型血統」的標籤；同一 family 的兩個 provider（例如雲端 OpenAI 與地端 vLLM 跑的 OpenAI 系開源模型）**不算**兩個 family。
 
 `config/providers.yaml` 每個 provider 的欄位：
 
