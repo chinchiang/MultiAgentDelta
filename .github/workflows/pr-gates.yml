@@ -523,6 +523,24 @@ jobs:
               raise SystemExit(1)
           EOF
 
+      # LLM 審查不在 CI 跑：/vibesec-harness 產出 reports/g4-review.yaml，由人複製為 reviews/g4/<commit>.yaml 提交。
+      # 這一步只讀該紀錄（schema、provider／family 一致性、對 PR head 是否過期），把 VS-G4-LLM-REVIEW 從 pending 推進到
+      # pass／pending／fail；無有效紀錄維持 incomplete（incomplete ≠ pass）。規則見 docs/05「阻擋政策」與 scripts/g4_review.py。
+      - name: 安裝 PyYAML / jsonschema（審查紀錄驗證）
+        if: always()
+        run: pip install pyyaml jsonschema
+
+      - name: G4 LLM 審查紀錄（reviews/g4/）→ 閘門狀態
+        if: always()
+        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        env:
+          VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
+          # pull_request 的 github.sha 是合併 commit；過期判斷要對 PR head，否則 base 分支的變更也會讓紀錄過期
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 scripts/g4_review.py gate --static reports/g4-gate.json --head "$HEAD_SHA" \
+            --out reports/g4-gate.json --comment reports/g4-comment.md --mode "$VIBESEC_MODE"
+
       - name: Upload G4 static SARIF
         if: always()
         continue-on-error: true
@@ -531,14 +549,28 @@ jobs:
           sarif_file: reports/g4-static.sarif
           category: vibesec-g4-static
 
+      - name: Upload G4 reports（gate JSON 供 summary 彙整）
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-g4-reports
+          path: reports/
+          if-no-files-found: ignore
+
       - name: PR 留言：G4 LLM 審查需人工／harness 執行
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            const fs = require('fs');
             const marker = '<!-- vibesec-g4-llm-review -->';
-            const body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / 單層 middleware）。\n\n**G4 狀態：\`incomplete\`**——LLM 審查（VS-G4-LLM-REVIEW）尚未執行，需由 \`/vibesec-harness\` 或人工完成（跨檔授權推理、BOLA/IDOR 綁定、HITL 判斷無法由靜態規則涵蓋）。目前政策下 G4 incomplete 不擋 merge。`;
+            // 留言內容由 scripts/g4_review.py gate 產生（含審查紀錄與發現表）；檔案缺席時退回固定提醒
+            let body;
+            try { body = fs.readFileSync('reports/g4-comment.md', 'utf8'); } catch (e) {
+              body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / 單層 middleware）。\n\n**G4 狀態：\`incomplete\`**——LLM 審查（VS-G4-LLM-REVIEW）尚未執行，需由 \`/vibesec-harness\` 完成並提交 \`reviews/g4/<commit>.yaml\`（跨檔授權推理、BOLA/IDOR 綁定、HITL 判斷無法由靜態規則涵蓋）。目前政策下 G4 incomplete 不擋 merge。`;
+            }
+            if (!body.includes(marker)) body = `${marker}\n${body}`;
             const {owner, repo} = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.rest.issues.listComments({owner, repo, issue_number});

@@ -192,7 +192,16 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 | `vibesec.g4.mcp-missing-resource-indicator` | advisory | CWE-863 |
 | reviewer 缺席 / provider 失敗 / 分歧未裁決 | `incomplete` 或 `pending`；不得 pass | — |
 
-CI（`pr-gates.yml` 的 G4 job）只跑靜態部分，`VS-G4-LLM-REVIEW` 在 CI 中恆為 `pending`，因此 G4 閘門狀態為：有 blocking 發現 → `fail`；否則 → `incomplete`（`status_reason` 註明 LLM 審查未執行），**不會**是 `pass`。G4 不在 `config/policy/blocking-policy.yaml` 的 `incomplete_gate_is_blocking_in_enforce`，所以 enforce 模式下 G4 `incomplete` 不擋 merge；若要改為阻擋，須由人類在獨立 PR 修改該政策（CLAUDE.md 規則 1）。
+CI（`pr-gates.yml` 的 G4 job）只跑靜態部分；LLM 審查由 `/vibesec-harness` 執行，結果寫成 `reports/g4-review.yaml`（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`），由人複製為 `reviews/g4/<commit>.yaml` 提交（`reviews/` 受 CODEOWNERS 審核；harness 不得自行寫入）。G4 job 以 `scripts/g4_review.py gate` 讀取對 PR head **有效**的紀錄——紀錄的 `commit` 是 head 的祖先，且其後只動過 `reviews/g4/`、`rulings/`——並推導狀態：
+
+| 情況 | G4 狀態 |
+|---|---|
+| 靜態 blocking，或 LLM 發現屬 blocking 且經人工裁決（`rulings/`）confirm | `fail` |
+| 任一發現 `requires_human` 且無有效裁決 | `pending` |
+| 無紀錄、紀錄過期、實際執行的 family < `min_families_for_high_risk`、必要角色缺席、coverage 有 pending／untested | `incomplete` |
+| 其餘 | `pass` |
+
+紀錄本身受規則約束（`g4_review.py check`，違規即 CI 失敗）：provider 名稱與 family 必須與 `config/providers.yaml` 一致；意見只能來自實際執行（`state: ran`）的 provider；分歧、少數意見、高風險發現 family 不足 → `requires_human` 必須為 true；沒有 `ruling_ref` 時 `validation_status` 只能是 `pending`、`evidence_grade` 最高 E2。也就是說，紀錄只能「誠實陳述審查發生了什麼」，不能自行宣告結論；結論只來自裁決。G4 不在 `config/policy/blocking-policy.yaml` 的 `incomplete_gate_is_blocking_in_enforce`，所以 enforce 模式下 G4 `incomplete` 不擋 merge；若要改為阻擋，須由人類在獨立 PR 修改該政策（CLAUDE.md 規則 1）。
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
