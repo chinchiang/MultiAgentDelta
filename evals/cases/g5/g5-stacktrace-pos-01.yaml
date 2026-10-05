@@ -4,6 +4,7 @@ domain: error_handling
 title: 錯誤回應洩漏 stack trace
 input:
   kind: http
+  target_app: vulnapp
   target: /items/abc
   steps:
   - GET /items/abc -> 500 Traceback (most recent call last) ...

@@ -3,8 +3,17 @@ gate: G4
 domain: ai_agent_security
 title: Agent 工具 allow-list 最小化
 input:
-  kind: config
-  snippet: 'tools: [search_docs, get_ticket]'
+  kind: code
+  language: python
+  path: agent/tools.py
+  snippet: |
+    from agent_sdk import Agent, tool
+
+    @tool
+    def get_ticket(ticket_id: str) -> dict:
+        return tickets.get_for_user(current_user(), ticket_id)
+
+    agent = Agent(tools=[search_docs, get_ticket])
 expected:
   should_flag: false
   control_id: VS-G4-AGENT-TOOL-ALLOWLIST
