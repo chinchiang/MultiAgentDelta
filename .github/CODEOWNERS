@@ -4,6 +4,9 @@
 # 人工裁決紀錄：裁決者不得是 PR 作者（另由 pr-gates repo-validate 檢查 decided_by）
 /rulings/                          @chinchiang
 
+# G4 LLM 審查紀錄：harness 輸出，由人複製提交；紀錄不能自行宣告結論（scripts/g4_review.py 檢查），但仍需 owner 確認來源
+/reviews/                          @chinchiang
+
 # 閘門、阻擋政策、provider 與 ID 目錄
 /vibesec.yaml                      @chinchiang
 /config/policy/                    @chinchiang

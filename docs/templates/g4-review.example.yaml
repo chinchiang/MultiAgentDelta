@@ -1,0 +1,74 @@
+# G4 LLM 審查紀錄範例（schemas/g4-review.schema.json）。
+# harness（/vibesec-harness 步驟 4）寫出 reports/g4-review.yaml；人工確認後複製為 reviews/g4/<commit>.yaml 提交，
+# 檔名必須等於 commit。CI 的 G4 job 讀取它：此 commit 之後若有 reviews/g4/、rulings/ 以外的變更，紀錄視為過期（incomplete）。
+review_version: 1
+gate: G4
+commit: 0123456789abcdef0123456789abcdef01234567
+diff_base: 89abcdef0123456789abcdef0123456789abcdef
+scope: diff
+reviewed_at: "2026-10-05T08:00:00Z"
+roles: [architecture, identity-authz]
+prompt_versions:
+  architecture: architecture@2026-10-03.1
+  identity-authz: identity-authz@2026-10-03.1
+providers:
+  - provider: claude-code-subagent     # Claude Code 內的 reviewer sub-agent（SKILL.md 步驟 2）
+    family: anthropic
+    model: claude-sonnet-5-5
+    state: ran
+  - provider: openai-cloud             # 第二個 family（高風險控制必需，docs/09 §5）
+    family: openai
+    model: gpt-5
+    state: ran
+coverage:
+  - control_id: VS-G4-LLM-REVIEW
+    state: fail                        # 有未 refute 的發現 → fail；全部 refute 或無發現 → pass；family 不足 → pending
+    reason: 1 筆發現待人工裁決
+findings:
+  - id: VS-20261005-9f3e2a1c
+    rule_id: vibesec.g4.missing-owner-filter
+    title: GET /users/{id}/notes 未將 id 綁定當前主體
+    policy_tier: advisory
+    evidence_grade: E1                 # 只有模型意見：最高 E2；E3 需人工核對（rulings/）
+    validation_status: pending
+    requires_human: true               # 分歧 → 人工裁決；此紀錄不裁決，也不多數決
+    ruling_ref: null
+    opinions:
+      - role: identity-authz
+        provider: claude-code-subagent
+        family: anthropic
+        model: claude-sonnet-5-5
+        prompt_version: identity-authz@2026-10-03.1
+        round: 1
+        verdict: confirm
+        rationale: "app/main.py:142-151 只驗 token 有效，未比對 user_id == user['id']"
+      - role: identity-authz
+        provider: openai-cloud
+        family: openai
+        model: gpt-5
+        prompt_version: identity-authz@2026-10-03.1
+        round: 1
+        verdict: refute
+        rationale: "gateway 層已做 owner 檢查"
+      - role: identity-authz
+        provider: claude-code-subagent
+        family: anthropic
+        model: claude-sonnet-5-5
+        prompt_version: identity-authz@2026-10-03.1
+        round: 3
+        verdict: confirm
+        rationale: "維持：gateway 只驗 token 有效性，app/main.py:142 仍無 owner 比對"
+      - role: identity-authz
+        provider: openai-cloud
+        family: openai
+        model: gpt-5
+        prompt_version: identity-authz@2026-10-03.1
+        round: 3
+        verdict: refute
+        rationale: "維持：gateway 已綁定 owner"
+        minority: true
+    notes: null
+recorded_by:
+  handle: appsec-lead
+  note: 由 reports/g4-review.yaml 原樣複製
+raw_ref: reports/raw/G4/review/

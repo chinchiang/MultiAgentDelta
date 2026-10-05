@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chinchiang/MultiAgentDelta/schemas/g4-review.schema.json",
+  "title": "VibeSec G4 LLM Review Record",
+  "description": "一次 G4 LLM 審查（docs/05 自動化作法第 2 點、docs/09）的紀錄，由 harness 寫到 reports/g4-review.yaml，人工複製為 reviews/g4/<commit>.yaml 提交。CI 據此把 VS-G4-LLM-REVIEW 從 pending 推進到有結論。紀錄只陳述審查發生了什麼：意見全部保留、不多數決、requires_human 的發現仍須 rulings/ 裁決；它本身不能把閘門變成 pass。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["review_version", "gate", "commit", "scope", "reviewed_at", "roles", "providers", "coverage", "findings", "recorded_by"],
+  "properties": {
+    "review_version": { "const": 1 },
+    "gate": { "const": "G4" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "審查時被測專案的 HEAD（完整 40 碼）。CI 只接受「此 commit 之後只動過 reviews/g4/ 與 rulings/」的 PR head" },
+    "diff_base": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$" },
+    "scope": { "type": "string", "enum": ["diff", "full"] },
+    "reviewed_at": { "type": "string", "format": "date-time" },
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "enum": ["architecture", "appsec", "identity-authz", "supplychain-cicd"] },
+      "description": "本次實際執行的角色；必須涵蓋 vibesec.yaml gates.g4_access_control_review.roles"
+    },
+    "prompt_versions": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[a-z-]+@[0-9]{4}-[0-9]{2}-[0-9]{2}\\.[0-9]+$" },
+      "description": "角色 → config/harness/roles/<role>.md 頂端的 prompt_version"
+    },
+    "providers": {
+      "type": "array",
+      "minItems": 1,
+      "description": "每個被呼叫的 provider 與其狀態；缺席者照實記 missing / timeout / error（docs/09 §11），不補假意見",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "family", "state"],
+        "properties": {
+          "provider": { "type": "string", "minLength": 1, "description": "config/providers.yaml 的 provider 名稱，或 claude-code-subagent（SKILL.md 步驟 2）" },
+          "family": { "type": "string", "enum": ["anthropic", "openai", "glm", "deepseek", "fake"] },
+          "model": { "type": ["string", "null"] },
+          "state": { "type": "string", "enum": ["ran", "missing", "timeout", "error"] },
+          "note": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "minItems": 1,
+      "description": "LLM 審查涵蓋的控制與結論；至少要有 VS-G4-LLM-REVIEW",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["control_id", "state"],
+        "properties": {
+          "control_id": { "type": "string" },
+          "state": { "type": "string", "enum": ["pass", "fail", "pending", "untested", "not_applicable"] },
+          "reason": { "type": ["string", "null"] }
+        },
+        "if": { "properties": { "state": { "const": "not_applicable" } } },
+        "then": { "required": ["reason"], "properties": { "reason": { "type": "string", "minLength": 1 } } }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "本次審查產生或審查過的 G4 發現（與 reports/findings.json 同 id）。可為空陣列",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rule_id", "title", "policy_tier", "evidence_grade", "validation_status", "requires_human", "opinions"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^VS-[0-9]{8}-[0-9a-f]{8}$" },
+          "rule_id": { "type": "string", "pattern": "^vibesec\\.g4\\.[a-z0-9-]+$" },
+          "title": { "type": "string", "minLength": 1 },
+          "policy_tier": { "type": "string", "enum": ["blocking", "advisory"] },
+          "evidence_grade": { "type": "string", "enum": ["E0", "E1", "E2", "E3"], "description": "只有模型意見時最高 E2（docs/09 §4）；E3 需人工裁決（rulings/）" },
+          "validation_status": { "type": "string", "enum": ["pending", "confirmed", "refuted"] },
+          "requires_human": { "type": "boolean" },
+          "ruling_ref": { "type": ["string", "null"], "pattern": "^rulings/VS-[0-9]{8}-[0-9a-f]{8}\\.yaml$" },
+          "opinions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["role", "provider", "family", "round", "verdict"],
+              "properties": {
+                "role": { "type": "string", "enum": ["architecture", "appsec", "identity-authz", "supplychain-cicd"] },
+                "provider": { "type": "string" },
+                "family": { "type": "string", "enum": ["anthropic", "openai", "glm", "deepseek", "fake"] },
+                "model": { "type": ["string", "null"] },
+                "prompt_version": { "type": ["string", "null"] },
+                "round": { "type": "integer", "minimum": 1, "maximum": 3 },
+                "verdict": { "type": "string", "enum": ["confirm", "refute", "uncertain"] },
+                "rationale": { "type": ["string", "null"] },
+                "minority": { "type": "boolean", "default": false }
+              }
+            }
+          },
+          "notes": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "recorded_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle"],
+      "properties": {
+        "handle": { "type": "string", "minLength": 2, "description": "把 reports/g4-review.yaml 複製進 reviews/g4/ 的人（GitHub 帳號）；harness 不得自行寫入 reviews/" },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "raw_ref": { "type": ["string", "null"], "description": "原始審查輸出的位置（reports/raw/… 或 artifact），供稽核" }
+  }
+}
