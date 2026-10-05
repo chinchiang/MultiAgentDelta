@@ -472,6 +472,27 @@ jobs:
             }
 
   # Summary —— 彙整各閘門結果；enforce 且有 blocking 或 blocking 閘門 incomplete → 失敗
+  # 倉庫完整性：schema、評測結構與 split、人工裁決紀錄與規則自我測試（scripts/validate.py）。
+  # 不是 G1–G4 閘門；任何錯誤都讓這個檢查失敗，不使用 continue-on-error，也不納入 shadow 模式的豁免。
+  repo-validate:
+    name: 倉庫驗證（validate.py）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      # 缺 PyYAML／jsonschema 時 validate.py 只會警告並略過檢查，等於沒驗證（incomplete ≠ pass），所以必須安裝成功。
+      - name: 安裝 PyYAML / jsonschema
+        run: pip install pyyaml jsonschema
+
+      - name: 執行 validate.py
+        run: python3 scripts/validate.py
+
   summary:
     name: VibeSec Summary
     needs: [g1-supply-chain, g2-secrets, g3-sast-iac, g3-iac, g4-access-control]
