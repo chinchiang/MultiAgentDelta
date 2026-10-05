@@ -11,6 +11,6 @@ expected:
   should_flag: true
   control_id: ASVS5-V13.3
   rule_id: vibesec.g2.hardcoded-llm-key
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: false
 notes: 報告只保留遮罩與指紋。

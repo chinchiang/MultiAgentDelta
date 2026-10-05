@@ -17,6 +17,6 @@ expected:
   should_flag: false
   control_id: VS-G0-LETHAL-TRIFECTA
   rule_id: vibesec.g0.lethal-trifecta-open
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: false
 notes: 三要素缺二（無不可信輸入、無外傳通道），不應標記。

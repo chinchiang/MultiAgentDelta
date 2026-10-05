@@ -186,7 +186,7 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 | `vibesec.g4.supabase-rls-disabled` | advisory（L3 升 blocking） | CWE-284 |
 | `vibesec.g4.agent-tool-overexposure` | advisory（L3 升 blocking） | CWE-250 |
 | `vibesec.g4.rules-file-invisible-unicode` | advisory | CWE-94 |
-| `vibesec.g4.missing-owner-filter` | advisory（G5 證實後升 blocking） | CWE-639 |
+| `vibesec.g4.missing-owner-filter` | advisory（L3 升 blocking）（G5 證實後升 blocking） | CWE-639 |
 | `vibesec.g4.single-middleware-authz` | advisory | CWE-287 / CWE-863 |
 | `vibesec.g4.missing-hitl` | advisory | CWE-250 |
 | `vibesec.g4.mcp-missing-resource-indicator` | advisory | CWE-863 |

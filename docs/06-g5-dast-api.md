@@ -193,7 +193,7 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 | `vibesec.g5.bola-cross-account`、`missing-session-check` | blocking（E3） | CWE-639 / CWE-287 |
 | `vibesec.g5.jwt-alg-none`、`jwt-alg-confusion` | blocking（E3） | CWE-347 |
 | `vibesec.g5.ssrf-metadata` | advisory（E3） | CWE-918 |
-| `vibesec.g5.cors-reflect-origin`（反射 Origin + Allow-Credentials） | advisory | CWE-942 |
+| `vibesec.g5.cors-reflect-origin`（反射 Origin + Allow-Credentials） | blocking | CWE-942 |
 | `vibesec.g5.swagger-exposed`、`graphql-introspection`、`debug-stacktrace` | advisory | CWE-200 / CWE-209 |
 | `vibesec.g5.missing-rate-limit` | advisory | CWE-770 |
 | 缺 Token / Target / staging 未啟動 | `incomplete` | — |

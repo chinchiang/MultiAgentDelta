@@ -86,14 +86,14 @@ USER app             # ← 最後一個 USER 不得為 root
 | 規則 | 偵測 | CWE | 層級 |
 |---|---|---|---|
 | `vibesec.g3.sql-string-concat`（py / js） | 污點 → SQL sink | CWE-89 | blocking |
-| `vibesec.g3.sql-fstring-execute` | `execute(f"…")` / `%` / `.format` / `+`，無需來源 | CWE-89 | advisory |
+| `vibesec.g3.sql-fstring-execute` | `execute(f"…")` / `%` / `.format` / `+`，無需來源 | CWE-89 | blocking |
 | `vibesec.g3.command-injection`（py / js） | 污點 → shell | CWE-78 | blocking |
 | `vibesec.g3.xss-innerhtml`（js）、`vibesec.g3.xss-unescaped-render-py` | 污點（含 LLM 輸出）→ HTML sink | CWE-79 | advisory |
-| `vibesec.g3.jwt-alg-none`（py / js） | `algorithms=["none"]`、`verify=False`、`verify_signature: False`、以 `jwt.decode()` 結果做授權 | CWE-347 | advisory |
+| `vibesec.g3.jwt-alg-none`（py / js） | `algorithms=["none"]`、`verify=False`、`verify_signature: False`、以 `jwt.decode()` 結果做授權 | CWE-347 | blocking |
 | `vibesec.g3.jwt-alg-confusion`（py / js） | `algorithms` 同時含 HS256 與 RS256 | CWE-347 | advisory |
 | `vibesec.g3.actions-unpinned-action` | `uses: owner/repo@ref`，ref 非 40 位 commit SHA（workflow 與 composite `action.yml`；`./` 與 `docker://` 除外） | CWE-829 | advisory |
 | `vibesec.g3.actions-pull-request-target` | `pull_request_target` 觸發卻引用 PR head／title／body／`head_ref` | CWE-94 | advisory |
-| `vibesec.g2.hardcoded-llm-key` | 同一規則檔內的 G2 第二道 | CWE-798 | advisory |
+| `vibesec.g2.hardcoded-llm-key` | 同一規則檔內的 G2 第二道 | CWE-798 | blocking |
 | `vibesec.g4.*` | G4 的靜態部分（owner filter、RLS、agent tool）也由這支規則檔執行，但結果歸 G4 | — | — |
 
 ## 自動化作法

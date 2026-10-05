@@ -14,6 +14,6 @@ expected:
   should_flag: true
   control_id: ASVS5-V9.1
   rule_id: vibesec.g5.jwt-alg-confusion
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: false
 notes: examples/vulnapp 預設（漏洞）模式；探針以 stdlib 從 JWKS 組 PEM，與伺服器公鑰逐位元組一致才能命中。
