@@ -70,4 +70,6 @@ python3 scripts/run_evals.py --no-network                                       
 
 這些情況都是「沒測到」，不算通過。結果會寫進 job summary，並上傳成 `vibesec-nightly-evals` artifact。
 
+任一 nightly job 失敗或被取消時，`notify` job 會開一張追蹤 issue（已有未關閉的就改成留言，不重複開），內容列出各 job 結果、相對 baseline 的退步清單和 run 連結；之後 nightly 恢復全綠時會自動留言並關閉。只在 `main` 上執行，分支上的手動試跑不會開 issue。
+
 新增可執行的案例後，先跑 `python3 scripts/run_evals.py --write-baseline evals/baseline.yaml` 重新產生 baseline，人工檢查差異後再提交。從 baseline 移除案例等於放寬檢查，必須由人類在獨立 PR 中決定。

@@ -629,10 +629,13 @@ def main(argv=None) -> int:
             tgt.close()
     summary = summarize(rows)
     md = to_markdown(summary, rows, a.split)
+    regressions = regressions_vs_baseline(rows, load_yaml(pathlib.Path(a.baseline)) or {}) if a.baseline else []
+    if regressions:
+        md += "\n\n## 相對 baseline 的退步\n\n" + "\n".join(f"- {x}" for x in regressions) + "\n"
     if a.json:
         pathlib.Path(a.json).parent.mkdir(parents=True, exist_ok=True)
-        pathlib.Path(a.json).write_text(json.dumps({"split": a.split, "summary": summary, "cases": rows},
-                                                   ensure_ascii=False, indent=2), encoding="utf-8")
+        pathlib.Path(a.json).write_text(json.dumps({"split": a.split, "summary": summary, "regressions": regressions,
+                                                    "cases": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
     if a.md:
         pathlib.Path(a.md).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(a.md).write_text(md, encoding="utf-8")
@@ -642,11 +645,6 @@ def main(argv=None) -> int:
             "# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN）。\n"
             "# 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。\n"
             + "executed:\n" + "".join(f"  - {i}\n" for i in ids), encoding="utf-8")
-    regressions = regressions_vs_baseline(rows, load_yaml(pathlib.Path(a.baseline)) or {}) if a.baseline else []
-    if regressions:
-        md += "\n\n## 相對 baseline 的退步\n\n" + "\n".join(f"- {x}" for x in regressions) + "\n"
-        if a.md:
-            pathlib.Path(a.md).write_text(md, encoding="utf-8")
     print(md)
     if regressions:
         return 1
