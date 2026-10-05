@@ -49,6 +49,16 @@ def verify_mitigation(name: str, evidence: list[dict], root: Path) -> tuple[bool
     return True, f"{name}：已由 " + "、".join(str(e.get("ref")) for e in evidence) + " 落實"
 
 
+def _tier(root: Path) -> str:
+    """tier 只來自 blocking-policy；selftest 的暫存 root 沒有政策檔時退回 blocking（只影響標籤，不影響判定）。"""
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from vibesec_policy import Policy
+        return Policy(root).tier(RULE)
+    except (OSError, ValueError):
+        return "blocking"
+
+
 def trifecta_findings(threat_model: dict, root: Path | None = None) -> list[dict]:
     """三要素皆成立、未切腳，且沒有任何「有可驗證證據」的 mitigation → 發現。
     只宣告 mitigation 名稱不算數（第二次 harness 審查發現 A：宣告與落實不符時 fail-open）。"""
@@ -62,7 +72,7 @@ def trifecta_findings(threat_model: dict, root: Path | None = None) -> list[dict
         if any(ok for ok, _ in results):
             continue
         why = "；".join(msg for _, msg in results) if results else "沒有 mitigation"
-        out.append({"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": "blocking",
+        out.append({"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": _tier(root),
                     "agent": a.get("id"),
                     "reason": f"agent {a.get('id')!r} 三要素皆成立、未切斷任何一腳，且沒有可驗證的 mitigation（{why}）"})
     return out

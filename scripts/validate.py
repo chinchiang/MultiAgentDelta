@@ -310,7 +310,7 @@ try:
             for e in _ev["errors"]: err(f"{_f.relative_to(ROOT)}: {e}")
             if not _ev["errors"]: ok(f"G4 審查紀錄 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "g1_kev.py", "g1_maintenance.py", "g1_provenance.py"):
+        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "g1_maintenance.py", "g1_provenance.py"):
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
@@ -354,6 +354,50 @@ try:
                         warn(_msg)
 except ImportError:
     warn("jsonschema 未安裝，略過威脅模型驗證")
+
+# --- tier 一致性：blocking-policy 是唯一來源（scripts/vibesec_policy.py）；cwe-map／semgrep metadata／evals／docs 政策表
+#     的 tier 必須等於政策的「基礎 tier」（不含 tier_overrides），否則文件說會擋、CI 實際不擋（或相反）。
+if yaml is not None:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from vibesec_policy import Policy as _Policy
+        _P = _Policy(ROOT)
+    except Exception as _e:
+        err(f"無法載入阻擋政策：{_e}"); _P = None
+    if _P:
+        _n = 0
+        for _rid, _meta in ((load_yaml(ROOT / "config/catalogs/cwe-map.yaml") or {}).get("rules") or {}).items():
+            _t = (_meta or {}).get("policy_tier")
+            if _t != _P.base_tier(_rid):
+                err(f"cwe-map {_rid}: policy_tier {_t} ≠ 政策基礎 tier {_P.base_tier(_rid)}（以 blocking-policy.yaml 為準）")
+            else:
+                _n += 1
+        ok(f"cwe-map policy_tier 與政策一致：{_n} 條")
+        for _r in (load_yaml(ROOT / "config/semgrep/vibesec-rules.yaml") or {}).get("rules") or []:
+            _id = str(_r.get("id", ""))
+            if not _id.startswith("vibesec."):
+                continue
+            _want = _P.base_tier(_VARIANT.sub("", _id))
+            _mt = (_r.get("metadata") or {}).get("policy_tier")
+            if _mt != _want:
+                err(f"semgrep {_id}: metadata.policy_tier {_mt} ≠ 政策基礎 tier {_want}")
+            if (_r.get("severity") == "ERROR") != (_want == "blocking"):
+                err(f"semgrep {_id}: severity 應為 {'ERROR' if _want == 'blocking' else 'WARNING'}（政策 {_want}）")
+        ok("semgrep metadata.policy_tier／severity 與政策一致")
+        for _f in sorted(glob.glob(str(ROOT / "evals/cases/**/*.yaml"), recursive=True)):
+            _e = (load_yaml(pathlib.Path(_f)) or {}).get("expected") or {}
+            if _e.get("rule_id") and _e.get("policy_tier") and _e["policy_tier"] != _P.base_tier(_e["rule_id"]):
+                err(f"{pathlib.Path(_f).relative_to(ROOT)}: expected.policy_tier {_e['policy_tier']} ≠ 政策基礎 tier {_P.base_tier(_e['rule_id'])}")
+        ok("evals expected.policy_tier 與政策一致")
+        for _f in sorted(glob.glob(str(ROOT / "docs/0[1-7]-*.md"))):
+            for _i, _ln in enumerate(pathlib.Path(_f).read_text(encoding="utf-8").splitlines(), 1):
+                _m = re.match(r"^\| `(vibesec\.g\d\.[a-z0-9-]+)`", _ln)
+                if not _m:
+                    continue
+                _m2 = re.search(r"\b(blocking|advisory)\b", _ln[_m.end():])
+                if _m2 and _m2.group(1) != _P.base_tier(_m.group(1)):
+                    err(f"{pathlib.Path(_f).name}:{_i}: {_m.group(1)} 政策表寫 {_m2.group(1)}，政策基礎 tier 為 {_P.base_tier(_m.group(1))}")
+        ok("docs 政策表的 tier 與政策一致")
 
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")

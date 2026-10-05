@@ -152,14 +152,14 @@ rules:
   # ===========================================================================
   - id: vibesec.g3.sql-fstring-execute
     languages: [python]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] SQL 執行點直接使用 f-string / % / .format / + 組字串，這正是 AI 生成程式碼最常見的注入型態。
       即使變數目前看似安全，仍必須改為參數化查詢。
     metadata:
       cwe: "CWE-89"
       control_ids: ["ASVS5-V1.2"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G3
       vibesec_rule_id: vibesec.g3.sql-fstring-execute
       category: security
@@ -287,14 +287,14 @@ rules:
   - id: vibesec.g3.xss-innerhtml
     mode: taint
     languages: [javascript, typescript]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] 不可信資料（含 LLM 回覆）未經編碼即寫入 innerHTML / dangerouslySetInnerHTML / document.write。
       AI 輸出是 LLM05 Improper Output Handling 的典型來源；請改用 textContent 或先以 DOMPurify.sanitize() 淨化。
     metadata:
       cwe: "CWE-79"
       control_ids: ["ASVS5-V1.1", "LLM05:2025"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G3
       vibesec_rule_id: vibesec.g3.xss-innerhtml
       owasp_llm: ["LLM05:2025"]
@@ -351,14 +351,14 @@ rules:
   - id: vibesec.g3.xss-unescaped-render-py
     mode: taint
     languages: [python]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] 不可信資料（含 LLM 回覆）未經編碼即以 Markup / render_template_string / HTMLResponse 輸出成 HTML。
       請以 markupsafe.escape() 或 bleach.clean() 處理，或改回傳 JSON 由前端以 textContent 顯示。
     metadata:
       cwe: "CWE-79"
       control_ids: ["ASVS5-V1.1", "LLM05:2025"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G3
       vibesec_rule_id: vibesec.g3.xss-innerhtml
       owasp_llm: ["LLM05:2025"]
@@ -408,14 +408,14 @@ rules:
   # ===========================================================================
   - id: vibesec.g3.jwt-alg-none
     languages: [python]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] jwt.decode 允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）。
       任何人都能偽造 Token。請固定 algorithms=["RS256"]（或單一 HS256）並保留簽章驗證。
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G3
       vibesec_rule_id: vibesec.g3.jwt-alg-none
       category: security
@@ -431,14 +431,14 @@ rules:
 
   - id: vibesec.g3.jwt-alg-none-js
     languages: [javascript, typescript]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] jsonwebtoken.verify 允許 "none" 演算法，或以 jwt.decode()（不驗簽）結果做授權判斷。
       請使用 jwt.verify(token, key, { algorithms: ["RS256"] })。
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G3
       vibesec_rule_id: vibesec.g3.jwt-alg-none
       category: security
@@ -457,14 +457,14 @@ rules:
 
   - id: vibesec.g3.jwt-alg-confusion
     languages: [python]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。
       請只允許單一非對稱演算法，例如 algorithms=["RS256"]。
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G3
       vibesec_rule_id: vibesec.g3.jwt-alg-confusion
       category: security
@@ -481,14 +481,14 @@ rules:
 
   - id: vibesec.g3.jwt-alg-confusion-js
     languages: [javascript, typescript]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。
       請只允許單一非對稱演算法，例如 { algorithms: ["RS256"] }。
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G3
       vibesec_rule_id: vibesec.g3.jwt-alg-confusion
       category: security
@@ -576,14 +576,14 @@ rules:
   # ===========================================================================
   - id: vibesec.g4.supabase-rls-disabled
     languages: [generic]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G4] SQL migration 停用 Row Level Security（$1）。Supabase 以 anon key 直連資料庫時，RLS 是唯一的資料層授權；
       停用等於全表對所有使用者開放（MAESTRO-L2）。
     metadata:
       cwe: "CWE-284"
       control_ids: ["ASVS5-V8.2", "MAESTRO-L2"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G4
       vibesec_rule_id: vibesec.g4.supabase-rls-disabled
       category: security
@@ -621,7 +621,7 @@ rules:
   # ===========================================================================
   - id: vibesec.g4.agent-tool-overexposure
     languages: [python]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G4] Agent 工具清單或工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。
       通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency；Replit 刪庫案例）。
@@ -629,7 +629,7 @@ rules:
     metadata:
       cwe: "CWE-250"
       control_ids: ["VS-G4-AGENT-TOOL-ALLOWLIST", "LLM06:2025", "MAESTRO-L3"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G4
       vibesec_rule_id: vibesec.g4.agent-tool-overexposure
       category: security
@@ -667,14 +667,14 @@ rules:
 
   - id: vibesec.g4.agent-tool-overexposure-js
     languages: [javascript, typescript]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G4] Agent 工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。
       通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency）。請改為 allow-list 內的細粒度工具並加 Human-in-the-Loop。
     metadata:
       cwe: "CWE-250"
       control_ids: ["VS-G4-AGENT-TOOL-ALLOWLIST", "LLM06:2025", "MAESTRO-L3"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G4
       vibesec_rule_id: vibesec.g4.agent-tool-overexposure
       category: security
@@ -698,14 +698,14 @@ rules:
   # ===========================================================================
   - id: vibesec.g2.hardcoded-llm-key
     languages: [generic]   # generic 模式對任何檔案做正則比對（.py/.js/.ts/.json/.yaml/.env …）
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G2] 原始碼含疑似 LLM 供應商金鑰（OpenAI sk-… / sk-proj-…、Anthropic sk-ant-api03-…、GLM id.secret）。
       請立即到供應商後台撤銷並輪替，改由環境變數或祕密管理服務注入；報告只保留遮罩與指紋。
     metadata:
       cwe: "CWE-798"
       control_ids: ["ASVS5-V13.3", "MAESTRO-L3"]
-      policy_tier: blocking
+      policy_tier: advisory
       gate: G2
       vibesec_rule_id: vibesec.g2.hardcoded-llm-key
       category: security
@@ -750,7 +750,7 @@ rules:
 
   - id: vibesec.g3.actions-pull-request-target
     languages: [generic]
-    severity: ERROR
+    severity: WARNING
     message: >-
       [G3] workflow 由 pull_request_target 觸發（具 base repo 的 secrets 與寫入權杖），卻引用 PR 提供的內容
       （`$1`）：檢出並執行 PR head，或把 title / body / head_ref 帶進 run。fork 的 PR 可藉此執行任意程式並外洩祕密。

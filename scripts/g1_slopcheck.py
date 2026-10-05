@@ -229,8 +229,18 @@ def similarity_check(pkg, eco, popular, blacklist, allowlist, c):
     return None
 
 def fnd(rule, pkg, eco, ver, reason, tier):
+    # tier 只能降級（advisory 線索），不能高於 blocking-policy（scripts/vibesec_policy.py）
     return {"rule_id": rule, "package": pkg, "ecosystem": eco, "version": ver,
-            "reason": reason, "policy_tier": tier}
+            "reason": reason, "policy_tier": _policy().cap(rule, tier)}
+
+_POLICY = None
+def _policy():
+    global _POLICY
+    if _POLICY is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from vibesec_policy import Policy
+        _POLICY = Policy(ROOT)
+    return _POLICY
 
 PKG_RE_NPM = re.compile(r'"([@a-z0-9._/-]+)"\s*:\s*"([~^]?[0-9][^"]*)"')
 
@@ -550,6 +560,7 @@ def main(argv):
                     for f in fs:
                         if f["rule_id"] == "vibesec.g1.hallucinated-package":
                             f["rule_id"] = "vibesec.g1.rules-file-unknown-package"
+                            f["policy_tier"] = _policy().cap(f["rule_id"], f["policy_tier"])   # 改名後依政策重算
                 found.extend(fs)
                 if reason:
                     incomplete.append(reason)

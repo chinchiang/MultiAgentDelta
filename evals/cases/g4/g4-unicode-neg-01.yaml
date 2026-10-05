@@ -10,5 +10,5 @@ expected:
   should_flag: false
   control_id: VS-G4-RULES-FILE-UNICODE
   rule_id: vibesec.g4.rules-file-invisible-unicode
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false

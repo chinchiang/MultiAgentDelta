@@ -12,6 +12,6 @@ expected:
   should_flag: false
   control_id: ASVS5-V1.3
   rule_id: vibesec.g5.ssrf-internal-fetch
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false
 notes: 已修補模式的 /fetch 使用空 allow-list，一律明確拒絕。g5-ssrf-pos-01 的修補後反例。

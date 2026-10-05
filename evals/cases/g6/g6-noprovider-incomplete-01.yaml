@@ -10,7 +10,7 @@ expected:
   should_flag: true
   control_id: LLM01:2025
   rule_id: vibesec.g6.direct-prompt-injection
-  policy_tier: blocking
+  policy_tier: advisory
   gate_status: incomplete
 held_out: true
 notes: staging 實跑結果：G6 incomplete。驗證 incomplete ≠ pass。

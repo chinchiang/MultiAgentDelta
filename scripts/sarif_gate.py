@@ -37,6 +37,7 @@ except ImportError:
 
 sys.path.insert(0, str(ROOT / "scripts"))
 from g1_slopcheck import load_exceptions  # noqa: E402  同一份例外規則（欄位完整且未過期，fail closed）
+from vibesec_policy import Policy  # noqa: E402  tier 的唯一來源
 
 
 def _yaml(p: pathlib.Path) -> dict:
@@ -46,11 +47,9 @@ def _yaml(p: pathlib.Path) -> dict:
 def load_policy() -> dict:
     vb = _yaml(ROOT / "vibesec.yaml")
     pol = _yaml(ROOT / "config/policy/blocking-policy.yaml")
-    tier = vb.get("risk_tier", "L2")
-    blocking = {r["rule_id"] for r in pol.get("blocking") or [] if isinstance(r, dict) and r.get("rule_id")}
-    ov = (pol.get("tier_overrides") or {}).get(tier) or {}
-    blocking |= set(ov.get("promote_to_blocking") or [])
-    blocking -= set(ov.get("demote_to_advisory") or [])
+    policy = Policy(ROOT)
+    tier = policy.risk_tier
+    blocking = policy.effective_blocking()
     rules = (_yaml(ROOT / "config/catalogs/cwe-map.yaml").get("rules") or {})
     impl: dict[str, set[str]] = collections.defaultdict(set)
     controls: dict[str, list[str]] = {}
@@ -61,7 +60,7 @@ def load_policy() -> dict:
             impl[f"{t}:{ext}"].add(rid)
     exceptions, ignored = load_exceptions()
     return {"mode": vb.get("mode", "shadow"), "risk_tier": tier, "blocking": blocking,
-            "default_tier": pol.get("default_tier", "advisory"), "impl": impl, "controls": controls,
+            "default_tier": policy.default_tier, "impl": impl, "controls": controls,
             "exceptions": exceptions, "ignored_exceptions": ignored}
 
 

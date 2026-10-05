@@ -10,5 +10,5 @@ expected:
   should_flag: true
   control_id: LLM01:2025
   rule_id: vibesec.g6.indirect-prompt-injection
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: false

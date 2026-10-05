@@ -4,7 +4,8 @@
 #       maestro-layers.yaml 查表；查不到就填 null 並在 notes 說明（CLAUDE.md 規則 3）。
 # 外部工具規則（gitleaks:、semgrep:、checkov:、zap: …）若未列於此，harness 以工具自帶的 CWE 標籤為準，
 # 並在 notes 標記「cwe_source: tool」。
-# policy_tier 僅為預設建議；正式阻擋與否以 config/policy/blocking-policy.yaml 為準。
+# policy_tier 僅為預設建議；正式阻擋與否以 config/policy/blocking-policy.yaml 為準（scripts/vibesec_policy.py 是唯一查詢入口，
+#   validate.py 要求本檔的 policy_tier 等於政策的基礎 tier，不含 tier_overrides）。
 # implemented_by（選填）：實際偵測此規則的外部工具規則，格式 <tool>:<規則 ID>（gitleaks:…、checkov:…）。
 #   scripts/validate.py 檢查它們確實存在且會在 CI 執行；scripts/run_evals.py 用它把工具命中對回 vibesec 規則。
 #   支援 gitleaks:、checkov:、promptfoo:<plugin>、zap:<alert id>；review:G0-threat-model／review:G4-llm-review 表示由人工／LLM 審查涵蓋（非自動）。
@@ -88,14 +89,14 @@ rules:
     title: ".cursorrules / AGENTS.md / SKILL.md / Markdown 中出現未知或黑名單套件安裝指令"
     control_ids: [ASVS5-V15.2, VS-G1-SLOPSQUAT, MAESTRO-L7]
     gate: G1
-    policy_tier: blocking
+    policy_tier: advisory
 
   vibesec.g0.lethal-trifecta-open:
     cwe: CWE-250
     title: "Agent 致命三要素（私有資料 + 不受信任內容 + 對外通訊）同時成立且無任何 mitigation"
     control_ids: [VS-G0-LETHAL-TRIFECTA, LLM06:2025, MAESTRO-L7]
     gate: G0
-    policy_tier: blocking
+    policy_tier: advisory
     implemented_by: [review:G0-threat-model]   # 威脅模型審查（docs/01）；非自動偵測
 
   # ---------------- G2 機密與金鑰 ----------------
@@ -115,7 +116,7 @@ rules:
     title: "硬編碼 LLM 供應商金鑰（sk-…、sk-ant-api03-…、sk-proj-…、GLM id.secret）"
     control_ids: [ASVS5-V13.3, MAESTRO-L3]
     gate: G2
-    policy_tier: blocking
+    policy_tier: advisory
     implemented_by: [gitleaks:vibesec-openai-api-key, gitleaks:vibesec-anthropic-api-key, gitleaks:vibesec-deepseek-api-key,
                      gitleaks:vibesec-glm-zhipu-api-key, gitleaks:vibesec-google-ai-studio-key]
   vibesec.g2.env-not-ignored:
@@ -123,7 +124,7 @@ rules:
     title: ".env 存在但未列入 .gitignore，或 .env 已被提交"
     control_ids: [ASVS5-V13.3]
     gate: G2
-    policy_tier: blocking
+    policy_tier: advisory
 
   # ---------------- G3 SAST 與 IaC ----------------
   vibesec.g3.sql-string-concat:
@@ -137,7 +138,7 @@ rules:
     title: "SQL 執行點直接使用 f-string / % / .format / + 組字串（無需污點來源即判定）"
     control_ids: [ASVS5-V1.2]
     gate: G3
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g3.command-injection:
     cwe: CWE-78
     title: "污點流入 subprocess(shell=True) / os.system / child_process.exec"
@@ -149,13 +150,13 @@ rules:
     title: "污點（含 LLM 輸出）流入 innerHTML / dangerouslySetInnerHTML / Markup / render_template_string"
     control_ids: [ASVS5-V1.1, LLM05:2025]
     gate: G3
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g3.xss-unescaped-render-py:
     cwe: CWE-79
     title: "污點（含 LLM 輸出）未編碼即以 Markup / render_template_string / HTMLResponse 輸出成 HTML（Python 對應 xss-innerhtml）"
     control_ids: [ASVS5-V1.1, LLM05:2025]
     gate: G3
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g3.imdsv1-allowed:
     cwe: CWE-918
     title: "aws_instance / launch_template 未設定 metadata_options.http_tokens = \"required\"（IMDSv2）"
@@ -182,13 +183,13 @@ rules:
     title: "程式層允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）"
     control_ids: [ASVS5-V9.1]
     gate: G3
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g3.jwt-alg-confusion:
     cwe: CWE-347
     title: "JWT 驗證同時接受 HS256 與 RS256（演算法混淆）"
     control_ids: [ASVS5-V9.1]
     gate: G3
-    policy_tier: blocking
+    policy_tier: advisory
 
   # ---------------- G4 架構與存取控制審查 ----------------
   vibesec.g4.missing-owner-filter:
@@ -202,7 +203,7 @@ rules:
     title: "Supabase / Postgres 資料表停用或未啟用 Row Level Security"
     control_ids: [ASVS5-V8.2, MAESTRO-L2]
     gate: G4
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g4.supabase-table-without-rls:
     cwe: CWE-284
     title: "同一 migration 建立資料表但未在該檔啟用 Row Level Security（best-effort）"
@@ -221,7 +222,7 @@ rules:
     title: "通用 Agent 工具清單含 delete_user / execute_sql / drop_table / rm -rf 等高影響工具"
     control_ids: [VS-G4-AGENT-TOOL-ALLOWLIST, LLM06:2025, MAESTRO-L3]
     gate: G4
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g4.missing-hitl:
     cwe: CWE-250
     title: "高影響動作（刪除、轉帳、部署、外送）未設 Human-in-the-Loop"
@@ -234,7 +235,7 @@ rules:
     title: "Agent 規則檔含零寬 / bidi / BOM 等隱形 Unicode（Rules File Backdoor）"
     control_ids: [VS-G4-RULES-FILE-UNICODE, LLM01:2025, MAESTRO-L7]
     gate: G4
-    policy_tier: blocking
+    policy_tier: advisory
     notes: "選 CWE-94（間接控制生成程式碼）而非 CWE-1333；隱形字元本質是對 AI 程式碼產生器的指令注入"
   vibesec.g4.mcp-missing-resource-indicator:
     cwe: CWE-863
@@ -256,7 +257,7 @@ rules:
     title: "受保護端點無 Token 仍回 200（前端防禦假象）"
     control_ids: [ASVS5-V7.1]
     gate: G5
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g5.jwt-alg-none:
     cwe: CWE-347
     title: "伺服器接受 alg:none 且無簽章的 JWT"
@@ -268,19 +269,19 @@ rules:
     title: "伺服器接受以公鑰作 HMAC 密鑰簽的 HS256 Token（RS256 / HS256 混淆）"
     control_ids: [ASVS5-V9.1]
     gate: G5
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g5.ssrf-metadata:
     cwe: CWE-918
     title: "URL 匯入端點可讀取 169.254.169.254 等雲端中繼資料"
     control_ids: [ASVS5-V1.3, ASVS5-V13.2]
     gate: G5
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g5.ssrf-internal-fetch:
     cwe: CWE-918
     title: "URL 抓取端點會替使用者存取內部位址（loopback canary 實證）"
     control_ids: [ASVS5-V1.3, ASVS5-V13.2]
     gate: G5
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g5.swagger-exposed:
     cwe: CWE-200
     title: "正式 / staging 環境可匿名存取 Swagger UI 或 OpenAPI 文件"
@@ -310,7 +311,7 @@ rules:
     title: "回應 Access-Control-Allow-Origin 反射任意 Origin 且 Allow-Credentials: true"
     control_ids: [ASVS5-V3.3]
     gate: G5
-    policy_tier: blocking
+    policy_tier: advisory
     implemented_by: [zap:40040]
 
   # ---------------- G6 LLM / Agent 紅隊 ----------------
@@ -319,13 +320,13 @@ rules:
     title: "直接 Prompt Injection / 越獄成功改變系統行為"
     control_ids: [LLM01:2025, MAESTRO-L1]
     gate: G6
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g6.indirect-prompt-injection:
     cwe: CWE-1427
     title: "RAG / PDF / 網頁中的指令觸發非預期工具呼叫或外連"
     control_ids: [LLM01:2025, VS-G0-LETHAL-TRIFECTA, MAESTRO-L2]
     gate: G6
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g6.system-prompt-extraction:
     cwe: CWE-200
     title: "System Prompt（含內嵌金鑰或商業邏輯）被提取"
@@ -337,7 +338,7 @@ rules:
     title: "誘導 AI 輸出 <script> 等 HTML 且前端未編碼即渲染"
     control_ids: [LLM05:2025, ASVS5-V1.1]
     gate: G6
-    policy_tier: blocking
+    policy_tier: advisory
   vibesec.g6.denial-of-wallet:
     cwe: CWE-770
     alt_cwe: [CWE-400]
@@ -350,7 +351,7 @@ rules:
     title: "Agent 在無人工確認下執行高影響動作"
     control_ids: [LLM06:2025, VS-G4-AGENT-TOOL-ALLOWLIST, MAESTRO-L3]
     gate: G6
-    policy_tier: blocking
+    policy_tier: advisory
     implemented_by: [promptfoo:excessive-agency]   # 生成層需模型金鑰；無金鑰時該層記 untested
 
   # ---------------- 補充：policy 引用但先前未列的規則 ----------------

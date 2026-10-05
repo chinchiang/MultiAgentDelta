@@ -13,5 +13,5 @@ expected:
   should_flag: true
   control_id: ASVS5-V13.3
   rule_id: vibesec.g2.env-not-ignored
-  policy_tier: blocking
+  policy_tier: advisory
 held_out: true

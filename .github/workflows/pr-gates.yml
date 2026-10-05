@@ -262,7 +262,11 @@ jobs:
             echo "OK: 無已追蹤的 .env 檔"
           fi
           echo "{\"gate\":\"G2\",\"rule_id\":\"vibesec.g2.env-not-ignored\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
-          if [ "${VIBESEC_MODE}" = "enforce" ] && [ "$fail" = "1" ]; then exit 1; fi
+          # 是否擋 job 依 blocking-policy 的有效 tier（run_evals.py 在暫存目錄執行時由 VIBESEC_CONFIG 找 repo 根）
+          ROOT=$(dirname "${VIBESEC_CONFIG:-$PWD/vibesec.yaml}")
+          TIER=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-not-ignored | awk '{print $2}')
+          echo "policy tier: ${TIER}"
+          if [ "${VIBESEC_MODE}" = "enforce" ] && [ "$fail" = "1" ] && [ "$TIER" = "blocking" ]; then exit 1; fi
 
       - name: Upload Gitleaks SARIF（若產生）
         if: always() && hashFiles('results.sarif') != ''
@@ -443,15 +447,21 @@ jobs:
         run: |
           python3 - <<'EOF'
           # G4 靜態檢查：隱形 Unicode（Rules File Backdoor）、Supabase RLS、Agent 工具 allow-list、單層 middleware 授權
-          import json, re, pathlib, os, datetime, glob
+          import json, re, pathlib, os, datetime, glob, sys
           NOW = datetime.datetime.now(datetime.timezone.utc)
           def iso(dt): return dt.replace(microsecond=0).isoformat()
           MODE = os.environ.get("VIBESEC_MODE", "shadow")
+          # tier 只來自 blocking-policy（含 risk_tier 的 tier_overrides）；VIBESEC_CONFIG 讓 run_evals.py 在暫存目錄執行時也找得到
+          ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
+          sys.path.insert(0, str(ROOT / "scripts"))
+          from vibesec_policy import Policy
+          POLICY = Policy(ROOT)
           COMMIT = os.environ.get("COMMIT_SHA", "")[:40] or None
           REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
 
           results = []; rules = {}
-          def add(rule_id, level, msg, uri, line=1, tier="advisory"):
+          def add(rule_id, level, msg, uri, line=1):
+              tier = POLICY.tier(rule_id)
               rules.setdefault(rule_id, {"id": rule_id, "name": rule_id,
                                          "shortDescription": {"text": rule_id},
                                          "defaultConfiguration": {"level": level},
@@ -488,7 +498,7 @@ jobs:
                   hits = [hex(ord(ch)) for ch in ln if ch in INVISIBLE]
                   if hits:
                       add("vibesec.g4.rules-file-invisible-unicode", "error",
-                          f"Rules File Backdoor：{p} 第 {i} 行含隱形 Unicode {hits}", p, i, "blocking")
+                          f"Rules File Backdoor：{p} 第 {i} 行含隱形 Unicode {hits}", p, i)
 
           # 2) Supabase migrations RLS
           # 兩個 glob 會重疊（supabase/migrations 也符合 **/migrations）→ 去重，避免同一檔案重複回報
@@ -497,12 +507,12 @@ jobs:
               if not fp.exists(): continue
               body = fp.read_text(encoding="utf-8", errors="replace")
               if re.search(r'disable\s+row\s+level\s+security', body, re.I):
-                  add("vibesec.g4.supabase-rls-disabled", "error", f"{p} 明確停用 RLS（全表暴露風險）", p, 1, "blocking")
+                  add("vibesec.g4.supabase-rls-disabled", "error", f"{p} 明確停用 RLS（全表暴露風險）", p, 1)
               for m in re.finditer(r'create\s+table\s+(?:if\s+not\s+exists\s+)?["`]?([A-Za-z0-9_.]+)', body, re.I):
                   tbl = m.group(1)
                   if not re.search(rf'alter\s+table\s+["`]?{re.escape(tbl)}["`]?\s+enable\s+row\s+level\s+security', body, re.I):
                       add("vibesec.g4.supabase-table-without-rls", "warning",
-                          f"{p}：資料表 {tbl} 未見 enable row level security", p, 1, "advisory")
+                          f"{p}：資料表 {tbl} 未見 enable row level security", p, 1)
 
           # 3) Agent 工具 allow-list lint（高危工具暴露）
           DANGEROUS = r'(delete_user|execute_sql|drop_table)'
@@ -515,14 +525,14 @@ jobs:
                   for i, ln in enumerate(body.splitlines(), 1):
                       if re.search(DANGEROUS, ln, re.I):
                           add("vibesec.g4.agent-tool-overexposure", "warning",
-                              f"{p} 第 {i} 行疑似向 Agent 註冊高危工具（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i, "advisory")
+                              f"{p} 第 {i} 行疑似向 Agent 註冊高危工具（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i)
                           break
 
           # 4) 單層 middleware 授權（CVE-2025-29927 類）— advisory
           for p in glob.glob("**/middleware.ts", recursive=True) + glob.glob("middleware.ts"):
               if "/node_modules/" in p: continue
               add("vibesec.g4.single-middleware-authz", "note",
-                  f"偵測到 Next.js {p}：請確認授權不只靠單層 middleware（CVE-2025-29927），資料層需獨立 authz", p, 1, "advisory")
+                  f"偵測到 Next.js {p}：請確認授權不只靠單層 middleware（CVE-2025-29927），資料層需獨立 authz", p, 1)
 
           sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
                    "version": "2.1.0",
