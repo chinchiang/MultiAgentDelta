@@ -365,6 +365,11 @@ jobs:
           MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
+      # Checkov action 在 Docker 容器內以 root 執行；若由它建立 reports/，目錄屬 root，之後以 runner 身分跑的
+      # Trivy 會 permission denied、寫不出 SARIF（G3 因此 incomplete）。先以 runner 身分建立目錄。
+      - name: 建立 reports/（runner 擁有）
+        run: mkdir -p reports
+
       - name: Checkov（IaC → SARIF）
         continue-on-error: true
         uses: bridgecrewio/checkov-action@cc0e17d456ef1713bbfd963ebac19dc776775cb2 # v12.3128.0
