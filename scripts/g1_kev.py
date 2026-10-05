@@ -11,6 +11,8 @@
 用法：
   python3 scripts/g1_kev.py --grype reports/grype-full.json --kev-feed .cache/kev.json \\
                             --sarif reports/g1-kev.sarif --json reports/g1-kev.json
+  # PR 階段：把結果併入 g1_slopcheck.py 產生的 G1 gate-result（summary 依此彙整）
+  python3 scripts/g1_kev.py ... --merge-gate reports/g1-gate.json
   python3 scripts/g1_kev.py selftest
 退出碼：0 已完成且無命中；1 有 KEV 命中（blocking：讓 nightly 轉紅、notify 開 issue；SARIF 照常寫出）；
         2 incomplete（輸入缺漏或無法解析）。
@@ -104,6 +106,35 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
             "matches_checked": len(grype.get("matches") or []), "hits": hits}, hits
 
 
+KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
+_RANK = {"pass": 0, "incomplete": 1, "fail": 2}
+
+
+def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | None) -> dict:
+    """把 KEV 結果併入既有 G1 gate-result。嚴重度 fail > incomplete > pass，只升不降；
+    KEV incomplete 會讓原本 pass 的 G1 變 incomplete（incomplete ≠ pass），原因附在 status_reason。"""
+    g = json.loads(json.dumps(gate))
+    kev_status = summary["status"]
+    reasons = [r for r in [g.get("status_reason")] if r]
+    if kev_status == "incomplete":
+        reasons.append(f"KEV：{summary['status_reason']}")
+    elif hits:
+        reasons.append(f"KEV 命中 {len(hits)} 筆（{', '.join(sorted({h['cve'] for h in hits}))}）")
+    cur = g.get("status", "pass")
+    if cur in _RANK and _RANK[kev_status] > _RANK[cur]:
+        g["status"] = kev_status
+    g["status_reason"] = "；".join(reasons) or None
+    fc = g.setdefault("findings_count", {"blocking": 0, "advisory": 0})
+    fc["blocking"] = int(fc.get("blocking") or 0) + len(hits)
+    g.setdefault("tools", []).append({"name": "vibesec-g1-kev", "version": "1.0.0", "state": "ran",
+                                      "exit_code": {"pass": 0, "fail": 1, "incomplete": 2}[kev_status],
+                                      "output_ref": sarif_ref, "duration_seconds": None})
+    state = {"pass": "pass", "fail": "fail", "incomplete": "untested"}[kev_status]
+    g.setdefault("coverage", []).append({"control_id": KEV_CONTROL, "state": state,
+                                         "reason": summary.get("status_reason") if kev_status == "incomplete" else None})
+    return g
+
+
 def selftest() -> list[str]:
     import tempfile
     fails: list[str] = []
@@ -147,6 +178,24 @@ def selftest() -> list[str]:
             st = run(gp, kp)[0]
             if st["status"] != "incomplete" or not st.get("status_reason"):
                 fails.append(f"{label} 應為 incomplete 並附原因：{st}")
+    # merge_gate：只升不降、incomplete ≠ pass
+    base = {"gate": "G1", "status": "pass", "status_reason": None, "findings_count": {"blocking": 0, "advisory": 2},
+            "tools": [], "coverage": []}
+    hit = [{"cve": "CVE-2021-44228"}]
+    m = merge_gate(base, {"status": "fail"}, hit, "r.sarif")
+    if m["status"] != "fail" or m["findings_count"] != {"blocking": 1, "advisory": 2} or m["coverage"][-1]["state"] != "fail":
+        fails.append(f"KEV 命中應讓 G1 fail 並加 1 筆 blocking：{m}")
+    m = merge_gate(base, {"status": "incomplete", "status_reason": "缺 KEV feed"}, [], None)
+    if m["status"] != "incomplete" or "缺 KEV feed" not in (m["status_reason"] or "") or m["coverage"][-1]["state"] != "untested":
+        fails.append(f"KEV incomplete 應讓原本 pass 的 G1 變 incomplete：{m}")
+    m = merge_gate({**base, "status": "fail"}, {"status": "incomplete", "status_reason": "x"}, [], None)
+    if m["status"] != "fail":
+        fails.append("G1 已 fail 時 KEV incomplete 不得降為 incomplete")
+    m = merge_gate({**base, "status": "incomplete", "status_reason": "slop"}, {"status": "pass"}, [], None)
+    if m["status"] != "incomplete" or m["status_reason"] != "slop":
+        fails.append("KEV pass 不得把 incomplete 的 G1 洗成 pass")
+    if base["status"] != "pass" or base["tools"]:
+        fails.append("merge_gate 不得修改輸入物件")
     return fails
 
 
@@ -160,11 +209,20 @@ def main(argv=None) -> int:
     ap.add_argument("--kev-feed", required=True)
     ap.add_argument("--sarif", required=True)
     ap.add_argument("--json", required=True)
+    ap.add_argument("--merge-gate", help="併入既有的 G1 gate-result（就地更新）；檔案不存在則略過")
     a = ap.parse_args(argv)
     summary, hits = run(pathlib.Path(a.grype), pathlib.Path(a.kev_feed))
     for out in (a.sarif, a.json):
         pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    if a.merge_gate:
+        gp = pathlib.Path(a.merge_gate)
+        if gp.is_file():
+            ref = a.sarif if summary["status"] != "incomplete" else None
+            merged = merge_gate(json.loads(gp.read_text(encoding="utf-8")), summary, hits, ref)
+            gp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            print(f"::warning::{gp} 不存在，KEV 結果未併入 G1 gate（summary 會顯示 G1 untested）")
     if summary["status"] == "incomplete":
         print(f"::error::KEV 檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
         return 2
