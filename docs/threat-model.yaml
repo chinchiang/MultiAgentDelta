@@ -68,7 +68,24 @@ agents:
     can_communicate_externally: true     # GitHub API、web、push
     tools: [read_repo, edit_repo, bash, git_push, github_api, dispatch_workflow, spawn_subagents, publish_artifact]
     high_impact_tools: [merge_pull_request, force_push_own_branch, dispatch_workflow, create_or_delete_trigger]
-    mitigations: [human_in_the_loop, tool_allowlist]
+    # tool_allowlist 已移除：repo 內沒有任何限制 c-claude 工具清單的落實（第二次 harness 審查發現 A）。
+    mitigations: [human_in_the_loop]
+    # 三要素全成立且未切腳 → 每項 mitigation 必須有可驗證證據，否則 G0 報 lethal-trifecta-open（scripts/g0_trifecta.py）
+    mitigation_evidence:
+      human_in_the_loop:
+        - kind: claude_permission
+          ref: .claude/settings.json
+          rules:                         # high_impact_tools 對應的工具呼叫：每次都需人確認
+            - mcp__github__merge_pull_request          # merge_pull_request
+            - Bash(gh pr merge *)
+            - Bash(git push --force *)                 # force_push_own_branch
+            - Bash(git push -f *)
+            - Bash(git push --force-with-lease *)
+            - mcp__github__actions_run_trigger         # dispatch_workflow
+            - Bash(gh workflow run *)
+            - mcp__claude-code-remote__create_trigger  # create_or_delete_trigger
+            - mcp__claude-code-remote__delete_trigger
+          note: 只約束在本 repo 執行的 Claude Code；以 bypassPermissions 或更高層設定（managed／user）放行時不受此約束，殘留風險見 t-hitl-bypass
     trifecta_leg_cut: null
   - id: c-reviewers
     accesses_private_data: false         # 只讀公開 repo；送審內容限 public／internal（providers.yaml）
@@ -114,6 +131,13 @@ threats:
     description: PR 作者在同一個 PR 自寫 reviews/g4/<commit>.yaml（宣稱兩個 family 都跑過、無發現），讓自己 PR 的 G4 顯示 pass（第二次 harness 審查發現，CLAUDE.md 規則 6）。
     mitigation: g4_review.py gate 對本 PR 新增／修改的紀錄設信任上限——需非 PR 作者在目前 head SHA 上 approve 且 recorded_by 不是 PR 作者，否則 G4 最高 pending；recorded_by 空白一律不採信。殘留：單一維護者無法取得非作者 approve，此時 G4 停在 pending（fail closed，不擋 merge）。
     status: mitigated
+    gate: G4
+  - id: t-hitl-bypass
+    category: MAESTRO-L3
+    target: c-claude
+    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 git push origin +branch、REST API 直接呼叫）執行高影響操作時，HITL 不生效。
+    mitigation: ask 規則涵蓋已知的 merge／force push／dispatch／trigger 入口；branch protection 應禁止 force push 到 main 並要求 code owner review（GitHub 設定，靜態無法驗證）。
+    status: accepted
     gate: G4
   - id: t-policy-tamper
     category: STRIDE-T

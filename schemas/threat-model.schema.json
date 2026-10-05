@@ -5,85 +5,416 @@
   "description": "G0 威脅建模輸入：資料流圖（DFD）、信任邊界、資產、Agent 能力（致命三要素）、風險分級。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["system", "assets", "components", "flows", "trust_boundaries", "agents", "risk_tier"],
+  "required": [
+    "system",
+    "assets",
+    "components",
+    "flows",
+    "trust_boundaries",
+    "agents",
+    "risk_tier"
+  ],
   "properties": {
     "system": {
-      "type": "object", "additionalProperties": false,
-      "required": ["name", "exposure", "data_sensitivity"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "exposure",
+        "data_sensitivity"
+      ],
       "properties": {
-        "name": { "type": "string" },
-        "description": { "type": "string" },
-        "exposure": { "type": "string", "enum": ["internal", "partner", "public"] },
-        "data_sensitivity": { "type": "string", "enum": ["none", "business", "pii", "sensitive_pii_or_secrets"] },
-        "methodologies": { "type": "array", "items": { "type": "string", "enum": ["STRIDE", "LINDDUN", "MAESTRO"] } }
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "exposure": {
+          "type": "string",
+          "enum": [
+            "internal",
+            "partner",
+            "public"
+          ]
+        },
+        "data_sensitivity": {
+          "type": "string",
+          "enum": [
+            "none",
+            "business",
+            "pii",
+            "sensitive_pii_or_secrets"
+          ]
+        },
+        "methodologies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "STRIDE",
+              "LINDDUN",
+              "MAESTRO"
+            ]
+          }
+        }
       }
     },
     "assets": {
-      "type": "array", "minItems": 1,
-      "items": { "type": "object", "additionalProperties": false, "required": ["id", "name", "sensitivity"],
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "sensitivity"
+        ],
         "properties": {
-          "id": { "type": "string" }, "name": { "type": "string" },
-          "sensitivity": { "type": "string", "enum": ["public", "internal", "confidential", "pii", "secret"] },
-          "store": { "type": ["string", "null"] }
-        } }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sensitivity": {
+            "type": "string",
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "pii",
+              "secret"
+            ]
+          },
+          "store": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
     },
     "components": {
-      "type": "array", "minItems": 1,
-      "items": { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "zone"],
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "zone"
+        ],
         "properties": {
-          "id": { "type": "string" }, "name": { "type": "string" },
-          "kind": { "type": "string", "enum": ["browser", "mobile", "api", "worker", "db", "vector_store", "llm", "agent", "tool", "mcp_server", "external_service", "ci"] },
-          "zone": { "type": "string", "description": "所在信任區域 id" },
-          "maestro_layer": { "type": ["integer", "null"], "minimum": 1, "maximum": 7 }
-        } }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "browser",
+              "mobile",
+              "api",
+              "worker",
+              "db",
+              "vector_store",
+              "llm",
+              "agent",
+              "tool",
+              "mcp_server",
+              "external_service",
+              "ci"
+            ]
+          },
+          "zone": {
+            "type": "string",
+            "description": "所在信任區域 id"
+          },
+          "maestro_layer": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 7
+          }
+        }
+      }
     },
     "flows": {
       "type": "array",
-      "items": { "type": "object", "additionalProperties": false, "required": ["from", "to", "data"],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to",
+          "data"
+        ],
         "properties": {
-          "from": { "type": "string" }, "to": { "type": "string" },
-          "data": { "type": "array", "items": { "type": "string" } },
-          "protocol": { "type": ["string", "null"] },
-          "authenticated": { "type": ["boolean", "null"] },
-          "crosses_boundary": { "type": ["boolean", "null"] }
-        } }
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "protocol": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authenticated": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "crosses_boundary": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
     },
     "trust_boundaries": {
-      "type": "array", "minItems": 1,
-      "items": { "type": "object", "additionalProperties": false, "required": ["id", "name", "zones"],
-        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "zones": { "type": "array", "items": { "type": "string" }, "minItems": 2 } } }
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "zones"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "zones": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2
+          }
+        }
+      }
     },
     "agents": {
       "type": "array",
       "description": "每個 LLM Agent 的致命三要素盤點；三者皆 true 且無 mitigation 即設計期不得放行",
-      "items": { "type": "object", "additionalProperties": false,
-        "required": ["id", "accesses_private_data", "exposed_to_untrusted_content", "can_communicate_externally"],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "accesses_private_data",
+          "exposed_to_untrusted_content",
+          "can_communicate_externally"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "accesses_private_data": { "type": "boolean" },
-          "exposed_to_untrusted_content": { "type": "boolean" },
-          "can_communicate_externally": { "type": "boolean", "description": "含發 HTTP、寫 DB、呼叫外部 API、執行指令" },
-          "tools": { "type": "array", "items": { "type": "string" } },
-          "high_impact_tools": { "type": "array", "items": { "type": "string" }, "description": "需 Human-in-the-Loop 的工具" },
-          "mitigations": { "type": "array", "items": { "type": "string", "enum": ["sandbox", "egress_allowlist", "tool_allowlist", "read_only_data", "no_untrusted_input", "human_in_the_loop"] } },
-          "trifecta_leg_cut": { "type": ["string", "null"], "enum": ["private_data", "untrusted_content", "external_comms", null] }
-        } }
+          "id": {
+            "type": "string"
+          },
+          "accesses_private_data": {
+            "type": "boolean"
+          },
+          "exposed_to_untrusted_content": {
+            "type": "boolean"
+          },
+          "can_communicate_externally": {
+            "type": "boolean",
+            "description": "含發 HTTP、寫 DB、呼叫外部 API、執行指令"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "high_impact_tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "需 Human-in-the-Loop 的工具"
+          },
+          "mitigations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "sandbox",
+                "egress_allowlist",
+                "tool_allowlist",
+                "read_only_data",
+                "no_untrusted_input",
+                "human_in_the_loop"
+              ]
+            }
+          },
+          "trifecta_leg_cut": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "private_data",
+              "untrusted_content",
+              "external_comms",
+              null
+            ]
+          },
+          "mitigation_evidence": {
+            "type": "object",
+            "description": "三要素全成立且未切腳時，mitigation 必須有可驗證的落實證據（scripts/g0_trifecta.py）；沒有證據的 mitigation 不算數。key 為 mitigations 中的項目",
+            "propertyNames": {
+              "enum": [
+                "sandbox",
+                "egress_allowlist",
+                "tool_allowlist",
+                "read_only_data",
+                "no_untrusted_input",
+                "human_in_the_loop"
+              ]
+            },
+            "additionalProperties": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "ref",
+                  "rules"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "claude_permission",
+                    "description": "Claude Code 設定檔中的權限規則；每條 rules 都必須出現在該檔 permissions.ask 或 permissions.deny"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "repo 內的設定檔路徑，例如 .claude/settings.json"
+                  },
+                  "rules": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "threats": {
       "type": "array",
-      "items": { "type": "object", "additionalProperties": false, "required": ["id", "category", "target", "description", "mitigation", "status"],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "category",
+          "target",
+          "description",
+          "mitigation",
+          "status"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "category": { "type": "string", "description": "STRIDE 類別、LINDDUN 類別或 MAESTRO-Lx" },
-          "target": { "type": "string" },
-          "description": { "type": "string" },
-          "mitigation": { "type": "string" },
-          "status": { "type": "string", "enum": ["open", "mitigated", "accepted", "transferred"] },
-          "gate": { "type": ["string", "null"], "enum": ["G1", "G2", "G3", "G4", "G5", "G6", null], "description": "由哪道執行閘門驗證" }
-        } }
+          "id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "description": "STRIDE 類別、LINDDUN 類別或 MAESTRO-Lx"
+          },
+          "target": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "mitigation": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "mitigated",
+              "accepted",
+              "transferred"
+            ]
+          },
+          "gate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "G1",
+              "G2",
+              "G3",
+              "G4",
+              "G5",
+              "G6",
+              null
+            ],
+            "description": "由哪道執行閘門驗證"
+          }
+        }
+      }
     },
-    "risk_tier": { "type": "string", "enum": ["L1", "L2", "L3"] },
-    "risk_tier_rationale": { "type": "string" },
-    "decisions": { "type": "array", "items": { "type": "string" }, "description": "文件化安全決策（ASVS 5.0 要求）" }
+    "risk_tier": {
+      "type": "string",
+      "enum": [
+        "L1",
+        "L2",
+        "L3"
+      ]
+    },
+    "risk_tier_rationale": {
+      "type": "string"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "文件化安全決策（ASVS 5.0 要求）"
+    }
   }
 }
