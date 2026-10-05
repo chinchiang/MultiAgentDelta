@@ -157,6 +157,16 @@ def list_users(user: dict = Depends(current_user)):
     return [{"id": u["id"], "username": u["username"]} for u in _DATA["users"]]
 
 
+@app.get("/admin/users")
+def admin_users(authorization: str = Header(default="")):
+    # 漏洞（缺 Session 驗證 / 前端防禦假象）：前端只對管理員顯示此頁，後端卻完全沒驗 token →
+    # 匿名請求即可取得全部帳號與筆記。G5 session_check 目標（vibesec.g5.missing-session-check）。
+    if PATCHED:
+        # 修補：與其他受保護端點相同，先驗證 Bearer token（缺少或無效 → 401）
+        current_user(authorization)
+    return [{"id": u["id"], "username": u["username"], "notes": u["notes"]} for u in _DATA["users"]]
+
+
 @app.get("/fetch")
 def fetch(url: str = Query(...), user: dict = Depends(current_user)):
     # 漏洞（SSRF）：對使用者提供的 URL 直接發出 server-side GET，無 allow-list、無私網封鎖。

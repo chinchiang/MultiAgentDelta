@@ -52,6 +52,7 @@ curl -s "$VIBESEC_TARGET_URL/api/todos" -H "$B" | grep -q 'vibesec-bola-probe' &
 
 - B 取得 2xx → `vibesec.g5.bola-cross-account`（blocking，CWE-639，E3）。
 - ANON 取得 2xx → `vibesec.g5.missing-session-check`（blocking，CWE-287，E3）。
+- 自動化（`session_check`）：`staging-blackbox.yml` 對 `vibesec.yaml` 的 `gates.g5_dast_api.protected_paths` 逐一送「無 token」與「無效 token」請求；任一取得 2xx → fail；兩者皆 401/403 → pass；其餘（404、5xx、連線失敗）→ untested；未設定 `protected_paths` → untested（探針無法從外部推斷哪些端點該受保護，incomplete ≠ pass）。
 - 完整 HTTP 交換（遮罩 Token）存 `reports/g5/<resource>-<account>.http`，`evidence_refs.kind: http_exchange`。
 - 功能層級（BFLA / 垂直越權）：一般使用者 Token 呼叫 `/api/admin/*` 必須 401/403。
 - 工具：curl / httpx（harness `api-probes`）、Burp Suite Pro 的 **Autorize**（自動重放改用低權 Token）與 **AuthMatrix**（角色 × 資源矩陣）、Schemathesis 自訂 hook 對 OpenAPI 每個路徑跑雙帳號。

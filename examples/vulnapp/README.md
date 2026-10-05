@@ -35,6 +35,7 @@ curl -s -X POST http://127.0.0.1:8000/login \
 |---|---|---|---|
 | JWT 以 RS256 簽發、公鑰於 `/.well-known/jwks.json` 公開；`_decode_token` 的 `alg` 取自 header，接受 `alg:none`（未簽章），也接受 `HS256` 並拿公鑰 PEM 當 HMAC 金鑰 | Broken Authentication（接受未簽章 / RS256→HS256 混淆 token） | G5 | `vibesec.g5.jwt-alg-none`、`vibesec.g5.jwt-alg-confusion` |
 | `GET /users/{id}/notes` 未將 `{id}` 綁定當前已驗證主體 | BOLA / IDOR（bob 讀 alice 私密筆記） | G5 | `vibesec.g5.bola-idor` |
+| `GET /admin/users` 後端未驗 token（前端只對管理員顯示） | 缺 Session 驗證 / 前端防禦假象（匿名取得全部帳號與筆記） | G5 | `vibesec.g5.missing-session-check` |
 | `GET /fetch?url=` 對任意 URL 發 server-side GET，無 allow-list、未封私網 | SSRF（可讀 `169.254.169.254` metadata） | G5 | `vibesec.g5.ssrf-metadata` |
 | `/docs`、`/redoc`、`/openapi.json` 全對外 | 開發便利設定外溢 | G5 | `vibesec.g5.swagger-exposed` |
 | 未處理例外回吐 traceback | Debug Mode / Stack Trace 外洩 | G5 | `vibesec.g5.debug-stacktrace` |
@@ -59,6 +60,7 @@ VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:
 |---|---|
 | JWT alg:none / RS256→HS256 混淆 | `jwt.decode(token, PUBLIC_KEY, algorithms=["RS256"])`，固定非對稱演算法並驗章 |
 | BOLA / IDOR | `/users/{id}/notes` 僅允許本人，否則 403 |
+| 缺 Session 驗證 | `/admin/users` 與其他受保護端點相同，缺少或無效 token 回 401 |
 | SSRF | `/fetch` 一律 400（無允許清單即拒絕） |
 | Stack trace 外洩 | 例外回傳一般化 `{"error":"internal error"}` |
 | Prompt injection / system prompt 外洩 | `llm_stub` 拒絕擷取與夾帶指令，不回吐輸入 |
