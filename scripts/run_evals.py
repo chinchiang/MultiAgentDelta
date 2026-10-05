@@ -214,6 +214,27 @@ class G1FixtureRunner(Runner):
         return ({f["rule_id"]} if f else set()), None
 
 
+class G0TrifectaRunner(Runner):
+    """以 input.threat_model 呼叫 scripts/g0_trifecta.py 的 trifecta_findings（validate.py 對本 repo 威脅模型用同一個函式）。"""
+    name = "g0-trifecta"
+
+    def __init__(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("g0_trifecta", ROOT / "scripts/g0_trifecta.py")
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+
+    def handles(self, case):
+        if case.get("gate") != "G0" or case["expected"].get("rule_id") != self.mod.RULE:
+            return "非 G0 lethal-trifecta 案例"
+        if not isinstance(case["input"].get("threat_model"), dict):
+            return "案例沒有 input.threat_model"
+        return None
+
+    def run(self, case):
+        return {f["rule_id"] for f in self.mod.trifecta_findings(case["input"]["threat_model"])}, None
+
+
 class Vulnapp:
     """在 127.0.0.1 隨機埠啟動 examples/vulnapp（只對本機靶場；CLAUDE.md #8）。整個評測共用一個實例。"""
 
@@ -657,7 +678,7 @@ def main(argv=None) -> int:
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), G1FixtureRunner(), G4StaticRunner(),
+    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
                              GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets)]
     try:
         rows = evaluate(cases, runners)
