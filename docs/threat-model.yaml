@@ -108,6 +108,13 @@ threats:
     mitigation: CODEOWNERS 涵蓋 rulings/；repo-validate 拒絕 decided_by 為 PR 作者（PR #42）。殘留：需 branch protection 開啟 code owner review；單一維護者無法職責分離（VIBESEC_SINGLE_MAINTAINER 僅警告）。
     status: open
     gate: G4
+  - id: t-review-forgery
+    category: STRIDE-S
+    target: c-ci-pr
+    description: PR 作者在同一個 PR 自寫 reviews/g4/<commit>.yaml（宣稱兩個 family 都跑過、無發現），讓自己 PR 的 G4 顯示 pass（第二次 harness 審查發現，CLAUDE.md 規則 6）。
+    mitigation: g4_review.py gate 對本 PR 新增／修改的紀錄設信任上限——需非 PR 作者在目前 head SHA 上 approve 且 recorded_by 不是 PR 作者，否則 G4 最高 pending；recorded_by 空白一律不採信。殘留：單一維護者無法取得非作者 approve，此時 G4 停在 pending（fail closed，不擋 merge）。
+    status: mitigated
+    gate: G4
   - id: t-policy-tamper
     category: STRIDE-T
     target: a-policy
