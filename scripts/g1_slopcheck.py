@@ -113,17 +113,14 @@ def npm_check(pkg, ver, c):
     times = meta.get("time", {})
     target_ver = ver or (meta.get("dist-tags", {}) or {}).get("latest")
     if target_ver and target_ver in times:
-        age = age_days(times[target_ver])
-        if age is not None and age < c["cooldown_days"]:
-            findings.append(fnd("vibesec.g1.cooldown-violation", pkg, "npm", target_ver,
-                                f"版本發布僅 {age} 天，未滿冷卻期 {c['cooldown_days']} 天", "blocking"))
+        f = cooldown_finding(pkg, "npm", target_ver, age_days(times[target_ver]), c)
+        if f:
+            findings.append(f)
     # 安裝 hook
     vmeta = (meta.get("versions", {}) or {}).get(target_ver or "", {})
-    scripts = vmeta.get("scripts", {}) or {}
-    hooks = [h for h in ("preinstall", "install", "postinstall") if h in scripts]
-    if hooks:
-        findings.append(fnd("vibesec.g1.postinstall-egress", pkg, "npm", target_ver,
-                            f"含安裝階段 hook（{', '.join(hooks)}），需人工審查是否外連或讀取憑證", "advisory"))
+    f = install_hook_finding(pkg, "npm", target_ver, vmeta.get("scripts", {}) or {})
+    if f:
+        findings.append(f)
     # 週下載
     try:
         dl = http_json(f"https://api.npmjs.org/downloads/point/last-week/{q}").get("downloads", 0)
@@ -150,11 +147,41 @@ def pypi_check(pkg, ver, c):
     target_ver = ver or (meta.get("info", {}) or {}).get("version")
     rel = (meta.get("releases", {}) or {}).get(target_ver or "", [])
     if rel:
-        age = age_days(rel[0].get("upload_time_iso_8601", ""))
-        if age is not None and age < c["cooldown_days"]:
-            findings.append(fnd("vibesec.g1.cooldown-violation", pkg, "pypi", target_ver,
-                                f"版本發布僅 {age} 天，未滿冷卻期 {c['cooldown_days']} 天", "blocking"))
+        f = cooldown_finding(pkg, "pypi", target_ver, age_days(rel[0].get("upload_time_iso_8601", "")), c)
+        if f:
+            findings.append(f)
     return findings, None
+
+def cooldown_finding(pkg, eco, ver, age, c):
+    """發布天數未滿冷卻期 → blocking；天數未知（None）不判定。純函式，run_evals.py 以合成 fixture 直接呼叫。"""
+    if age is None or age >= c["cooldown_days"]:
+        return None
+    return fnd("vibesec.g1.cooldown-violation", pkg, eco, ver,
+               f"版本發布僅 {age} 天，未滿冷卻期 {c['cooldown_days']} 天", "blocking")
+
+def _hook_patterns():
+    return ((load_yaml(CFG_DIR / "cooldown.yaml") or {}).get("install_hooks") or {}).get("suspicious_patterns") or {}
+
+def install_hook_finding(pkg, eco, ver, scripts, patterns=None):
+    """依 cooldown.yaml install_hooks 分類安裝階段 hook（docs/02 第 3 層）。
+    外連 + 讀環境變數／執行、憑證路徑、濫用本機 AI CLI → blocking；只有動態執行 → advisory；
+    其餘（例如 node-gyp rebuild）不判 egress，回傳 None。純函式，run_evals.py 以合成 fixture 直接呼叫。"""
+    hooks = {h: str(scripts[h]) for h in ("preinstall", "install", "postinstall") if h in scripts}
+    if not hooks:
+        return None
+    pats = patterns if patterns is not None else _hook_patterns()
+    body = "\n".join(hooks.values())
+    hit = {k: any(re.search(rx, body) for rx in pats.get(k) or []) for k in
+           ("network", "env_read", "credential_paths", "ai_cli_abuse", "exec")}
+    names = ", ".join(hooks)
+    if hit["credential_paths"] or hit["ai_cli_abuse"] or (hit["network"] and (hit["env_read"] or hit["exec"])):
+        why = [k for k in ("network", "env_read", "credential_paths", "ai_cli_abuse", "exec") if hit[k]]
+        return fnd("vibesec.g1.postinstall-egress", pkg, eco, ver,
+                   f"安裝階段 hook（{names}）命中可疑樣式：{', '.join(why)}", "blocking")
+    if hit["exec"] or hit["network"]:
+        return fnd("vibesec.g1.postinstall-egress", pkg, eco, ver,
+                   f"安裝階段 hook（{names}）含動態執行或外連，需人工審查", "advisory")
+    return None
 
 def age_days(iso):
     try:

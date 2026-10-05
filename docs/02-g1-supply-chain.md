@@ -96,7 +96,9 @@ def suspicious(name, popular):
 | 環境變數 | `process.env|os.environ|os.getenv|$...TOKEN/SECRET/KEY/PASSWORD` | 網路 + 環境變數 → **block** `vibesec.g1.postinstall-egress`（CWE-506） |
 | 憑證路徑 | `~/.aws`、`~/.npmrc`、`~/.pypirc`、`~/.ssh`、`~/.claude`、`~/.config/gcloud`、`~/.docker/config.json`、`~/.gitconfig`、`~/.netrc`、`~/.kube/config`、`.env` | **block** |
 | 濫用本機 AI CLI | `claude|gemini|codex|aider` 搭配 `-p|--print|-y|--yes|--dangerously-skip-permissions` | **block**（Nx s1ngularity / Shai-Hulud 手法） |
-| 動態執行 | `child_process|execSync|subprocess|os.system|eval(|new Function(`、`base64 … decode` | 單獨出現 → advisory |
+| 動態執行 | `child_process|execSync|subprocess|os.system|eval(|new Function(`、`base64 … decode`、管線交給 shell（`| sh`） | 與網路併存（例如 `curl … \| sh`）→ **block**；單獨出現 → advisory |
+
+實作：`scripts/g1_slopcheck.py` 的 `install_hook_finding()` 依上表分類 npm `preinstall`／`install`／`postinstall`。只有網路（例如單純 `wget` 下載）→ advisory；不含任何可疑樣式的 hook（例如 `node-gyp rebuild`）不判 `postinstall-egress`。
 
 ```bash
 # npm：不執行 scripts 取得 tarball 並檢查

@@ -54,8 +54,9 @@ install_hooks:
     env_read: ['(?i)\bprocess\.env\b', '(?i)\bos\.environ\b', '(?i)\bos\.getenv\b', '(?i)\$\{?[A-Z_]*(TOKEN|SECRET|KEY|PASSWORD)[A-Z_]*\}?']
     credential_paths: ['~/\.aws', '~/\.npmrc', '~/\.pypirc', '~/\.ssh', '~/\.claude', '~/\.config/gcloud', '~/\.docker/config\.json', '~/\.gitconfig', '~/\.netrc', '~/\.kube/config', '\.env\b']
     ai_cli_abuse: ['(?i)\b(claude|gemini|codex|aider)\b\s+(-p|--print|--prompt|-y|--yes|--dangerously-skip-permissions)']   # Nx s1ngularity / Shai-Hulud 手法
-    exec: ['(?i)\b(child_process|execSync|spawnSync|subprocess|os\.system|eval\(|new Function\()\b', '(?i)\bbase64\b.*\b(decode|atob|b64decode)\b']
+    exec: ['(?i)\b(child_process|execSync|spawnSync|subprocess|os\.system|eval\(|new Function\()\b', '(?i)\bbase64\b.*\b(decode|atob|b64decode)\b', '\|\s*(ba|z)?sh\b']
   decision:
+    any_network_and_exec: block            # 外連 + 執行（例如 curl … | sh，下載後執行）→ blocking（docs/02「網路與下列任一併存 → block」）
     any_network_and_env_read: block        # 同時外連 + 讀環境變數 → blocking（vibesec.g1.postinstall-egress）
     credential_path_access: block
     ai_cli_abuse: block
