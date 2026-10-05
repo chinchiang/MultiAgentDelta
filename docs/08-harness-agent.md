@@ -228,6 +228,7 @@ CLI 讀同一份 `vibesec.yaml`，實作同一個狀態機，透過 `config/prov
 
 - 取 `location.path` 對應元件在威脅模型 `assets[].sensitivity` 的最高等級；無威脅模型時一律視為 `confidential`。
 - 程式碼片段本身預設 `internal`；含祕密（即使已遮罩）、個資樣本、客戶資料 → `confidential` 或 `pii`。
+- 例外：威脅模型把原始碼資產標為 `sensitivity: public`（公開 repo，例如本 repo 的 `a-source`）時，取自該 repo 的程式碼與文件片段為 `public`；但上一條的升級條件仍優先（含祕密、個資、客戶資料的片段照樣是 `confidential`／`pii`）。
 - 只有 `allowed_data_classes` 包含該等級的 provider 才可收到該內容。雲端 provider（anthropic、openai、glm、deepseek）預設不收 `confidential` / `pii`；這類內容只送 `onprem_vllm` 之類的地端 provider。
 - 若沒有任何可用 provider 符合分級 → 該發現 `pending`、`notes` 記 `no provider allowed for data_class=pii`，閘門對該控制 `incomplete`。harness **不得**為了湊足兩個 family 而降級資料分類或改送不被允許的 provider。
 - 中國廠區（CSL / DSL / PIPL）專案：`providers.yaml` 只啟用地端 provider，並且報告只傳去識別化統計（見 `docs/13-roadmap-governance-compliance.md`）。

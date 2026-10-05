@@ -81,7 +81,7 @@
             "properties": {
               "role": { "type": "string", "enum": ["architecture", "appsec", "identity-authz", "supplychain-cicd"] },
               "provider": { "type": "string" },
-              "family": { "type": "string", "enum": ["anthropic", "openai", "glm", "deepseek", "fake"] },
+              "family": { "type": "string", "enum": ["anthropic", "openai", "google", "glm", "deepseek", "fake"] },
               "model": { "type": ["string", "null"] },
               "prompt_version": { "type": ["string", "null"] },
               "round": { "type": "integer", "minimum": 1, "maximum": 3 },
