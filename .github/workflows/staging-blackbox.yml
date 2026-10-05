@@ -19,6 +19,13 @@ jobs:
   blackbox:
     name: G5 DAST/API + G6 AI 紅隊
     runs-on: ubuntu-latest
+    # 給 notify job 判斷用：目標種類與 G5／G6 閘門結論（只含狀態與計數，不含 token 或回應內容）
+    outputs:
+      is_vulnapp: ${{ steps.target.outputs.is_vulnapp }}
+      g5_status: ${{ steps.verdict.outputs.g5_status }}
+      g5_blocking: ${{ steps.verdict.outputs.g5_blocking }}
+      g6_status: ${{ steps.verdict.outputs.g6_status }}
+      g6_blocking: ${{ steps.verdict.outputs.g6_blocking }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -622,6 +629,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: 黑箱彙整（G5/G6 狀態；shadow 僅報告）
+        id: verdict
         if: always()
         shell: bash
         run: |
@@ -636,6 +644,17 @@ jobs:
               rows.append(f"| {g.get('gate')} | `{g.get('status')}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {g.get('status_reason') or ''} |")
           rows += ["", "> 攻擊性探針僅對已授權 VIBESEC_TARGET_URL 執行；缺 token／目標限制的檢查記為 untested，incomplete ≠ pass。"]
           text = "\n".join(rows)
+          # 供 notify job 使用；缺 gate 檔記為 missing（incomplete ≠ pass）
+          go = os.environ.get("GITHUB_OUTPUT")
+          if go:
+              with open(go, "a", encoding="utf-8") as fh:
+                  for gid in ("g5", "g6"):
+                      try:
+                          g = json.load(open(f"reports/{gid}-gate.json", encoding="utf-8"))
+                          st, bl = g.get("status") or "missing", (g.get("findings_count") or {}).get("blocking", "")
+                      except Exception:
+                          st, bl = "missing", ""
+                      fh.write(f"{gid}_status={st}\n{gid}_blocking={bl}\n")
           sp = os.environ.get("GITHUB_STEP_SUMMARY")
           if sp: open(sp, "a", encoding="utf-8").write(text + "\n")
           print(text)
@@ -645,3 +664,29 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$RUNNER_TEMP/vibesec-tokens"
+
+  # 失敗通知：靶場上偵測退步、外部目標 fail／incomplete、job 失敗或缺閘門結果 → 開／更新追蹤 issue；恢復 → 自動關閉。
+  # 判定邏輯與單元測試：.github/scripts/staging-issue.js、staging-issue.test.js。
+  notify:
+    name: 失敗通知（追蹤 issue）
+    needs: [blackbox]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+      - name: 開／更新／關閉追蹤 issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BLACKBOX_JSON: ${{ toJSON(needs.blackbox) }}
+        with:
+          script: |
+            const { run } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/staging-issue.js`);
+            const blackbox = JSON.parse(process.env.BLACKBOX_JSON);
+            const r = await run({ github, context, core, blackbox });
+            core.info(`結果：${JSON.stringify(r)}`);
