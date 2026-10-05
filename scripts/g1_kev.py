@@ -12,7 +12,8 @@
   python3 scripts/g1_kev.py --grype reports/grype-full.json --kev-feed .cache/kev.json \\
                             --sarif reports/g1-kev.sarif --json reports/g1-kev.json
   python3 scripts/g1_kev.py selftest
-退出碼：0 已完成（有無命中皆是；命中與否看輸出）；2 incomplete（輸入缺漏或無法解析）。
+退出碼：0 已完成且無命中；1 有 KEV 命中（blocking：讓 nightly 轉紅、notify 開 issue；SARIF 照常寫出）；
+        2 incomplete（輸入缺漏或無法解析）。
 """
 from __future__ import annotations
 import argparse, datetime, json, pathlib, re, sys
@@ -170,6 +171,9 @@ def main(argv=None) -> int:
     pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits), ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"KEV：檢查 {summary['matches_checked']} 筆 grype 結果，命中 {len(hits)} 筆"
           + "".join(f"\n  {h['cve']} {h['package']}@{h['version']}（KEV {h['kev_date']}）" for h in hits))
+    if hits:
+        print(f"::error::KEV 命中 {len(hits)} 筆（{RULE}，blocking）：需升級或移除受影響套件")
+        return 1
     return 0
 
 
