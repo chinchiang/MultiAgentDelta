@@ -20,11 +20,11 @@
 退出碼：0 已完成（有無命中皆是；advisory 不讓步驟失敗）；2 incomplete。
 """
 from __future__ import annotations
-import argparse, base64, datetime, http.client, json, os, pathlib, re, ssl, sys, time, urllib.parse
+import argparse, datetime, json, os, pathlib, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
 
 RULE = "vibesec.g1.unmaintained-dependency"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-API_HOST = "api.deps.dev"
+API_BASE = "https://api.deps.dev"
 API_PATH = "/v3/systems/{system}/packages/{name}"
 SYSTEMS = {"pypi": "pypi", "npm": "npm", "golang": "go", "maven": "maven", "cargo": "cargo", "nuget": "nuget"}
 DEFAULT_DAYS = 730
@@ -106,45 +106,36 @@ class FetchError(Exception):
     pass
 
 
-def _connection(timeout: int) -> http.client.HTTPSConnection:
-    """固定連線到 API_HOST（HTTPS）。不經 urllib 以字串組 URL：scheme 與主機不受輸入影響（無 file:// 等風險）。
-    有 HTTPS_PROXY 時以 HTTP CONNECT 穿隧（http.client 原生 set_tunnel），TLS 仍驗證 API_HOST 的憑證。"""
-    ctx = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if not proxy:
-        return http.client.HTTPSConnection(API_HOST, 443, timeout=timeout, context=ctx)
-    pu = urllib.parse.urlsplit(proxy)
-    headers = {}
-    if pu.username:
-        cred = f"{urllib.parse.unquote(pu.username)}:{urllib.parse.unquote(pu.password or '')}"
-        headers["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
-    conn = http.client.HTTPSConnection(pu.hostname, pu.port or 80, timeout=timeout, context=ctx)
-    conn.set_tunnel(API_HOST, 443, headers=headers)
-    return conn
+def _https_only_opener() -> urllib.request.OpenerDirector:
+    """只裝 HTTPS（驗證憑證與主機名）與 proxy 的 opener：沒有 FileHandler／HTTPHandler／FTPHandler，
+    所以 file://、http://（含被重導到 http）等一律無法開啟——不只靠 URL 是常數字串來保證。"""
+    opener = urllib.request.OpenerDirector()
+    https_proxy = {k: v for k, v in urllib.request.getproxies().items() if k == "https"}   # 只讓 https 走 proxy
+    for h in (urllib.request.ProxyHandler(https_proxy),
+              urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)),
+              urllib.request.UnknownHandler(),   # 其他 scheme（file://、http://、ftp://）→ URLError
+              urllib.request.HTTPDefaultErrorHandler(), urllib.request.HTTPErrorProcessor()):
+        opener.add_handler(h)
+    return opener
 
 
 def fetch_deps_dev(system: str, name: str, retries: int = 3) -> dict | None:
-    """回傳套件資料；404 → None（查無此套件）；其他錯誤重試後拋出。"""
-    path = API_PATH.format(system=urllib.parse.quote(system, safe=""), name=urllib.parse.quote(name, safe=""))
+    """回傳套件資料；404 → None（查無此套件）；其他錯誤重試後拋出 FetchError。"""
+    url = API_BASE + API_PATH.format(system=urllib.parse.quote(system, safe=""), name=urllib.parse.quote(name, safe=""))
+    req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1-maintenance", "Accept": "application/json"})
+    opener = _https_only_opener()
     for i in range(retries):
-        conn = None
         try:
-            conn = _connection(30)
-            conn.request("GET", path, headers={"User-Agent": "vibesec-g1-maintenance", "Accept": "application/json"})
-            r = conn.getresponse()
-            body = r.read()
-            if r.status == 200:
-                return json.loads(body.decode("utf-8"))
-            if r.status == 404:
+            with opener.open(req, timeout=30) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
                 return None
-            if r.status < 500 or i == retries - 1:
-                raise FetchError(f"HTTP {r.status}")
-        except (OSError, http.client.HTTPException) as e:
+            if e.code < 500 or i == retries - 1:
+                raise FetchError(f"HTTP {e.code}") from e
+        except (OSError, ValueError) as e:   # URLError 是 OSError 的子類別
             if i == retries - 1:
                 raise FetchError(f"{type(e).__name__}: {e}") from e
-        finally:
-            if conn is not None:
-                conn.close()
         time.sleep(2 ** i)
     return None
 
@@ -290,6 +281,12 @@ def selftest() -> list[str]:
         (pp / "package.json").write_text('{"name": "@acme/web"}')
         if first_party(pp) != {("pypi", "demo-app"), ("npm", "@acme/web")}:
             fails.append(f"first_party 應讀到 pyproject 與 package.json 名稱：{first_party(pp)}")
+        for bad in ("file:///etc/passwd", "http://example.com/"):
+            try:
+                _https_only_opener().open(bad, timeout=5)
+                fails.append(f"opener 不應開啟 {bad}")
+            except urllib.error.URLError:
+                pass
         if run(pathlib.Path(d, "none.json"), fetch=fake, now=now)[0]["status"] != "incomplete":
             fails.append("缺 SBOM 應為 incomplete")
         sp.write_text("{bad")
