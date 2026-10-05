@@ -305,6 +305,40 @@ try:
 except ImportError:
     warn("jsonschema 未安裝，略過人工裁決驗證")
 
+# --- G0 威脅模型：vibesec.yaml 引用的必須是本 repo 的真實模型（不是範本），通過 schema，risk_tier 一致性 ---
+# 範本（docs/templates/、system.name: example-project）也能通過 schema，所以要另外擋，否則 G0 的輸入是虛構系統。
+try:
+    from jsonschema import Draft202012Validator as _V
+    if yaml is not None:
+        _vb = load_yaml(ROOT / "vibesec.yaml") or {}
+        _tm_rel = ((_vb.get("project") or {}).get("threat_model") or "").strip()
+        _tm = ROOT / _tm_rel if _tm_rel else None
+        if not _tm or not _tm.is_file():
+            err(f"vibesec.yaml project.threat_model 不存在：{_tm_rel or '(未設定)'}")
+        elif "docs/templates/" in _tm_rel:
+            err(f"project.threat_model 指向範本 {_tm_rel}：G0 需要描述本 repo 的威脅模型")
+        else:
+            _d = load_yaml(_tm) or {}
+            _es = sorted(_V(json.load(open(ROOT / "schemas/threat-model.schema.json"))).iter_errors(_d), key=str)
+            if _es:
+                for e in _es: err(f"{_tm_rel} 不符 schema: {e.message} @ {list(e.path)}")
+            elif ((_d.get("system") or {}).get("name") or "") == "example-project":
+                err(f"{_tm_rel} 仍是範本內容（system.name: example-project）")
+            else:
+                ok(f"威脅模型 ok: {_tm_rel}")
+                _order = {"L1": 1, "L2": 2, "L3": 3}
+                _decl, _model = _vb.get("risk_tier"), _d.get("risk_tier")
+                if _decl != _model:
+                    # docs/01：兩者應一致，且推導值不得高於宣告值。改 vibesec.yaml risk_tier 是政策決定（CLAUDE.md 規則 1），
+                    # 由人類在獨立 PR 決定；在那之前以警告呈現，G0 會照實標出差異。
+                    _msg = f"risk_tier 不一致：vibesec.yaml {_decl}、威脅模型 {_model}"
+                    if _order.get(_model, 0) > _order.get(_decl, 0):
+                        warn(_msg + "（模型推導較高；調整 vibesec.yaml 須由人類在獨立 PR 決定）")
+                    else:
+                        warn(_msg)
+except ImportError:
+    warn("jsonschema 未安裝，略過威脅模型驗證")
+
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
 for w in warns: print(f"  WARN {w}")
