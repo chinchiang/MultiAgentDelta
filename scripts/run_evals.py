@@ -10,6 +10,9 @@
   semgrep   — input.kind ∈ {code, iac} 且預期規則存在於 config/semgrep/vibesec-rules.yaml
   slopcheck — G1 manifest 案例，且只用到 ecosystem / added（其餘欄位為合成 fixture，live registry 無法重現）
   g4-static — G4 code／iac 案例且預期規則由 pr-gates.yml 的 G4 靜態檢查實作：把 fixture 寫回原路徑後執行同一份程式碼
+  gitleaks／checkov — 預期規則在 config/catalogs/cwe-map.yaml 有 implemented_by 指向該工具的規則：
+              以 CI 同一份設定檔（config/gitleaks.toml、config/checkov/.checkov.yaml）掃 fixture，再對回 vibesec 規則
+  env-check — vibesec.g2.env-not-ignored：在暫存 git repo 執行 pr-gates.yml 中同一份 .env 檢查步驟
   vulnapp   — 標記 input.target_app: vulnapp 的 G5 / G6 案例（靶場確實可重現該行為者才標記）：
               G5 執行 staging workflow 中同一份 api-probes 程式碼（取自 .github/workflows/staging-blackbox.yml）；
               G6 把 prompt 送到靶場 /chat，以與 config/promptfoo/tests.yaml 相同的決定性斷言判定。
@@ -298,6 +301,151 @@ class G4StaticRunner(Runner):
         return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}, None
 
 
+def _implemented_by(tool: str) -> dict[str, set[str]]:
+    """config/catalogs/cwe-map.yaml 的 implemented_by 反查表：外部工具規則 ID → vibesec 規則 ID 集合。"""
+    import yaml
+    rules = (yaml.safe_load((ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8")) or {}).get("rules") or {}
+    out: dict[str, set[str]] = collections.defaultdict(set)
+    for rid, meta in rules.items():
+        for ref in (meta or {}).get("implemented_by") or []:
+            t, _, ext = str(ref).partition(":")
+            if t == tool:
+                out[ext].add(rid)
+    return out
+
+
+def _write_fixture(d: str, inp: dict, default_name: str) -> pathlib.Path:
+    snippet = str(inp["snippet"])
+    for k, v in PLACEHOLDERS.items():
+        snippet = snippet.replace(k, v)
+    target = pathlib.Path(d) / (_fixture_path(inp) or default_name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(snippet, encoding="utf-8")
+    return target
+
+
+class _MappedToolRunner(Runner):
+    """以外部工具掃描 fixture，再用 cwe-map.yaml 的 implemented_by 把工具規則對回 vibesec 規則。"""
+    tool = ""
+    gates: tuple[str, ...] = ()
+
+    def __init__(self, binary: str | None):
+        self.bin = binary
+        self.map = _implemented_by(self.tool)
+        self.rules = set().union(*self.map.values()) if self.map else set()
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        if case["gate"] not in self.gates:
+            return f"非 {'/'.join(self.gates)} 案例"
+        if exp.get("rule_id") not in self.rules:
+            return f"{exp.get('rule_id')} 沒有 {self.tool} 實作（cwe-map implemented_by）"
+        if inp.get("kind") not in ("code", "iac") or not inp.get("snippet"):
+            return "需要 code／iac snippet"
+        if not self.bin:
+            return f"本機缺 {self.tool}"
+        return None
+
+    def to_vibesec(self, tool_ids: set[str]) -> set[str]:
+        return set().union(*(self.map.get(t, set()) for t in tool_ids)) if tool_ids else set()
+
+
+class GitleaksRunner(_MappedToolRunner):
+    name = tool = "gitleaks"
+    gates = ("G2",)
+
+    def __init__(self):
+        super().__init__(os.environ.get("VIBESEC_GITLEAKS") or shutil.which("gitleaks"))
+
+    def run(self, case):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            _write_fixture(d, case["input"], "snippet.py")
+            report = pathlib.Path(out) / "gitleaks.json"
+            try:
+                p = subprocess.run([self.bin, "dir", d, "--config", str(ROOT / "config/gitleaks.toml"),
+                                    "--report-format", "json", "--report-path", str(report),
+                                    "--exit-code", "0", "--no-banner", "--log-level", "error"],
+                                   capture_output=True, text=True, timeout=120)
+                if p.returncode != 0:
+                    return None, f"gitleaks 執行失敗：exit {p.returncode} {p.stderr.strip()[:120]}"
+                found = {f.get("RuleID") for f in json.loads(report.read_text(encoding="utf-8") or "[]")}
+            except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
+                return None, f"gitleaks 執行失敗：{type(e).__name__}"
+        return self.to_vibesec(found), None
+
+
+class CheckovRunner(_MappedToolRunner):
+    """用 CI 同一份 .checkov.yaml（含 check allow-list 與自訂政策）掃描 fixture；allow-list 外的檢查不算偵測。"""
+    name = tool = "checkov"
+    gates = ("G3",)
+
+    def __init__(self):
+        super().__init__(os.environ.get("VIBESEC_CHECKOV") or shutil.which("checkov"))
+
+    def run(self, case):
+        with tempfile.TemporaryDirectory() as d:
+            _write_fixture(d, case["input"], "main.tf")
+            try:
+                p = subprocess.run([self.bin, "-d", d, "--config-file", str(ROOT / "config/checkov/.checkov.yaml"),
+                                    "--external-checks-dir", str(ROOT / "config/checkov/custom"),
+                                    "-o", "json", "--output-file-path", "console", "--soft-fail"],
+                                   capture_output=True, text=True, timeout=300, cwd=d)
+                data = json.loads(p.stdout or "[]")
+            except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
+                return None, f"checkov 執行失敗：{type(e).__name__}"
+        reports = data if isinstance(data, list) else [data]
+        if not any(r.get("check_type") for r in reports):
+            return None, "checkov 沒有掃到 fixture（無任何 framework 結果）"
+        found = {c.get("check_id") for r in reports for c in (r.get("results") or {}).get("failed_checks", [])}
+        return self.to_vibesec(found), None
+
+
+class EnvCheckRunner(Runner):
+    """執行 pr-gates.yml 中同一份「.env 是否在 .gitignore」步驟：在暫存 git repo 依案例建立並追蹤檔案。"""
+    name = "env-check"
+    STEP = "檢查 .env 是否在 .gitignore"
+    RULE = "vibesec.g2.env-not-ignored"
+
+    def __init__(self):
+        self.code = _workflow_step(self.STEP, "pr-gates.yml")
+        self.git = shutil.which("git")
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        if exp.get("rule_id") != self.RULE:
+            return f"{exp.get('rule_id')} 不由 .env 檢查步驟實作"
+        if not inp.get("files"):
+            return "案例沒有 input.files"
+        if not self.code:
+            return "pr-gates.yml 找不到 .env 檢查步驟"
+        if not self.git:
+            return "本機缺 git"
+        return None
+
+    def run(self, case):
+        inp = case["input"]
+        with tempfile.TemporaryDirectory() as d:
+            git = lambda *a: subprocess.run([self.git, "-C", d, *a], check=True, capture_output=True, text=True, timeout=30)
+            try:
+                git("init", "-q")
+                if inp.get("gitignore") is not None:
+                    (pathlib.Path(d) / ".gitignore").write_text(str(inp["gitignore"]), encoding="utf-8")
+                for f in inp["files"]:
+                    rel = pathlib.PurePosixPath(f)
+                    if rel.is_absolute() or ".." in rel.parts:
+                        return None, f"不安全的 fixture 路徑：{f}"
+                    t = pathlib.Path(d) / rel
+                    t.parent.mkdir(parents=True, exist_ok=True)
+                    t.write_text(str(inp.get("content", "PLACEHOLDER=1\n")), encoding="utf-8")
+                git("add", "-f", "--", *inp["files"])  # 案例描述「已提交」：-f 即使被 ignore 也追蹤
+                subprocess.run(["bash", "-c", self.code], env={**os.environ, "VIBESEC_MODE": "shadow"},
+                               cwd=d, capture_output=True, text=True, timeout=60)
+                out = json.loads((pathlib.Path(d) / "reports/g2-envcheck.json").read_text(encoding="utf-8"))
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
+                return None, f".env 檢查執行失敗：{type(e).__name__}"
+        return ({out.get("rule_id")} if out.get("env_gitignore_fail") else set()), None
+
+
 # G6 決定性斷言：與 config/promptfoo/tests.yaml 的 not-contains 斷言一致
 G6_ORACLES = {
     "vibesec.g6.stored-xss-via-ai-output": lambda reply, case: "<script" in reply.lower() or "onerror" in reply.lower(),
@@ -473,7 +621,7 @@ def main(argv=None) -> int:
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
     runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), G4StaticRunner(),
-                             VulnappRunner(targets)]
+                             GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets)]
     try:
         rows = evaluate(cases, runners)
     finally:

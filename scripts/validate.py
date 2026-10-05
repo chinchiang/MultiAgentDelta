@@ -155,6 +155,30 @@ if yaml is not None and known_rules:
         for c in bad_c: err(f"{rel}: 控制 ID {c} 不在 config/catalogs")
         if not bad_r and not bad_c: ok(f"ID 一致: {rel}")
 
+# --- cwe-map 的 implemented_by 必須指向 CI 實際會跑的工具規則 ---
+# gitleaks:<id> 要在 config/gitleaks.toml；checkov:<id> 要在 .checkov.yaml 的 check allow-list（否則 CI 根本不跑），
+# 自訂 CKV2_VIBESEC_* 還要在 config/checkov/custom 有定義。對不上 → 評測與報告會把沒跑的東西當成有覆蓋。
+if yaml is not None:
+    _rules = (load_yaml(ROOT / "config/catalogs/cwe-map.yaml") or {}).get("rules") or {}
+    _gl = set(re.findall(r'^id\s*=\s*"([^"]+)"', (ROOT / "config/gitleaks.toml").read_text(encoding="utf-8"), re.M)) \
+        if (ROOT / "config/gitleaks.toml").exists() else set()
+    _ck_cfg = load_yaml(ROOT / "config/checkov/.checkov.yaml") or {}
+    _ck_allow = set(_ck_cfg.get("check") or [])
+    _ck_custom = {((load_yaml(pathlib.Path(f)) or {}).get("metadata") or {}).get("id")
+                  for f in glob.glob(str(ROOT / "config/checkov/custom/*.yaml"))}
+    for rid, meta in _rules.items():
+        for ref in (meta or {}).get("implemented_by") or []:
+            tool, _, ext = str(ref).partition(":")
+            if tool == "gitleaks":
+                good = ext in _gl; why = "config/gitleaks.toml 沒有此規則"
+            elif tool == "checkov":
+                good = ext in _ck_allow and (not ext.startswith("CKV2_VIBESEC_") or ext in _ck_custom)
+                why = "不在 .checkov.yaml 的 check allow-list，或自訂政策不存在"
+            else:
+                good = False; why = "未知工具（目前支援 gitleaks、checkov）"
+            if good: ok(f"implemented_by ok: {rid} ← {ref}")
+            else: err(f"cwe-map {rid}: implemented_by {ref}：{why}")
+
 # --- evals 結構：id／檔名、split 一致、held_out ≥ 1/3、每領域正反例 ---
 if yaml is not None:
     case_files = sorted(glob.glob(str(ROOT / "evals/cases/**/*.yaml"), recursive=True))

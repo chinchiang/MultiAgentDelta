@@ -220,8 +220,19 @@ jobs:
           python-version: "3.11"
       - name: Install uv（啟動本機靶場用）
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: 安裝 semgrep / PyYAML
-        run: pip install pyyaml semgrep==1.179.0
+      - name: 安裝 semgrep / checkov / PyYAML
+        run: pip install pyyaml semgrep==1.179.0 checkov==3.3.22
+      # gitleaks 不用 action（action 只掃 repo）；下載固定版本並比對官方 checksum，不符就失敗，不帶未驗證的二進位檔執行
+      - name: 安裝 gitleaks（固定版本 + SHA-256 驗證）
+        env:
+          GITLEAKS_VERSION: "8.28.0"
+          GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          echo "VIBESEC_GITLEAKS=$RUNNER_TEMP/gitleaks" >> "$GITHUB_ENV"
       - name: 執行評測（靶場只在 127.0.0.1 啟動；CLAUDE.md 規則 8）
         # 退出碼 1 = 相對 baseline 退步（任何 FP／FN，或應實測的案例變成 untested／incomplete）→ job 標紅。
         # 不得以 continue-on-error 或縮減 baseline 讓它轉綠（CLAUDE.md 規則 1、2）。

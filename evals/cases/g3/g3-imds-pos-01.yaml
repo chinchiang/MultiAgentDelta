@@ -5,7 +5,14 @@ title: EC2 允許 IMDSv1
 input:
   kind: iac
   path: infra/main.tf
-  snippet: metadata_options { http_tokens = "optional" }
+  snippet: |
+    resource "aws_instance" "app" {
+      ami           = "ami-12345678"
+      instance_type = "t3.micro"
+      metadata_options {
+        http_tokens = "optional"
+      }
+    }
 expected:
   should_flag: true
   control_id: ASVS5-V13.2
