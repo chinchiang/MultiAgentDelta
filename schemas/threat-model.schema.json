@@ -327,6 +327,18 @@
                       "minLength": 1
                     }
                   },
+                  "covers": {
+                    "type": "object",
+                    "description": "high_impact_tools 中的工具 → 擋住它的規則（必須是本筆 rules 的子集）。human_in_the_loop 必須讓 agent 的每個 high_impact_tools 都至少被一條規則涵蓋（scripts/g0_trifecta.py）",
+                    "additionalProperties": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
                   "note": {
                     "type": [
                       "string",
