@@ -140,6 +140,8 @@ checkov -d . --config-file config/checkov/.checkov.yaml --check ''   # 清空 al
 
 ## 阻擋政策
 
+CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從semgrep、Checkov、Trivy config 的 SARIF推導（gate JSON，`schemas/gate-result.schema.json`）：外部工具規則經 `config/catalogs/cwe-map.yaml` 的 `implemented_by` 對回 vibesec 規則，tier 依 `config/policy/blocking-policy.yaml`（含 `tier_overrides` 與未過期的 `exceptions`）；有 blocking → `fail`；任一工具輸出缺席或無法解析 → `incomplete`；其餘 → `pass`。enforce 模式下 incomplete 是否擋 merge 依政策的 `incomplete_gate_is_blocking_in_enforce`。
+
 | 條件 | 層級 |
 |---|---|
 | `vibesec.g3.sql-*`、`command-injection`、`xss-*`、`jwt-alg-*`、`imdsv1-allowed` | blocking |

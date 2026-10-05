@@ -104,6 +104,8 @@ GitHub 原生 Secret Scanning + Push Protection 若可用，開啟後與 gitleak
 
 ## 阻擋政策
 
+CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從gitleaks SARIF 與 `.env` 檢查結果推導（gate JSON，`schemas/gate-result.schema.json`）：外部工具規則經 `config/catalogs/cwe-map.yaml` 的 `implemented_by` 對回 vibesec 規則，tier 依 `config/policy/blocking-policy.yaml`（含 `tier_overrides` 與未過期的 `exceptions`）；有 blocking → `fail`；任一工具輸出缺席或無法解析 → `incomplete`；其餘 → `pass`。enforce 模式下 incomplete 是否擋 merge 依政策的 `incomplete_gate_is_blocking_in_enforce`。
+
 | 規則 | 層級 | CWE | 備註 |
 |---|---|---|---|
 | `gitleaks:*`（任何命中）→ `vibesec.g2.hardcoded-secret` | blocking | CWE-798 | 誤報只能透過 `config/gitleaks.toml` allowlist 或 `.gitleaksignore`（需附指紋與理由）處理 |

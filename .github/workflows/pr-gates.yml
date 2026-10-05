@@ -272,6 +272,21 @@ jobs:
           sarif_file: results.sarif
           category: vibesec-g2-gitleaks
 
+      # summary 以 scripts/sarif_gate.py 從這些輸出推導 G2 gate JSON；檔案缺席 → G2 incomplete（不是 pass）
+      - name: 整理 G2 reports（gitleaks SARIF 複製進 reports/）
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p reports
+          if [ -f results.sarif ]; then cp results.sarif reports/gitleaks.sarif; fi
+      - name: Upload G2 artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-g2-reports
+          path: reports/
+          if-no-files-found: ignore
+
   # G3 SAST 與 IaC（diff-aware；跨檔污點分析 + IaC 設定掃描）
   g3-sast-iac:
     name: G3 SAST 與 IaC
@@ -322,6 +337,14 @@ jobs:
         with:
           sarif_file: reports/semgrep.sarif
           category: vibesec-g3-semgrep
+
+      - name: Upload G3 semgrep artifact（summary 推導 G3 gate JSON 用）
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-g3-semgrep-reports
+          path: reports/
+          if-no-files-found: ignore
 
   # G3 IaC 掃描（Checkov + Trivy config）獨立於 semgrep container 執行
   g3-iac:
@@ -374,6 +397,14 @@ jobs:
         with:
           sarif_file: reports/trivy-config.sarif
           category: vibesec-g3-trivy-config
+
+      - name: Upload G3 IaC artifact（summary 推導 G3 gate JSON 用）
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-g3-iac-reports
+          path: reports/
+          if-no-files-found: ignore
 
   # G4 架構與存取控制（靜態檢查 + PR 留言提示 LLM 審查）
   g4-access-control:
@@ -660,16 +691,34 @@ jobs:
         with:
           path: _artifacts
 
+      - name: 安裝 PyYAML / jsonschema
+        run: pip install pyyaml jsonschema
+
+      # G2、G3 的工具是第三方 action，本身不寫 gate JSON；由此從各 job 上傳的 SARIF 推導。
+      # artifact 或 SARIF 缺席 → 該閘門 incomplete（incomplete ≠ pass），不再顯示為 untested。
+      - name: 推導 G2 / G3 gate JSON（scripts/sarif_gate.py）
+        shell: bash
+        run: |
+          mkdir -p reports
+          A=_artifacts
+          python3 scripts/sarif_gate.py --gate G2 --tool gitleaks=$A/vibesec-g2-reports/gitleaks.sarif \
+            --envcheck $A/vibesec-g2-reports/g2-envcheck.json --out reports/g2-gate.json
+          python3 scripts/sarif_gate.py --gate G3 --tool semgrep=$A/vibesec-g3-semgrep-reports/semgrep.sarif \
+            --tool checkov=$A/vibesec-g3-iac-reports/results_sarif.sarif \
+            --tool trivy=$A/vibesec-g3-iac-reports/trivy-config.sarif --out reports/g3-gate.json
+
       - name: 彙整 gate-status 矩陣
         shell: bash
         run: |
           MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           mkdir -p reports
-          find _artifacts -name 'g*-gate.json' -exec cp {} reports/ \; 2>/dev/null || true
+          find _artifacts \( -name 'g1-gate.json' -o -name 'g4-gate.json' \) -exec cp {} reports/ \; 2>/dev/null || true
           python3 - "$MODE" <<'EOF'
-          import json, glob, os, sys, pathlib
+          import json, glob, os, sys, pathlib, yaml
           MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
-          BLOCKING_GATES = {"G1", "G2", "G3"}  # blocking 閘門：其 incomplete → exit 2
+          # incomplete 會擋的閘門以 blocking-policy 為準（原本寫死 G1、G2、G3，與政策 [G1, G2] 不一致）
+          _pol = yaml.safe_load(open("config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
+          BLOCKING_GATES = set(_pol.get("incomplete_gate_is_blocking_in_enforce") or [])
           rows = []; fail = False; incomplete_block = False
           seen = {}
           for p in sorted(glob.glob("reports/*-gate.json")):
@@ -681,7 +730,10 @@ jobs:
           for gid in ["G1", "G2", "G3", "G4"]:
               g = seen.get(gid)
               if not g:
-                  out.append(f"| {gid} | `untested` | - | - | 未產生 gate 結果 |")
+                  # 沒有 gate 結果 = 沒有證據顯示該閘門跑完；對 incomplete 會擋的閘門，enforce 下視同 incomplete
+                  out.append(f"| {gid} | `incomplete` | - | - | 未產生 gate 結果（job 失敗或 artifact 缺席） |")
+                  if MODE == "enforce" and gid in BLOCKING_GATES:
+                      incomplete_block = True
                   continue
               st = g.get("status", "untested")
               fc = g.get("findings_count", {})
