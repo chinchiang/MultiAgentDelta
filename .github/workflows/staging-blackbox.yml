@@ -211,6 +211,28 @@ jobs:
               else:
                   coverage["graphql_introspection"] = "pass" if s is not None else "untested"
 
+          # ---- cors_reflect_origin ----
+          # 帶一個不可能在白名單內的 Origin（RFC 2606 保留網域）；ACAO 反射它且 ACAC: true → 任意網站可帶 cookie/憑證讀回應
+          if reachable:
+              EVIL = "https://vibesec-cors-probe.invalid"
+              h = {"User-Agent": "vibesec-g5-probes", "Origin": EVIL}
+              if HAS_A: h["Authorization"] = f"Bearer {TA}"
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(URL + "/openapi.json", headers=h), timeout=15) as resp:
+                      acao, acac = resp.headers.get("Access-Control-Allow-Origin"), resp.headers.get("Access-Control-Allow-Credentials")
+              except urllib.error.HTTPError as e:
+                  acao, acac = e.headers.get("Access-Control-Allow-Origin"), e.headers.get("Access-Control-Allow-Credentials")
+              except Exception:
+                  acao = acac = False
+              if acao is False:
+                  coverage["cors_reflect_origin"] = "untested"
+              elif acao == EVIL and str(acac).lower() == "true":
+                  add("vibesec.g5.cors-reflect-origin", "error",
+                      "CORS 反射任意 Origin 且 Access-Control-Allow-Credentials: true", "blocking")
+                  coverage["cors_reflect_origin"] = "fail"
+              else:
+                  coverage["cors_reflect_origin"] = "pass"
+
           # ---- debug_stacktrace ----
           if reachable:
               markers = ("Traceback (most recent call last)", "File \"", "Exception", "at line")

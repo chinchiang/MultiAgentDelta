@@ -1,0 +1,16 @@
+id: g5-cors-neg-01
+gate: G5
+domain: general_vulnerabilities
+title: CORS 只允許固定白名單，不反射陌生 Origin
+input:
+  kind: http
+  target_app: vulnapp-patched
+  target: /openapi.json
+  steps:
+  - 'GET /openapi.json Origin: https://vibesec-cors-probe.invalid -> 無 ACAO'
+expected:
+  should_flag: false
+  control_id: ASVS5-V3.3
+  rule_id: vibesec.g5.cors-reflect-origin
+  policy_tier: blocking
+held_out: false

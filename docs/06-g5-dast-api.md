@@ -134,6 +134,16 @@ echo "$code" | grep -q 429 || echo "FAIL: no rate limit on login"   # vibesec.g5
 
 缺速率限制 / Captcha → `vibesec.g5.missing-rate-limit`（advisory，CWE-770）。與 G6 的 Denial of Wallet 同源但不同層：G5 看 HTTP 層節流，G6 看 LLM token 配額。
 
+### 5a. CORS 反射 Origin（`cors_reflect_origin`）
+
+```bash
+curl -s -o /dev/null -D - "$VIBESEC_TARGET_URL/openapi.json" -H 'Origin: https://vibesec-cors-probe.invalid' \
+  | grep -i '^access-control-allow-'
+# ACAO 等於送出的 Origin 且 ACAC: true → vibesec.g5.cors-reflect-origin
+```
+
+CI 的 api-probes 帶 RFC 2606 保留網域 `.invalid` 的 Origin（不可能在任何白名單內）。ACAO 反射該 Origin 且 `Access-Control-Allow-Credentials: true` → `fail`（blocking，CWE-942）；沒反射 → `pass`；連線失敗 → `untested`。只反射不帶 credentials 不判此規則（交 ZAP 40040 的較寬判定）。
+
 ### 6. ZAP 掃描
 
 ```bash

@@ -4,6 +4,7 @@ domain: general_vulnerabilities
 title: CORS 反射任意 Origin 並允許 credentials
 input:
   kind: http
+  target_app: vulnapp
   target: /api/me
   steps:
   - 'GET /api/me Origin: https://evil.example -> ACAO: https://evil.example, ACAC: true'

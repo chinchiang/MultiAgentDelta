@@ -40,6 +40,8 @@ executed:
   - g4-unicode-pos-01
   - g5-bola-neg-01
   - g5-bola-pos-01
+  - g5-cors-neg-01
+  - g5-cors-pos-01
   - g5-jwt-neg-01
   - g5-jwt-neg-02
   - g5-jwt-pos-01

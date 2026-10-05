@@ -80,7 +80,7 @@ gates:
     two_account_test: required            # 需要兩個不同權限帳號的 token
     account_a_token_env: VIBESEC_TOKEN_A
     account_b_token_env: VIBESEC_TOKEN_B
-    checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check]
+    checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check, cors_reflect_origin]
     # session_check：這些路徑在「無 token」與「無效 token」時都必須回 401/403。由應用擁有者列出（探針無法從外部推斷意圖）；
     # 未列出 → session_check 記為 untested（incomplete ≠ pass）。
     protected_paths: ["/me", "/users", "/admin/users"]
