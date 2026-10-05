@@ -199,6 +199,8 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 
 ## 驗證方式
 
+- **失敗通知**：`staging-blackbox.yml` 的 notify job（僅 main）依 `.github/scripts/staging-issue.js` 判定：靶場上 G5／G6 應為 `fail` 且有 blocking，否則視為偵測退步；外部目標 G5／G6 非 `pass`（fail 或 incomplete）；job 失敗或缺閘門結果 → 開／更新追蹤 issue，恢復後自動關閉。
+
 1. **缺 Token 行為**：移除 `VIBESEC_TOKEN_B` → G5 `incomplete`（`status_reason: "VIBESEC_TOKEN_B missing"`），絕不 pass。
 2. **靶場正例**（`examples/vulnapp`）：B 讀 A 的 todo 回 200 → `bola-cross-account`；`alg:none` 被接受；`/api/import` 讀到 `169.254.169.254` 的角色名；`/docs` 回 200。
 3. **反例**：修復後 B 讀 A 回 404、`alg:none` 回 401、SSRF 被 egress allowlist 擋 → 對應 finding `retest_result: fixed`、`validation_status: confirmed`。
