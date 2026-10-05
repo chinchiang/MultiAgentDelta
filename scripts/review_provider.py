@@ -15,7 +15,7 @@
 離開碼：0 = ran；2 = missing／timeout／error；3 = refused；4 = 參數或設定錯誤。
 """
 from __future__ import annotations
-import argparse, json, os, pathlib, re, socket, sys, urllib.error, urllib.request
+import argparse, json, os, pathlib, re, socket, sys, urllib.error, urllib.parse, urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIDENCE_KEYS = re.compile(r"confidence|certainty|probability|信心", re.I)
@@ -47,9 +47,18 @@ def strip_confidence(x):
     return x
 
 
+# 只裝 HTTP／HTTPS（與代理）handler：不支援 file:// 等其他 scheme，即使 providers.yaml 的 base_url 被改壞也讀不到本機檔案
+_OPENER = urllib.request.OpenerDirector()
+for _h in (urllib.request.ProxyHandler(), urllib.request.HTTPHandler(), urllib.request.HTTPSHandler(),
+           urllib.request.HTTPDefaultErrorHandler(), urllib.request.HTTPErrorProcessor()):
+    _OPENER.add_handler(_h)
+
+
 def _post(url: str, headers: dict, body: dict, timeout: float) -> dict:
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        raise ValueError(f"base_url 必須是 http(s)：{url!r}")
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — URL 來自 providers.yaml
+    with _OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
@@ -154,7 +163,7 @@ def selftest() -> list[str]:
                                   "enabled": True, **kw}
         (root / "config/providers.yaml").write_text(yaml.safe_dump({"providers": {
             "ok": mk("m"), "slow": mk("slow"), "notemp": mk("no-temp"), "pub": mk("m", allowed_data_classes=["public"]),
-            "off": mk("m", enabled=False)}}))
+            "off": mk("m", enabled=False), "file": mk("m", base_url="file:///etc")}}))
         env = {"K": "sk-secret-123"}
         pk = {"finding": {"id": "VS-20260101-00000000"}}
         r = call("ok", "architecture", "internal", pk, root, env)
@@ -173,6 +182,8 @@ def selftest() -> list[str]:
         if r["state"] != "missing" or len(seen) != n: fails.append("缺金鑰 → missing 且不得送出")
         r = call("slow", "architecture", "internal", pk, root, env)
         if r["state"] != "timeout": fails.append(f"逾時 → timeout：{r}")
+        r = call("file", "architecture", "internal", pk, root, env)
+        if r["state"] != "error" or "http" not in (r["note"] or ""): fails.append(f"file:// base_url → error：{r}")
         r = call("notemp", "architecture", "internal", pk, root, env)
         if r["state"] != "ran" or "temperature" not in (r["note"] or ""): fails.append(f"不接受 temperature → 調整後 ran 並註記：{r}")
     srv.shutdown()
