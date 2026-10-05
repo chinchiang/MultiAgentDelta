@@ -52,6 +52,8 @@ python3 scripts/run_evals.py --no-network                                       
 
 - 只有「預期規則確實由本機執行器實作」的案例才執行並計分：
   - `semgrep`：`kind: code|iac` 且 `rule_id` 存在於 `config/semgrep/vibesec-rules.yaml`（`-js` 等語言變體歸回同一規則）。
+  - `slopcheck-rules-file`：G1 `vibesec.g1.rules-file-unknown-package` 案例，snippet 寫成 `input.path` 的規則檔（例如 `.cursorrules`），以 `g1_slopcheck.py --rules-file` 實測並查 live registry；`--no-network` 時記 untested。
+  - `g1-kev`：G1 `vibesec.g1.kev-hit` 案例，`input.grype_matches` 是 grype 比對結果 fixture，評測時即時下載 CISA KEV feed，以 `scripts/g1_kev.py` 判定。驗證比對與判定邏輯，不含 grype 本身（nightly 以真實 grype 執行）；`--no-network` 或下載失敗時記 untested／incomplete。
   - `slopcheck`：G1 manifest 案例，且只用 `ecosystem` / `added`（含 `published_hours_ago` 等合成 fixture 的案例記 untested）。
   - `g1-fixture`：G1 manifest 案例帶合成欄位 `published_hours_ago`（`vibesec.g1.cooldown-violation`）或 `package_json.scripts`（`vibesec.g1.postinstall-egress`）。直接呼叫 `scripts/g1_slopcheck.py` 的判定函式 `cooldown_finding`／`install_hook_finding`（與 registry 查詢後走的是同一段邏輯與同一份 `cooldown.yaml` 樣式）；registry 查詢本身不在此驗證。
   - `g0-trifecta`：G0 `vibesec.g0.lethal-trifecta-open` 案例，`input.threat_model` 為 `schemas/threat-model.schema.json` 的 `agents[]` 結構。呼叫 `scripts/g0_trifecta.py` 的 `trifecta_findings`（`validate.py` 對本 repo 威脅模型用同一個函式）。

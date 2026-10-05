@@ -7,6 +7,11 @@ input:
   ecosystem: maven
   added:
   - org.apache.logging.log4j:log4j-core:2.14.1
+  # grype 比對結果（fixture）：本機與評測不跑 grype，比對 CVE 的工作由 nightly 的 grype 負責；
+  # 這裡驗證 scripts/g1_kev.py 拿到 grype 結果後，是否正確對 CISA KEV（評測時即時下載）判定 kev-hit。
+  grype_matches:
+  - artifact: {name: log4j-core, version: 2.14.1, type: java-archive, locations: [{path: pom.xml}]}
+    vulnerability: {id: CVE-2021-44228, fix: {versions: [2.15.0]}}
 expected:
   should_flag: true
   control_id: ASVS5-V15.2

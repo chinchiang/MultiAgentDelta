@@ -235,6 +235,95 @@ class G0TrifectaRunner(Runner):
         return {f["rule_id"] for f in self.mod.trifecta_findings(case["input"]["threat_model"])}, None
 
 
+class RulesFileRunner(Runner):
+    """G1 規則檔案例：把 snippet 寫成 agent 規則檔，以 g1_slopcheck.py --rules-file 實測（查 live registry）。"""
+    name = "slopcheck-rules-file"
+    RULE = "vibesec.g1.rules-file-unknown-package"
+
+    def __init__(self, network: bool):
+        self.network = network
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        if case.get("gate") != "G1" or exp.get("rule_id") != self.RULE:
+            return f"{exp.get('rule_id')} 不由規則檔掃描實作"
+        if inp.get("kind") != "code" or not inp.get("snippet"):
+            return "需要規則檔 snippet"
+        rel = _fixture_path(inp)
+        if not rel:
+            return "input.path 不是規則檔"
+        if not self.network:
+            return "--no-network：規則檔掃描需要 registry"
+        return None
+
+    def run(self, case):
+        with tempfile.TemporaryDirectory() as d:
+            target = _write_fixture(d, case["input"], ".cursorrules")
+            try:
+                p = subprocess.run([sys.executable, str(SLOPCHECK), "--rules-file", str(target)],
+                                   capture_output=True, text=True, timeout=120, cwd=ROOT)
+                out = json.loads(p.stdout or "{}")
+            except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+                return None, f"slopcheck 執行失敗：{type(e).__name__}"
+            if out.get("status") == "incomplete":
+                return None, f"slopcheck incomplete：{out.get('status_reason', '')[:120]}"
+            return {f.get("rule_id") for f in out.get("findings", [])}, None
+
+
+class KevRunner(Runner):
+    """G1 KEV 案例：input.grype_matches 為 grype 比對結果 fixture；KEV 清單評測時即時下載 CISA feed（整個評測共用一份）。
+    驗證的是 scripts/g1_kev.py 的比對與判定，不含 grype 本身（nightly 以真實 grype 執行）。"""
+    name = "g1-kev"
+    RULE = "vibesec.g1.kev-hit"
+    FEED = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+
+    def __init__(self, network: bool):
+        self.network = network
+        self._feed: pathlib.Path | None = None
+        self._err: str | None = None
+        self._dir = tempfile.TemporaryDirectory()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("g1_kev", ROOT / "scripts/g1_kev.py")
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        if case.get("gate") != "G1" or exp.get("rule_id") != self.RULE:
+            return f"{exp.get('rule_id')} 不由 KEV 檢查實作"
+        if not isinstance(inp.get("grype_matches"), list):
+            return "案例沒有 input.grype_matches（grype 比對結果 fixture）"
+        if not self.network:
+            return "--no-network：需要下載 CISA KEV feed"
+        return None
+
+    def _kev(self) -> tuple[pathlib.Path | None, str | None]:
+        if self._feed or self._err:
+            return self._feed, self._err
+        import urllib.request
+        path = pathlib.Path(self._dir.name) / "kev.json"
+        try:
+            req = urllib.request.Request(self.FEED, headers={"User-Agent": "vibesec-evals"})
+            # 固定的 https 常數 URL（非使用者輸入），不經 file:// 等 scheme
+            with urllib.request.build_opener(urllib.request.HTTPSHandler).open(req, timeout=60) as r:  # nosemgrep
+                path.write_bytes(r.read())
+            self._feed = path
+        except Exception as e:
+            self._err = f"KEV feed 下載失敗：{type(e).__name__}"
+        return self._feed, self._err
+
+    def run(self, case):
+        feed, err = self._kev()
+        if err:
+            return None, err
+        grype = pathlib.Path(self._dir.name) / f"{case['id']}-grype.json"
+        grype.write_text(json.dumps({"matches": case["input"]["grype_matches"]}), encoding="utf-8")
+        summary, hits = self.mod.run(grype, feed)
+        if summary.get("status") == "incomplete":
+            return None, f"g1_kev incomplete：{summary.get('status_reason', '')[:120]}"
+        return ({self.RULE} if hits else set()), None
+
+
 class Vulnapp:
     """在 127.0.0.1 隨機埠啟動 examples/vulnapp（只對本機靶場；CLAUDE.md #8）。整個評測共用一個實例。"""
 
@@ -678,7 +767,7 @@ def main(argv=None) -> int:
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
+    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), RulesFileRunner(network=not a.no_network), KevRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
                              GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets)]
     try:
         rows = evaluate(cases, runners)

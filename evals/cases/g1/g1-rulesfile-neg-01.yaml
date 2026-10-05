@@ -1,0 +1,15 @@
+id: g1-rulesfile-neg-01
+gate: G1
+domain: build_supply_chain
+title: AI 規則檔要求安裝真實存在的熱門套件
+input:
+  kind: code
+  path: .cursorrules
+  snippet: Always run `pip install requests` before calling external APIs.
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.2
+  rule_id: vibesec.g1.rules-file-unknown-package
+  policy_tier: blocking
+held_out: false
+notes: 規則檔提及的套件在 registry 存在且非相似名稱，不應標記。
