@@ -169,7 +169,7 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 | `vibesec.g1.rules-file-unknown-package` | blocking | CWE-1357 |
 | `vibesec.g1.low-download-package` | advisory（與相似度併發升 blocking） | CWE-1357 |
 | `vibesec.g1.vulnerable-dependency`（`scripts/g1_kev.py` 由 grype 結果產生；KEV 以外的已知漏洞，CVSS 原樣分欄、EPSS 另記） | advisory；KEV 命中改發 `vibesec.g1.kev-hit`（blocking） | CWE-1395 |
-| `vibesec.g1.unmaintained-dependency` | advisory | CWE-1104 |
+| `vibesec.g1.unmaintained-dependency`（nightly `scripts/g1_maintenance.py`：SBOM 套件查 deps.dev，所用版本 deprecated 或最新版發布超過 `unmaintained_days`（預設 730）天；查詢失敗或查無 → incomplete；本 repo 自身專案與 GitHub Actions 列 not_applicable） | advisory | CWE-1104 |
 | 無 lockfile / Registry API 失敗 | `fail` / `incomplete` | — |
 
 正式判定以 `config/policy/blocking-policy.yaml` 為準。

@@ -39,6 +39,7 @@ gates:
     diff_aware: true
     order: first                          # 惡意 postinstall 會在安裝瞬間執行，G1 必須最先跑
     cooldown_days: 14                     # 7–14；發布未滿此天數的新套件版本拒絕安裝
+    unmaintained_days: 730                # 套件最新版發布超過此天數 → vibesec.g1.unmaintained-dependency（advisory）
     min_weekly_downloads: 1000
     popular_lists: [config/slopsquat/popular-npm.txt, config/slopsquat/popular-pypi.txt]
     blacklist: config/slopsquat/blacklist.yaml

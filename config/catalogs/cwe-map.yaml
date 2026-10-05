@@ -83,7 +83,6 @@ rules:
     control_ids: [ASVS5-V15.2]
     gate: G1
     policy_tier: advisory
-    not_implemented: "slopcheck 不查維護狀態（最後發布日、封存）"
   vibesec.g1.rules-file-unknown-package:
     cwe: CWE-1357
     title: ".cursorrules / AGENTS.md / SKILL.md / Markdown 中出現未知或黑名單套件安裝指令"
