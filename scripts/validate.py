@@ -166,6 +166,16 @@ if yaml is not None:
     _ck_allow = set(_ck_cfg.get("check") or [])
     _ck_custom = {((load_yaml(pathlib.Path(f)) or {}).get("metadata") or {}).get("id")
                   for f in glob.glob(str(ROOT / "config/checkov/custom/*.yaml"))}
+    _pf_cfg = load_yaml(ROOT / "config/promptfoo/promptfooconfig.yaml") or {}
+    _pf_plugins = {(x.get("id") if isinstance(x, dict) else x) for x in ((_pf_cfg.get("redteam") or {}).get("plugins") or [])}
+    _zap = {}
+    if (ROOT / "config/zap/api-scan.conf").exists():
+        for ln in (ROOT / "config/zap/api-scan.conf").read_text(encoding="utf-8").splitlines():
+            parts = ln.split("\t")
+            if len(parts) >= 2 and parts[0].strip().isdigit():
+                _zap[parts[0].strip()] = parts[1].strip().upper()
+    # 人工／LLM 審查流程（非自動偵測）：docs/01 威脅模型、docs/09 多模型審查
+    _REVIEWS = {"G0-threat-model", "G4-llm-review"}
     for rid, meta in _rules.items():
         for ref in (meta or {}).get("implemented_by") or []:
             tool, _, ext = str(ref).partition(":")
@@ -174,10 +184,58 @@ if yaml is not None:
             elif tool == "checkov":
                 good = ext in _ck_allow and (not ext.startswith("CKV2_VIBESEC_") or ext in _ck_custom)
                 why = "不在 .checkov.yaml 的 check allow-list，或自訂政策不存在"
+            elif tool == "promptfoo":
+                good = ext in _pf_plugins; why = "config/promptfoo/promptfooconfig.yaml 的 redteam.plugins 沒有此 plugin"
+            elif tool == "zap":
+                good = _zap.get(ext, "IGNORE") != "IGNORE"; why = "config/zap/api-scan.conf 沒有啟用此 ZAP 規則（缺或 IGNORE）"
+            elif tool == "review":
+                good = ext in _REVIEWS; why = f"未知的審查流程（可用：{', '.join(sorted(_REVIEWS))}）"
             else:
-                good = False; why = "未知工具（目前支援 gitleaks、checkov）"
+                good = False; why = "未知工具（支援 gitleaks、checkov、promptfoo、zap、review）"
             if good: ok(f"implemented_by ok: {rid} ← {ref}")
             else: err(f"cwe-map {rid}: implemented_by {ref}：{why}")
+
+# --- 每條目錄規則都要有實作（CLAUDE.md #1、#2）---
+# 「政策說會擋、實際沒有任何東西發出這條規則」是最危險的落差：enforce 模式下等於靜默放行。
+#   自動實作 = semgrep 規則、workflow／scripts 中實際發出的 "vibesec.gN.x" 字面值、implemented_by 的工具規則（review: 除外）
+#   blocking（blocking-policy.yaml 的 blocking 或任一 tier_overrides.promote_to_blocking）→ 必須有自動實作，否則錯誤
+#   advisory → 自動實作，或 implemented_by: [review:…]（人工／LLM 審查），或 not_implemented: "<理由>"（列為警告）
+if yaml is not None:
+    _pol = load_yaml(ROOT / "config/policy/blocking-policy.yaml") or {}
+    _blocking = {r.get("rule_id") for r in _pol.get("blocking") or [] if isinstance(r, dict)}
+    for _t in (_pol.get("tier_overrides") or {}).values():
+        _blocking |= set((_t or {}).get("promote_to_blocking") or [])
+    _auto = {_VARIANT.sub("", r) for r in known_rules
+             if r in set(re.findall(r"vibesec\.g[0-6]\.[a-z0-9-]+", (ROOT / "config/semgrep/vibesec-rules.yaml").read_text(encoding="utf-8")))}
+    for f in _emitters:
+        if pathlib.Path(f).name in ("run_evals.py", "ruling.py"):   # 評測執行器與裁決工具只「引用」規則，不發出
+            continue
+        # 字面值可能在 shell echo 內被跳脫（\"vibesec…\"），結尾容許反斜線
+        _auto |= {_VARIANT.sub("", r) for r in re.findall(r'"(vibesec\.g[0-6]\.[a-z0-9-]+)\\?"', pathlib.Path(f).read_text(encoding="utf-8"))}
+    # promptfoo 決定性測試以 metadata.vibesec_rule_id 發出（scripts/g6_gate.py 讀取）
+    for f in glob.glob(str(ROOT / "config/promptfoo/*.yaml")):
+        _auto |= set(re.findall(r"vibesec_rule_id:\s*(vibesec\.g[0-6]\.[a-z0-9-]+)", pathlib.Path(f).read_text(encoding="utf-8")))
+    _todo = []
+    for rid, meta in _rules.items():
+        meta = meta or {}
+        refs = [str(x) for x in meta.get("implemented_by") or []]
+        machine = rid in _auto or any(not x.startswith("review:") for x in refs)
+        review = any(x.startswith("review:") for x in refs)
+        reason = str(meta.get("not_implemented") or "").strip()
+        if machine and reason:
+            err(f"cwe-map {rid}: 已有實作卻仍標 not_implemented，請移除該欄")
+        elif machine:
+            ok(f"規則有實作: {rid}")
+        elif rid in _blocking:
+            err(f"cwe-map {rid}: blocking 規則沒有任何自動實作（review／not_implemented 不能取代）——政策會擋、實際不會擋")
+        elif review:
+            ok(f"規則由人工／LLM 審查涵蓋: {rid}")
+        elif reason:
+            _todo.append(rid)
+        else:
+            err(f"cwe-map {rid}: 沒有任何實作，也沒有標 implemented_by: [review:…] 或 not_implemented 理由")
+    if _todo:
+        warn(f"{len(_todo)} 條 advisory 規則尚未實作（not_implemented）：{', '.join(sorted(_todo))}")
 
 # --- evals 結構：id／檔名、split 一致、held_out ≥ 1/3、每領域正反例 ---
 if yaml is not None:
@@ -240,9 +298,10 @@ try:
             else:
                 ok(f"人工裁決 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        _r = subprocess.run([sys.executable, str(ROOT / "scripts/ruling.py"), "selftest"], capture_output=True, text=True)
-        if _r.returncode == 0: ok("ruling.py selftest")
-        else: err("ruling.py selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
+        for _tool in ("ruling.py", "g1_kev.py"):
+            _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
+            if _r.returncode == 0: ok(f"{_tool} selftest")
+            else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
 except ImportError:
     warn("jsonschema 未安裝，略過人工裁決驗證")
 

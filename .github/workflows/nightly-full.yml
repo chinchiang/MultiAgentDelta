@@ -184,6 +184,21 @@ jobs:
           print(f"寫出 reports/enrichment.json（{len(enrichment)} 筆）")
           EOF
 
+      # KEV 命中 → vibesec.g1.kev-hit（blocking）。不設 continue-on-error：缺 grype 結果或 KEV feed（下載失敗且無快取）
+      # 時 scripts/g1_kev.py 退出碼 2，讓 job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
+      - name: G1 KEV 命中（vibesec.g1.kev-hit）
+        run: |
+          python3 scripts/g1_kev.py --grype reports/grype-full.json --kev-feed .cache/kev.json \
+            --sarif reports/g1-kev.sarif --json reports/g1-kev.json
+
+      - name: Upload KEV SARIF
+        if: always() && hashFiles('reports/g1-kev.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/g1-kev.sarif
+          category: vibesec-nightly-kev
+
       - name: Upload Grype full SARIF
         if: always()
         continue-on-error: true
