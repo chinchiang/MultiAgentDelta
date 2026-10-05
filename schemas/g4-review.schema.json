@@ -104,7 +104,7 @@
       "additionalProperties": false,
       "required": ["handle"],
       "properties": {
-        "handle": { "type": "string", "description": "把 reports/g4-review.yaml 複製進 reviews/g4/ 的人（GitHub 帳號）。harness 產出時留空字串；空白 = 未經人確認，紀錄不能把 G4 推到 pass。由本 PR 新增的紀錄，此值不得是 PR 作者" },
+        "handle": { "type": "string", "description": "把 reports/g4-review.yaml 複製進 reviews/g4/ 的人（GitHub 帳號）。harness 產出時留空字串；空白 = 未經人確認，紀錄不能把 G4 推到 pass。由本 PR 新增的紀錄，此值不得是 PR 作者，且必須是在目前 head 上 approve 的人之一" },
         "note": { "type": ["string", "null"] }
       }
     },
