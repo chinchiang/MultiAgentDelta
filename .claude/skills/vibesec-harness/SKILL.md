@@ -157,7 +157,7 @@ PY
 - `reports/findings.json`：全部發現。
 - `reports/risk_register.json`：`architecture` / `prompt` 類 + G0 open threats。
 - `reports/gates/G<N>.json`：每閘門一份。
-- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。**你不得把它寫進 `reviews/`**（規則 9）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
+- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填（空白 = 未經人確認，check 會列為缺口，CI 不採信）。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。**你不得把它寫進 `reviews/`**（規則 9）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
 - `reports/summary.md`：固定七節（閘門狀態矩陣 / INCOMPLETE / 致命三要素 / 發現表 / 控制覆蓋率 / 需人工裁決 / Exit code），版面見 `config/harness/harness-agent.md` §7。INCOMPLETE 節永遠存在。
 
 ## 步驟 5：exit code 與回覆

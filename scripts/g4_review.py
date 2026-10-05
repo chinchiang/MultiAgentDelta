@@ -101,6 +101,8 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
     if len(families) < cfg["min_families"]:
         incomplete.append(f"只有 {len(families)} 個 family 實際執行（需 ≥ {cfg['min_families']}）："
                           + "、".join(f"{p['provider']}={p['state']}" for p in record["providers"]))
+    if not str(record["recorded_by"].get("handle") or "").strip():
+        incomplete.append("recorded_by.handle 未填：紀錄尚未經人確認（harness 產出時留空，由複製提交的人填寫）")
     missing_roles = [r for r in cfg["roles"] if r not in record["roles"]]
     if missing_roles:
         incomplete.append("必要角色缺席：" + "、".join(missing_roles))
@@ -240,6 +242,43 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     return gate
 
 
+def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers: list[str]) -> str | None:
+    """紀錄能否把 G4 推到 pass。回傳 None = 可信；否則回傳理由（閘門最高 pending）。
+    紀錄由本 PR 新增或修改時不能自證：需要非 PR 作者在目前 head SHA 上 approve，且 recorded_by 不是 PR 作者
+    （比照 rulings/ 的職責分離，CLAUDE.md 規則 6）。已在 base 分支上的紀錄經過另一個 PR 審查合併，視為可信。"""
+    h = str(handle or "").lstrip("@").strip().lower()
+    author = str(pr_author or "").lstrip("@").strip().lower()
+    if not h:
+        return "recorded_by.handle 未填，紀錄未經人確認"
+    if not changed_in_pr:
+        return None
+    if author and h == author:
+        return f"審查紀錄由本 PR 新增／修改，且 recorded_by 是 PR 作者 @{author}（不得自證）"
+    others = sorted({x.lstrip("@").strip().lower() for x in approvers if x.strip()} - {author, ""})
+    if not others:
+        return "審查紀錄由本 PR 新增／修改，尚無非 PR 作者在目前 head 上 approve（approve 後再 push 需重新 approve）"
+    return None
+
+
+def apply_cap(gate: dict, reason: str) -> dict:
+    """把 pass 降為 pending（fail／pending／incomplete 不變），並在理由與 coverage 註明。"""
+    if gate["status"] == "pass":
+        gate["status"] = "pending"
+        gate["status_reason"] = "；".join(x for x in (f"審查紀錄未獲信任：{reason}", gate.get("status_reason")) if x)
+        for c in gate.get("coverage") or []:
+            if c.get("control_id") == LLM_CONTROL and c.get("state") == "pass":
+                c.update(state="pending", reason=f"審查紀錄未獲信任：{reason}")
+    elif reason:
+        gate["status_reason"] = "；".join(x for x in (gate.get("status_reason"), f"審查紀錄未獲信任：{reason}") if x)
+    return gate
+
+
+def changed_since(base: str, head: str, path: str) -> bool:
+    """path 在 base..head 之間有變更（本 PR 新增或修改）。git 失敗時視為有變更（fail closed）。"""
+    r = _git("diff", "--name-only", f"{base}...{head}", "--", path)
+    return r.returncode != 0 or bool(r.stdout.strip())
+
+
 def comment_markdown(gate: dict, record_ref: str | None) -> str:
     st = gate["status"]
     lines = ["<!-- vibesec-g4-llm-review -->", "### VibeSec G4 — 存取控制", "",
@@ -377,6 +416,30 @@ def selftest() -> list[str]:
     ev5 = evaluate(r5, cfg, controls, None)
     if gate_of(r5, ev5)["status"] != "incomplete":
         fails.append("family < min → 閘門應為 incomplete")
+    # 信任上限：本 PR 新增的紀錄不能自證
+    if trust_cap(False, "appsec-lead", "author", []) is not None:
+        fails.append("已在 base 上的紀錄（未在本 PR 變更）應可信")
+    if trust_cap(True, "appsec-lead", "author", []) is None:
+        fails.append("本 PR 新增的紀錄、無非作者 approve → 應不可信")
+    if trust_cap(True, "appsec-lead", "author", ["author"]) is None:
+        fails.append("只有 PR 作者自己 approve → 應不可信")
+    if trust_cap(True, "@Author", "author", ["reviewer"]) is None:
+        fails.append("recorded_by 是 PR 作者（大小寫、@ 不同）→ 應不可信")
+    if trust_cap(True, "appsec-lead", "author", ["reviewer"]) is not None:
+        fails.append("非作者 approve 且 recorded_by 非作者 → 應可信")
+    if trust_cap(False, "", "author", ["reviewer"]) is None:
+        fails.append("recorded_by.handle 空白 → 應不可信")
+    g4p = gate_of(r4, ev4)
+    if apply_cap(g4p, "x")["status"] != "pending" or next(c for c in g4p["coverage"] if c["control_id"] == LLM_CONTROL)["state"] != "pending":
+        fails.append("不可信的 pass → pending，且 VS-G4-LLM-REVIEW coverage 降為 pending")
+    gf = derive_gate({**_static(), "findings_count": {"blocking": 1, "advisory": 0}}, r4, ev4, None, "x")
+    gf.pop("_llm_findings", None)
+    if apply_cap(gf, "x")["status"] != "fail":
+        fails.append("上限不得把 fail 改掉")
+    r6 = copy.deepcopy(r4); r6["recorded_by"]["handle"] = ""
+    ev6 = evaluate(r6, cfg, controls, None)
+    if ev6["errors"] or not any("handle 未填" in i for i in ev6["incomplete"]):
+        fails.append("handle 空白：schema 應接受（harness 照 SKILL 留空），但列為缺口")
     if "pending" not in comment_markdown(gate_of(rec, ev), "x") or fid not in comment_markdown(gate_of(rec, ev), "x"):
         fails.append("留言應列出狀態與發現")
     return fails
@@ -389,6 +452,9 @@ def main(argv=None) -> int:
     c = sub.add_parser("check"); c.add_argument("record"); c.add_argument("--head", default="HEAD"); c.add_argument("--no-git", action="store_true")
     g = sub.add_parser("gate"); g.add_argument("--static", required=True); g.add_argument("--head", required=True)
     g.add_argument("--out"); g.add_argument("--comment"); g.add_argument("--mode", default="shadow")
+    g.add_argument("--base", help="PR base SHA；有值時檢查紀錄是否由本 PR 新增／修改")
+    g.add_argument("--pr-author", default="")
+    g.add_argument("--approvers", default="", help="在目前 head SHA 上 approve 的帳號，逗號分隔")
     sub.add_parser("selftest")
     a = ap.parse_args(argv)
     cfg = load_cfg(); controls = known_controls()
@@ -415,6 +481,12 @@ def main(argv=None) -> int:
     head = _git("rev-parse", a.head).stdout.strip() or a.head
     record, ev, ref, reason = find_record(head, cfg, controls)
     gate = derive_gate(static, record, ev, reason, ref)
+    if record is not None:
+        changed = bool(a.base) and changed_since(a.base, head, ref)
+        cap = trust_cap(changed, record["recorded_by"].get("handle", ""), a.pr_author,
+                        [x for x in a.approvers.split(",") if x])
+        if cap:
+            apply_cap(gate, cap)
     md = comment_markdown(gate, ref)
     gate.pop("_llm_findings", None)
     if a.out:

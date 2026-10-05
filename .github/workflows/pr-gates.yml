@@ -566,6 +566,31 @@ jobs:
         if: always()
         run: pip install pyyaml jsonschema
 
+      # 職責分離（CLAUDE.md 規則 6）：本 PR 新增／修改的 reviews/g4 紀錄不能自證。取得「在目前 head SHA 上
+      # approve、且不是 PR 作者」的帳號（每人只看最後一次 review；之後的 CHANGES_REQUESTED／DISMISSED 會取消）。
+      # 查詢失敗 → 空清單 → 紀錄不被信任（fail closed），G4 最高 pending。
+      - name: 取得目前 head 上的非作者 approve
+        id: approvals
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const reviews = await github.paginate(github.rest.pulls.listReviews,
+              {owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number, per_page: 100});
+            const last = new Map();
+            for (const r of reviews) {
+              if (!r.user || r.state === 'COMMENTED' || r.state === 'PENDING') continue;
+              last.set(r.user.login.toLowerCase(), r);
+            }
+            const author = pr.user.login.toLowerCase();
+            const ok = [...last.entries()]
+              .filter(([login, r]) => login !== author && r.state === 'APPROVED' && r.commit_id === pr.head.sha)
+              .map(([login]) => login);
+            core.info(`head ${pr.head.sha} 上的非作者 approve：${ok.join(', ') || '（無）'}`);
+            core.setOutput('approvers', ok.join(','));
+
       - name: G4 LLM 審查紀錄（reviews/g4/）→ 閘門狀態
         if: always()
         continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
@@ -573,8 +598,12 @@ jobs:
           VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
           # pull_request 的 github.sha 是合併 commit；過期判斷要對 PR head，否則 base 分支的變更也會讓紀錄過期
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          APPROVERS: ${{ steps.approvals.outputs.approvers }}
         run: |
           python3 scripts/g4_review.py gate --static reports/g4-gate.json --head "$HEAD_SHA" \
+            --base "$BASE_SHA" --pr-author "$PR_AUTHOR" --approvers "$APPROVERS" \
             --out reports/g4-gate.json --comment reports/g4-comment.md --mode "$VIBESEC_MODE"
 
       - name: Upload G4 static SARIF
