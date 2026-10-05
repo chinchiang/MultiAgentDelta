@@ -15,9 +15,9 @@ mode: shadow
 risk_tier: L2
 
 project:
-  name: example-project
+  name: multiagentdelta
   owner: appsec-team
-  threat_model: docs/templates/threat-model.yaml   # G0 輸入；不存在時 G0 記為 incomplete
+  threat_model: docs/threat-model.yaml             # G0 輸入（本 repo 的真實模型）；不存在時 G0 記為 incomplete
   contains_llm: true                                # 為 false 時 G6 記為 not_applicable（附理由）
   languages: [python, javascript]
 
