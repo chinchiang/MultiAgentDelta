@@ -478,10 +478,15 @@ jobs:
 
           blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
           advisory = len(results) - blocking
-          # 狀態反映發現本身；shadow 只決定是否擋下 merge（見下方 exit 與 job 的 continue-on-error），不把 fail 改寫成 pass
-          status = "fail" if blocking else "pass"
+          # 狀態反映發現本身；shadow 只決定是否擋下 merge（見下方 exit 與 job 的 continue-on-error），不把 fail 改寫成 pass。
+          # CI 只跑靜態部分；VS-G4-LLM-REVIEW（跨檔授權推理、BOLA/IDOR、HITL）在此仍 pending → G4 最多是 incomplete，
+          # 不報 pass（incomplete ≠ pass，CLAUDE.md #2；docs/05「reviewer 缺席 → incomplete 或 pending；不得 pass」）。
+          # G4 不在 blocking-policy 的 incomplete_gate_is_blocking_in_enforce，所以 incomplete 不擋 merge；要擋須人類另開 PR 改政策。
+          LLM_PENDING = "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 或人工完成"
+          status = "fail" if blocking else "incomplete"
+          status_reason = LLM_PENDING if status == "incomplete" else f"靜態檢查 {blocking} 筆 blocking；另：{LLM_PENDING}"
           def _state(*ids): return "fail" if any(r["ruleId"] in ids for r in results) else "pass"
-          gate = {"gate": "G4", "status": status, "status_reason": None, "mode": MODE, "scope": "diff",
+          gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "diff",
                   "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
                   "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
                   "tools": [{"name": "vibesec-g4-static", "version": "1.0.0", "state": "ran", "exit_code": 0,
@@ -514,7 +519,7 @@ jobs:
         with:
           script: |
             const marker = '<!-- vibesec-g4-llm-review -->';
-            const body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / 單層 middleware）。\n\n**G4 LLM 審查需由 \`/vibesec-harness\` 或人工執行**（跨檔授權推理、BOLA/IDOR 綁定、HITL 判斷無法由靜態規則涵蓋）。`;
+            const body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / 單層 middleware）。\n\n**G4 狀態：\`incomplete\`**——LLM 審查（VS-G4-LLM-REVIEW）尚未執行，需由 \`/vibesec-harness\` 或人工完成（跨檔授權推理、BOLA/IDOR 綁定、HITL 判斷無法由靜態規則涵蓋）。目前政策下 G4 incomplete 不擋 merge。`;
             const {owner, repo} = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.rest.issues.listComments({owner, repo, issue_number});
