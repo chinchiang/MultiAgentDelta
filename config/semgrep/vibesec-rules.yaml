@@ -152,14 +152,14 @@ rules:
   # ===========================================================================
   - id: vibesec.g3.sql-fstring-execute
     languages: [python]
-    severity: WARNING
+    severity: ERROR
     message: >-
       [G3] SQL 執行點直接使用 f-string / % / .format / + 組字串，這正是 AI 生成程式碼最常見的注入型態。
       即使變數目前看似安全，仍必須改為參數化查詢。
     metadata:
       cwe: "CWE-89"
       control_ids: ["ASVS5-V1.2"]
-      policy_tier: advisory
+      policy_tier: blocking
       gate: G3
       vibesec_rule_id: vibesec.g3.sql-fstring-execute
       category: security
@@ -408,14 +408,14 @@ rules:
   # ===========================================================================
   - id: vibesec.g3.jwt-alg-none
     languages: [python]
-    severity: WARNING
+    severity: ERROR
     message: >-
       [G3] jwt.decode 允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）。
       任何人都能偽造 Token。請固定 algorithms=["RS256"]（或單一 HS256）並保留簽章驗證。
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
-      policy_tier: advisory
+      policy_tier: blocking
       gate: G3
       vibesec_rule_id: vibesec.g3.jwt-alg-none
       category: security
@@ -431,14 +431,14 @@ rules:
 
   - id: vibesec.g3.jwt-alg-none-js
     languages: [javascript, typescript]
-    severity: WARNING
+    severity: ERROR
     message: >-
       [G3] jsonwebtoken.verify 允許 "none" 演算法，或以 jwt.decode()（不驗簽）結果做授權判斷。
       請使用 jwt.verify(token, key, { algorithms: ["RS256"] })。
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
-      policy_tier: advisory
+      policy_tier: blocking
       gate: G3
       vibesec_rule_id: vibesec.g3.jwt-alg-none
       category: security
@@ -698,14 +698,14 @@ rules:
   # ===========================================================================
   - id: vibesec.g2.hardcoded-llm-key
     languages: [generic]   # generic 模式對任何檔案做正則比對（.py/.js/.ts/.json/.yaml/.env …）
-    severity: WARNING
+    severity: ERROR
     message: >-
       [G2] 原始碼含疑似 LLM 供應商金鑰（OpenAI sk-… / sk-proj-…、Anthropic sk-ant-api03-…、GLM id.secret）。
       請立即到供應商後台撤銷並輪替，改由環境變數或祕密管理服務注入；報告只保留遮罩與指紋。
     metadata:
       cwe: "CWE-798"
       control_ids: ["ASVS5-V13.3", "MAESTRO-L3"]
-      policy_tier: advisory
+      policy_tier: blocking
       gate: G2
       vibesec_rule_id: vibesec.g2.hardcoded-llm-key
       category: security

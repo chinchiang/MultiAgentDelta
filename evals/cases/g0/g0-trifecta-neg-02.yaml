@@ -18,6 +18,6 @@ expected:
   should_flag: false
   control_id: VS-G0-LETHAL-TRIFECTA
   rule_id: vibesec.g0.lethal-trifecta-open
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: false
 notes: 外傳通道已被切斷（allow-list 僅內部 + 人工核准），預期 G0 不 blocking；若審查者意見分歧應保留少數意見。

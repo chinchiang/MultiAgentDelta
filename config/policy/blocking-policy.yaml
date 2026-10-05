@@ -49,6 +49,26 @@ blocking:
   - rule_id: vibesec.g5.jwt-alg-none
     why: 伺服器接受 alg:none 或未簽章 JWT；可直接偽造任意身分。
 
+  # --- 2026-10-05 人類決策（chinchiang）：tier 對照後補入（原本只在 cwe-map 標 blocking，政策未列）---
+  - rule_id: vibesec.g0.lethal-trifecta-open
+    why: Agent 三要素皆成立、未切腳，且沒有可驗證的 mitigation（scripts/g0_trifecta.py）；設計期不得放行（docs/01）。
+  - rule_id: vibesec.g1.rules-file-unknown-package
+    why: 規則檔（.cursorrules、AGENTS.md 等）要 AI 助手安裝 registry 查無的套件；與 hallucinated-package 同性質，助手會照做。
+  - rule_id: vibesec.g2.hardcoded-llm-key
+    why: 與 hardcoded-secret 由同一組 gitleaks 規則實作；LLM 金鑰外洩可直接造成費用與資料外傳。
+  - rule_id: vibesec.g3.jwt-alg-none
+    why: 程式層允許 alg:none 或停用簽章驗證；與 G5 jwt-alg-none（blocking）是同一個缺陷，修法明確。
+  - rule_id: vibesec.g3.sql-fstring-execute
+    why: 在 execute() 當場以 f-string、%、format 或 + 組 SQL，不需追污點來源即可確認；修法明確（參數化）。
+  - rule_id: vibesec.g5.cors-reflect-origin
+    why: "探針實證回應反射任意 Origin 且 Access-Control-Allow-Credentials: true（E3）；任何網站可帶憑證讀回應。"
+  - rule_id: vibesec.g5.jwt-alg-confusion
+    why: 探針以 JWKS 公鑰當 HMAC 金鑰偽造 HS256 token 並取得受保護資源 200（E3，PR #21 起實測）；可偽造任意身分。
+  - rule_id: vibesec.g5.missing-session-check
+    why: 受保護端點無 token 仍回 2xx 並含資料（E3）；前端防禦假象的直接證明。
+  - rule_id: vibesec.g5.ssrf-internal-fetch
+    why: loopback canary 實證端點會替使用者存取內部位址（E3）；可轉向內網服務。
+
 # ----------------------------------------------------------------------------
 # advisory：明列是為了讓讀者知道「這些我們有查，但預設不擋」
 # ----------------------------------------------------------------------------
@@ -81,8 +101,6 @@ advisory:
     why: .cursorrules / AGENTS.md 含隱形 Unicode；多為複製貼上造成，但可能是 Rules File Backdoor，需人工看內容。
   - rule_id: vibesec.g4.mcp-missing-resource-indicator
     why: MCP 伺服器 OAuth 未使用 RFC 8707 Resource Indicators；標準對齊建議。
-  - rule_id: vibesec.g5.jwt-alg-confusion
-    why: RS256/HS256 混淆需以公鑰成功偽造才算 E3；探針只能證明接受 HS256，故先 advisory 待人工重現。
   - rule_id: vibesec.g5.ssrf-metadata
     why: 需確認 169.254.169.254 回應是否真的含憑證（IMDSv2 已擋則為縱深缺口）。
   - rule_id: vibesec.g5.swagger-exposed
@@ -138,6 +156,12 @@ exceptions:
     expires: "2027-03-31"
   - rule_id: vibesec.g2.hardcoded-secret
     path_glob: "examples/vulnapp/app/main.py"
+    reason: 靶場故意放置的假金鑰（格式有效、已標註 FAKE），用於驗證 G2 偵測能力。
+    approved_by: appsec-lead@example.com
+    expires: "2027-03-31"
+  - rule_id: vibesec.g2.hardcoded-llm-key
+    path_glob: "examples/vulnapp/app/main.py"
+    # 2026-10-05：hardcoded-llm-key 升為 blocking 後延伸同一筆核准例外（與 hardcoded-secret 由同一組 gitleaks 規則偵測同一個假金鑰）
     reason: 靶場故意放置的假金鑰（格式有效、已標註 FAKE），用於驗證 G2 偵測能力。
     approved_by: appsec-lead@example.com
     expires: "2027-03-31"

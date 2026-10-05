@@ -109,7 +109,7 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 | 規則 | 層級 | CWE | 備註 |
 |---|---|---|---|
 | `gitleaks:*`（任何命中）→ `vibesec.g2.hardcoded-secret` | blocking | CWE-798 | 誤報只能透過 `config/gitleaks.toml` allowlist 或 `.gitleaksignore`（需附指紋與理由）處理 |
-| `vibesec.g2.hardcoded-llm-key` | advisory | CWE-798 | — |
+| `vibesec.g2.hardcoded-llm-key` | blocking | CWE-798 | — |
 | `vibesec.g2.env-not-ignored` | advisory | CWE-538 | — |
 | 命中且為正式環境有效高權限祕密 | **P0** | — | 立即事故處理（`scoring.priority_sla_days.P0: 0`） |
 | gitleaks 缺席 / 逾時 | `incomplete` | — | 不得 pass |

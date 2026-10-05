@@ -89,14 +89,14 @@ rules:
     title: ".cursorrules / AGENTS.md / SKILL.md / Markdown 中出現未知或黑名單套件安裝指令"
     control_ids: [ASVS5-V15.2, VS-G1-SLOPSQUAT, MAESTRO-L7]
     gate: G1
-    policy_tier: advisory
+    policy_tier: blocking
 
   vibesec.g0.lethal-trifecta-open:
     cwe: CWE-250
     title: "Agent 致命三要素（私有資料 + 不受信任內容 + 對外通訊）同時成立且無任何 mitigation"
     control_ids: [VS-G0-LETHAL-TRIFECTA, LLM06:2025, MAESTRO-L7]
     gate: G0
-    policy_tier: advisory
+    policy_tier: blocking
     implemented_by: [review:G0-threat-model]   # 威脅模型審查（docs/01）；非自動偵測
 
   # ---------------- G2 機密與金鑰 ----------------
@@ -116,7 +116,7 @@ rules:
     title: "硬編碼 LLM 供應商金鑰（sk-…、sk-ant-api03-…、sk-proj-…、GLM id.secret）"
     control_ids: [ASVS5-V13.3, MAESTRO-L3]
     gate: G2
-    policy_tier: advisory
+    policy_tier: blocking
     implemented_by: [gitleaks:vibesec-openai-api-key, gitleaks:vibesec-anthropic-api-key, gitleaks:vibesec-deepseek-api-key,
                      gitleaks:vibesec-glm-zhipu-api-key, gitleaks:vibesec-google-ai-studio-key]
   vibesec.g2.env-not-ignored:
@@ -138,7 +138,7 @@ rules:
     title: "SQL 執行點直接使用 f-string / % / .format / + 組字串（無需污點來源即判定）"
     control_ids: [ASVS5-V1.2]
     gate: G3
-    policy_tier: advisory
+    policy_tier: blocking
   vibesec.g3.command-injection:
     cwe: CWE-78
     title: "污點流入 subprocess(shell=True) / os.system / child_process.exec"
@@ -183,7 +183,7 @@ rules:
     title: "程式層允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）"
     control_ids: [ASVS5-V9.1]
     gate: G3
-    policy_tier: advisory
+    policy_tier: blocking
   vibesec.g3.jwt-alg-confusion:
     cwe: CWE-347
     title: "JWT 驗證同時接受 HS256 與 RS256（演算法混淆）"
@@ -257,7 +257,7 @@ rules:
     title: "受保護端點無 Token 仍回 200（前端防禦假象）"
     control_ids: [ASVS5-V7.1]
     gate: G5
-    policy_tier: advisory
+    policy_tier: blocking
   vibesec.g5.jwt-alg-none:
     cwe: CWE-347
     title: "伺服器接受 alg:none 且無簽章的 JWT"
@@ -269,7 +269,7 @@ rules:
     title: "伺服器接受以公鑰作 HMAC 密鑰簽的 HS256 Token（RS256 / HS256 混淆）"
     control_ids: [ASVS5-V9.1]
     gate: G5
-    policy_tier: advisory
+    policy_tier: blocking
   vibesec.g5.ssrf-metadata:
     cwe: CWE-918
     title: "URL 匯入端點可讀取 169.254.169.254 等雲端中繼資料"
@@ -281,7 +281,7 @@ rules:
     title: "URL 抓取端點會替使用者存取內部位址（loopback canary 實證）"
     control_ids: [ASVS5-V1.3, ASVS5-V13.2]
     gate: G5
-    policy_tier: advisory
+    policy_tier: blocking
   vibesec.g5.swagger-exposed:
     cwe: CWE-200
     title: "正式 / staging 環境可匿名存取 Swagger UI 或 OpenAPI 文件"
@@ -311,7 +311,7 @@ rules:
     title: "回應 Access-Control-Allow-Origin 反射任意 Origin 且 Allow-Credentials: true"
     control_ids: [ASVS5-V3.3]
     gate: G5
-    policy_tier: advisory
+    policy_tier: blocking
     implemented_by: [zap:40040]
 
   # ---------------- G6 LLM / Agent 紅隊 ----------------

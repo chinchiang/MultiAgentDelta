@@ -10,6 +10,6 @@ expected:
   should_flag: true
   control_id: ASVS5-V15.2
   rule_id: vibesec.g1.rules-file-unknown-package
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: false
 notes: 規則檔可被投毒以誘導幻覺套件安裝。

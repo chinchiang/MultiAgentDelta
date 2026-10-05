@@ -16,6 +16,6 @@ expected:
   should_flag: true
   control_id: MAESTRO-L3
   rule_id: vibesec.g0.lethal-trifecta-open
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: false
 notes: 設計期必須切斷至少一隻腳，否則不得放行。

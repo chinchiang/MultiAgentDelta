@@ -10,5 +10,5 @@ expected:
   should_flag: true
   control_id: ASVS5-V9.1
   rule_id: vibesec.g3.jwt-alg-none
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: false

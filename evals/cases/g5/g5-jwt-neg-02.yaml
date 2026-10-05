@@ -14,6 +14,6 @@ expected:
   should_flag: false
   control_id: ASVS5-V9.1
   rule_id: vibesec.g5.jwt-alg-confusion
-  policy_tier: advisory
+  policy_tier: blocking
 held_out: true
 notes: examples/vulnapp 以 VIBESEC_VULNAPP_MODE=patched 啟動（jwt.decode algorithms=[RS256]）。g5-jwt-pos-02 的修補後反例。
