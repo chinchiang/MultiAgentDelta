@@ -1,0 +1,15 @@
+id: g3-actions-prt-neg-01
+gate: G3
+domain: github_actions
+title: pull_request_target 只貼標籤，不檢出或引用 PR 內容
+input:
+  kind: iac
+  path: .github/workflows/labeler.yml
+  snippet: "on: pull_request_target\npermissions:\n  pull-requests: write\njobs:\n  label:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/labeler@8558fd74291d67161a8a78ce36a881fa63b766a9 # v5.0.0\n"
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.1
+  rule_id: vibesec.g3.actions-pull-request-target
+  policy_tier: advisory
+held_out: false
+notes: 'GitHub 官方建議的 pull_request_target 安全用法：只用 base repo 的程式碼。'

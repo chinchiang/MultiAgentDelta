@@ -1,0 +1,14 @@
+id: g3-actions-unpinned-pos-02
+gate: G3
+domain: github_actions
+title: composite action 以分支名引用子 action
+input:
+  kind: iac
+  path: action.yml
+  snippet: "runs:\n  using: composite\n  steps:\n    - uses: \"some-org/setup-tool/sub@main\"\n"
+expected:
+  should_flag: true
+  control_id: ASVS5-V15.1
+  rule_id: vibesec.g3.actions-unpinned-action
+  policy_tier: advisory
+held_out: false

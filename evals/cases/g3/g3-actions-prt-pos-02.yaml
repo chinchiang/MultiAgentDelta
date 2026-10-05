@@ -1,0 +1,14 @@
+id: g3-actions-prt-pos-02
+gate: G3
+domain: github_actions
+title: pull_request_target 把 PR 標題帶進 run（腳本注入）
+input:
+  kind: iac
+  path: .github/workflows/greet.yml
+  snippet: "on:\n  pull_request_target:\n    types: [opened]\njobs:\n  greet:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"Thanks for ${{ github.event.pull_request.title }}\"\n"
+expected:
+  should_flag: true
+  control_id: ASVS5-V15.1
+  rule_id: vibesec.g3.actions-pull-request-target
+  policy_tier: advisory
+held_out: true

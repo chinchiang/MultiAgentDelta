@@ -6,7 +6,9 @@ held_out:
 - g1-slopsquat-pos-01
 - g2-envignore-pos-01
 - g2-secret-pos-01
+- g3-actions-prt-pos-02
 - g3-actions-unpinned-neg-01
+- g3-actions-unpinned-neg-02
 - g3-cmdi-neg-01
 - g3-csp-pos-01
 - g3-imds-neg-01
@@ -40,8 +42,10 @@ held_in:
 - g2-llmkey-neg-01
 - g2-llmkey-pos-01
 - g2-secret-neg-01
+- g3-actions-prt-neg-01
 - g3-actions-prt-pos-01
 - g3-actions-unpinned-pos-01
+- g3-actions-unpinned-pos-02
 - g3-cmdi-pos-01
 - g3-csp-neg-01
 - g3-imds-pos-01

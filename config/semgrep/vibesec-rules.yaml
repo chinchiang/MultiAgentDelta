@@ -721,3 +721,51 @@ rules:
       - pattern-regex: \bsk-proj-[A-Za-z0-9_\-]{40,}\b
       - pattern-regex: \bsk-[A-Za-z0-9]{32,}\b
       - pattern-regex: \b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b
+
+  # ===========================================================================
+  # G3 — GitHub Actions 供應鏈（generic + regex；同時涵蓋 workflow 與 composite action.yml）
+  # 不以路徑過濾：`uses: owner/repo@ref` 本身就是 Actions 專屬語法；文件中的範例另行排除。
+  # ===========================================================================
+  - id: vibesec.g3.actions-unpinned-action
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      [G3] Action `$1@$2` 以可變 ref（tag / branch）引用，而非完整 40 字元 commit SHA。
+      tag 可被改指向惡意 commit（例：CVE-2026-33634，trivy-action 76 個 tag 遭改寫為竊取憑證程式）。
+      請改為 `$1@<完整 SHA> # <版本>`；本地 action（./）與 docker:// 映像不在此規則範圍。
+    metadata:
+      cwe: "CWE-829"
+      control_ids: ["ASVS5-V15.1"]
+      policy_tier: advisory
+      gate: G3
+      vibesec_rule_id: vibesec.g3.actions-unpinned-action
+      category: security
+      technology: [github-actions]
+    paths:
+      exclude:
+        - "docs/**"
+        - "**/*.md"
+    # 擷取 owner/repo[/path]@ref；ref 不是 40 位十六進位 SHA 就命中
+    pattern-regex: (?m)^[ \t]*-?[ \t]*uses:[ \t]*["']?([A-Za-z0-9][\w.\-]*/[\w.\-/]+)@(?![0-9a-fA-F]{40}(?![\w.\-]))([^\s"'#]+)
+
+  - id: vibesec.g3.actions-pull-request-target
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      [G3] workflow 由 pull_request_target 觸發（具 base repo 的 secrets 與寫入權杖），卻引用 PR 提供的內容
+      （`$1`）：檢出並執行 PR head，或把 title / body / head_ref 帶進 run。fork 的 PR 可藉此執行任意程式並外洩祕密。
+      請改用 pull_request 觸發；確需寫入權限時拆成 pull_request + workflow_run，且不要執行 PR 程式碼。
+    metadata:
+      cwe: "CWE-94"
+      control_ids: ["ASVS5-V15.1"]
+      policy_tier: advisory
+      gate: G3
+      vibesec_rule_id: vibesec.g3.actions-pull-request-target
+      category: security
+      technology: [github-actions]
+    paths:
+      exclude:
+        - "docs/**"
+        - "**/*.md"
+    # 同一檔案內先出現 pull_request_target，之後引用 PR head / 使用者可控欄位
+    pattern-regex: (?s)\bpull_request_target\b.*?(github\.(?:event\.pull_request\.(?:head\.(?:sha|ref|repo\.full_name)|title|body|merge_commit_sha)|head_ref))
