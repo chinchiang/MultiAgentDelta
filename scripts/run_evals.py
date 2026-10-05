@@ -178,6 +178,42 @@ class SlopcheckRunner(Runner):
             return {f.get("rule_id") for f in out.get("findings", [])}, None
 
 
+class G1FixtureRunner(Runner):
+    """以合成 registry 欄位直接呼叫 g1_slopcheck 的判定函式（cooldown_finding、install_hook_finding）。
+    驗證的是判定邏輯與 cooldown.yaml 樣式，不含 registry 查詢本身（那部分由 SlopcheckRunner 以 live registry 實測）。"""
+    name = "g1-fixture"
+    RULES = {"vibesec.g1.cooldown-violation": "published_hours_ago", "vibesec.g1.postinstall-egress": "package_json"}
+
+    def __init__(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("g1_slopcheck", SLOPCHECK)
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        if case.get("gate") != "G1" or inp.get("kind") != "manifest":
+            return "非 G1 manifest"
+        field = self.RULES.get(exp.get("rule_id"))
+        if not field:
+            return f"{exp.get('rule_id')} 不由 G1 fixture 判定函式實作"
+        if field not in inp:
+            return f"案例缺合成欄位 {field}"
+        return None
+
+    def run(self, case):
+        inp, rule = case["input"], case["expected"]["rule_id"]
+        added = inp.get("added") or ["fixture-pkg"]
+        name = re.split(r"[=@<>!~ ]", added[0].lstrip("@"))[0] or "fixture-pkg"
+        eco = inp.get("ecosystem") or "npm"
+        if rule == "vibesec.g1.cooldown-violation":
+            f = self.mod.cooldown_finding(name, eco, None, int(inp["published_hours_ago"]) // 24, self.mod.cfg())
+        else:
+            scripts = (inp.get("package_json") or {}).get("scripts") or {}
+            f = self.mod.install_hook_finding(name, eco, None, scripts)
+        return ({f["rule_id"]} if f else set()), None
+
+
 class Vulnapp:
     """在 127.0.0.1 隨機埠啟動 examples/vulnapp（只對本機靶場；CLAUDE.md #8）。整個評測共用一個實例。"""
 
@@ -621,7 +657,7 @@ def main(argv=None) -> int:
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), G4StaticRunner(),
+    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), G1FixtureRunner(), G4StaticRunner(),
                              GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets)]
     try:
         rows = evaluate(cases, runners)

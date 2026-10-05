@@ -53,6 +53,7 @@ python3 scripts/run_evals.py --no-network                                       
 - 只有「預期規則確實由本機執行器實作」的案例才執行並計分：
   - `semgrep`：`kind: code|iac` 且 `rule_id` 存在於 `config/semgrep/vibesec-rules.yaml`（`-js` 等語言變體歸回同一規則）。
   - `slopcheck`：G1 manifest 案例，且只用 `ecosystem` / `added`（含 `published_hours_ago` 等合成 fixture 的案例記 untested）。
+  - `g1-fixture`：G1 manifest 案例帶合成欄位 `published_hours_ago`（`vibesec.g1.cooldown-violation`）或 `package_json.scripts`（`vibesec.g1.postinstall-egress`）。直接呼叫 `scripts/g1_slopcheck.py` 的判定函式 `cooldown_finding`／`install_hook_finding`（與 registry 查詢後走的是同一段邏輯與同一份 `cooldown.yaml` 樣式）；registry 查詢本身不在此驗證。
   - `g4-static`：G4 的 `kind: code|iac` 案例，且 `rule_id` 由 `pr-gates.yml` 的 G4 靜態檢查實作。執行器把 snippet 寫回 `input.path` 的原路徑（保留目錄，例如 `.github/copilot-instructions.md`），再執行 workflow 中**同一份**程式碼；所有 SARIF 等級都算偵測。
   - `gitleaks`／`checkov`：預期規則在 `config/catalogs/cwe-map.yaml` 有 `implemented_by`（例如 `checkov:CKV2_VIBESEC_1`）。執行器以 CI **同一份**設定檔（`config/gitleaks.toml`、`config/checkov/.checkov.yaml` 含 check allow-list 與自訂政策）掃 fixture，再依 `implemented_by` 對回 vibesec 規則；allow-list 外的檢查不算偵測。本機沒有 gitleaks 時可設 `VIBESEC_GITLEAKS=<路徑>`；nightly 會下載固定版本並驗證 SHA-256。
   - `env-check`：`vibesec.g2.env-not-ignored`。在暫存 git repo 依 `input.files`／`input.gitignore` 建立並追蹤檔案，再執行 `pr-gates.yml` 中**同一份** `.env` 檢查步驟。
