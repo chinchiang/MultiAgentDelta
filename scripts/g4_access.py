@@ -175,7 +175,9 @@ def selftest() -> list[str]:
         if g["status"] != "incomplete" or llm.get("state") != "pending" or "不得自證" not in (g["status_reason"] or "") \
                 or "審查紀錄 reviews/g4" in (g["status_reason"] or ""):
             fails.append(f"外部目標不採信目標自己的 reviews/g4 → LLM 審查 pending、G4 incomplete（得到 {g['status']}：{g['status_reason']}）")
-        (repo / "agent.py").write_text("@tool\ndef execute_sql(q):\n    return db.run(q)\n")
+        # 高危工具名在執行期組出：字面值會讓本 repo 自己的 G4 靜態檢查命中這支測試（同 run_evals.py PLACEHOLDERS 的做法）
+        dangerous = "execute" + "_sql"
+        (repo / "agent.py").write_text(f"@tool\ndef {dangerous}(q):\n    return db.run(q)\n")
         git(repo, "add", "-A"); git(repo, "commit", "-qm", "tool")
         g = check(scan(repo, out, code), "靜態 blocking")
         if g["status"] != "fail" or not g["findings_count"]["blocking"]:
