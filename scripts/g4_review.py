@@ -5,6 +5,9 @@
   check <record.yaml> [--head <sha>] [--no-git]       驗證紀錄（schema + 規則），並報告對 head 是否仍有效
   gate  --static reports/g4-gate.json --head <sha>    找出對 head 有效的紀錄，推導 G4 狀態並寫回 gate JSON 與 PR 留言
         [--out reports/g4-gate.json] [--comment reports/g4-comment.md] [--mode shadow|enforce]
+  external-trust --base <sha> --head <sha> --pr-author <login> --reviews <reviews.json>
+                                                      本 PR 新增／修改的 reviews/g4/external/*.yaml 不能自證：
+                                                      recorded_by 須是在目前 head 上 approve 的非作者（CI 用）
   selftest                                            內建規則自我測試（validate.py 會呼叫）
 
 紀錄來源：harness 寫 reports/g4-review.yaml（reports/ 不入版控），人工複製為 reviews/g4/<commit>.yaml 提交；
@@ -270,6 +273,41 @@ def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers
     return None
 
 
+# 只採計有 repo 寫入關係者的核准：公開 repo 上任何帳號都能 approve（與 pr-gates.yml「取得目前 head 上的非作者 approve」相同）
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+
+def trusted_approvers(reviews: list[dict], pr_author: str, head_sha: str) -> list[str]:
+    """GitHub pulls.listReviews 的結果 → 在 head_sha 上 approve、且不是 PR 作者的帳號（小寫）。
+    每人只看最後一次非 COMMENTED／PENDING 的 review：之後的 CHANGES_REQUESTED、DISMISSED 會取消先前的 approve。"""
+    last: dict[str, dict] = {}
+    for r in reviews:
+        login = ((r.get("user") or {}).get("login") or "").strip().lower()
+        if not login or r.get("state") in ("COMMENTED", "PENDING"):
+            continue
+        last[login] = r
+    author = str(pr_author or "").lstrip("@").strip().lower()
+    return sorted(login for login, r in last.items()
+                  if login != author and r.get("state") == "APPROVED" and r.get("commit_id") == head_sha
+                  and r.get("author_association") in TRUSTED_ASSOCIATIONS)
+
+
+def external_trust(records: dict[str, dict | None], pr_author: str, approvers: list[str],
+                   cfg: dict, controls: set[str]) -> list[str]:
+    """本 PR 新增／修改的外部紀錄 {路徑: 內容（無法解析為 None）} → 問題清單（空 = 全部可信）。"""
+    problems = []
+    for ref, rec in sorted(records.items()):
+        if rec is None:
+            problems.append(f"{ref}：無法解析"); continue
+        ev = evaluate(rec, cfg, controls, pathlib.Path(ref))
+        if ev["errors"]:
+            problems.append(f"{ref}：違規：{ev['errors'][0]}"); continue
+        cap = trust_cap(True, (rec.get("recorded_by") or {}).get("handle", ""), pr_author, approvers)
+        if cap:
+            problems.append(f"{ref}：{cap}")
+    return problems
+
+
 def apply_cap(gate: dict, reason: str) -> dict:
     """把 pass 降為 pending（fail／pending／incomplete 不變），並在理由與 coverage 註明。"""
     if gate["status"] == "pass":
@@ -462,6 +500,35 @@ def selftest() -> list[str]:
         fails.append("handle 空白：schema 應接受（harness 照 SKILL 留空），但列為缺口")
     if "pending" not in comment_markdown(gate_of(rec, ev), "x") or fid not in comment_markdown(gate_of(rec, ev), "x"):
         fails.append("留言應列出狀態與發現")
+    # 核准者：與 pr-gates.yml 的 approve 擷取規則相同
+    head = "a" * 40
+    rv = lambda login, state, commit=head, assoc="COLLABORATOR": {"user": {"login": login}, "state": state,
+                                                                    "commit_id": commit, "author_association": assoc}
+    cases = [
+        ([rv("Reviewer", "APPROVED")], ["reviewer"], "非作者在 head 上 approve → 採計（小寫）"),
+        ([rv("author", "APPROVED")], [], "PR 作者自己 approve → 不採計"),
+        ([rv("reviewer", "APPROVED", "b" * 40)], [], "approve 在舊 commit 上 → 不採計"),
+        ([rv("reviewer", "APPROVED", assoc="NONE")], [], "沒有 repo 寫入關係 → 不採計"),
+        ([rv("reviewer", "APPROVED"), rv("reviewer", "CHANGES_REQUESTED")], [], "approve 後 request changes → 取消"),
+        ([rv("reviewer", "APPROVED"), rv("reviewer", "DISMISSED")], [], "approve 被 dismiss → 取消"),
+        ([rv("reviewer", "APPROVED"), rv("reviewer", "COMMENTED")], ["reviewer"], "approve 後只留言 → 仍採計"),
+    ]
+    for reviews, want, why in cases:
+        if trusted_approvers(reviews, "Author", head) != want:
+            fails.append(f"trusted_approvers：{why}（得到 {trusted_approvers(reviews, 'Author', head)}）")
+    ext = copy.deepcopy(r4); ext["recorded_by"]["handle"] = "reviewer"
+    ref = f"reviews/g4/external/{ext['commit']}.yaml"
+    if external_trust({ref: ext}, "author", ["reviewer"], cfg, controls):
+        fails.append("外部紀錄：recorded_by 是在 head 上 approve 的非作者 → 應可信")
+    if not external_trust({ref: ext}, "author", [], cfg, controls):
+        fails.append("外部紀錄：沒有非作者 approve → 應不可信")
+    ext_self = copy.deepcopy(ext); ext_self["recorded_by"]["handle"] = "author"
+    if not external_trust({ref: ext_self}, "author", ["reviewer"], cfg, controls):
+        fails.append("外部紀錄：recorded_by 是 PR 作者 → 應不可信")
+    if not external_trust({f"reviews/g4/external/{'c' * 40}.yaml": ext}, "author", ["reviewer"], cfg, controls):
+        fails.append("外部紀錄：檔名與 commit 不符 → 應違規")
+    if not external_trust({ref: None}, "author", ["reviewer"], cfg, controls):
+        fails.append("外部紀錄：無法解析 → 應不可信")
     return fails
 
 
@@ -475,6 +542,12 @@ def main(argv=None) -> int:
     g.add_argument("--base", help="PR base SHA；有值時檢查紀錄是否由本 PR 新增／修改")
     g.add_argument("--pr-author", default="")
     g.add_argument("--approvers", default="", help="在目前 head SHA 上 approve 的帳號，逗號分隔")
+    x = sub.add_parser("external-trust")
+    x.add_argument("--base", required=True); x.add_argument("--head", required=True)
+    x.add_argument("--pr-author", required=True)
+    x.add_argument("--reviews", required=True, help="GitHub pulls.listReviews 結果的 JSON 檔（無法取得時傳空檔 → 無核准者）")
+    x.add_argument("--single-maintainer", action="store_true",
+                   help="只有一位維護者、無法職責分離：問題改為警告（仍逐筆列出），不使 job 失敗")
     sub.add_parser("selftest")
     a = ap.parse_args(argv)
     cfg = load_cfg(); controls = known_controls()
@@ -496,6 +569,30 @@ def main(argv=None) -> int:
             print(("有效：" if ok else "過期：") + why)
         print("check " + ("通過" if not ev["errors"] else "失敗"))
         return 1 if ev["errors"] else 0
+
+    if a.cmd == "external-trust":
+        r = _git("diff", "--name-only", "--diff-filter=AMR", f"{a.base}...{a.head}", "--", "reviews/g4/external/*.yaml")
+        if r.returncode != 0:   # 無法判斷本 PR 動了哪些紀錄 → 不放行（fail closed）
+            print(f"::error::無法取得 {a.base[:12]}...{a.head[:12]} 的變更清單：{r.stderr.strip()[-200:]}")
+            return 1
+        refs = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+        records: dict[str, dict | None] = {}
+        for ref in refs:
+            try:
+                records[ref] = _yaml(PROJECT / ref)
+            except Exception:
+                records[ref] = None
+        try:
+            reviews = json.loads(pathlib.Path(a.reviews).read_text(encoding="utf-8") or "[]")
+        except (OSError, json.JSONDecodeError):
+            reviews = []   # 取不到 review → 沒有核准者 → 紀錄不可信（fail closed）
+        approvers = trusted_approvers(reviews if isinstance(reviews, list) else [], a.pr_author, a.head)
+        problems = external_trust(records, a.pr_author, approvers, cfg, controls)
+        print(f"本 PR 新增／修改的外部 G4 紀錄 {len(refs)} 份；head {a.head[:12]} 上的非作者核准者：{', '.join(approvers) or '（無）'}")
+        level = "warning" if a.single_maintainer else "error"
+        for pb in problems:
+            print(f"::{level}::{pb}" + ("（單一維護者，無法職責分離，僅警告）" if a.single_maintainer else ""))
+        return 1 if problems and not a.single_maintainer else 0
 
     static = json.loads(pathlib.Path(a.static).read_text(encoding="utf-8"))
     head = _git("rev-parse", a.head).stdout.strip() or a.head

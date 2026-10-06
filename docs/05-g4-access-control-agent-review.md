@@ -89,6 +89,15 @@ create policy "todos_delete_own" on public.todos
 
 修法：三層都做——路由層（middleware，快速拒絕）、服務層（`assert_owner(user, resource)`）、資料層（RLS / `WHERE owner_id`）。規則 `vibesec.g4.single-middleware-authz`（advisory，CWE-287 / CWE-863）。
 
+靜態檢查（`pr-gates.yml`「G4 靜態檢查」第 4 項）涵蓋兩種框架：
+
+- **Next.js**：只要有 `middleware.ts` 就提醒，因為 CVE-2025-29927 類型的繞過不看授權寫在哪裡。
+- **FastAPI／Starlette**：以 `ast` 解析 import fastapi／starlette 的 `.py` 檔。下列兩個條件同時成立才報：
+  1. `@app.middleware("http")` 函式或 `BaseHTTPMiddleware` 子類別內有授權訊號（Authorization 標頭、bearer、token、session、401／403 等）。授權交給同檔 helper 時（例如 `guard(request)`），檢查器會往下看一層。
+  2. 整個專案沒有任何路由層授權：沒有 `Security()`，也沒有依賴名稱像授權的 `Depends()`（`require_user`、`get_current_user`、`session` 等；`Depends(get_db)` 不算）。
+
+  有路由層授權就不報，因為那已經是兩層；每條路由是否都涵蓋，交給 LLM 審查（`VS-G4-LLM-REVIEW`）。純 ASGI middleware（自訂 `__call__`）與跨檔 helper 不在靜態檢查範圍內，同樣由 LLM 審查補足。
+
 ### 4. Agent 工具 allow-list（`agent_tool_allowlist`）
 
 原則：**通用 Agent 永遠不得暴露 `delete_user`、`execute_sql`、`drop_table`、`rm -rf`、任意 HTTP**。工具要細粒度（`get_my_todos`、`create_todo`），且以當前使用者身分執行（工具內部仍走 owner binding）。
@@ -211,6 +220,8 @@ CI（`pr-gates.yml` 的 G4 job）只跑靜態部分；LLM 審查由 `/vibesec-ha
 紀錄本身受規則約束（`g4_review.py check`，違規即 CI 失敗）：provider 名稱與 family 必須與 `config/providers.yaml` 一致；意見只能來自實際執行（`state: ran`）的 provider；分歧、少數意見、高風險發現 family 不足 → `requires_human` 必須為 true；沒有 `ruling_ref` 時 `validation_status` 只能是 `pending`、`evidence_grade` 最高 E2。也就是說，紀錄只能「誠實陳述審查發生了什麼」，不能自行宣告結論；結論只來自裁決。
 
 **信任上限（職責分離）**：紀錄由本 PR 新增或修改時不能自證。只有在「非 PR 作者在目前 head SHA 上 approve（之後再 push 需重新 approve）」且「`recorded_by.handle` 不是 PR 作者、而且就是其中一位核准者」時（確認紀錄的人必須親自 approve，不能只填別人的帳號），紀錄才能把 G4 推到 `pass`；否則 `pass` 降為 `pending`（`fail` 不受影響）。`recorded_by.handle` 空白（harness 產出時的預設）一律不採信。已在 base 分支上的紀錄經過另一個 PR 審查合併，照常採用。approve 由 G4 job 以 GitHub API 取得，只採計 author_association 為 OWNER／MEMBER／COLLABORATOR 者，查詢失敗視為沒有 approve（fail closed）。判定腳本 `scripts/g4_review.py` 在 CI 中取自 base 分支（PR head 只當資料讀取），PR 不能改寫決定自己結果的邏輯；workflow 檔本身仍取自 PR head，由 CODEOWNERS 與 branch protection 把關。G4 不在 `config/policy/blocking-policy.yaml` 的 `incomplete_gate_is_blocking_in_enforce`，所以 enforce 模式下 G4 `incomplete` 不擋 merge；若要改為阻擋，須由人類在獨立 PR 修改該政策（CLAUDE.md 規則 1）。
+
+外部專案的紀錄（`reviews/g4/external/<commit>.yaml`）適用同一條規則，由 `.github/workflows/review-record-trust.yml` 的「外部 G4 紀錄不得自證」check 檢查（`scripts/g4_review.py external-trust`）。這個 check 也會在 review 送出或撤銷時重新判定。
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 

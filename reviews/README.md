@@ -13,7 +13,7 @@
 
 `--target` 掃其他專案時（`scripts/g4_access.py --target <dir>`），G4 LLM 審查紀錄放在**本 repo** 的 `reviews/g4/external/<commit>.yaml`（2026-10-06 人工決定）；被測專案自己的 `reviews/g4/`、`rulings/` 一律不採信（不得自證）。
 
-- 格式、規則、提交方式與上面相同：`<commit>` = 被測專案審查時的 HEAD（40 碼），`recorded_by.handle` 填複製提交的人，經 PR 由 CODEOWNERS 審核；同樣不能自證（`recorded_by` 不是 PR 作者，且須在 PR head 上 approve）。注意：CI 的 G4 job 只對本 repo 自己的紀錄自動檢查 approve，外部紀錄的這條規則目前靠 CODEOWNERS 與審查者把關。建議在 `recorded_by.note` 寫明被測專案（例如 `chinchiang/MultiAgentBeta`）。
+- 格式、規則、提交方式與上面相同：`<commit>` = 被測專案審查時的 HEAD（40 碼），`recorded_by.handle` 填複製提交的人，經 PR 由 CODEOWNERS 審核；同樣不能自證（`recorded_by` 不是 PR 作者，且須在 PR head 上 approve）。CI 的「外部 G4 紀錄不得自證」check（`.github/workflows/review-record-trust.yml`）會自動檢查這條規則：本 PR 新增或修改的外部紀錄，`recorded_by` 必須是在目前 head 上 approve、且不是 PR 作者的協作者。有人 approve、request changes 或 dismiss 時會重新判定；approve 之後再 push 就要重新 approve。這個 check 要在 branch protection 設為 required 才會擋 merge。建議在 `recorded_by.note` 寫明被測專案（例如 `chinchiang/MultiAgentBeta`）。
 - 外部發現的人工裁決同樣放本 repo 的 `rulings/`。
 - 紀錄只在以下條件下採用，否則 `VS-G4-LLM-REVIEW` 維持 `pending`：
   - `<commit>` 恰好是被測專案目前的 HEAD：紀錄不會提交到被測專案，所以它的任何新 commit 都是新的程式碼，要重新審查。

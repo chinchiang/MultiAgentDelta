@@ -1,0 +1,99 @@
+# 外部專案的 G4 審查紀錄（reviews/g4/external/*.yaml）不能自證（CLAUDE.md 規則 6：職責分離）。
+# 本 PR 新增或修改的外部紀錄，recorded_by 必須是「在目前 head SHA 上 approve、且不是 PR 作者、有 repo 寫入關係」的人。
+# 本 repo 自己的紀錄（reviews/g4/<commit>.yaml）由 pr-gates.yml 的 G4 job 檢查；外部紀錄不進 G4 job 的閘門推導，
+# 所以在這裡單獨檢查。判定程式取自 base 分支（_trusted/），PR head 只當資料讀取。
+# 另外監聽 review 事件：有人 approve、request changes 或 dismiss 時重新判定，不必重跑整組閘門。
+# 這個 check 要擋 merge，需在 branch protection 把「外部 G4 紀錄不得自證」設為 required。
+name: VibeSec Review Record Trust
+
+on:
+  pull_request:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibesec-review-trust-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  external-g4-record-trust:
+    name: 外部 G4 紀錄不得自證
+    permissions:
+      contents: read
+      pull-requests: read   # 讀取 review 清單
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR head（只當資料）
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 取出 base 分支的判定程式（_trusted/）
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: _trusted
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            schemas
+            config
+            docs/templates
+            vibesec.yaml
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      # 缺 PyYAML／jsonschema 時 g4_review.py 以 exit 2 結束（工具缺席 ≠ 通過）
+      - name: 安裝 PyYAML / jsonschema
+        run: pip install pyyaml jsonschema
+
+      # 取不到 review 清單 → 空檔 → 沒有核准者 → 本 PR 動到的外部紀錄一律不可信（fail closed）
+      - name: 取得 PR 的 review 清單
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const pr = context.payload.pull_request;
+            const reviews = await github.paginate(github.rest.pulls.listReviews,
+              {owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number, per_page: 100});
+            const keep = reviews.map(r => ({user: {login: r.user ? r.user.login : ''}, state: r.state,
+              commit_id: r.commit_id, author_association: r.author_association}));
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/reviews.json`, JSON.stringify(keep));
+            core.info(`${keep.length} 筆 review`);
+
+      - name: 檢查本 PR 新增／修改的外部紀錄
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          # 只有單一維護者的 repo 無法做到職責分離：由 admin 設 Actions 變數 VIBESEC_SINGLE_MAINTAINER=true，
+          # 違反時改為明確警告並記錄在 log（不是靜默放行）；未設定時一律失敗。與 pr-gates.yml 的人工裁決檢查相同。
+          SINGLE_MAINTAINER: ${{ vars.VIBESEC_SINGLE_MAINTAINER }}
+        run: |
+          # 引入本 check 的 PR 本身：base 的判定程式還沒有 external-trust。沒有動到外部紀錄就無需判定；
+          # 動到了就無法判定，一律失敗（fail closed）。
+          if ! python3 _trusted/scripts/g4_review.py external-trust --help > /dev/null 2>&1; then
+            CHANGED=$(git diff --name-only --diff-filter=AMR "$BASE_SHA...$HEAD_SHA" -- 'reviews/g4/external/*.yaml')
+            if [ -z "$CHANGED" ]; then
+              echo "::notice::base 分支的 g4_review.py 還沒有 external-trust；本 PR 沒有新增或修改外部 G4 紀錄，無需判定"
+              exit 0
+            fi
+            echo "::error::base 分支的判定程式不支援 external-trust，無法判定本 PR 新增／修改的外部 G4 紀錄：$CHANGED"
+            exit 1
+          fi
+          test -f "$RUNNER_TEMP/reviews.json" || : > "$RUNNER_TEMP/reviews.json"
+          FLAG=""
+          [ "$(echo "${SINGLE_MAINTAINER:-}" | tr '[:upper:]' '[:lower:]')" = "true" ] && FLAG="--single-maintainer"
+          VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/g4_review.py external-trust \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --pr-author "$PR_AUTHOR" \
+            --reviews "$RUNNER_TEMP/reviews.json" $FLAG

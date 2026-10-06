@@ -18,6 +18,8 @@ held_out:
 - g4-hitl-pos-01
 - g4-owner-pos-02
 - g4-rls-pos-01
+- g4-single-mw-fastapi-neg-02
+- g4-single-mw-fastapi-pos-02
 - g5-cors-pos-01
 - g5-jwt-neg-01
 - g5-jwt-neg-02
@@ -67,6 +69,8 @@ held_in:
 - g4-owner-pos-01
 - g4-owner-pos-03
 - g4-rls-neg-01
+- g4-single-mw-fastapi-neg-01
+- g4-single-mw-fastapi-pos-01
 - g4-single-mw-pos-01
 - g4-unicode-neg-01
 - g4-unicode-pos-01

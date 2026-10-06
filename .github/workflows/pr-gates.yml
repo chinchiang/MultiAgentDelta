@@ -534,6 +534,48 @@ jobs:
               add("vibesec.g4.single-middleware-authz", "note",
                   f"偵測到 Next.js {p}：請確認授權不只靠單層 middleware（CVE-2025-29927），資料層需獨立 authz", p, 1)
 
+          # 4b) FastAPI／Starlette：授權只做在 app middleware，路由與 router 都沒有授權依賴 → 同一規則（advisory）。
+          #     「middleware 做授權」= @app.middleware("http") 函式或 BaseHTTPMiddleware 子類別內有授權訊號；
+          #     「路由層授權」= 任何 Security()，或依賴名稱像授權的 Depends()（Depends(get_db) 這類不算）。
+          #     只要有路由層授權就不報：那已是兩層，是否涵蓋每條路由交給 LLM 審查（VS-G4-LLM-REVIEW）。
+          import ast
+          AUTH_SIGNAL = re.compile(r'authori[sz]ation|bearer|token|session|api[_-]?key|unauthori[sz]ed|forbidden|\b40[13]\b|HTTP_40[13]', re.I)
+          AUTH_DEP = re.compile(r'auth|user|token|session|principal|permission|scope|login|verify|require|current|guard|role', re.I)
+          def _name(n):
+              return n.attr if isinstance(n, ast.Attribute) else n.id if isinstance(n, ast.Name) else ""
+          mw_hits, route_auth = [], False
+          for p in sorted(glob.glob("**/*.py", recursive=True)):
+              if "/node_modules/" in p or "site-packages/" in p or p.startswith((".git/", "venv/")): continue
+              try: src = pathlib.Path(p).read_text(encoding="utf-8", errors="replace")
+              except Exception: continue
+              if not re.search(r'^\s*(from|import)\s+(fastapi|starlette)\b', src, re.M): continue
+              try: tree = ast.parse(src)
+              except (SyntaxError, ValueError): continue
+              funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+              def _does_auth(node):
+                  # middleware 常把判斷交給同檔的 helper（例如 response = await guard(request)）：往下看一層
+                  called = {_name(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+                  return any(AUTH_SIGNAL.search(ast.get_source_segment(src, n) or "")
+                             for n in [node, *(funcs[c] for c in called if c in funcs and funcs[c] is not node)])
+              for node in ast.walk(tree):
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                      if any(isinstance(d, ast.Call) and _name(d.func) == "middleware" and d.args
+                             and isinstance(d.args[0], ast.Constant) and d.args[0].value == "http" for d in node.decorator_list) \
+                              and _does_auth(node):
+                          mw_hits.append((p, node.lineno))
+                  elif isinstance(node, ast.ClassDef):
+                      if any(_name(b) == "BaseHTTPMiddleware" for b in node.bases) and _does_auth(node):
+                          mw_hits.append((p, node.lineno))
+                  elif isinstance(node, ast.Call):
+                      fn = _name(node.func)
+                      if fn == "Security" or (fn == "Depends" and node.args and AUTH_DEP.search(_name(node.args[0]))):
+                          route_auth = True
+          if not route_auth:
+              for p, line in mw_hits:
+                  add("vibesec.g4.single-middleware-authz", "note",
+                      f"FastAPI {p} 第 {line} 行的 middleware 含授權判斷，但沒有任何路由或 router 以 Depends／Security 檢查授權："
+                      "middleware 被繞過或路由掛到其他 app 時沒有第二道檢查；路由或服務層需獨立 authz，資料層再加 owner filter", p, line)
+
           sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
                    "version": "2.1.0",
                    "runs": [{"tool": {"driver": {"name": "vibesec-g4-static", "version": "1.0.0",
