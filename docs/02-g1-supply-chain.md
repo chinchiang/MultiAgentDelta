@@ -36,7 +36,8 @@
 │   只有 1 個版本 / 維護者 30 天內變更 → high risk                                  │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 第 2 層  名稱相似度與幻覺黑名單                                                  │
-│   對 popular-npm.txt / popular-pypi.txt：Levenshtein ≤ 2 或 difflib ratio ≥ 0.85 │
+│   對 popular-npm.txt / popular-pypi.txt：編輯距離 ≤ 2（≤ 5 字元的名稱 ≤ 1）     │
+│   或 difflib ratio ≥ 0.85                                                       │
 │   且名稱不相等 → 疑似 typosquat（axois vs axios）                                │
 │   blacklist.yaml 命中 → block / warn                                            │
 │   掃描範圍：package.json、requirements.txt、lockfile，以及 .cursorrules、         │
@@ -78,7 +79,9 @@ import difflib
 def suspicious(name, popular):
     for p in popular:
         if name == p or len(name) < 4: continue
-        if levenshtein(name, p) <= 2 or difflib.SequenceMatcher(None, name, p).ratio() >= 0.85:
+        # 編輯距離用 optimal string alignment：相鄰字母易位算 1（axois → axios）
+        limit = 1 if len(name) <= 5 else 2   # 短名改兩個字母已是另一個字（zipp／pip、hpack／black）
+        if 0 < osa_distance(name, p) <= limit or difflib.SequenceMatcher(None, name, p).ratio() >= 0.85:
             return p   # 疑似 typosquat of p
 ```
 
@@ -158,7 +161,7 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 
 只給 `--target` → 全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（`scope: full`）；`--changed-files`、`--staged`、`--base`、相對路徑都以目標專案為準。設定、清單與阻擋政策取自本 repo；`blocking-policy.yaml` 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用。`pnpm-lock.yaml`、`yarn.lock` 尚無解析器 → `incomplete` 並列出檔名。
 
-`package-lock.json`（lockfileVersion 1–3）逐筆解析（別名取實名、略過 workspace 連結）：每個條目都做 registry 存在性、冷卻期、安裝 hook、週下載與黑名單；名稱相似度只做**直接相依**（根目錄與 workspace 宣告的相依；v1 取同目錄 `package.json`），間接相依的名稱由上游決定、不是開發者或 AI 打出來的。`resolved` 不在 npm registry（git、file、tarball URL、私有 registry）或版本不是 semver 的條目無法以 registry 驗證 → `incomplete` 並列出。同一個（名稱, 版本）只查一次，registry 以 8 個並行查詢；連線中斷、傳輸截斷、逾時、429、5xx 重試 2 次（404 不重試），仍失敗 → `incomplete`。
+`package-lock.json`（lockfileVersion 1–3）逐筆解析（別名取實名、略過 workspace 連結）：每個條目都做 registry 存在性、冷卻期、安裝 hook、週下載與黑名單；名稱相似度只做**直接相依**（根目錄與 workspace 宣告的相依；v1 取同目錄 `package.json`），間接相依的名稱由上游決定、不是開發者或 AI 打出來的。`requirements*.txt` 鎖定檔（pip-compile、uv export）沒有直接／間接的標記，改以 PyPI 該版本的 `requires_dist` 推得：同檔其他套件宣告為相依者視為間接相依（自己需要自己不算）；查不到 `requires_dist` 就照直接相依比對，不會少查。`resolved` 不在 npm registry（git、file、tarball URL、私有 registry）或版本不是 semver 的條目無法以 registry 驗證 → `incomplete` 並列出。同一個（名稱, 版本）只查一次，registry 以 8 個並行查詢；連線中斷、傳輸截斷、逾時、429、5xx 重試 2 次（404 不重試），仍失敗 → `incomplete`。
 
 ## 工具與設定檔
 

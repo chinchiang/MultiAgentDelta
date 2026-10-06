@@ -99,7 +99,8 @@ keywords = ["jwt_secret", "jwt-secret", "secret_key", "secret-key", "signing_key
 entropy = 3.0
 tags = ["jwt", "CWE-798", "ASVS5-V13.3", "ASVS5-V9.1"]
 [rules.allowlist]
-regexes = ['''(?i)(change[_\-]?me|replace[_\-]?me|your[_\-]?secret|example|placeholder|dummy|xxx+|<[^>]+>|\$\{[^}]+\}|os\.environ|process\.env)''']
+# synthetic：測試資料的慣用標記（2026-10-06 對 MultiAgentBeta 的 G2 全歷史掃描：17 筆 blocking 皆為 'synthetic-secret' 測試字串）
+regexes = ['''(?i)(change[_\-]?me|replace[_\-]?me|your[_\-]?secret|example|placeholder|dummy|synthetic|xxx+|<[^>]+>|\$\{[^}]+\}|os\.environ|process\.env)''']
 
 # ---------------------------------------------------------------------------
 # 通用高熵字串（補強預設 generic-api-key）

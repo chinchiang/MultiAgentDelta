@@ -59,7 +59,7 @@ git -C "$TARGET" diff --name-only <base>...HEAD -- package.json package-lock.jso
 
 對新增 / 升版的每個套件（以 lockfile 為準）：
 - 查 registry（`curl -s https://registry.npmjs.org/<pkg>`、`https://pypi.org/pypi/<pkg>/json`）：不存在 → `vibesec.g1.hallucinated-package`；版本發布日距今 < `cooldown_days` → `vibesec.g1.cooldown-violation`；週下載 < `min_weekly_downloads` → `vibesec.g1.low-download-package`。查詢失敗 → G1 `incomplete`。
-- 對 `popular_lists` 做字串距離（PyPI 名稱先依 PEP 503 正規化；Levenshtein ≤ 2 且不相等）→ `vibesec.g1.hallucinated-package`；命中 `blacklist` → `hallucinated-package`。`allowlist` 不跳過檢查：只把條目 `bypass` 列出的檢查（registry_health / low_download / cooldown / blacklist / similarity）在版本相符且未過期時降為 advisory，安裝 hook 不可放行（docs/02「套件例外」）。
+- 對 `popular_lists` 做字串距離（PyPI 名稱先依 PEP 503 正規化；編輯距離 ≤ 2 且不相等，相鄰易位算 1、≤ 5 字元的名稱只認 1；鎖定檔的間接相依只查黑名單）→ `vibesec.g1.hallucinated-package`；命中 `blacklist` → `hallucinated-package`。`allowlist` 不跳過檢查：只把條目 `bypass` 列出的檢查（registry_health / low_download / cooldown / blacklist / similarity）在版本相符且未過期時降為 advisory，安裝 hook 不可放行（docs/02「套件例外」）。
 - 掃 `scan_agent_rule_files` 中出現的套件名（`.cursorrules`、`AGENTS.md`、`SKILL.md`、`*.md`）同上處理；`-r`、`-e`、`--index-url` 這類帶值旗標的值不是套件名。
 - 讀 `package.json scripts.postinstall|preinstall|install` 與 `setup.py`：含 `curl|wget|fetch|http`、`process.env`、`~/.aws|~/.npmrc|~/.ssh|keychain`、`claude|gemini|codex` CLI 呼叫 → `vibesec.g1.postinstall-egress`。
 - 每個 CVE 查 EPSS（`https://api.first.org/data/v1/epss?cve=`）與 KEV（`https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`）；查不到填 `null` + `notes`；KEV 命中且版本在範圍 → `vibesec.g1.kev-hit`。
@@ -180,7 +180,7 @@ PY
 - `reports/findings.json`：全部發現。
 - `reports/risk_register.json`：`architecture` / `prompt` 類 + G0 open threats。
 - `reports/gates/G<N>.json`：每閘門一份。
-- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填（空白 = 未經人確認，check 會列為缺口，CI 不採信）。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。`--target` 指向外部專案時，`commit` 填目標的 HEAD；目標自己的 `reviews/g4`、`rulings` 不採信（不得自證），由人確認後複製為**本 repo** 的 `reviews/g4/external/<commit>.yaml` 提交（裁決放本 repo 的 `rulings/`），只在目標 HEAD 仍是該 commit 且沒有未提交修改時採用。**你不得把它寫進 `reviews/`**（規則 9）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
+- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error；資料分級不允許、未送出記 refused）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填（空白 = 未經人確認，check 會列為缺口，CI 不採信）。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。`--target` 指向外部專案時，`commit` 填目標的 HEAD；目標自己的 `reviews/g4`、`rulings` 不採信（不得自證），由人確認後複製為**本 repo** 的 `reviews/g4/external/<commit>.yaml` 提交（裁決放本 repo 的 `rulings/`），只在目標 HEAD 仍是該 commit 且沒有未提交修改時採用。**你不得把它寫進 `reviews/`**（規則 9）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
 - `reports/summary.md`：固定七節（閘門狀態矩陣 / INCOMPLETE / 致命三要素 / 發現表 / 控制覆蓋率 / 需人工裁決 / Exit code），版面見 `config/harness/harness-agent.md` §7。INCOMPLETE 節永遠存在。
 
 ## 步驟 5：exit code 與回覆

@@ -187,6 +187,37 @@ def pypi_check(pkg, ver, c):
             findings.append(f)
     return findings, None
 
+def pypi_requires(pkg, ver):
+    """該版本在 PyPI 宣告的相依名稱（PEP 503 正規化；含 extra 與環境標記限定的相依）。查不到回空集合：
+    結果只用來把鎖定檔中的間接相依排除在名稱相似度之外，查不到就照直接相依檢查，不會少查。"""
+    if not ver or not valid_name("pypi", pkg):
+        return set()
+    try:
+        info = http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg, safe='')}/"
+                         f"{urllib.parse.quote(ver, safe='')}/json").get("info") or {}
+    except Exception:
+        return set()
+    return {canon("pypi", x[0]) for x in map(_pep508, info.get("requires_dist") or []) if x}
+
+def requirements_indirect(path, requires=None):
+    """requirements*.txt 中由同檔其他套件宣告為相依的 (名稱小寫, 版本)，即間接相依，不做名稱相似度。
+    只看鎖定版本（==）的條目；pip-compile／uv export 產生的鎖定檔沒有直接／間接的標記，改以 PyPI 的 requires_dist 推得。"""
+    requires = requires or pypi_requires
+    pins = []
+    for line in Path(path).read_text(errors="ignore").splitlines():
+        x = _pep508(line.split(" #", 1)[0])
+        if x and x[1]:
+            pins.append(x)
+    if len(pins) < 2:
+        return set()
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        deps = list(ex.map(lambda p: requires(*p), pins))
+    required_by = {}
+    for (name, _), ds in zip(pins, deps):
+        for d in ds - {canon("pypi", name)}:
+            required_by.setdefault(d, set()).add(canon("pypi", name))
+    return {(n.lower(), v) for n, v in pins if required_by.get(canon("pypi", n))}
+
 def cooldown_finding(pkg, eco, ver, age, c):
     """發布天數未滿冷卻期 → blocking；天數未知（None）不判定。純函式，run_evals.py 以合成 fixture 直接呼叫。"""
     if age is None or age >= c["cooldown_days"]:
@@ -225,20 +256,17 @@ def age_days(iso):
     except Exception:
         return None
 
-def _levenshtein(a: str, b: str) -> int:
+def _edit_distance(a: str, b: str) -> int:
+    """Optimal string alignment 距離：插入、刪除、替換與相鄰字母易位各算 1（axois → axios 為 1）。"""
     if a == b:
         return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = cur
-    return prev[-1]
+    d = [[i + j if not i * j else 0 for j in range(len(b) + 1)] for i in range(len(a) + 1)]
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[-1][-1]
 
 def similarity_check(pkg, eco, popular, blacklist, c, fuzzy=True):
     """blacklist → 與熱門清單的名稱相似度（allowlist 由 apply_allowlist 逐筆發現套用）。fuzzy=False（鎖定檔中的
@@ -257,9 +285,10 @@ def similarity_check(pkg, eco, popular, blacklist, c, fuzzy=True):
         return None
     for cg, good in canon_popular.items():
         ratio = difflib.SequenceMatcher(None, pl, cg).ratio()
-        dist = _levenshtein(pl, cg)
-        # 兩路判定：ratio 門檻，或編輯距離 <=2（補 difflib 對字母易位的低估，如 axois vs axios）
-        if (ratio >= c["similarity"] or (len(pl) >= 4 and dist <= 2 and dist > 0)):
+        dist = _edit_distance(pl, cg)
+        # 兩路判定：ratio 門檻，或編輯距離（補 difflib 對字母易位的低估，如 axois vs axios）。5 個字元以內的名稱
+        # 只認 1 次編輯：短名改 2 個字母已是另一個字（zipp／pip、hpack／black、pyrit／pyjwt 都是不相干的真套件）
+        if ratio >= c["similarity"] or (len(pl) >= 4 and 0 < dist <= (1 if len(pl) <= 5 else 2)):
             return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
                        f"名稱與熱門套件 '{good}' 高度相似（ratio={ratio:.2f}, edit={dist}），疑似 typosquat", "blocking",
                        "similarity")
@@ -748,10 +777,10 @@ def selftest():
     """離線自我測試 --target：registry 查詢以替身取代，只驗證路徑、全量探索、鎖定檔與例外範圍。"""
     import contextlib, io, tempfile
     from jsonschema import Draft202012Validator
-    global TARGET, npm_check, pypi_check, load_exceptions, load_allowlist, _https_only_opener, BACKOFF
+    global TARGET, npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist, _https_only_opener, BACKOFF
     fails = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    real = (npm_check, pypi_check, load_exceptions, load_allowlist)
+    real = (npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist)
     real_allowlist = load_allowlist
     allow = []                                  # 整合測試用的合成 allowlist（不依賴政策檔現有條目與到期日）
     load_allowlist = lambda path=None, today=None: (list(allow), [])
@@ -760,6 +789,8 @@ def selftest():
         calls.append((pkg, ver))
         return [fnd("vibesec.g1.cooldown-violation", pkg, "pypi", ver, "selftest 替身", "blocking")], None
     npm_check = pypi_check = stub
+    requires_of = {}                            # 合成的 PyPI requires_dist（名稱小寫 → 相依名稱）
+    pypi_requires = lambda pkg, ver: set(requires_of.get(pkg.lower(), ()))
     # 合成例外（不依賴政策檔現有例外與其到期日）
     load_exceptions = lambda today=None: ([{"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "examples/vulnapp/**",
                                             "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"}], [])
@@ -787,6 +818,11 @@ def selftest():
             fails.append("PyPI typing-extensionz 仍要判 typosquat")
         if not similarity_check("left_pad", "npm", {"left-pad"}, {}, c):
             fails.append("npm 的 left_pad 與 left-pad 是不同套件，不做 PEP 503 正規化")
+        # 編輯距離：相鄰易位算 1 次；5 個字元以內只認 1 次編輯，較長的名稱認到 2 次
+        for name, good, want in (("axois", "axios", True), ("numpyy", "numpy", True), ("pnadsa", "pandas", True),
+                                 ("zipp", "pip", False), ("hpack", "black", False), ("pyrit", "pyjwt", False)):
+            if bool(similarity_check(name, "pypi", {good}, {}, {"similarity": 0.99})) != want:
+                fails.append(f"{name} 對 {good}：{'應' if want else '不應'}判 typosquat（距離 {_edit_distance(name, good)}）")
         bl = {("pypi", "foo-bar"): {"reason": "t"}, (None, "baz_qux"): {"reason": "u"}}
         if not lookup(bl, "pypi", "Foo_Bar") or not lookup(bl, "pypi", "baz.qux") or lookup(bl, "npm", "baz-qux"):
             fails.append("黑名單／允許清單查詢：PyPI 依 PEP 503 比對，npm 只比對小寫")
@@ -959,6 +995,20 @@ def selftest():
             fa = [f for f in out.get("findings", []) if f["package"] == "fastapi"]
             if calls != [("fastapi", "0.1.0")] or [f["policy_tier"] for f in fa] != ["advisory"] or code != 0:
                 fails.append(f"allowlist 內的套件仍要查 registry，放行的發現降為 advisory（查詢 {calls}，發現 {fa}，exit {code}）")
+            # requirements 鎖定檔：由同檔其他套件宣告為相依者是間接相依，不做名稱相似度；沒有人需要的仍要比對
+            (D / "py").mkdir()
+            (D / "py/requirements.lock.txt").write_text("openai==2.0.0 \\\n    --hash=sha256:00\nhttpx2==2.13.1\n"
+                                                        "reqursts==1.0.0\nlanggraph==1.0.0\nlanggraph-sdk==0.4.5\n")
+            requires_of.update({"openai": {"httpx2", "openai"}, "langgraph": {"langgraph-sdk"}, "reqursts": {"reqursts"}})
+            code, out = run("--target", str(D), "--manifest", "py/requirements.lock.txt")
+            hall = {f["package"] for f in out.get("findings", []) if f["rule_id"] == "vibesec.g1.hallucinated-package"}
+            if hall != {"reqursts"}:
+                fails.append(f"requirements 鎖定檔：間接相依（httpx2、langgraph-sdk）只查黑名單，自己需要自己不算（得到 {sorted(hall)}）")
+            requires_of.clear()
+            code, out = run("--target", str(D), "--manifest", "py/requirements.lock.txt")
+            hall = {f["package"] for f in out.get("findings", []) if f["rule_id"] == "vibesec.g1.hallucinated-package"}
+            if not {"httpx2", "langgraph-sdk"} <= hall:
+                fails.append(f"查不到 requires_dist 時照直接相依比對（得到 {sorted(hall)}）")
             code, out = run("--target", str(D), "--manifest", "examples/vulnapp/requirements.txt")
             if [f["package"] for f in out.get("findings", [])] != ["requests"] or code != 1:
                 fails.append("--target 搭配 --manifest：相對路徑以目標專案為準，只掃指定的檔")
@@ -969,7 +1019,7 @@ def selftest():
         if code != 2:
             fails.append("--target 不是目錄 → exit 2（incomplete）")
     finally:
-        npm_check, pypi_check, load_exceptions, load_allowlist = real
+        npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist = real
         TARGET = ROOT
     return fails
 
@@ -1045,7 +1095,7 @@ def main(argv):
     unparsed = [rel_path(m) for m in manifests if UNPARSED_RE.search(Path(m).name)]
     if unparsed:
         incomplete.append(f"鎖定檔尚無解析器，其中的套件未逐一檢查：{', '.join(unparsed)}")
-    indirect = {}       # package-lock.json → 只以間接相依出現的 (名稱小寫, 版本)：不做名稱相似度
+    indirect = {}       # package-lock.json、requirements 鎖定檔 → 只以間接相依出現的 (名稱小寫, 版本)：不做名稱相似度
     for m in manifests:
         if Path(m).name == "package-lock.json":
             entries, bad = npm_lock(m)
@@ -1053,6 +1103,8 @@ def main(argv):
             if bad:
                 incomplete.append(f"{rel_path(m)}：{len(bad)} 筆不是 npm registry 來源或版本無法驗證，未檢查"
                                   f"（{', '.join(bad[:5])}{' …' if len(bad) > 5 else ''}）")
+        elif re.search(r'requirements.*\.txt$', Path(m).name):
+            indirect[m] = requirements_indirect(m)
 
     # registry 查詢：同一個 (生態系, 名稱, 版本) 只查一次，並行查詢（鎖定檔動輒上千筆）
     # allowlist 內的套件也要查：allowlist 只放行特定檢查，安裝 hook 等其他檢查照做
