@@ -58,6 +58,12 @@ def load_popular(name):
         return set()
     return {l.strip().lower() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")}
 
+def canon(eco, name):
+    """比對用的套件名稱。PyPI 依 PEP 503 正規化：大小寫不分，連續的 -、_、. 視為同一個 -
+    （typing_extensions 與 typing-extensions 是同一個專案，不能另外註冊）；npm 只轉小寫（_ 與 - 是不同套件）。"""
+    name = str(name).lower()
+    return re.sub(r"[-_.]+", "-", name) if eco == "pypi" else name
+
 def load_list(name):
     """讀 blacklist / allowlist：鍵為 (ecosystem, 名稱小寫)；ecosystem 缺省時記為 None（適用所有生態系）。
 
@@ -75,8 +81,13 @@ def load_list(name):
     return out
 
 def lookup(entries, eco, pkg):
-    """依生態系查清單；先找同生態系，再找未指定生態系的條目。"""
-    return entries.get((eco, pkg.lower())) or entries.get((None, pkg.lower()))
+    """依生態系查清單（名稱以 canon() 比對）；先找同生態系，再找未指定生態系的條目。"""
+    key = canon(eco, pkg)
+    for want in (eco, None):
+        for (e, n), it in entries.items():
+            if e == want and canon(eco, n) == key:
+                return it
+    return None
 
 # 套件名稱來自 PR 內的 manifest（不可信）：先依 registry 命名規則驗證，再 percent-encode 組 URL。
 # 不合法的名稱不送出查詢，記為 incomplete（incomplete ≠ pass）。
@@ -224,14 +235,13 @@ def similarity_check(pkg, eco, popular, blacklist, allowlist, c):
         tier = "advisory" if it.get("action") == "warn" else "blocking"
         return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
                    f"命中黑名單（{it.get('status', '?')}）：{it.get('reason', 'known typosquat')}{hint}", tier)
-    if pkg.lower() in popular:
+    pl = canon(eco, pkg)
+    canon_popular = {canon(eco, g): g for g in popular}
+    if pl in canon_popular:
         return None
-    pl = pkg.lower()
-    for good in popular:
-        if pl == good:
-            return None
-        ratio = difflib.SequenceMatcher(None, pl, good).ratio()
-        dist = _levenshtein(pl, good)
+    for cg, good in canon_popular.items():
+        ratio = difflib.SequenceMatcher(None, pl, cg).ratio()
+        dist = _levenshtein(pl, cg)
         # 兩路判定：ratio 門檻，或編輯距離 <=2（補 difflib 對字母易位的低估，如 axois vs axios）
         if (ratio >= c["similarity"] or (len(pl) >= 4 and dist <= 2 and dist > 0)):
             return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
@@ -426,6 +436,18 @@ def discover(target):
             files += [Path(d, n).relative_to(target).as_posix() for n in names]
     return sorted(files)
 RULE_FILE_NAMES = (".cursorrules", "AGENTS.md", "SKILL.md")
+# 安裝指令中「後面接一個值」的旗標：緊接在這類旗標後的是檔案、路徑、URL 或設定值，不是套件名
+# （pip install -r requirements.txt、-e git+https://…、-i https://…）。只列文件明載需要值的旗標，以免把真正的套件漏掉。
+VALUE_FLAGS = {
+    "npm": {"--prefix", "--registry", "--tag", "-w", "--workspace", "--cache", "--userconfig", "--omit", "--include",
+            "--install-strategy", "--before", "--otp", "--loglevel", "--filter", "-F", "--dir", "-C", "--cwd"},
+    "pypi": {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url",
+             "-f", "--find-links", "-t", "--target", "--prefix", "--root", "--src", "--trusted-host", "--python", "-p",
+             "--platform", "--python-version", "--implementation", "--abi", "--only-binary", "--no-binary",
+             "--upgrade-strategy", "-C", "--config-settings", "--global-option", "--proxy", "--retries", "--timeout",
+             "--exists-action", "--cert", "--client-cert", "--cache-dir", "--log", "--report", "--progress-bar",
+             "--root-user-action", "--keyring-provider", "--group", "--suffix", "--pip-args", "--preinstall"},
+}
 INSTALL_RE = {
     "npm": re.compile(r'\b(?:npm|pnpm|yarn)\s+(?:install|add|i)\s+((?:-{1,2}[A-Za-z-]+\s+)*)([@A-Za-z0-9][@A-Za-z0-9._/-]*)'),
     "pypi": re.compile(r'\b(?:pip3?|pipx|uv\s+pip)\s+install\s+((?:-{1,2}[A-Za-z-]+\s+)*)([A-Za-z0-9][A-Za-z0-9._-]*)'),
@@ -444,10 +466,13 @@ def rule_file_mentions(path):
     out = []
     for eco, rx in INSTALL_RE.items():
         for m in rx.finditer(text):
+            flags = m.group(1).split()
+            if flags and flags[-1] in VALUE_FLAGS[eco]:
+                continue                    # 例如 pip install -r requirements.txt：名稱位置是旗標的值
             name = m.group(2).rstrip(".,;:)`'\"")
             if name and not name.startswith(("-", ".", "/")):
                 out.append((eco, name, None))
-    return out
+    return list(dict.fromkeys(out))         # 同一個檔提到同一個套件多次只算一次
 
 def git_show(ref, path):
     """回傳 ref 版本的檔案內容；不存在（新檔）回傳 None。"""
@@ -565,6 +590,29 @@ def selftest():
         subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, capture_output=True, check=True)
 
     try:
+        # PEP 503：PyPI 的 _ / . / 大小寫與 - 是同一個專案；npm 不正規化；真正的拼錯仍要抓到
+        c = {"similarity": 0.80}
+        for name in ("typing_extensions", "Typing.Extensions", "TYPING-extensions"):
+            if similarity_check(name, "pypi", {"typing-extensions"}, {}, {}, c):
+                fails.append(f"PyPI {name} 與 typing-extensions 是同一個專案（PEP 503），不得判 typosquat")
+        if not similarity_check("typing-extensionz", "pypi", {"typing-extensions"}, {}, {}, c):
+            fails.append("PyPI typing-extensionz 仍要判 typosquat")
+        if not similarity_check("left_pad", "npm", {"left-pad"}, {}, {}, c):
+            fails.append("npm 的 left_pad 與 left-pad 是不同套件，不做 PEP 503 正規化")
+        bl = {("pypi", "foo-bar"): {"reason": "t"}, (None, "baz_qux"): {"reason": "u"}}
+        if not lookup(bl, "pypi", "Foo_Bar") or not lookup(bl, "pypi", "baz.qux") or lookup(bl, "npm", "baz-qux"):
+            fails.append("黑名單／允許清單查詢：PyPI 依 PEP 503 比對，npm 只比對小寫")
+        with tempfile.TemporaryDirectory() as d:
+            rf = Path(d) / "AGENTS.md"
+            rf.write_text("pip install -r requirements.lock.txt\n`pip install -e git+https://example.com/x.git`\n"
+                          "uv pip install --index-url https://pypi.org/simple foo\npip install --requirement req.txt\n"
+                          "npm install --registry https://r.example.com bar\npip install -U fastapi-auth-helperz\n"
+                          "npm install -D left-pad\nRun `pip install requests`, then `pip install requests` again.\n",
+                          encoding="utf-8")
+            got = rule_file_mentions(rf)
+            want = [("npm", "left-pad", None), ("pypi", "fastapi-auth-helperz", None), ("pypi", "requests", None)]
+            if sorted(got) != want:
+                fails.append(f"規則檔：帶值旗標（-r、-e、--index-url、--registry）的值不是套件名，重複提及只算一次（得到 {got}）")
         with tempfile.TemporaryDirectory() as d:
             D = Path(d)
             (D / "examples/vulnapp").mkdir(parents=True)
