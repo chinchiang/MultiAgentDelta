@@ -188,6 +188,19 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 
 正式判定以 `config/policy/blocking-policy.yaml` 為準。
 
+### 套件例外：`config/slopsquat/allowlist.yaml`
+
+`scripts/g1_slopcheck.py` 的 `load_allowlist()` 讀 `entries`，只採用合規且未過期的條目；其餘忽略並列在輸出的 `ignored_allowlist` 與 gate `status_reason`（fail closed）。
+
+| 欄位 | 規則 |
+|---|---|
+| `package`、`approved_by`、`expires`、`reason`、`bypass` | 必填；`expires` 為 `YYYY-MM-DD`，過期即失效 |
+| `ecosystem` | `npm` / `pypi`；省略＝所有生態系。名稱比對同第 2 層（PyPI 依 PEP 503） |
+| `version` | 省略／`null`＝所有版本；精確版本（`2.32.5`、`==2.32.5`）；或全部須成立的比較式（`>=2.0.0 <3.0.0`、`>=2,<3`）。`^`、`~`、`x`、`\|\|` 不接受（條目忽略）；預發布版本不落在範圍內 |
+| `bypass` | 只能是 `registry_health`（registry 查無）、`low_download`、`cooldown`、`blacklist`、`similarity`（名稱相似度）。**安裝 hook（`postinstall-egress`）與 KEV 不可放行**，寫了整筆忽略 |
+
+套用方式：allowlist 內的套件仍做全部檢查（安裝 hook 照查）；某筆發現的檢查在條目的 `bypass` 內且版本相符 → blocking 降為 advisory，發現保留並附 `allowlist`（核准人、到期日、ticket、理由），同 blocking-policy 的 `exceptions`。allowlist 以套件為單位、不綁路徑，`--target` 掃其他專案時同樣適用。
+
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
 | 類型 | ID |
