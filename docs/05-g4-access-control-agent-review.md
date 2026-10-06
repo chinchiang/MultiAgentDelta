@@ -173,7 +173,7 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 
 - 靜態部分直接執行 `pr-gates.yml`「G4 靜態檢查」步驟的同一段程式碼（`scripts/run_evals.py` 的 G4 評測也用它），在目標「追蹤中檔案」的暫存副本上跑（不跟隨 symlink、不把 `reports/` 寫進被測專案）。
 - `VS-G4-LLM-REVIEW`：目標是本 repo 時與 CI 相同，由 `scripts/g4_review.py` 從 `reviews/g4/` 找對 HEAD 有效的紀錄（本機沒有 PR，不檢查 approve）。
-- `--target` 指向外部專案時，**不讀目標自己的 `reviews/g4/`、`rulings/`**——那是被測專案自己寫的，等於自證；本 repo 的紀錄也只審本 repo。`VS-G4-LLM-REVIEW` 維持 `pending`，G4 最多 `incomplete`（有靜態 blocking 則 `fail`）。外部專案審查紀錄的存放與核准流程需人工決定（規則 1）。
+- `--target` 指向外部專案時，**不讀目標自己的 `reviews/g4/`、`rulings/`**——那是被測專案自己寫的，等於自證。外部專案的紀錄放在本 repo 的 `reviews/g4/external/<commit>.yaml`（2026-10-06 人工決定），格式、規則與核准方式同 `reviews/g4/`，裁決同樣放本 repo 的 `rulings/`。只有 `<commit>` 恰好是目標目前的 HEAD、目標追蹤中的檔案沒有未提交修改時才採用；紀錄尚未提交到本 repo 或 `recorded_by.handle` 空白 → 最高 `pending`。沒有可用紀錄 → `VS-G4-LLM-REVIEW` 維持 `pending`，G4 最多 `incomplete`（有靜態 blocking 則 `fail`）。細節見 `reviews/README.md`。
 
 ## 工具與設定檔
 

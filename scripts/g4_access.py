@@ -10,9 +10,14 @@
 VS-G4-LLM-REVIEW（LLM 審查紀錄）：
 - 目標是本 repo：與 CI 相同，以 scripts/g4_review.py 從 reviews/g4/ 找對 HEAD 有效的紀錄並推導狀態
   （本機沒有 PR，紀錄不檢查 approve；CI 會另外檢查）。
-- 目標是外部專案：不讀目標的 reviews/g4/ 與 rulings/——那是被測專案自己寫的，等於自證；本 repo 的紀錄也只審本 repo。
-  VS-G4-LLM-REVIEW 維持 pending，G4 最多 incomplete（有靜態 blocking 則 fail）。外部專案審查紀錄的存放與核准流程
-  需人工決定（CLAUDE.md 規則 1）。
+- 目標是外部專案：紀錄放在本 repo 的 reviews/g4/external/<commit>.yaml（2026-10-06 人工決定），格式與規則同
+  reviews/g4/<commit>.yaml，人工裁決同樣放本 repo 的 rulings/。不讀目標的 reviews/g4/ 與 rulings/——那是被測專案
+  自己寫的，等於自證。紀錄只在以下條件下採用：
+    · <commit> 恰好是目標目前的 HEAD（外部紀錄不另外提交到目標，任何新 commit 都是新的程式碼）；
+    · 目標追蹤中的檔案沒有未提交的修改（掃描的就是紀錄審查的內容）；
+    · 紀錄通過 g4_review 的規則檢查。
+  紀錄尚未提交到本 repo（未經 PR 與 CODEOWNERS）或 recorded_by.handle 空白 → 最高 pending。
+  沒有可用紀錄 → VS-G4-LLM-REVIEW 維持 pending，G4 最多 incomplete（有靜態 blocking 則 fail）。
 原則（CLAUDE.md #2）：靜態檢查程式碼找不到或執行失敗、目標不是 git repo 根目錄 → incomplete，絕不視為通過。
 
 用法：python3 scripts/g4_access.py [--target <dir>] [--out-dir reports/raw/G4] [--gate reports/gates/G4.json]
@@ -29,8 +34,7 @@ from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔�
 
 WORKFLOW = ROOT / ".github/workflows/pr-gates.yml"
 STEP = "G4 靜態檢查"
-EXTERNAL_LLM = ("外部專案的 G4 LLM 審查紀錄不採信：目標的 reviews/g4、rulings 是被測專案自己寫的（不得自證），"
-                "本 repo 的紀錄只審本 repo；外部專案審查紀錄的存放與核准流程需人工決定")
+EXTERNAL_REVIEWS = "reviews/g4/external"
 
 
 def static_step_code(workflow: pathlib.Path = WORKFLOW) -> str | None:
@@ -87,8 +91,42 @@ def run_static(target: pathlib.Path, out_dir: pathlib.Path, code: str | None, co
     return static, None, notes
 
 
-def scan(target: pathlib.Path, out_dir: pathlib.Path, code: str | None = None, timeout: int = 900) -> dict:
-    """掃描目標專案並回傳 G4 gate JSON（schemas/gate-result.schema.json）。"""
+def _committed(root: pathlib.Path, rel: str) -> bool:
+    """rel 已提交到 root 的 HEAD，且工作目錄內容與 HEAD 相同。未提交的紀錄沒有經過 PR 與 CODEOWNERS 審核。"""
+    if _git(root, "ls-files", "--error-unmatch", "--", rel) is None:
+        return False
+    try:
+        return subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=root, capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def find_external_record(target: pathlib.Path, commit: str, cfg: dict, controls: set[str], root: pathlib.Path = ROOT):
+    """外部專案的審查紀錄 root/reviews/g4/external/<commit>.yaml。
+    回傳 (record, evaluation, record_ref, 沒有可用紀錄的理由, 信任上限的理由)。"""
+    rel = f"{EXTERNAL_REVIEWS}/{commit}.yaml"
+    path = root / rel
+    if not path.is_file():
+        return None, None, None, (f"沒有 {rel}：外部專案的 G4 LLM 審查紀錄放在本 repo 的 {EXTERNAL_REVIEWS}/<commit>.yaml"
+                                  "（見 reviews/README.md）；目標自己的 reviews/g4、rulings 不採信（不得自證）"), None
+    dirty = _git(target, "status", "--porcelain", "--untracked-files=no")
+    if dirty is None or dirty:
+        return None, None, None, f"目標的追蹤中檔案有未提交的修改，掃描的內容不是 {rel} 審查的 commit", None
+    try:
+        rec = g4_review._yaml(path)
+    except Exception as e:   # YAML 錯誤：紀錄不可用，不是通過
+        return None, None, None, f"{rel} 無法解析（{type(e).__name__}）", None
+    ev = g4_review.evaluate(rec, cfg, controls, path)
+    if ev["errors"]:
+        return None, None, None, f"{rel} 違規：{ev['errors'][0]}", None
+    cap = None if _committed(root, rel) else f"{rel} 尚未提交到本 repo（未經 PR 與 CODEOWNERS 審核）"
+    return rec, ev, rel, None, cap
+
+
+def scan(target: pathlib.Path, out_dir: pathlib.Path, code: str | None = None, timeout: int = 900,
+         review_root: pathlib.Path = ROOT) -> dict:
+    """掃描目標專案並回傳 G4 gate JSON（schemas/gate-result.schema.json）。
+    review_root：外部專案審查紀錄所在的 repo（本 repo；selftest 以暫存 repo 代替）。"""
     started = _now()
     target, out_dir = target.resolve(), out_dir.resolve()
     external = target != ROOT.resolve()
@@ -106,16 +144,17 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, code: str | None = None, t
                            "output_ref": None, "duration_seconds": None}],
                 "findings_count": {"blocking": 0, "advisory": 0},
                 "coverage": [{"control_id": g4_review.LLM_CONTROL, "state": "pending", "reason": why}]}
+    cfg, controls = g4_review.load_cfg(), g4_review.known_controls()
     if external:
-        gate = g4_review.derive_gate(static, None, None, EXTERNAL_LLM, None)
+        record, ev, ref, reason, cap = find_external_record(target, commit, cfg, controls, review_root)
     else:
-        cfg, controls = g4_review.load_cfg(), g4_review.known_controls()
         record, ev, ref, reason = g4_review.find_record(commit, cfg, controls)
-        gate = g4_review.derive_gate(static, record, ev, reason, ref)
-        if record is not None:
-            cap = g4_review.trust_cap(False, record["recorded_by"].get("handle", ""), None, [])
-            if cap:
-                g4_review.apply_cap(gate, cap)
+        cap = None
+    gate = g4_review.derive_gate(static, record, ev, reason, ref)
+    if record is not None:
+        caps = [cap, g4_review.trust_cap(False, record["recorded_by"].get("handle", ""), None, [])]
+        if any(caps):
+            g4_review.apply_cap(gate, "；".join(c for c in caps if c))
     gate.pop("_llm_findings", None)
     if notes:
         gate["status_reason"] = "；".join(x for x in (gate.get("status_reason"), *notes) if x)
@@ -191,6 +230,77 @@ def selftest() -> list[str]:
         g = check(scan(repo / "supabase", out, code), "子目錄")
         if g["status"] != "incomplete" or "根目錄" not in (g["status_reason"] or ""):
             fails.append("--target 不是 repo 根目錄 → incomplete")
+        if git(repo, "status", "--porcelain").stdout.strip():
+            fails.append("掃描不得改動被測專案的工作目錄")
+    # 外部專案的紀錄放在本 repo 的 reviews/g4/external/<commit>.yaml（2026-10-06 人工決定）；以暫存 repo 代替本 repo
+    with tempfile.TemporaryDirectory() as d:
+        D = pathlib.Path(d)
+        repo, out, home = D / "proj", D / "out", D / "vibesec"
+        repo.mkdir(); home.mkdir()
+        (repo / "app.py").write_text("print('ok')\n")
+        git(repo, "init", "-q"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "c1")
+        c1 = git(repo, "rev-parse", "HEAD").stdout.strip()
+        (home / "README.md").write_text("vibesec\n")
+        git(home, "init", "-q"); git(home, "add", "-A"); git(home, "commit", "-qm", "base")
+        rel = f"{EXTERNAL_REVIEWS}/{c1}.yaml"
+        # 沒有待裁決發現、coverage 全部 pass 的紀錄：條件都滿足時 G4 會是 pass，才看得出信任上限有沒有生效
+        rec = g4_review._example(); rec.update(commit=c1, findings=[])
+        for c in rec["coverage"]:
+            c.update(state="pass", reason=None)
+
+        def put(record, name=c1):
+            p = home / EXTERNAL_REVIEWS / f"{name}.yaml"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(yaml.safe_dump(record, allow_unicode=True), encoding="utf-8")
+
+        def ext(why):
+            g = check(scan(repo, out, code, review_root=home), why)
+            return g, g["status_reason"] or "", next((c for c in g["coverage"] if c["control_id"] == g4_review.LLM_CONTROL), {})
+
+        g, why, llm = ext("外部紀錄缺席")
+        none_gate = g   # 沒有紀錄時就是靜態結果加上 LLM pending，用來推導有紀錄時的預期狀態
+        if f"沒有 {rel}" not in why or llm.get("state") != "pending" or g["status"] != "incomplete":
+            fails.append(f"沒有 reviews/g4/external/<HEAD>.yaml → LLM 審查 pending、G4 incomplete（得到 {g['status']}：{why}）")
+        put(rec)   # 只放在工作目錄、尚未提交
+        g, why, _ = ext("外部紀錄未提交")
+        if f"審查紀錄 {rel}" not in why or "尚未提交到本 repo" not in why or g["status"] != "pending":
+            fails.append(f"未提交到本 repo 的外部紀錄會被讀取但最高 pending（得到 {g['status']}：{why}）")
+        git(home, "add", "-A"); git(home, "commit", "-qm", "record")
+        committed, why, llm = ext("外部紀錄已提交")
+        if f"審查紀錄 {rel}" not in why or "尚未提交" in why or committed["status"] != "pass" or llm.get("state") != "pass":
+            fails.append(f"已提交、條件都滿足的外部紀錄 → G4 pass（得到 {committed['status']}：{why}）")
+        put(dict(rec, recorded_by={**rec["recorded_by"], "note": "本機改過、未提交"}))   # 已追蹤，但工作目錄的內容不是提交的版本
+        g, why, _ = ext("外部紀錄有未提交的修改")
+        if g["status"] != "pending" or "尚未提交到本 repo" not in why:
+            fails.append(f"外部紀錄在本 repo 有未提交的修改 → 最高 pending（得到 {g['status']}：{why}）")
+        git(home, "checkout", "--", rel)
+        rec_unsigned = dict(rec, recorded_by={"handle": ""})
+        put(rec_unsigned); git(home, "commit", "-qam", "unsigned")
+        g, why, _ = ext("外部紀錄未經人確認")
+        if g["status"] == "pass" or "recorded_by.handle" not in why:
+            fails.append(f"recorded_by.handle 空白的外部紀錄不能讓 G4 pass（得到 {g['status']}：{why}）")
+        put(rec); git(home, "commit", "-qam", "signed")
+        rec_human = g4_review._example(); rec_human["commit"] = c1   # 有待人工裁決的發現：照 g4_review 的規則推導
+        put(rec_human); git(home, "commit", "-qam", "needs ruling")
+        g, why, _ = ext("外部紀錄待裁決")
+        ev = g4_review.evaluate(rec_human, g4_review.load_cfg(), g4_review.known_controls())
+        expected = g4_review.derive_gate(none_gate, rec_human, ev, None, rel)["status"]
+        if g["status"] != expected or "待人工裁決" not in why:
+            fails.append(f"外部紀錄的狀態照 g4_review 的規則推導（預期 {expected}，得到 {g['status']}：{why}）")
+        put(rec); git(home, "commit", "-qam", "signed again")
+        (repo / "app.py").write_text("print('changed')\n")   # 目標有未提交的修改：掃描內容不是紀錄審查的 commit
+        g, why, _ = ext("目標有未提交修改")
+        if "未提交的修改" not in why or f"審查紀錄 {rel}" in why:
+            fails.append(f"目標追蹤中檔案有未提交修改 → 不採用紀錄（得到 {g['status']}：{why}）")
+        git(repo, "commit", "-qam", "c2")
+        c2 = git(repo, "rev-parse", "HEAD").stdout.strip()
+        g, why, _ = ext("目標前進")
+        if f"沒有 {EXTERNAL_REVIEWS}/{c2}.yaml" not in why or f"審查紀錄 {rel}" in why:
+            fails.append(f"目標 HEAD 前進後，舊 commit 的紀錄不再適用（得到 {g['status']}：{why}）")
+        put(rec, c2)   # 檔名是 c2，內容審的是 c1
+        g, why, _ = ext("檔名與 commit 不符")
+        if "違規" not in why or "不一致" not in why or g["status"] == "pass":
+            fails.append(f"檔名與紀錄 commit 不一致 → 紀錄違規、不採用（得到 {g['status']}：{why}）")
         if git(repo, "status", "--porcelain").stdout.strip():
             fails.append("掃描不得改動被測專案的工作目錄")
     # 目標是本 repo：與 CI 相同，從 reviews/g4 找紀錄（本 repo 目前沒有 → 標準的 pending 理由）

@@ -297,13 +297,15 @@ try:
                 err(f"{_f.relative_to(ROOT)}: 檔名與 finding_id {_d.get('finding_id')} 不一致")
             else:
                 ok(f"人工裁決 ok: {_f.relative_to(ROOT)}")
-        # G4 LLM 審查紀錄：schema、範例、reviews/g4/*.yaml（規則與 provider／family 一致性；對 PR head 是否過期由 CI 的 G4 job 判斷）
+        # G4 LLM 審查紀錄：schema、範例、reviews/g4/*.yaml 與外部專案的 reviews/g4/external/*.yaml
+        # （規則與 provider／family 一致性、檔名 = commit；對 PR head 是否過期由 CI 的 G4 job 判斷，外部紀錄由 g4_access.py 對目標 HEAD 判斷）
         _gs = ROOT / "schemas/g4-review.schema.json"
         _s4 = json.load(open(_gs)); _V.check_schema(_s4); ok("schema 合法: g4-review")
         sys.path.insert(0, str(ROOT / "scripts"))
         import g4_review as _g4
         _cfg4 = _g4.load_cfg()
-        for _f in [ROOT / "docs/templates/g4-review.example.yaml"] + sorted((ROOT / "reviews/g4").glob("*.yaml")):
+        for _f in ([ROOT / "docs/templates/g4-review.example.yaml"] + sorted((ROOT / "reviews/g4").glob("*.yaml"))
+                   + sorted((ROOT / "reviews/g4/external").glob("*.yaml"))):
             if not _f.exists():
                 err(f"缺 {_f.relative_to(ROOT)}"); continue
             _ev = _g4.evaluate(load_yaml(_f), _cfg4, known_controls, _f)
