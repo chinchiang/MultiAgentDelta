@@ -80,6 +80,17 @@ jobs:
           # 違反時改為明確警告並記錄在 log（不是靜默放行）；未設定時一律失敗。與 pr-gates.yml 的人工裁決檢查相同。
           SINGLE_MAINTAINER: ${{ vars.VIBESEC_SINGLE_MAINTAINER }}
         run: |
+          # 引入本 check 的 PR 本身：base 的判定程式還沒有 external-trust。沒有動到外部紀錄就無需判定；
+          # 動到了就無法判定，一律失敗（fail closed）。
+          if ! python3 _trusted/scripts/g4_review.py external-trust --help > /dev/null 2>&1; then
+            CHANGED=$(git diff --name-only --diff-filter=AMR "$BASE_SHA...$HEAD_SHA" -- 'reviews/g4/external/*.yaml')
+            if [ -z "$CHANGED" ]; then
+              echo "::notice::base 分支的 g4_review.py 還沒有 external-trust；本 PR 沒有新增或修改外部 G4 紀錄，無需判定"
+              exit 0
+            fi
+            echo "::error::base 分支的判定程式不支援 external-trust，無法判定本 PR 新增／修改的外部 G4 紀錄：$CHANGED"
+            exit 1
+          fi
           test -f "$RUNNER_TEMP/reviews.json" || : > "$RUNNER_TEMP/reviews.json"
           FLAG=""
           [ "$(echo "${SINGLE_MAINTAINER:-}" | tr '[:upper:]' '[:lower:]')" = "true" ] && FLAG="--single-maintainer"
