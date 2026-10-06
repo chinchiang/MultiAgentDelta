@@ -15,10 +15,10 @@ description: 依 vibesec.yaml 執行 G0–G6 閘門、彙整發現、呼叫 revi
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；有 `--target` → `g1,g2,g3`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
+| `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；有 `--target` → `g1,g2,g3,g4`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
 | `--mode` | `vibesec.yaml` 的 `mode` | 只能 shadow → enforce；傳 `shadow` 但設定是 `enforce` 時忽略並在 summary 註明 |
 | `--diff` | `origin/main` 若存在，否則 full | diff-aware 閘門的比較基準 |
-| `--target` | 本 repo（`.`） | 被測專案的本機路徑（git repo 根目錄），例如 `../MultiAgentBeta`。目前 **G1 套件預檢、G2 機密掃描、G3 SAST／IaC** 支援：設定、清單、政策一律取自本 repo，報告寫在本 repo 的 `reports/`（不寫進被測專案）。本 repo 的 blocking-policy `exceptions` 只核准給本 repo 路徑，掃外部專案時不套用。有 `--target` 時要求 G4 → 記 `incomplete`（`status_reason: "--target 尚未支援 G4"`），**不得改掃本 repo 充數**；G0 讀的是本 repo 的威脅模型，同樣記 `incomplete` |
+| `--target` | 本 repo（`.`） | 被測專案的本機路徑（git repo 根目錄），例如 `../MultiAgentBeta`。目前 **G1 套件預檢、G2 機密掃描、G3 SAST／IaC、G4 存取控制** 支援：設定、清單、政策一律取自本 repo，報告寫在本 repo 的 `reports/`（不寫進被測專案）。本 repo 的 blocking-policy `exceptions` 只核准給本 repo 路徑，掃外部專案時不套用。外部專案的 G4 LLM 審查紀錄不採信（見下方 G4），G4 最多 `incomplete`。有 `--target` 時要求 G0 → 記 `incomplete`（G0 讀的是本 repo 的威脅模型），**不得改用本 repo 的結果充數** |
 | `--target-url` | `$VIBESEC_TARGET_URL` | G5 / G6 目標；必須先確認是授權的測試環境 |
 
 ## 步驟 0：讀取與檢查
@@ -86,7 +86,13 @@ python3 scripts/g3_sast.py --target "$TARGET" [--base <base>] --out-dir reports/
 
 ### G4 架構與存取控制
 
-六項靜態檢查（`static_checks`）以 Grep / Read 執行：
+```bash
+# CI 同一段靜態檢查（rules_file_unicode、supabase_rls、agent_tool_allowlist、single_middleware_authz），在目標追蹤中檔案的副本上執行
+# + VS-G4-LLM-REVIEW：本 repo 照 CI 讀 reviews/g4；外部專案不採信（見下）。exit 1 = blocking、2 = incomplete／pending
+python3 scripts/g4_access.py --target "$TARGET" --out-dir reports/raw/G4 --gate reports/gates/G4.json
+```
+
+六項靜態檢查（`static_checks`）中，上面的腳本涵蓋四項；`owner_binding`、`mcp_resource_indicator` 與腳本之外的細節以 Grep / Read 在 `$TARGET` 內執行：
 - `owner_binding`：ORM / SQL 查詢含 `id = ` 但同函式無 `owner_id|user_id|tenant_id` 綁定 → `vibesec.g4.missing-owner-filter`。
 - `supabase_rls`：`supabase/migrations/**` 有 `create table` 但無 `enable row level security` → `vibesec.g4.supabase-rls-disabled`。
 - `single_middleware_authz`：授權只出現在 `middleware.(ts|js|py)` 且 handler 無檢查 → `vibesec.g4.single-middleware-authz`。
@@ -166,7 +172,7 @@ PY
 - `reports/findings.json`：全部發現。
 - `reports/risk_register.json`：`architecture` / `prompt` 類 + G0 open threats。
 - `reports/gates/G<N>.json`：每閘門一份。
-- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填（空白 = 未經人確認，check 會列為缺口，CI 不採信）。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。**你不得把它寫進 `reviews/`**（規則 9）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
+- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填（空白 = 未經人確認，check 會列為缺口，CI 不採信）。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。`--target` 指向外部專案時照樣寫出供人閱讀，但它不會推進 G4：目標自己的 `reviews/g4`、`rulings` 不採信（不得自證），本 repo 的 `reviews/g4` 只審本 repo，外部專案紀錄的存放與核准流程待人工決定。**你不得把它寫進 `reviews/`**（規則 9）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
 - `reports/summary.md`：固定七節（閘門狀態矩陣 / INCOMPLETE / 致命三要素 / 發現表 / 控制覆蓋率 / 需人工裁決 / Exit code），版面見 `config/harness/harness-agent.md` §7。INCOMPLETE 節永遠存在。
 
 ## 步驟 5：exit code 與回覆
