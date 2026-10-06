@@ -1,0 +1,34 @@
+id: g4-single-mw-fastapi-pos-02
+gate: G4
+domain: authorization
+title: FastAPI middleware 把授權交給同檔 helper，路由沒有授權依賴
+input:
+  kind: code
+  language: python
+  path: app/main.py
+  snippet: |
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+
+    app = FastAPI()
+
+    def guard(request: Request):
+        if request.cookies.get("session") is None:
+            return JSONResponse({"detail": "forbidden"}, status_code=403)
+        return None
+
+    @app.middleware("http")
+    async def security(request: Request, call_next):
+        response = guard(request)
+        return response if response is not None else await call_next(request)
+
+    @app.get("/api/orders/{order_id}")
+    def read_order(order_id: int):
+        return load_order(order_id)
+expected:
+  should_flag: true
+  control_id: ASVS5-V8.3
+  rule_id: vibesec.g4.single-middleware-authz
+  policy_tier: advisory
+held_out: true
+notes: middleware 本身只呼叫 guard()；檢查器往下看一層同檔函式，仍判定授權只在 middleware。

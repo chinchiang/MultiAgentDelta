@@ -95,7 +95,7 @@ python3 scripts/g4_access.py --target "$TARGET" --out-dir reports/raw/G4 --gate 
 六項靜態檢查（`static_checks`）中，上面的腳本涵蓋四項；`owner_binding`、`mcp_resource_indicator` 與腳本之外的細節以 Grep / Read 在 `$TARGET` 內執行：
 - `owner_binding`：ORM / SQL 查詢含 `id = ` 但同函式無 `owner_id|user_id|tenant_id` 綁定 → `vibesec.g4.missing-owner-filter`。
 - `supabase_rls`：`supabase/migrations/**` 有 `create table` 但無 `enable row level security` → `vibesec.g4.supabase-rls-disabled`。
-- `single_middleware_authz`：授權只出現在 `middleware.(ts|js|py)` 且 handler 無檢查 → `vibesec.g4.single-middleware-authz`。
+- `single_middleware_authz`：Next.js 有 `middleware.ts`，或 FastAPI 的 app middleware 做授權而沒有任何路由／router 授權依賴（`Depends`／`Security`）→ `vibesec.g4.single-middleware-authz`（腳本已涵蓋這兩種；其他框架以 Grep／Read 檢查）。
 - `agent_tool_allowlist`：Agent 工具定義含 `delete|drop|execute_sql|send_email|transfer` 且無 HITL 標記 → `vibesec.g4.agent-tool-overexposure`。
 - `rules_file_unicode`：`grep -P '[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{FEFF}]' .cursorrules AGENTS.md` → `vibesec.g4.rules-file-invisible-unicode`。
 - `mcp_resource_indicator`：MCP server OAuth 設定無 `resource` 參數 → `vibesec.g4.mcp-missing-resource-indicator`。

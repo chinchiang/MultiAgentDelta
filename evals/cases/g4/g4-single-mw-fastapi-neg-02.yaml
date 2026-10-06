@@ -1,0 +1,27 @@
+id: g4-single-mw-fastapi-neg-02
+gate: G4
+domain: authorization
+title: FastAPI middleware 只量測耗時，不做授權
+input:
+  kind: code
+  language: python
+  path: app/main.py
+  snippet: |
+    import time
+    from fastapi import FastAPI, Request
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def add_timing(request: Request, call_next):
+        started = time.monotonic()
+        response = await call_next(request)
+        response.headers["X-Elapsed"] = f"{time.monotonic() - started:.3f}"
+        return response
+expected:
+  should_flag: false
+  control_id: ASVS5-V8.3
+  rule_id: vibesec.g4.single-middleware-authz
+  policy_tier: advisory
+held_out: true
+notes: middleware 沒有授權判斷，不是「授權只靠 middleware」。
