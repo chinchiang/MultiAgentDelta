@@ -55,7 +55,7 @@ python3 scripts/g1_slopcheck.py --target "$TARGET" \
 git -C "$TARGET" diff --name-only <base>...HEAD -- package.json package-lock.json pnpm-lock.yaml yarn.lock requirements*.txt pyproject.toml uv.lock poetry.lock
 ```
 
-`package-lock.json`、`pnpm-lock.yaml`、`yarn.lock` 目前沒有解析器 → slopcheck 記 `incomplete` 並列出檔名（其中的套件沒逐一檢查，不是 pass）。
+`package-lock.json`（v1–3）逐筆檢查，名稱相似度只對直接相依；非 npm registry 來源的條目 → `incomplete`。`pnpm-lock.yaml`、`yarn.lock` 目前沒有解析器 → slopcheck 記 `incomplete` 並列出檔名（其中的套件沒逐一檢查，不是 pass）。
 
 對新增 / 升版的每個套件（以 lockfile 為準）：
 - 查 registry（`curl -s https://registry.npmjs.org/<pkg>`、`https://pypi.org/pypi/<pkg>/json`）：不存在 → `vibesec.g1.hallucinated-package`；版本發布日距今 < `cooldown_days` → `vibesec.g1.cooldown-violation`；週下載 < `min_weekly_downloads` → `vibesec.g1.low-download-package`。查詢失敗 → G1 `incomplete`。

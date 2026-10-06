@@ -156,7 +156,9 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
   --sarif reports/raw/G1/slopcheck.sarif --gate reports/raw/G1/slopcheck-gate.json > reports/raw/G1/slopcheck.json
 ```
 
-只給 `--target` → 全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（`scope: full`）；`--changed-files`、`--staged`、`--base`、相對路徑都以目標專案為準。設定、清單與阻擋政策取自本 repo；`blocking-policy.yaml` 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用。`package-lock.json`、`pnpm-lock.yaml`、`yarn.lock` 尚無解析器 → `incomplete` 並列出檔名。
+只給 `--target` → 全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（`scope: full`）；`--changed-files`、`--staged`、`--base`、相對路徑都以目標專案為準。設定、清單與阻擋政策取自本 repo；`blocking-policy.yaml` 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用。`pnpm-lock.yaml`、`yarn.lock` 尚無解析器 → `incomplete` 並列出檔名。
+
+`package-lock.json`（lockfileVersion 1–3）逐筆解析（別名取實名、略過 workspace 連結）：每個條目都做 registry 存在性、冷卻期、安裝 hook、週下載與黑名單；名稱相似度只做**直接相依**（根目錄與 workspace 宣告的相依；v1 取同目錄 `package.json`），間接相依的名稱由上游決定、不是開發者或 AI 打出來的。`resolved` 不在 npm registry（git、file、tarball URL、私有 registry）或版本不是 semver 的條目無法以 registry 驗證 → `incomplete` 並列出。同一個（名稱, 版本）只查一次，registry 以 8 個並行查詢；連線中斷、傳輸截斷、逾時、429、5xx 重試 2 次（404 不重試），仍失敗 → `incomplete`。
 
 ## 工具與設定檔
 
