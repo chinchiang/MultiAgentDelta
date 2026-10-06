@@ -38,6 +38,8 @@ G1_LIVE_KEYS = {"kind", "ecosystem", "added"}
 PLACEHOLDERS = {
     "{{FAKE_ANTHROPIC_KEY}}": "sk-ant-api03-" + ("EvalFixtureOnly0" * 6),          # 96 字元，形似但非真金鑰
     "{{FAKE_OPENAI_KEY}}": "sk-proj-" + ("EvalFixtureOnly0" * 3),                 # 48 字元
+    "{{FAKE_JWT_SECRET}}": "EvalFixtureOnly0" * 2,                                # 32 字元、熵約 3.6：真正會命中的密鑰形值
+    "{{SYNTHETIC_SECRET}}": "synthetic-" + "secret",                              # 遮罩測試常用的假值（Checkov 也會當成高熵字串）
 }
 LANG_EXT = {"python": ".py", "javascript": ".js", "typescript": ".ts", "sql": ".sql",
             "terraform": ".tf", "hcl": ".tf", "yaml": ".yml", "dockerfile": ".Dockerfile"}
