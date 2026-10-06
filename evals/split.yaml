@@ -58,7 +58,9 @@ held_in:
 - g3-xss-pos-01
 - g4-agent-tools-pos-01
 - g4-owner-neg-02
+- g4-owner-neg-03
 - g4-owner-pos-01
+- g4-owner-pos-03
 - g4-rls-neg-01
 - g4-single-mw-pos-01
 - g4-unicode-neg-01

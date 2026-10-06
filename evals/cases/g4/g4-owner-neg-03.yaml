@@ -1,0 +1,21 @@
+id: g4-owner-neg-03
+gate: G4
+domain: authorization
+title: 路由處理函式讀 header、cookie、dict 的 .get(key, default)，不是以 id 查資源
+input:
+  kind: code
+  language: python
+  snippet: |
+    @app.get("/api/session")
+    async def session(request: Request):
+        token = request.headers.get("x-session-token", "")
+        sessions.pop(request.cookies.get("sid", ""), None)
+        cases = {c["id"]: c for c in run.get("cases", [])}
+        return cases.get(token, {})
+expected:
+  should_flag: false
+  control_id: ASVS5-V8.2
+  rule_id: vibesec.g4.missing-owner-filter
+  policy_tier: advisory
+held_out: false
+notes: 2026-10-06 對 MultiAgentBeta 的 G4 審查發現 $DB.get($MODEL, $ID) 把這類呼叫當成 ORM 查詢（9 筆皆為誤判）。
