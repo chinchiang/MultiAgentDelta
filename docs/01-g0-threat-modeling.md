@@ -118,6 +118,13 @@ G0 本身是人工活動，但 harness 做四件確定性檢查：
 3. `risk_tier` 一致性：threat-model 與 `vibesec.yaml` 相同；且決策樹推導值不低於宣告值（宣告 L1 但有 `public` 暴露 → fail，附推導路徑）。
 4. 覆蓋對照：每條 `threats[].gate` 指向的閘門必須 `enabled: true`；`contains_llm: true` 但 methodologies 無 MAESTRO → advisory。
 
+本機 / harness：`python3 scripts/g0_threat_model.py [--target <dir>] [--threat-model <file>] --out-dir reports/raw/G0 --gate reports/gates/G0.json` 執行上面第 1–3 項並產出 G0 gate JSON（第 3 項的決策樹以 `derive_tier()` 實作，推導路徑寫進 `g0-findings.json`）。`--target` 指向其他專案時：
+
+- 模型依序取 `--threat-model`（可放在目標之外）→ 目標 `vibesec.yaml` 的 `project.threat_model` → 目標的 `docs/threat-model.yaml`；找不到 → `incomplete`，不得拿本 repo 的模型代替。
+- 模型與 `mitigation_evidence` 的證據檔從目標「追蹤中檔案」的暫存副本讀，不跟隨 symlink——否則目標可把 `.claude/settings.json` 指向操作者本機的設定，讓 mitigation 看似已落實。
+- `vibesec.g0.lethal-trifecta-open` 的 tier 一律取本 repo 的 `blocking-policy.yaml`（`scripts/g0_trifecta.py` 不讀被檢查專案的政策檔）。
+- 外部專案沒有可對照的 `vibesec.yaml`，只檢查「宣告值不低於推導值」；G1–G4 仍以本 repo `vibesec.yaml` 的 `risk_tier` 計算 tier（`tier_overrides` 只升不降，結果偏嚴），差異寫進 `status_reason`。
+
 LLM 輔助（非裁決）：harness 可請 `architecture` reviewer 依 DFD 提出遺漏的威脅候選，標 `evidence_grade: E0/E1`，由人決定是否收進 `threats[]`。
 
 ## 工具與設定檔
