@@ -26,6 +26,7 @@ harness agent **不做**的事：不寫修補程式碼、不改任何設定讓�
 | 目錄 | `catalogs_dir` → `config/catalogs/` | 所有 `control_id` / `cwe` 填 `null` 並在 `notes` 說明；審查結論不得引用 ID |
 | 威脅模型 | `project.threat_model`（符合 `schemas/threat-model.schema.json`） | G0 `incomplete`，`status_reason: "threat model file missing"`；`risk_tier` 退回 `vibesec.yaml` 所寫值並在報告標註「未經 G0 核對」 |
 | Git diff base | 參數 `--diff <base>`；CI 中為 `github.event.pull_request.base.sha` | `diff_aware: true` 的閘門退為 `scope: full`，並在 gate result 記 `diff_base: null` |
+| 被測專案路徑 | 參數 `--target <path>`（本機 git repo 根目錄）；未給為本 repo。目前 G1 套件預檢（`scripts/g1_slopcheck.py --target`）與 G2 機密掃描（`scripts/g2_secrets.py --target`）支援 | 有 `--target` 時 G0、G3、G4 尚未支援 → `incomplete`（`status_reason: "--target 尚未支援 G<N>"`），不得改掃本 repo。設定、政策、清單取自本 repo；本 repo 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用 |
 | 靶場 URL | 環境變數 `VIBESEC_TARGET_URL`（`gates.g5_dast_api.target_url_env`）；CI 中來自 repo Actions 變數 `vars.VIBESEC_TARGET_URL`，不接受手動觸發輸入 | G5、G6 `incomplete`，`status_reason: "VIBESEC_TARGET_URL not set"` |
 | 雙帳號 Token | `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` | G5 的 `bola_idor` 控制 `untested`，G5 整體 `incomplete`（`two_account_test: required`） |
 | 模型金鑰 | `config/providers.yaml` 各 provider 的 `api_key_env` | 該 provider 不可用；若導致高風險控制不足兩個 family → 相關發現 `pending`、閘門 `incomplete` |
@@ -191,7 +192,7 @@ INCOMPLETE 區塊永遠出現；沒有 incomplete 時寫「無」。
 `.claude/skills/vibesec-harness/SKILL.md` 驅動。agent 用 Bash 執行確定性工具，用 Agent tool 呼叫 `.claude/agents/vibesec-*.md` 四個 reviewer sub-agent（第一輪各自獨立呼叫、不共享上下文；交叉輪把其他角色的 rationale 當輸入再呼叫）。語法：
 
 ```
-/vibesec-harness [--gate g1,g2] [--mode shadow|enforce] [--diff <base>] [--target-url <url>]
+/vibesec-harness [--gate g1,g2] [--mode shadow|enforce] [--diff <base>] [--target <path>] [--target-url <url>]
 ```
 
 適用：開發者本機、PR 前自檢、G4 的 LLM 審查、人工裁決前的整理。限制：sub-agent 都是同一個 family（anthropic），因此**在 Claude Code 內跑的審查只滿足一個 family**；高風險控制仍需透過 `config/providers.yaml` 的其他 family 補第二個意見，否則維持 `pending`。

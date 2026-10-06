@@ -149,6 +149,15 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 
 本機開發者：`.pre-commit-config.yaml` 掛同一支檢查腳本（只跑第 1、2、4 層，秒級）。
 
+掃其他專案（被測專案在本機另一個目錄）：
+
+```bash
+python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
+  --sarif reports/raw/G1/slopcheck.sarif --gate reports/raw/G1/slopcheck-gate.json > reports/raw/G1/slopcheck.json
+```
+
+只給 `--target` → 全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（`scope: full`）；`--changed-files`、`--staged`、`--base`、相對路徑都以目標專案為準。設定、清單與阻擋政策取自本 repo；`blocking-policy.yaml` 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用。`package-lock.json`、`pnpm-lock.yaml`、`yarn.lock` 尚無解析器 → `incomplete` 並列出檔名。
+
 ## 工具與設定檔
 
 | 工具 | 用途 | 設定 |

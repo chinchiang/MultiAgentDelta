@@ -10,22 +10,24 @@ description: 依 vibesec.yaml 執行 G0–G6 閘門、彙整發現、呼叫 revi
 ## 參數
 
 ```
-/vibesec-harness [--gate g1,g2,...] [--mode shadow|enforce] [--diff <base>] [--target-url <url>]
+/vibesec-harness [--gate g1,g2,...] [--mode shadow|enforce] [--diff <base>] [--target <path>] [--target-url <url>]
 ```
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
+| `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；有 `--target` → `g1,g2`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
 | `--mode` | `vibesec.yaml` 的 `mode` | 只能 shadow → enforce；傳 `shadow` 但設定是 `enforce` 時忽略並在 summary 註明 |
 | `--diff` | `origin/main` 若存在，否則 full | diff-aware 閘門的比較基準 |
+| `--target` | 本 repo（`.`） | 被測專案的本機路徑（git repo 根目錄），例如 `../MultiAgentBeta`。目前只有 **G1 套件預檢與 G2 機密掃描**支援：設定、清單、政策一律取自本 repo，報告寫在本 repo 的 `reports/`（不寫進被測專案）。本 repo 的 blocking-policy `exceptions` 只核准給本 repo 路徑，掃外部專案時不套用。有 `--target` 時要求 G3 / G4 → 記 `incomplete`（`status_reason: "--target 尚未支援 G<N>"`），**不得改掃本 repo 充數**；G0 讀的是本 repo 的威脅模型，同樣記 `incomplete` |
 | `--target-url` | `$VIBESEC_TARGET_URL` | G5 / G6 目標；必須先確認是授權的測試環境 |
 
 ## 步驟 0：讀取與檢查
 
 ```bash
+TARGET="${TARGET:-.}"     # --target 的值；未給為本 repo
 cat vibesec.yaml config/policy/blocking-policy.yaml config/providers.yaml
 ls config/catalogs/
-git rev-parse HEAD; git rev-parse --abbrev-ref HEAD
+git -C "$TARGET" rev-parse HEAD; git -C "$TARGET" rev-parse --abbrev-ref HEAD
 mkdir -p reports/raw reports/gates
 for b in syft grype trivy gitleaks semgrep checkov zap-baseline.py promptfoo garak; do printf '%s: ' "$b"; command -v "$b" || echo MISSING; done
 for v in VIBESEC_TARGET_URL VIBESEC_TOKEN_A VIBESEC_TOKEN_B ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GLM_API_KEY DEEPSEEK_API_KEY; do printf '%s: ' "$v"; [ -n "${!v}" ] && echo set || echo UNSET; done
@@ -42,12 +44,18 @@ for v in VIBESEC_TARGET_URL VIBESEC_TOKEN_A VIBESEC_TOKEN_B ANTHROPIC_API_KEY OP
 ### G1 供應鏈（必須最先；通過前不得執行任何安裝指令）
 
 ```bash
-syft dir:. -o cyclonedx-json > reports/raw/G1/sbom.cdx.json
+syft dir:"$TARGET" -o cyclonedx-json > reports/raw/G1/sbom.cdx.json
 grype sbom:reports/raw/G1/sbom.cdx.json -o sarif > reports/raw/G1/grype.sarif
-trivy fs --scanners vuln --format sarif -o reports/raw/G1/trivy.sarif .
+trivy fs --scanners vuln --format sarif -o reports/raw/G1/trivy.sarif "$TARGET"
+# 四層快篩（存在性／相似度／安裝 hook／冷卻期）：只給 --target 時全量掃描目標專案追蹤中的 manifest 與 agent 規則檔；
+# diff-aware 時改給 --changed-files <清單> --base <base>（路徑相對目標專案）。exit 1 = blocking、2 = incomplete
+python3 scripts/g1_slopcheck.py --target "$TARGET" \
+  --sarif reports/raw/G1/slopcheck.sarif --gate reports/raw/G1/slopcheck-gate.json > reports/raw/G1/slopcheck.json
 # 相依變更（diff-aware）
-git diff --name-only <base>...HEAD -- package.json package-lock.json pnpm-lock.yaml yarn.lock requirements*.txt pyproject.toml uv.lock poetry.lock
+git -C "$TARGET" diff --name-only <base>...HEAD -- package.json package-lock.json pnpm-lock.yaml yarn.lock requirements*.txt pyproject.toml uv.lock poetry.lock
 ```
+
+`package-lock.json`、`pnpm-lock.yaml`、`yarn.lock` 目前沒有解析器 → slopcheck 記 `incomplete` 並列出檔名（其中的套件沒逐一檢查，不是 pass）。
 
 對新增 / 升版的每個套件（以 lockfile 為準）：
 - 查 registry（`curl -s https://registry.npmjs.org/<pkg>`、`https://pypi.org/pypi/<pkg>/json`）：不存在 → `vibesec.g1.hallucinated-package`；版本發布日距今 < `cooldown_days` → `vibesec.g1.cooldown-violation`；週下載 < `min_weekly_downloads` → `vibesec.g1.low-download-package`。查詢失敗 → G1 `incomplete`。
@@ -59,11 +67,12 @@ git diff --name-only <base>...HEAD -- package.json package-lock.json pnpm-lock.y
 ### G2 機密（永遠全歷史）
 
 ```bash
-gitleaks detect --source . --config config/gitleaks.toml --report-format sarif --report-path reports/raw/G2/gitleaks.sarif --no-banner --exit-code 0
-grep -qxF '.env' .gitignore || echo "vibesec.g2.env-not-ignored"
+# gitleaks 全歷史（--redact）＋ .env 防護 → reports/raw/G2/{gitleaks.sarif,g2-envcheck.json} 與 G2 gate JSON
+# gitleaks 缺席／失敗、目標不是 git repo 根目錄或是 shallow clone → incomplete。exit 1 = blocking、2 = incomplete
+python3 scripts/g2_secrets.py --target "$TARGET" --out-dir reports/raw/G2 --gate reports/gates/G2.json
 ```
 
-命中的祕密：`title` / `description` 只留前 4 後 4 遮罩與 `sha256`；通過格式驗證者 → `vibesec.g2.hardcoded-secret`（blocking）。
+外部專案：目標專案自己的 `gitleaks:allow` 註解不採信，`.gitleaksignore` 會在 `status_reason` 註明待人工確認。命中的祕密：`title` / `description` 只留前 4 後 4 遮罩與 `sha256`；通過格式驗證者 → `vibesec.g2.hardcoded-secret`（blocking）。
 
 ### G3 SAST / IaC
 
@@ -179,4 +188,4 @@ PY
 6. 不對 `VIBESEC_TARGET_URL` 以外的主機發探針。
 7. 不安裝任何工具或套件；G1 完成前不執行安裝指令。
 8. 報告中祕密只留遮罩與指紋。
-9. 不修改被測專案的程式碼（本 skill 只讀與寫 `reports/`）。
+9. 不修改被測專案的程式碼（本 skill 只讀與寫 `reports/`）；`--target` 指向外部專案時，報告仍寫在本 repo 的 `reports/`。

@@ -5,18 +5,28 @@
 四層：(1) registry 存在性 + 週下載量；(2) 名稱相似度 vs popular 清單 + blacklist；
       (3) 安裝階段 hook（npm postinstall/preinstall/install）；(4) 新套件冷卻期。
 
-原則（CLAUDE.md #2）：網路失敗、registry 無法查詢 → 標記 incomplete，絕不視為通過。
+原則（CLAUDE.md #2）：網路失敗、registry 無法查詢、鎖定檔尚無解析器 → 標記 incomplete，絕不視為通過。
 退出碼：0 無阻擋；1 有 blocking 發現；2 無法完成檢查（incomplete）。
-用法：python3 scripts/g1_slopcheck.py [--staged] [--manifest <path> ...]
+用法：python3 scripts/g1_slopcheck.py [--target <dir>] [--staged] [--manifest <path> ...]
+
+--target <dir>：被掃描的專案根目錄（預設本 repo）。設定、清單與阻擋政策一律取自本 repo；
+  相對路徑、--staged、--changed-files、--base 都以目標專案為準。只給 --target、沒指定要掃哪些檔時，
+  全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（scope: full）。
+  blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用（fail closed）。
 """
 from __future__ import annotations
 import sys, os, ssl, json, re, difflib, fnmatch, urllib.parse, urllib.request, urllib.error, subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent      # VibeSec 本身：設定、清單、政策
 CFG_DIR = ROOT / "config" / "slopsquat"
 TIMEOUT = 8
+TARGET = ROOT                                      # 被掃描的專案根目錄；--target 改寫
+
+def external_target():
+    """目標不是本 repo → 本 repo 的 blocking-policy exceptions 不適用。"""
+    return TARGET.resolve() != ROOT.resolve()
 
 def load_yaml(p: Path):
     try:
@@ -302,7 +312,7 @@ def parse_added(paths):
     out = []
     for p in paths:
         p = Path(p)
-        if not p.exists():
+        if not p.exists() or UNPARSED_RE.search(p.name):
             continue
         text = p.read_text(errors="ignore")
         if p.name in ("package.json",) or p.name.endswith(".json") and "package" in p.name:
@@ -321,7 +331,7 @@ def parse_added(paths):
             data = _toml(p)
             if data is not None:
                 out += [("pypi", n, v) for n, v in _lock_packages(data)]
-        elif p.name.startswith("requirements"):
+        elif re.search(r'requirements.*\.txt$', p.name):
             for line in text.splitlines():
                 x = _pep508(line.split(" #", 1)[0])
                 if x:
@@ -364,12 +374,19 @@ def load_exceptions(today=None):
     return valid, ignored
 
 def rel_path(path):
-    """manifest 路徑轉成相對 repo 根目錄的 POSIX 路徑；repo 外的檔案保持原樣。"""
+    """manifest 路徑轉成相對目標專案根目錄的 POSIX 路徑；目標外的檔案保持原樣。"""
     p = Path(path).resolve()
     try:
-        return p.relative_to(ROOT).as_posix()
+        return p.relative_to(TARGET.resolve()).as_posix()
     except ValueError:
         return Path(path).as_posix()
+
+def resolve(path):
+    """相對路徑先以目標專案為基準，找不到再以目前目錄為基準（相容 --manifest 傳入工作目錄相對路徑）。"""
+    p = Path(path)
+    if p.is_absolute() or not (TARGET / p).exists():
+        return p
+    return TARGET / p
 
 def apply_exceptions(finding, exceptions):
     """命中 rule_id 與 path_glob 的例外時把 blocking 降為 advisory；例外不刪除發現。"""
@@ -383,13 +400,31 @@ def apply_exceptions(finding, exceptions):
 
 def staged_files():
     try:
-        r = subprocess.run(["git", "diff", "--cached", "--name-only"],
-                           capture_output=True, text=True, cwd=ROOT)
+        r = subprocess.run(["git", "diff", "--cached", "--name-only", "--relative"],
+                           capture_output=True, text=True, cwd=TARGET)
         return [l for l in r.stdout.splitlines() if l.strip()]
     except Exception:
         return []
 
 MANIFEST_RE = re.compile(r'(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock)$')
+# 有 manifest 樣式但尚無解析器的鎖定檔：其中的套件無法逐一檢查 → incomplete（不是 pass）
+UNPARSED_RE = re.compile(r'(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$')
+# 全量掃描（--target、非 git 目錄）時略過的目錄：安裝產物與快取，不是專案宣告的相依
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"}
+
+def discover(target):
+    """列出目標專案的所有 manifest 與 agent 規則檔（相對目標根目錄）。git repo 取追蹤中的檔案，否則走訪目錄。"""
+    try:
+        r = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True, cwd=target)
+        files = [f for f in r.stdout.split("\0") if f] if r.returncode == 0 else None
+    except OSError:
+        files = None
+    if files is None:
+        files = []
+        for d, dirs, names in os.walk(target):
+            dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
+            files += [Path(d, n).relative_to(target).as_posix() for n in names]
+    return sorted(files)
 RULE_FILE_NAMES = (".cursorrules", "AGENTS.md", "SKILL.md")
 INSTALL_RE = {
     "npm": re.compile(r'\b(?:npm|pnpm|yarn)\s+(?:install|add|i)\s+((?:-{1,2}[A-Za-z-]+\s+)*)([@A-Za-z0-9][@A-Za-z0-9._/-]*)'),
@@ -417,7 +452,7 @@ def rule_file_mentions(path):
 def git_show(ref, path):
     """回傳 ref 版本的檔案內容；不存在（新檔）回傳 None。"""
     try:
-        r = subprocess.run(["git", "show", f"{ref}:{rel_path(path)}"], capture_output=True, text=True, cwd=ROOT)
+        r = subprocess.run(["git", "show", f"{ref}:./{rel_path(path)}"], capture_output=True, text=True, cwd=TARGET)
         return r.stdout if r.returncode == 0 else None
     except Exception:
         return None
@@ -470,22 +505,22 @@ CONTROL_OF = {
     "vibesec.g1.postinstall-egress": "VS-G1-INSTALL-HOOK",
 }
 
-def write_gate(path, findings, incomplete, started, base, scope, sarif_ref):
+def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=()):
     vb = read_vibesec() or {}
     mode = vb.get("mode", "shadow"); tier = vb.get("risk_tier", "L2")
     blocking = sum(f["policy_tier"] == "blocking" for f in findings)
     advisory = sum(f["policy_tier"] == "advisory" for f in findings)
     if incomplete:
-        status, reason = "incomplete", "；".join(incomplete)
+        status, reason = "incomplete", "；".join(list(incomplete) + list(notes))
     else:
-        status, reason = ("fail" if blocking else "pass"), None
+        status, reason = ("fail" if blocking else "pass"), ("；".join(notes) or None)
     coverage = []
     for ctl in ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK"):
         hit = [f for f in findings if CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
         coverage.append({"control_id": ctl, "state": "untested" if incomplete else ("fail" if hit else "pass"), "reason": None})
     coverage.append({"control_id": "VS-G1-SBOM", "state": "pending", "reason": None})
     try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=ROOT).stdout.strip() or None
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=TARGET).stdout.strip() or None
     except Exception:
         commit = None
     gate = {"gate": "G1", "status": status, "status_reason": reason, "mode": mode, "risk_tier": tier,
@@ -502,9 +537,98 @@ def _opt(args, name):
     """收集重複出現的 `--name value` 參數。"""
     return [args[i + 1] for i, a in enumerate(args[:-1]) if a == name]
 
+def selftest():
+    """離線自我測試 --target：registry 查詢以替身取代，只驗證路徑、全量探索、鎖定檔與例外範圍。"""
+    import contextlib, io, tempfile
+    from jsonschema import Draft202012Validator
+    global TARGET, npm_check, pypi_check, load_exceptions
+    fails = []
+    schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
+    real = (npm_check, pypi_check, load_exceptions)
+    stub = lambda pkg, ver, c: ([fnd("vibesec.g1.cooldown-violation", pkg, "pypi", ver, "selftest 替身", "blocking")], None)
+    npm_check = pypi_check = stub
+    # 合成例外（不依賴政策檔現有例外與其到期日）
+    load_exceptions = lambda today=None: ([{"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "examples/vulnapp/**",
+                                            "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"}], [])
+
+    def run(*argv):
+        global TARGET
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["g1_slopcheck.py", *argv])
+        finally:
+            TARGET = ROOT
+        return code, (json.loads(out.getvalue()) if out.getvalue().strip() else {})
+
+    def git(d, *a):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, capture_output=True, check=True)
+
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            D = Path(d)
+            (D / "examples/vulnapp").mkdir(parents=True)
+            (D / "examples/vulnapp/requirements.txt").write_text("requests==2.0.0\n")
+            (D / "deploy").mkdir()
+            (D / "deploy/python-requirements.txt").write_text("fastapi==0.1.0 \\\n    --hash=sha256:00\n")
+            (D / "frontend").mkdir()
+            (D / "frontend/package-lock.json").write_text('{"lockfileVersion": 3, "packages": {}}')
+            (D / "README.md").write_text("沒有安裝指令。\n")
+            (D / "node_modules/x").mkdir(parents=True)
+            (D / "node_modules/x/package.json").write_text('{"dependencies": {"evil": "1.0.0"}}')
+            git(D, "init", "-q"); git(D, "add", "examples", "deploy", "frontend", "README.md"); git(D, "commit", "-qm", "t")
+            files = discover(D)
+            if "node_modules/x/package.json" in files or "deploy/python-requirements.txt" not in files:
+                fails.append(f"git repo 的全量探索只取追蹤中的檔案（得到 {files}）")
+            gate = D.parent / f"{D.name}-gate.json"
+            code, out = run("--target", str(D), "--gate", str(gate))
+            pkgs = {f["package"]: f for f in out.get("findings", [])}
+            if set(pkgs) != {"requests", "fastapi"}:
+                fails.append(f"只給 --target → 全量掃描 requirements（含 python-requirements.txt），不掃 node_modules（得到 {sorted(pkgs)}）")
+            if pkgs.get("requests", {}).get("policy_tier") != "blocking" or "exception" in pkgs.get("requests", {}):
+                fails.append("外部目標：本 repo 的 examples/vulnapp/** 例外不得套用（仍為 blocking）")
+            if pkgs.get("fastapi", {}).get("manifest") != "deploy/python-requirements.txt":
+                fails.append("manifest 路徑相對目標專案根目錄")
+            if code != 1 or out.get("status") != "incomplete" or "frontend/package-lock.json" not in out.get("status_reason", ""):
+                fails.append(f"尚無解析器的鎖定檔 → incomplete 並列出檔名（exit {code}，{out.get('status_reason')}）")
+            g = json.loads(gate.read_text(encoding="utf-8"))
+            gate.unlink()
+            errs = list(schema.iter_errors(g))
+            if errs:
+                fails.append(f"gate JSON 不符 schema：{errs[0].message}")
+            head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=D).stdout.strip()
+            if g.get("commit") != head or g.get("scope") != "full" or "exceptions" not in (g.get("status_reason") or ""):
+                fails.append("gate JSON 的 commit 取目標專案 HEAD、scope full、status_reason 註明例外未套用")
+            code, out = run("--target", str(D), "--manifest", "examples/vulnapp/requirements.txt")
+            if [f["package"] for f in out.get("findings", [])] != ["requests"] or code != 1:
+                fails.append("--target 搭配 --manifest：相對路徑以目標專案為準，只掃指定的檔")
+        code, out = run("--target", str(ROOT), "--manifest", "examples/vulnapp/pyproject.toml")
+        if not out.get("findings") or any(f["policy_tier"] != "advisory" or "exception" not in f for f in out["findings"]):
+            fails.append("目標是本 repo 時照常套用 blocking-policy 例外")
+        code, _ = run("--target", str(ROOT / "no-such-dir"))
+        if code != 2:
+            fails.append("--target 不是目錄 → exit 2（incomplete）")
+    finally:
+        npm_check, pypi_check, load_exceptions = real
+        TARGET = ROOT
+    return fails
+
 def main(argv):
+    global TARGET
     args = argv[1:]
+    if args[:1] == ["selftest"]:
+        fails = selftest()
+        for f in fails:
+            print(f"FAIL {f}")
+        print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
+        return 1 if fails else 0
     started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    target = (_opt(args, "--target") or [None])[-1]
+    if target:
+        TARGET = Path(target).expanduser().resolve()
+        if not TARGET.is_dir():
+            print(f"⚠️ G1 無法完成檢查：--target 不是目錄（{target}）→ incomplete。", file=sys.stderr)
+            return 2
     manifests = list(_opt(args, "--manifest"))
     rule_files = list(_opt(args, "--rules-file"))
     base = (_opt(args, "--base") or [None])[-1]
@@ -518,21 +642,30 @@ def main(argv):
             changed += [l.strip() for l in Path(lst).read_text().splitlines() if l.strip()]
         except OSError:
             pass
+    selected = manifests or rule_files or changed or "--staged" in args or _opt(args, "--changed-files")
+    if target and not selected:
+        changed = discover(TARGET)          # 只給 --target：全量掃描目標專案
     for f in changed:
         if MANIFEST_RE.search(f):
             manifests.append(f)
-        elif is_rule_file(f) and not f.startswith("config/slopsquat/"):
+        elif is_rule_file(f) and not (f.startswith("config/slopsquat/") and not external_target()):
             rule_files.append(f)
-    manifests = [m for m in dict.fromkeys(manifests) if Path(m).exists() or (ROOT / m).exists()]
-    rule_files = [r for r in dict.fromkeys(rule_files) if Path(r).exists() or (ROOT / r).exists()]
+    manifests = [resolve(m) for m in dict.fromkeys(manifests) if resolve(m).exists()]
+    rule_files = [resolve(r) for r in dict.fromkeys(rule_files) if resolve(r).exists()]
     scope = "diff" if base else "full"
+    notes = []
+    if external_target():
+        notes.append(f"目標專案 {TARGET.name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用")
 
     if not manifests and not rule_files:
-        print(json.dumps({"gate": "G1", "findings": []}, ensure_ascii=False, indent=2))
+        out = {"gate": "G1", "findings": []}
+        if external_target():
+            out["target"] = str(TARGET)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
         if sarif_out:
             write_sarif(sarif_out, [])
         if gate_out:
-            write_gate(gate_out, [], [], started, base, scope, sarif_out)
+            write_gate(gate_out, [], [], started, base, scope, sarif_out, notes)
         print("G1 slopcheck：無相依清單或規則檔變更，略過。", file=sys.stderr)
         return 0
 
@@ -541,12 +674,15 @@ def main(argv):
     popular = {"npm": load_popular("popular-npm.txt"), "pypi": load_popular("popular-pypi.txt")}
     blacklist = load_list("blacklist.yaml")
     allowlist = load_list("allowlist.yaml")
-    exceptions, ignored_exceptions = load_exceptions()
+    exceptions, ignored_exceptions = load_exceptions() if not external_target() else ([], [])
 
     targets = [(m, added_packages(m, base), False) for m in manifests]
     targets += [(r, rule_file_mentions(r), True) for r in rule_files]
 
     findings, incomplete = [], []
+    unparsed = [rel_path(m) for m in manifests if UNPARSED_RE.search(Path(m).name)]
+    if unparsed:
+        incomplete.append(f"鎖定檔尚無解析器，其中的套件未逐一檢查：{', '.join(unparsed)}")
     for source, packages, from_rules in targets:
         source_rel = rel_path(source)
         for eco, name, ver in packages:
@@ -569,6 +705,9 @@ def main(argv):
                 findings.append(apply_exceptions(f, exceptions))
 
     out = {"gate": "G1", "findings": findings}
+    if external_target():
+        out["target"] = str(TARGET)
+        out["notes"] = notes
     if ignored_exceptions:
         out["ignored_exceptions"] = ignored_exceptions
     if incomplete:
@@ -578,14 +717,14 @@ def main(argv):
     if sarif_out:
         write_sarif(sarif_out, findings)
     if gate_out:
-        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out)
+        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out, notes)
 
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     if blocking:
         print(f"\n⛔ G1 阻擋：{len(blocking)} 筆 blocking 供應鏈發現。", file=sys.stderr)
         return 1
     if incomplete:
-        print("\n⚠️ G1 無法完成檢查（網路/registry 失敗）→ incomplete，絕不視為通過。", file=sys.stderr)
+        print("\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。", file=sys.stderr)
         return 2
     print("\n✅ G1 快篩通過。", file=sys.stderr)
     return 0
