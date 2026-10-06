@@ -125,6 +125,22 @@ codeql database analyze /tmp/db codeql/python-queries:codeql-suites/python-secur
 checkov -d . --config-file config/checkov/.checkov.yaml --check ''   # 清空 allow-list 跑全規則
 ```
 
+掃其他專案（本機 harness；CI 的 G3 jobs 只掃本 repo）：
+
+```bash
+python3 scripts/g3_sast.py --target ../MultiAgentBeta [--base <ref>] --out-dir reports/raw/G3 --gate reports/gates/G3.json
+```
+
+以本 repo 的設定對目標跑三個工具，再由 `scripts/sarif_gate.py` 推導 G3 gate JSON（同一份規則對應、tier、coverage）；任一工具缺席／逾時／失敗、目標不是 git repo 根目錄 → `incomplete`。`--base` 只讓 semgrep diff-aware（`--baseline-commit`），checkov／trivy 仍全量。被測專案自己的設定不採信：
+
+| 工具 | 做法 | 原因 |
+|---|---|---|
+| semgrep | 在目標根目錄掃 `.`；外部專案加 `--disable-nosem` | `# nosemgrep` 是目標自己的抑制。目標的 `.semgrepignore` semgrep 一定會讀（沒有公開選項可關）→ 寫進 `status_reason` 待人工確認 |
+| checkov | 掃目標**追蹤中檔案的暫存副本**（去掉 `.checkov.yaml`／`.checkov.yml` 與 symlink），工作目錄為空的暫存目錄；SARIF 路徑改回相對目標根目錄 | checkov 會自動載入被掃目錄與工作目錄的 `.checkov.yaml`，可停用檢查，或以 `external-checks-dir` 載入並**執行**目標的 Python 檢查；symlink 可能指向主機上的檔案 |
+| trivy | `trivy config <target>`，工作目錄為空的暫存目錄 | trivy 從工作目錄讀 `.trivyignore`／`trivy.yaml` |
+
+外部專案也不套用本 repo blocking-policy 的 `exceptions`；`checkov:skip=`、`trivy:ignore` 行內註解工具一定會採信 → 列進 `status_reason`。`config/checkov/.checkov.yaml` 的 `skip-path`（含本 repo 靶場路徑）對所有目標相同。
+
 工作流對應：`pr-gates.yml`（方式 A 或 B + Checkov + Trivy）、`nightly-full.yml`（CodeQL + 全量）。所有 SARIF 由 harness 合併進 `reports/vibesec.sarif`，`rule_id` 對 `config/catalogs/cwe-map.yaml` 補 CWE / control_id。
 
 ## 工具與設定檔
@@ -135,6 +151,7 @@ checkov -d . --config-file config/checkov/.checkov.yaml --check ''   # 清空 al
 | CodeQL | 夜間跨檔跨函式 | `nightly-full.yml` |
 | Checkov | Terraform / Dockerfile / K8s / GHA / secrets | `config/checkov/.checkov.yaml`、`config/checkov/custom/*.yaml` |
 | Trivy（`trivy config`） | IaC 第二意見 | — |
+| `scripts/g3_sast.py` | 本機／harness：三個工具 → G3 gate JSON；`--target` 掃其他專案 | 同上三份設定 |
 | Dependabot（github-actions） | 已釘 SHA 的 Actions 自動升級 PR（每週、cooldown 14 天，與 G1 一致）；升級 PR 照常跑閘門 | `.github/dependabot.yml` |
 | KICS（可選） | IaC 第三意見；Terraform / CloudFormation / Ansible | — |
 

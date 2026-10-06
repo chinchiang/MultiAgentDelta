@@ -15,10 +15,10 @@ description: 依 vibesec.yaml 執行 G0–G6 閘門、彙整發現、呼叫 revi
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；有 `--target` → `g1,g2`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
+| `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；有 `--target` → `g1,g2,g3`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
 | `--mode` | `vibesec.yaml` 的 `mode` | 只能 shadow → enforce；傳 `shadow` 但設定是 `enforce` 時忽略並在 summary 註明 |
 | `--diff` | `origin/main` 若存在，否則 full | diff-aware 閘門的比較基準 |
-| `--target` | 本 repo（`.`） | 被測專案的本機路徑（git repo 根目錄），例如 `../MultiAgentBeta`。目前只有 **G1 套件預檢與 G2 機密掃描**支援：設定、清單、政策一律取自本 repo，報告寫在本 repo 的 `reports/`（不寫進被測專案）。本 repo 的 blocking-policy `exceptions` 只核准給本 repo 路徑，掃外部專案時不套用。有 `--target` 時要求 G3 / G4 → 記 `incomplete`（`status_reason: "--target 尚未支援 G<N>"`），**不得改掃本 repo 充數**；G0 讀的是本 repo 的威脅模型，同樣記 `incomplete` |
+| `--target` | 本 repo（`.`） | 被測專案的本機路徑（git repo 根目錄），例如 `../MultiAgentBeta`。目前 **G1 套件預檢、G2 機密掃描、G3 SAST／IaC** 支援：設定、清單、政策一律取自本 repo，報告寫在本 repo 的 `reports/`（不寫進被測專案）。本 repo 的 blocking-policy `exceptions` 只核准給本 repo 路徑，掃外部專案時不套用。有 `--target` 時要求 G4 → 記 `incomplete`（`status_reason: "--target 尚未支援 G4"`），**不得改掃本 repo 充數**；G0 讀的是本 repo 的威脅模型，同樣記 `incomplete` |
 | `--target-url` | `$VIBESEC_TARGET_URL` | G5 / G6 目標；必須先確認是授權的測試環境 |
 
 ## 步驟 0：讀取與檢查
@@ -77,12 +77,12 @@ python3 scripts/g2_secrets.py --target "$TARGET" --out-dir reports/raw/G2 --gate
 ### G3 SAST / IaC
 
 ```bash
-semgrep scan --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit --sarif -o reports/raw/G3/semgrep.sarif --metrics=off [--baseline-commit <base>]
-checkov -d . -o sarif --output-file-path reports/raw/G3/ --quiet
-trivy config --format sarif -o reports/raw/G3/trivy-config.sarif .
+# semgrep（vibesec.yaml semgrep_rules）+ checkov（config/checkov/.checkov.yaml）+ trivy config → reports/raw/G3/*.sarif 與 G3 gate JSON
+# 任一工具缺席／逾時／失敗、目標不是 git repo 根目錄 → incomplete。exit 1 = blocking、2 = incomplete
+python3 scripts/g3_sast.py --target "$TARGET" [--base <base>] --out-dir reports/raw/G3 --gate reports/gates/G3.json
 ```
 
-Semgrep 缺席 → G3 `incomplete`；checkov / trivy-config 缺席 → 對應 IaC 控制 `untested`，G3 仍 `incomplete`。SARIF 內 `rule.id` 以 `vibesec.g3.*` 開頭者沿用，否則加前綴 `semgrep:` / `checkov:` / `trivy:`。
+外部專案：`# nosemgrep` 不採信（`--disable-nosem`）；checkov 掃目標追蹤中檔案的副本（去掉 `.checkov.yaml` 與 symlink），trivy 以空目錄為工作目錄，目標自己的設定不會被載入；目標的 `.semgrepignore` 與 `checkov:skip=`／`trivy:ignore` 行內註解工具仍會採信，寫進 `status_reason` 待人工確認。Semgrep 缺席 → G3 `incomplete`；checkov / trivy-config 缺席 → 對應 IaC 控制 `untested`，G3 仍 `incomplete`。SARIF 內 `rule.id` 以 `vibesec.g3.*` 開頭者沿用，否則加前綴 `semgrep:` / `checkov:` / `trivy:`。
 
 ### G4 架構與存取控制
 
