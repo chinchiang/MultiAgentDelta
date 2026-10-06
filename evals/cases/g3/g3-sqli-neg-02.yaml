@@ -1,0 +1,24 @@
+id: g3-sqli-neg-02
+gate: G3
+domain: general_vulnerabilities
+title: Map 與 HTTP client 的 .get 不是 SQL 執行點
+input:
+  kind: code
+  language: typescript
+  snippet: |
+    const sessions = new Map<string, string>();
+    function identity(req) {
+      const authorization = req.headers.authorization ?? '';
+      return sessions.get(authorization.slice(7));
+    }
+    async function poll(page, base, req) {
+      const created = await req.json();
+      return page.request.get(`${base}/api/runs/${created.id}`);
+    }
+expected:
+  should_flag: false
+  control_id: ASVS5-V1.2
+  rule_id: vibesec.g3.sql-string-concat
+  policy_tier: blocking
+held_out: false
+notes: 2026-10-06 對 MultiAgentBeta 的 G3 掃描：fixtures/web-api/server.ts:53 與 frontend/scripts/browser-smoke.cjs:44 兩筆 blocking 都是這種誤判。

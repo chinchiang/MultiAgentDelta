@@ -209,7 +209,10 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
         status = "fail" if static_blocking else "incomplete"
     else:
         for p in record["providers"]:
-            tools.append({"name": p["provider"], "version": p.get("model"), "state": p["state"], "exit_code": None,
+            # gate-result 的 tools 沒有 refused：資料分級不允許、未送出的 provider 記為 missing（未執行），exit_code 沿用 review_provider.py 的 3
+            tools.append({"name": p["provider"], "version": p.get("model"),
+                          "state": "missing" if p["state"] == "refused" else p["state"],
+                          "exit_code": 3 if p["state"] == "refused" else None,
                           "output_ref": record_ref, "duration_seconds": None})
         coverage += [dict(c) for c in record["coverage"]]
         confirmed_blocking = []
@@ -423,6 +426,14 @@ def selftest() -> list[str]:
     ev5 = evaluate(r5, cfg, controls, None)
     if gate_of(r5, ev5)["status"] != "incomplete":
         fails.append("family < min → 閘門應為 incomplete")
+    # 資料分級不允許而拒收（refused）照實記錄：紀錄通過 schema，不算 family，gate 的 tools 仍符合 gate-result schema
+    r6 = copy.deepcopy(r4); r6["providers"][1]["state"] = "refused"
+    ev6 = evaluate(r6, cfg, controls, None)
+    g6 = gate_of(r6, ev6)
+    if ev6["errors"] or g6["status"] != "incomplete" or not any("refused" in e for e in ev6["incomplete"]):
+        fails.append(f"refused 的 provider 不算 family、紀錄仍有效（errors {ev6['errors']}、gate {g6['status']}）")
+    if any(t["state"] == "refused" for t in g6["tools"]):
+        fails.append("gate 的 tools 不得出現 refused（gate-result schema 沒有此值）")
     # 信任上限：本 PR 新增的紀錄不能自證
     if trust_cap(False, "appsec-lead", "author", []) is not None:
         fails.append("已在 base 上的紀錄（未在本 PR 變更）應可信")

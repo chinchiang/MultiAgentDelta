@@ -14,7 +14,7 @@ thresholds:
 
 similarity:
   # 名稱正規化後（小寫；pypi 把 _ 與 . 視同 -；npm 去除 scope 另比）與 popular list 比對
-  levenshtein_max: 2           # 距離 ≤ 2 且不相等 → 疑似 typosquat
+  levenshtein_max: 2           # 距離 ≤ 2 且不相等 → 疑似 typosquat（optimal string alignment：相鄰易位算 1；≤ 5 字元的名稱只認 1）
   difflib_ratio_min: 0.85      # difflib.SequenceMatcher ratio ≥ 0.85 且不相等 → 疑似 typosquat
   min_name_length: 4           # 太短的名稱不比對（避免 ws / qs 等誤報）
   homoglyph_check: true        # 同形字（大寫 I vs 小寫 l、數字 0 vs 字母 o）正規化後再比

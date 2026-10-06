@@ -39,11 +39,14 @@ held_in:
 - g1-postinstall-pos-01
 - g1-rulesfile-pos-01
 - g1-slopsquat-neg-01
+- g1-slopsquat-neg-02
 - g1-slopsquat-pos-02
 - g2-envignore-neg-01
 - g2-llmkey-neg-01
 - g2-llmkey-pos-01
 - g2-secret-neg-01
+- g2-secret-neg-02
+- g2-secret-pos-02
 - g3-actions-prt-neg-01
 - g3-actions-prt-pos-01
 - g3-actions-unpinned-pos-01
@@ -54,6 +57,8 @@ held_in:
 - g3-jwt-none-neg-01
 - g3-jwt-none-pos-01
 - g3-sqli-neg-01
+- g3-sqli-neg-02
+- g3-sqli-pos-02
 - g3-xss-neg-01
 - g3-xss-pos-01
 - g4-agent-tools-pos-01
