@@ -23,7 +23,7 @@ role: harness
 | Provider | `config/providers.yaml` | 審查全部 incomplete；確定性閘門照跑 |
 | Catalogs | `config/catalogs/` | 所有 ID 填 `null` 並在 `notes` 說明 |
 | 威脅模型 | `project.threat_model` | G0 incomplete；risk_tier 標「未核對」 |
-| 參數 | `--gate`、`--mode`、`--diff`、`--target-url` | 以 `vibesec.yaml` 為準；`--mode` 只能升級不能降級 |
+| 參數 | `--gate`、`--mode`、`--diff`、`--target`、`--target-url` | 以 `vibesec.yaml` 為準；`--mode` 只能升級不能降級；`--target`（被測專案路徑）支援 G0–G4（G0 讀目標自己的威脅模型；外部專案的 G4 LLM 審查紀錄只採信本 repo 的 reviews/g4/external/<目標 HEAD>.yaml） |
 | 環境變數 | `VIBESEC_TARGET_URL`、`VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B`、各 `api_key_env` | 缺 → 對應閘門 / provider incomplete |
 
 ## 3. 逐步程序

@@ -3,6 +3,7 @@
 
 檢查：(1) 無已追蹤的 .env / .env.* 檔（.env.example / .env.sample 除外）；
       (2) .gitignore 含 .env 規則。
+用法：python3 scripts/env_guard.py [--target <dir>]（預設本 repo；scripts/g2_secrets.py 以 check() 檢查被測專案）
 退出碼：0 通過；1 阻擋。
 """
 from __future__ import annotations
@@ -13,22 +14,29 @@ ROOT = Path(__file__).resolve().parent.parent
 ALLOW = re.compile(r'\.env\.(example|sample|template)$')
 ENV_RE = re.compile(r'(^|/)\.env(\.[^/]*)?$')
 
-def tracked():
+def tracked(root=ROOT):
     try:
-        r = subprocess.run(["git", "ls-files"], capture_output=True, text=True, cwd=ROOT)
+        r = subprocess.run(["git", "ls-files"], capture_output=True, text=True, cwd=root)
         return r.stdout.splitlines()
     except Exception:
         return []
 
-def main():
-    bad = [f for f in tracked() if ENV_RE.search(f) and not ALLOW.search(f)]
+def check(root=ROOT):
+    """回傳錯誤訊息清單；空清單 = 通過。"""
+    root = Path(root)
+    bad = [f for f in tracked(root) if ENV_RE.search(f) and not ALLOW.search(f)]
     errs = []
     if bad:
         errs.append("已追蹤的機密檔（應移出版控並撤銷其中憑證）：\n  - " + "\n  - ".join(bad))
-    gi = ROOT / ".gitignore"
+    gi = root / ".gitignore"
     gi_text = gi.read_text() if gi.exists() else ""
     if not re.search(r'^\s*\.env', gi_text, re.M):
         errs.append(".gitignore 未包含 .env 規則（新建的 .env 可能被誤加入）。")
+    return errs
+
+def main(argv):
+    root = Path(argv[argv.index("--target") + 1]) if "--target" in argv[:-1] else ROOT
+    errs = check(root)
     if errs:
         print("⛔ G2 .env 防護阻擋：\n" + "\n".join(errs), file=sys.stderr)
         return 1
@@ -36,4 +44,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

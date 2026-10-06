@@ -84,7 +84,7 @@ def suspicious(name, popular):
 
 - 命中 → `vibesec.g1.hallucinated-package`（blocking），finding.notes 記 `looks_like`。
 - `blacklist.yaml` 的 `status` 分三類：`confirmed_malicious`（曾被下架 / CERT 證實，例如 `crossenv`、`colourama`、`jeIlyfish`、`torchtriton`）、`hallucination_prone`（`axois`、`reqeusts`、`python-dotenv-env`、`yaml`、`beautifulsoup`；`huggingface-cli` 也是 LLM 常捏造的名稱，PyPI 上並不存在，真正提供該指令的套件是 `huggingface-hub`）、`confusable_legit`（真實存在但易混淆，例如 `sklearn` 應為 `scikit-learn`、`pytorch` 應為 `torch`）。
-- **規則檔也要掃**（`scan_agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "**/*.md"]`）：AI 助手會「照做」規則檔裡的 `pip install foo`；在這些檔案發現未知 / 黑名單套件 → `vibesec.g1.rules-file-unknown-package`。同時這一步順便執行 G4 的隱形 Unicode 掃描（`VS-G4-RULES-FILE-UNICODE`）。
+- **規則檔也要掃**（`scan_agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "**/*.md"]`）：AI 助手會「照做」規則檔裡的 `pip install foo`；在這些檔案發現未知 / 黑名單套件 → `vibesec.g1.rules-file-unknown-package`。帶值旗標後面的是檔案、路徑或 URL，不是套件名（`pip install -r requirements.txt`、`-e git+https://…`、`--index-url …`、`npm install --registry …`；清單見 `scripts/g1_slopcheck.py` 的 `VALUE_FLAGS`）；同一個檔重複提及同一個套件只記一次。同時這一步順便執行 G4 的隱形 Unicode 掃描（`VS-G4-RULES-FILE-UNICODE`）。
 
 ### 第 3 層：安裝鉤子
 
@@ -149,6 +149,17 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 
 本機開發者：`.pre-commit-config.yaml` 掛同一支檢查腳本（只跑第 1、2、4 層，秒級）。
 
+掃其他專案（被測專案在本機另一個目錄）：
+
+```bash
+python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
+  --sarif reports/raw/G1/slopcheck.sarif --gate reports/raw/G1/slopcheck-gate.json > reports/raw/G1/slopcheck.json
+```
+
+只給 `--target` → 全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（`scope: full`）；`--changed-files`、`--staged`、`--base`、相對路徑都以目標專案為準。設定、清單與阻擋政策取自本 repo；`blocking-policy.yaml` 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用。`pnpm-lock.yaml`、`yarn.lock` 尚無解析器 → `incomplete` 並列出檔名。
+
+`package-lock.json`（lockfileVersion 1–3）逐筆解析（別名取實名、略過 workspace 連結）：每個條目都做 registry 存在性、冷卻期、安裝 hook、週下載與黑名單；名稱相似度只做**直接相依**（根目錄與 workspace 宣告的相依；v1 取同目錄 `package.json`），間接相依的名稱由上游決定、不是開發者或 AI 打出來的。`resolved` 不在 npm registry（git、file、tarball URL、私有 registry）或版本不是 semver 的條目無法以 registry 驗證 → `incomplete` 並列出。同一個（名稱, 版本）只查一次，registry 以 8 個並行查詢；連線中斷、傳輸截斷、逾時、429、5xx 重試 2 次（404 不重試），仍失敗 → `incomplete`。
+
 ## 工具與設定檔
 
 | 工具 | 用途 | 設定 |
@@ -176,6 +187,19 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 | 無 lockfile / Registry API 失敗 | `fail` / `incomplete` | — |
 
 正式判定以 `config/policy/blocking-policy.yaml` 為準。
+
+### 套件例外：`config/slopsquat/allowlist.yaml`
+
+`scripts/g1_slopcheck.py` 的 `load_allowlist()` 讀 `entries`，只採用合規且未過期的條目；其餘忽略並列在輸出的 `ignored_allowlist` 與 gate `status_reason`（fail closed）。
+
+| 欄位 | 規則 |
+|---|---|
+| `package`、`approved_by`、`expires`、`reason`、`bypass` | 必填；`expires` 為 `YYYY-MM-DD`，過期即失效 |
+| `ecosystem` | `npm` / `pypi`；省略＝所有生態系。名稱比對同第 2 層（PyPI 依 PEP 503） |
+| `version` | 省略／`null`＝所有版本；精確版本（`2.32.5`、`==2.32.5`）；或全部須成立的比較式（`>=2.0.0 <3.0.0`、`>=2,<3`）。`^`、`~`、`x`、`\|\|` 不接受（條目忽略）；預發布版本不落在範圍內 |
+| `bypass` | 只能是 `registry_health`（registry 查無）、`low_download`、`cooldown`、`blacklist`、`similarity`（名稱相似度）。**安裝 hook（`postinstall-egress`）與 KEV 不可放行**，寫了整筆忽略 |
+
+套用方式：allowlist 內的套件仍做全部檢查（安裝 hook 照查）；某筆發現的檢查在條目的 `bypass` 內且版本相符 → blocking 降為 advisory，發現保留並附 `allowlist`（核准人、到期日、ticket、理由），同 blocking-policy 的 `exceptions`。allowlist 以套件為單位、不綁路徑，`--target` 掃其他專案時同樣適用。
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 

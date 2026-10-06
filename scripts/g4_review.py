@@ -87,8 +87,9 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
     if errors:
         return {"errors": errors, "incomplete": [], "findings": [], "families": 0}
     incomplete: list[str] = []
-    if path is not None and path.parent.name == "g4" and path.stem != record["commit"]:
-        errors.append(f"檔名 {path.name} 與 commit {record['commit']} 不一致（必須是 reviews/g4/<commit>.yaml）")
+    # reviews/g4/<commit>.yaml（本 repo）與 reviews/g4/external/<commit>.yaml（外部專案）都以審查的 commit 命名
+    if path is not None and path.parent.name in ("g4", "external") and path.stem != record["commit"]:
+        errors.append(f"檔名 {path.name} 與 commit {record['commit']} 不一致（必須是 {path.parent.name}/<commit>.yaml）")
 
     # providers：名稱與 family 必須與 providers.yaml 一致（避免「兩個 family」是寫出來的）
     pf = cfg["provider_family"]

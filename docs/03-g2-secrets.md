@@ -90,6 +90,14 @@ semgrep --config config/semgrep/vibesec-rules.yaml --include '*.py' --include '*
   --sarif -o reports/semgrep-g2.sarif .
 ```
 
+掃其他專案（本機 harness；CI 的 G2 job 只掃本 repo）：
+
+```bash
+python3 scripts/g2_secrets.py --target ../MultiAgentBeta --out-dir reports/raw/G2 --gate reports/gates/G2.json
+```
+
+以本 repo 的 `config/gitleaks.toml` 對目標專案跑 `gitleaks git`（全歷史、`--redact`），再以 `scripts/env_guard.py` 的同一套規則檢查 `.env`，由 `scripts/sarif_gate.py` 推導 G2 gate JSON。gitleaks 缺席／逾時／失敗、目標不是 git repo 根目錄、shallow clone → `incomplete`。外部專案：本 repo 的 `exceptions` 不套用，目標專案自己的 `gitleaks:allow` 不採信（例外只能經 blocking-policy 核准），有 `.gitleaksignore` 時在 `status_reason` 註明。
+
 GitHub 原生 Secret Scanning + Push Protection 若可用，開啟後與 gitleaks 並行（互補：GitHub 有合作夥伴驗證金鑰是否有效）。
 
 ## 工具與設定檔
@@ -98,6 +106,7 @@ GitHub 原生 Secret Scanning + Push Protection 若可用，開啟後與 gitleak
 |---|---|---|
 | gitleaks（github.com/gitleaks/gitleaks） | 歷史 / 暫存區 / 範圍掃描；SARIF | `config/gitleaks.toml` |
 | pre-commit | 本機 hook | `.pre-commit-config.yaml` |
+| `scripts/g2_secrets.py` | 本機 / harness：gitleaks 全歷史 + `.env` 防護 → G2 gate JSON；`--target` 掃其他專案 | `config/gitleaks.toml` |
 | Semgrep | PR diff 第二道 | `vibesec.g2.hardcoded-llm-key` |
 | trivy `--scanners secret`（可選） | 容器層 / 建置產物中的祕密 | 由 G1 job 一起跑 |
 | git filter-repo / BFG Repo-Cleaner | 事故後清歷史 | 見 SOP |

@@ -169,12 +169,19 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 3. **規則**：高風險控制 ≥ 2 個不同 `family`；第一輪不交換結論；最多兩輪交叉；保留少數意見；不多數決；分歧 `requires_human: true`（CLAUDE.md 規則 6）。模型意見記在 `finding.review.opinions[]`，`evidence_grade` 最高 E1，人工核對程式後才升 E2 / E3。
 4. **資料分級**：未分類程式碼只能送 `config/providers.yaml` 允許的 provider（規則 7）。
 
+本機 / harness：`python3 scripts/g4_access.py [--target <dir>] --out-dir reports/raw/G4 --gate reports/gates/G4.json`。
+
+- 靜態部分直接執行 `pr-gates.yml`「G4 靜態檢查」步驟的同一段程式碼（`scripts/run_evals.py` 的 G4 評測也用它），在目標「追蹤中檔案」的暫存副本上跑（不跟隨 symlink、不把 `reports/` 寫進被測專案）。
+- `VS-G4-LLM-REVIEW`：目標是本 repo 時與 CI 相同，由 `scripts/g4_review.py` 從 `reviews/g4/` 找對 HEAD 有效的紀錄（本機沒有 PR，不檢查 approve）。
+- `--target` 指向外部專案時，**不讀目標自己的 `reviews/g4/`、`rulings/`**——那是被測專案自己寫的，等於自證。外部專案的紀錄放在本 repo 的 `reviews/g4/external/<commit>.yaml`（2026-10-06 人工決定），格式、規則與核准方式同 `reviews/g4/`，裁決同樣放本 repo 的 `rulings/`。只有 `<commit>` 恰好是目標目前的 HEAD、目標追蹤中的檔案沒有未提交修改時才採用；紀錄尚未提交到本 repo 或 `recorded_by.handle` 空白 → 最高 `pending`。沒有可用紀錄 → `VS-G4-LLM-REVIEW` 維持 `pending`，G4 最多 `incomplete`（有靜態 blocking 則 `fail`）。細節見 `reviews/README.md`。
+
 ## 工具與設定檔
 
 | 用途 | 檔案 / 工具 |
 |---|---|
 | 靜態規則 | `config/semgrep/vibesec-rules.yaml`（`vibesec.g4.*`） |
 | Unicode 掃描 | 上述 grep / python 腳本（harness 內建） |
+| 本機 / harness 閘門 | `scripts/g4_access.py`（CI 同一段靜態檢查 + 審查紀錄；`--target` 掃其他專案） |
 | 工具白名單 | OPA（Rego 政策，建議放 `config/policy/agent-tools.rego`，由 AppSec 維護） |
 | 審查角色提示 | `config/harness/`、`.claude/agents/`（architecture、identity） |
 | 控制對照 | `config/catalogs/cwe-map.yaml`、`asvs-5.0-controls.yaml`、`llm-top10-2025.yaml`、`maestro-layers.yaml` |

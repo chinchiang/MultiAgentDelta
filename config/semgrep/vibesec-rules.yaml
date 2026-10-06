@@ -531,7 +531,13 @@ rules:
           - pattern: $DB.query($MODEL).filter($MODEL.id == $ID)
           - pattern: $DB.query($MODEL).filter_by(id=$ID)
           - pattern: $DB.query($MODEL).get($ID)
-          - pattern: $DB.get($MODEL, $ID)
+          # SQLAlchemy 的 session.get(Model, id)：$MODEL 必須像類別名稱（User、models.User），
+          # 否則 dict／header／cookie 的 .get(key, default) 也會命中（2026-10-06 對 MultiAgentBeta 的 G4 審查：9 筆皆為誤判）
+          - patterns:
+              - pattern: $DB.get($MODEL, $ID)
+              - metavariable-regex:
+                  metavariable: $MODEL
+                  regex: ^([A-Za-z_][A-Za-z0-9_]*\.)*[A-Z][A-Za-z0-9_]*$
           - pattern: select($MODEL).where($MODEL.id == $ID)
           - pattern: $MODEL.query.get($ID)
           - pattern: $MODEL.query.filter_by(id=$ID)
