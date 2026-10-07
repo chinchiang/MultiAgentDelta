@@ -12,6 +12,9 @@
     這些狀態都不是意見，呼叫端必須照實記錄（incomplete ≠ pass，規則 2），不得補假意見。
   - system prompt = config/harness/roles/<role>.md 全文（與 sub-agent 同一份）；temperature 0、JSON 輸出。
   - 回應中的 confidence／信心類欄位一律丟棄（規則 4：模型自評信心不轉成證據等級）。
+  - 回應必須符合審查包要求的輸出契約：審查包的 output 要 {"opinions", "general"} 時用 review-summary，
+    否則是 docs/09 §3 的單一 opinion。不是合法 JSON 或不符契約 → 重試一次，再不符 → state=error（docs/09 §1）；
+    harness 不替模型改寫格式。
 離開碼：0 = ran；2 = missing／timeout／error；3 = refused；4 = 參數或設定錯誤。
 """
 from __future__ import annotations
@@ -19,6 +22,11 @@ import argparse, json, os, pathlib, re, socket, sys, urllib.error, urllib.parse,
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIDENCE_KEYS = re.compile(r"confidence|certainty|probability|信心", re.I)
+VERDICTS = ("confirm", "refute", "uncertain")
+
+
+class BadResponse(ValueError):
+    """模型回應不是可解析的 JSON 物件：可以重試一次（與 HTTP／設定錯誤不同）。"""
 
 try:
     import yaml
@@ -83,7 +91,10 @@ def _openai(p: dict, key: str, system: str, user: str) -> tuple[dict, str | None
             raise RuntimeError(f"HTTP {e.code}: {msg}") from None
     else:
         raise RuntimeError("參數調整後仍失敗")
-    return json.loads(d["choices"][0]["message"]["content"]), d.get("model"), notes
+    try:
+        return json.loads(d["choices"][0]["message"]["content"]), d.get("model"), notes
+    except json.JSONDecodeError as e:
+        raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
 
 
 def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | None, list[str]]:
@@ -94,8 +105,47 @@ def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | N
     text = "".join(b.get("text", "") for b in d.get("content") or [] if b.get("type") == "text")
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
-        raise ValueError("回應中沒有 JSON")
-    return json.loads(m.group(0)), d.get("model"), []
+        raise BadResponse("回應中沒有 JSON")
+    try:
+        return json.loads(m.group(0)), d.get("model"), []
+    except json.JSONDecodeError as e:
+        raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
+
+
+def output_contract(packet: dict) -> str:
+    """審查包要求的輸出形狀：明列 output_contract 優先；output 說明要 general 摘要者為 review-summary。"""
+    if packet.get("output_contract") in ("review-summary", "finding-opinion"):
+        return packet["output_contract"]
+    out = packet.get("output")
+    return "review-summary" if isinstance(out, str) and '"general"' in out else "finding-opinion"
+
+
+def contract_errors(opinion, contract: str) -> list[str]:
+    """回應不符輸出契約的原因（空 = 符合）。只檢查形狀，不判斷內容對錯。"""
+    if not isinstance(opinion, dict):
+        return ["回應不是 JSON 物件"]
+    errs = []
+    if contract == "review-summary":
+        if not isinstance(opinion.get("opinions"), list):
+            errs.append("缺 opinions 陣列")
+        g = opinion.get("general")
+        if not isinstance(g, dict) or not isinstance(g.get("summary"), str) or not isinstance(g.get("concerns"), list):
+            errs.append("缺 general.summary 或 general.concerns")
+        else:
+            for i, c in enumerate(g["concerns"]):
+                if not isinstance(c, dict) or not isinstance(c.get("title"), str) or not isinstance(c.get("cited_evidence"), list):
+                    errs.append(f"general.concerns[{i}] 缺 title 或 cited_evidence"); break
+        return errs
+    if opinion.get("verdict") not in VERDICTS:
+        errs.append("verdict 必須是 " + "／".join(VERDICTS))
+    if not isinstance(opinion.get("rationale"), str):
+        errs.append("缺 rationale")
+    ev = opinion.get("cited_evidence")
+    if not isinstance(ev, list):
+        errs.append("cited_evidence 必須是陣列")
+    elif not ev and opinion.get("verdict") != "uncertain":
+        errs.append("cited_evidence 為空時 verdict 只能是 uncertain（docs/09 §3）")
+    return errs
 
 
 def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
@@ -116,15 +166,30 @@ def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.
     fn = {"openai_compatible": _openai, "anthropic": _anthropic}.get(p.get("kind"))
     if fn is None:
         return {**out, "state": "error", "note": f"不支援的 kind {p.get('kind')!r}"}
-    try:
-        opinion, served, notes = fn(p, key, system, user)
-    except (socket.timeout, TimeoutError):
-        return {**out, "state": "timeout", "note": f"超過 {p.get('timeout_seconds', 120)} 秒"}
-    except urllib.error.URLError as e:
-        st = "timeout" if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)) else "error"
-        return {**out, "state": st, "note": str(e.reason)[:300]}
-    except (RuntimeError, ValueError, KeyError, IndexError) as e:
-        return {**out, "state": "error", "note": str(e).replace(key, "***")[:500]}
+    contract = output_contract(packet)
+    rejected: list[str] = []
+    for _ in range(2):   # 不符契約只重試一次（docs/09 §1）；HTTP／逾時／設定錯誤不重試
+        try:
+            opinion, served, notes = fn(p, key, system, user)
+        except (socket.timeout, TimeoutError):
+            return {**out, "state": "timeout", "note": f"超過 {p.get('timeout_seconds', 120)} 秒"}
+        except urllib.error.URLError as e:
+            st = "timeout" if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)) else "error"
+            return {**out, "state": st, "note": str(e.reason)[:300]}
+        except BadResponse as e:
+            problems = [str(e)]
+        except (RuntimeError, ValueError, KeyError, IndexError) as e:
+            return {**out, "state": "error", "note": str(e).replace(key, "***")[:500]}
+        else:
+            problems = contract_errors(opinion, contract)
+        if not problems:
+            break
+        rejected.append("、".join(problems))
+    else:
+        return {**out, "state": "error",
+                "note": f"回應兩次都不符輸出契約 {contract}（docs/09 §1，不採用）：" + "／".join(rejected)}
+    if rejected:
+        notes = [f"第 1 次回應不符輸出契約 {contract}，已重試一次：{rejected[0]}", *notes]
     return {**out, "state": "ran", "model": served or p.get("model"), "opinion": strip_confidence(opinion),
             "note": "；".join(notes) or None}
 
@@ -134,6 +199,7 @@ def selftest() -> list[str]:
     import http.server, tempfile, threading, time
     fails: list[str] = []
     seen: list[dict] = []
+    calls: dict[str, int] = {}
 
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -145,7 +211,30 @@ def selftest() -> list[str]:
             if body["model"] == "no-temp" and "temperature" in body:
                 self.send_response(400); self.end_headers()
                 self.wfile.write(b'{"error":{"message":"Unsupported parameter: temperature"}}'); return
-            content = json.dumps({"verdict": "confirm", "confidence": 0.9, "rationale": "r", "cited_evidence": ["a:1"]})
+            good = {"verdict": "confirm", "confidence": 0.9, "rationale": "r", "cited_evidence": ["a:1"]}
+            summary = {"opinions": [], "general": {"summary": "s", "concerns": [{"title": "t", "cited_evidence": [{"kind": "code_excerpt", "ref": "a.py:1"}]}]}}
+            model = body["model"]
+            calls[model] = calls.get(model, 0) + 1
+            if model == "flip":        # 第一次回錯形狀，第二次正確
+                content = json.dumps(summary if calls[model] > 1 else good)
+            elif model == "bad":       # 一直回錯形狀
+                content = json.dumps(good)
+            elif model == "badconcern":   # concern 缺 cited_evidence
+                content = json.dumps({"opinions": [], "general": {"summary": "s", "concerns": [{"title": "t"}]}})
+            elif model == "norationale":
+                content = json.dumps({k: v for k, v in good.items() if k != "rationale"})
+            elif model == "badverdict":
+                content = json.dumps({**good, "verdict": "yes"})
+            elif model == "noopinions":   # 只有 general，缺 opinions
+                content = json.dumps({"general": summary["general"]})
+            elif model == "nojson":
+                content = "not json"
+            elif model == "noev":      # 沒有證據卻 confirm
+                content = json.dumps({**good, "cited_evidence": []})
+            elif model == "http500":
+                self.send_response(500); self.end_headers(); self.wfile.write(b"boom"); return
+            else:
+                content = json.dumps(good)
             resp = {"model": body["model"] + "-served", "choices": [{"message": {"content": content}}]}
             try:
                 self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(resp).encode())
@@ -163,7 +252,8 @@ def selftest() -> list[str]:
                                   "enabled": True, **kw}
         (root / "config/providers.yaml").write_text(yaml.safe_dump({"providers": {
             "ok": mk("m"), "slow": mk("slow"), "notemp": mk("no-temp"), "pub": mk("m", allowed_data_classes=["public"]),
-            "off": mk("m", enabled=False), "file": mk("m", base_url="file:///etc")}}))
+            "off": mk("m", enabled=False), "file": mk("m", base_url="file:///etc"),
+            "flip": mk("flip"), "bad": mk("bad"), "nojson": mk("nojson"), "noopinions": mk("noopinions"), "badconcern": mk("badconcern"), "badverdict": mk("badverdict"), "norationale": mk("norationale"), "noev": mk("noev"), "http500": mk("http500")}}))
         env = {"K": "sk-secret-123"}
         pk = {"finding": {"id": "VS-20260101-00000000"}}
         r = call("ok", "architecture", "internal", pk, root, env)
@@ -186,6 +276,32 @@ def selftest() -> list[str]:
         if r["state"] != "error" or "http" not in (r["note"] or ""): fails.append(f"file:// base_url → error：{r}")
         r = call("notemp", "architecture", "internal", pk, root, env)
         if r["state"] != "ran" or "temperature" not in (r["note"] or ""): fails.append(f"不接受 temperature → 調整後 ran 並註記：{r}")
+        # 輸出契約：G4 審查包要 {opinions, general}；不符重試一次，再不符 error，不改寫模型輸出
+        g4 = {"findings": [], "output": '回傳 {"opinions": [], "general": {"summary": "…", "concerns": []}}'}
+        r = call("flip", "architecture", "internal", g4, root, env)
+        if r["state"] != "ran" or calls.get("flip") != 2 or "已重試" not in (r["note"] or "") or "general" not in (r["opinion"] or {}):
+            fails.append(f"第一次形狀不符 → 重試一次後 ran 並註記：{r}")
+        r = call("bad", "architecture", "internal", g4, root, env)
+        if r["state"] != "error" or calls.get("bad") != 2 or r["opinion"] is not None or "兩次" not in (r["note"] or ""):
+            fails.append(f"兩次形狀都不符 → error、不採用意見、只重試一次：{r}")
+        r = call("ok", "architecture", "internal", g4, root, env)
+        if r["state"] != "error": fails.append(f"G4 審查包收到單一 opinion 形狀 → 不符契約：{r}")
+        r = call("noopinions", "architecture", "internal", g4, root, env)
+        if r["state"] != "error" or "opinions" not in (r["note"] or ""): fails.append(f"缺 opinions 陣列 → 不符契約：{r}")
+        r = call("badconcern", "architecture", "internal", g4, root, env)
+        if r["state"] != "error" or "concerns[0]" not in (r["note"] or ""): fails.append(f"concern 缺 cited_evidence → 不符契約：{r}")
+        r = call("badverdict", "architecture", "internal", pk, root, env)
+        if r["state"] != "error" or "verdict" not in (r["note"] or ""): fails.append(f"verdict 不在 confirm／refute／uncertain → 不符契約：{r}")
+        r = call("norationale", "architecture", "internal", pk, root, env)
+        if r["state"] != "error" or "rationale" not in (r["note"] or ""): fails.append(f"缺 rationale → 不符契約：{r}")
+        r = call("nojson", "architecture", "internal", pk, root, env)
+        if r["state"] != "error" or calls.get("nojson") != 2 or "JSON" not in (r["note"] or ""):
+            fails.append(f"不是 JSON → 重試一次後 error：{r}")
+        r = call("noev", "architecture", "internal", pk, root, env)
+        if r["state"] != "error" or "uncertain" not in (r["note"] or ""): fails.append(f"沒有證據卻 confirm → 不符契約：{r}")
+        r = call("http500", "architecture", "internal", pk, root, env)
+        if r["state"] != "error" or calls.get("http500") != 1: fails.append(f"HTTP 錯誤不重試：{r}／{calls.get('http500')}")
+        if output_contract({"output_contract": "finding-opinion", **g4}) != "finding-opinion": fails.append("明列 output_contract 優先")
     srv.shutdown()
     return fails
 
