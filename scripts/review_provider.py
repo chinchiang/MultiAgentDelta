@@ -168,16 +168,18 @@ def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.
         return {**out, "state": "error", "note": f"不支援的 kind {p.get('kind')!r}"}
     contract = output_contract(packet)
     rejected: list[str] = []
+    attempts: list[dict] = []   # 被拒絕的回應原樣保存（稽核用，不採用）
+    prompt = user
     for _ in range(2):   # 不符契約只重試一次（docs/09 §1）；HTTP／逾時／設定錯誤不重試
         try:
-            opinion, served, notes = fn(p, key, system, user)
+            opinion, served, notes = fn(p, key, system, prompt)
         except (socket.timeout, TimeoutError):
             return {**out, "state": "timeout", "note": f"超過 {p.get('timeout_seconds', 120)} 秒"}
         except urllib.error.URLError as e:
             st = "timeout" if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)) else "error"
             return {**out, "state": st, "note": str(e.reason)[:300]}
         except BadResponse as e:
-            problems = [str(e)]
+            opinion, problems = None, [str(e)]
         except (RuntimeError, ValueError, KeyError, IndexError) as e:
             return {**out, "state": "error", "note": str(e).replace(key, "***")[:500]}
         else:
@@ -185,13 +187,23 @@ def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.
         if not problems:
             break
         rejected.append("、".join(problems))
+        attempts.append({"problems": problems, "response": opinion})
+        # temperature 0 下送出同一份內容只會得到同一個回應：重試時說明上次哪裡不符、應回什麼形狀。
+        # 只補格式說明，不改審查包內容，也不替模型改寫結論。
+        prompt = (user + "\n\n上一次回應不符輸出契約（" + "、".join(problems) + "），不採用。請只回傳一個 JSON 物件，"
+                  + (f"形狀完全依照審查包的 output 欄位：{packet.get('output')}" if contract == "review-summary"
+                     else "形狀依照角色說明的單一 opinion（verdict 為 confirm／refute／uncertain，含 rationale 與 cited_evidence）")
+                  + "。審查內容由你重新判斷。")
     else:
-        return {**out, "state": "error",
+        return {**out, "state": "error", "rejected_attempts": attempts,
                 "note": f"回應兩次都不符輸出契約 {contract}（docs/09 §1，不採用）：" + "／".join(rejected)}
     if rejected:
-        notes = [f"第 1 次回應不符輸出契約 {contract}，已重試一次：{rejected[0]}", *notes]
-    return {**out, "state": "ran", "model": served or p.get("model"), "opinion": strip_confidence(opinion),
-            "note": "；".join(notes) or None}
+        notes = [f"第 1 次回應不符輸出契約 {contract}，已附格式說明重試一次：{rejected[0]}", *notes]
+    result = {**out, "state": "ran", "model": served or p.get("model"), "opinion": strip_confidence(opinion),
+              "note": "；".join(notes) or None}
+    if attempts:
+        result["rejected_attempts"] = attempts
+    return result
 
 
 # ------------------------------------------------------------------ selftest
@@ -217,6 +229,8 @@ def selftest() -> list[str]:
             calls[model] = calls.get(model, 0) + 1
             if model == "flip":        # 第一次回錯形狀，第二次正確
                 content = json.dumps(summary if calls[model] > 1 else good)
+            elif model == "needhint":  # 決定性模型：同一份輸入永遠同一個回應，只有收到格式說明才改回正確形狀
+                content = json.dumps(summary if "上一次回應不符輸出契約" in body["messages"][-1]["content"] else good)
             elif model == "bad":       # 一直回錯形狀
                 content = json.dumps(good)
             elif model == "badconcern":   # concern 缺 cited_evidence
@@ -253,7 +267,7 @@ def selftest() -> list[str]:
         (root / "config/providers.yaml").write_text(yaml.safe_dump({"providers": {
             "ok": mk("m"), "slow": mk("slow"), "notemp": mk("no-temp"), "pub": mk("m", allowed_data_classes=["public"]),
             "off": mk("m", enabled=False), "file": mk("m", base_url="file:///etc"),
-            "flip": mk("flip"), "bad": mk("bad"), "nojson": mk("nojson"), "noopinions": mk("noopinions"), "badconcern": mk("badconcern"), "badverdict": mk("badverdict"), "norationale": mk("norationale"), "noev": mk("noev"), "http500": mk("http500")}}))
+            "flip": mk("flip"), "needhint": mk("needhint"), "bad": mk("bad"), "nojson": mk("nojson"), "noopinions": mk("noopinions"), "badconcern": mk("badconcern"), "badverdict": mk("badverdict"), "norationale": mk("norationale"), "noev": mk("noev"), "http500": mk("http500")}}))
         env = {"K": "sk-secret-123"}
         pk = {"finding": {"id": "VS-20260101-00000000"}}
         r = call("ok", "architecture", "internal", pk, root, env)
@@ -279,11 +293,22 @@ def selftest() -> list[str]:
         # 輸出契約：G4 審查包要 {opinions, general}；不符重試一次，再不符 error，不改寫模型輸出
         g4 = {"findings": [], "output": '回傳 {"opinions": [], "general": {"summary": "…", "concerns": []}}'}
         r = call("flip", "architecture", "internal", g4, root, env)
-        if r["state"] != "ran" or calls.get("flip") != 2 or "已重試" not in (r["note"] or "") or "general" not in (r["opinion"] or {}):
+        if r["state"] != "ran" or calls.get("flip") != 2 or "重試一次" not in (r["note"] or "") or "general" not in (r["opinion"] or {}):
             fails.append(f"第一次形狀不符 → 重試一次後 ran 並註記：{r}")
+        n = len(seen)
+        r = call("needhint", "architecture", "internal", g4, root, env)
+        retry_msg = seen[-1]["body"]["messages"][-1]["content"] if len(seen) == n + 2 else ""
+        if r["state"] != "ran" or "general" not in (r["opinion"] or {}) or g4["output"] not in retry_msg:
+            fails.append(f"重試要附上不符原因與審查包的 output 形狀，決定性模型才會改正：{r}")
+        if [a["response"] for a in r.get("rejected_attempts") or []] != [{"verdict": "confirm", "confidence": 0.9, "rationale": "r", "cited_evidence": ["a:1"]}]:
+            fails.append(f"被拒絕的回應要原樣保存在 rejected_attempts：{r.get('rejected_attempts')}")
+        if seen[n]["body"]["messages"][-1]["content"] not in retry_msg or "上一次回應不符輸出契約" in seen[n]["body"]["messages"][-1]["content"]:
+            fails.append("第一次送出不含格式說明；重試保留完整審查包並附加說明")
         r = call("bad", "architecture", "internal", g4, root, env)
         if r["state"] != "error" or calls.get("bad") != 2 or r["opinion"] is not None or "兩次" not in (r["note"] or ""):
             fails.append(f"兩次形狀都不符 → error、不採用意見、只重試一次：{r}")
+        if len(r.get("rejected_attempts") or []) != 2:
+            fails.append(f"兩次都不符時兩個回應都要保存：{r.get('rejected_attempts')}")
         r = call("ok", "architecture", "internal", g4, root, env)
         if r["state"] != "error": fails.append(f"G4 審查包收到單一 opinion 形狀 → 不符契約：{r}")
         r = call("noopinions", "architecture", "internal", g4, root, env)
@@ -297,6 +322,8 @@ def selftest() -> list[str]:
         r = call("nojson", "architecture", "internal", pk, root, env)
         if r["state"] != "error" or calls.get("nojson") != 2 or "JSON" not in (r["note"] or ""):
             fails.append(f"不是 JSON → 重試一次後 error：{r}")
+        if [a["response"] for a in r.get("rejected_attempts") or []] != [None, None]:
+            fails.append(f"不是 JSON 的回應記為 None（不保存無法解析的文字）：{r.get('rejected_attempts')}")
         r = call("noev", "architecture", "internal", pk, root, env)
         if r["state"] != "error" or "uncertain" not in (r["note"] or ""): fails.append(f"沒有證據卻 confirm → 不符契約：{r}")
         r = call("http500", "architecture", "internal", pk, root, env)
