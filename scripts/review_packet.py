@@ -87,11 +87,19 @@ def changed_ranges(target: pathlib.Path, base: str, commit: str) -> dict[str, li
     return out
 
 
+def gitleaks_binary() -> str:
+    """操作者以 VIBESEC_GITLEAKS 指定 gitleaks，否則取 PATH 上的。只接受解析得到的可執行檔，回傳絕對路徑。"""
+    wanted = os.environ.get("VIBESEC_GITLEAKS")
+    found = shutil.which(wanted) if wanted else shutil.which("gitleaks")
+    if not found:
+        where = f"VIBESEC_GITLEAKS={wanted!r} 不是可執行檔" if wanted else "PATH 上找不到 gitleaks"
+        raise PacketError(f"{where}：無法確認祕密已遮罩，不產生審查包")
+    return str(pathlib.Path(found).resolve())
+
+
 def gitleaks_scan(texts: dict[str, str]) -> list[str]:
     """回傳命中的祕密字串。gitleaks 缺席或失敗 → PacketError（不產生審查包）。"""
-    binary = os.environ.get("VIBESEC_GITLEAKS") or shutil.which("gitleaks")
-    if not binary:
-        raise PacketError("找不到 gitleaks（VIBESEC_GITLEAKS 或 PATH）：無法確認祕密已遮罩，不產生審查包")
+    binary = gitleaks_binary()
     with tempfile.TemporaryDirectory(prefix="vibesec-packet-") as d:
         src = pathlib.Path(d) / "src"
         for name, text in texts.items():
@@ -203,7 +211,18 @@ def selftest() -> list[str]:
             gitleaks_scan({"a": "b"}); fails.append("缺 gitleaks 必須拒絕產生")
         except PacketError:
             pass
+        not_exec = pathlib.Path(d) / "not-executable"
+        not_exec.write_text("#!/bin/sh\nexit 0\n")
+        not_exec.chmod(0o644)
+        try:
+            for bogus in (str(not_exec), str(pathlib.Path(d) / "missing")):
+                os.environ["VIBESEC_GITLEAKS"] = bogus
+                try:
+                    gitleaks_binary(); fails.append(f"VIBESEC_GITLEAKS 指向非可執行檔必須拒絕：{bogus}")
+                except PacketError:
+                    pass
         finally:
+            os.environ.pop("VIBESEC_GITLEAKS", None)
             os.environ["PATH"] = path
             if old is not None:
                 os.environ["VIBESEC_GITLEAKS"] = old
