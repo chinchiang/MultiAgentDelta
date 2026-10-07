@@ -12,7 +12,7 @@ def complete(messages: list[Message], json_schema: dict, temperature: float = 0)
 ```
 
 - `messages`：`[{"role": "system", "content": <角色提示>}, {"role": "user", "content": <審查包>}]`。
-- `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。`scripts/review_provider.py` 依審查包判斷契約：`output` 要 `{"opinions", "general"}` 者為 G4 審查摘要，否則為 §3 的單一 opinion；回應不是 JSON 或不符契約時重試一次，再不符記 `error`，不替模型改寫格式。
+- `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。`scripts/review_provider.py` 依審查包判斷契約：`output` 要 `{"opinions", "general"}` 者為 G4 審查摘要，否則為 §3 的單一 opinion；回應不是 JSON 或不符契約時重試一次，再不符記 `error`，不替模型改寫格式。重試時在原審查包後附上「上一次哪裡不符、應回什麼形狀」；temperature 0 下送出同一份內容只會得到同一個回應，不附說明的重試沒有意義。被拒絕的回應原樣保存在輸出的 `rejected_attempts`（不採用，只供稽核）。
 - `temperature` 固定 `0`，讓同一 `prompt_version` 下的輸出可比較。
 
 五個 `family`：`anthropic`、`openai`、`google`（Gemini）、`glm`、`deepseek`（`schemas/finding.schema.json` 另允許 `fake` 供 evals 用）。`family` 是「同一基礎模型血統」的標籤；同一 family 的兩個 provider（例如雲端 OpenAI 與地端 vLLM 跑的 OpenAI 系開源模型）**不算**兩個 family。
