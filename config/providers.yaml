@@ -52,12 +52,14 @@ providers:
     kind: openai_compatible           # Gemini API 的 OpenAI 相容端點（Chat Completions）
     base_url: https://generativelanguage.googleapis.com/v1beta/openai
     api_key_env: GEMINI_API_KEY
-    model: gemini-2.5-pro             # 確認可用版本
-    timeout_seconds: 120
-    max_tokens: 4096
+    model: gemini-3.8-flash           # 2026-10-07 以 models.list 確認可用
+    timeout_seconds: 180
+    max_tokens: 16384                 # 思考 token 也計入上限；審查意見 JSON 常有數千字
     temperature: 0
     json_mode: true
-    allowed_data_classes: [public]    # 人工決定：目前只送公開內容；需要送 internal 時改接地端 LLM（onprem_vllm），不放寬此項
+    # 人工決定（2026-10-07 @chinchiang）：作為 G4 高風險審查的第二個 family，允許接收 internal（例如受測專案的原始碼）。
+    # confidential／pii 仍只走 sensitive_data_providers（onprem_vllm）。祕密在送出前仍須遮罩（CLAUDE.md 規則 7）。
+    allowed_data_classes: [public, internal]
     enabled: true
 
   # ---------------------------------------------------------------------- glm
