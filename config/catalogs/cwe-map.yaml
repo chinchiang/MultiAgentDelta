@@ -367,6 +367,13 @@ rules:
     control_ids: [ASVS5-V15.1, VS-G1-SBOM]
     gate: G1
     policy_tier: advisory
+  vibesec.g1.sbom-incomplete:
+    cwe: null
+    notes: "MITRE CWE 沒有對應「SBOM 漏列元件」的弱點類別；這是證據完整性缺口，不是程式弱點，所以不指派 CWE（CLAUDE.md 規則 3）"
+    title: "鎖定檔釘選的套件不在 CycloneDX SBOM（漏列的套件不會被 grype／KEV 比對）"
+    control_ids: [VS-G1-SBOM]
+    gate: G1
+    policy_tier: advisory
   vibesec.g3.actions-pull-request-target:
     cwe: CWE-94
     title: "GitHub Actions 以 pull_request_target 處理不可信輸入，具腳本注入 / 權限外洩風險"

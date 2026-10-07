@@ -108,6 +108,9 @@ jobs:
 
       - name: Syft SBOM（全庫）+ Grype（SARIF + JSON）
         continue-on-error: true
+        # 與 PR 的 scripts/g1_sbom.py 相同：npm devDependencies 也列入（建置工具屬供應鏈範圍）
+        env:
+          SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES: "true"
         run: |
           mkdir -p reports
           if command -v syft >/dev/null 2>&1; then
