@@ -127,8 +127,18 @@ if now - publish_time < cooldown_days(14):  → vibesec.g1.cooldown-violation (b
 
 ### 通過後：SBOM 與漏洞加值
 
+SBOM 由 `scripts/g1_sbom.py` 產生並驗證（控制 `VS-G1-SBOM`），三件事都做到才算 pass：
+
+1. **乾淨的樹、可重現**：以 `git archive` 匯出受測 commit（不讀工作目錄，本機裝過的 `node_modules`、`.venv` 不會混入），syft 產生兩次，`components[]` 集合必須相同（忽略 serialNumber、timestamp、bom-ref）。
+2. **格式**：`bomFormat: CycloneDX`、`specVersion` 1.4 以上、`components` 為清單。
+3. **完整**：每個鎖定檔（`package-lock.json`、`uv.lock`、`poetry.lock`、檔名含 requirements 的 `.txt` 中以 `==` 釘選者）釘選的套件版本都要以 purl 出現在 SBOM。漏列的套件不會被 grype 與 KEV 比對，所以缺漏 → `vibesec.g1.sbom-incomplete`（一個鎖定檔一筆，tier 依 blocking-policy），`VS-G1-SBOM` 記 fail。
+   - syft 預設不收 npm devDependencies；建置工具在建置時會執行，屬供應鏈範圍，所以固定開啟 `SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES`。對 chinchiang/MultiAgentBeta 實測，沒開時 `frontend/package-lock.json` 的 119 個套件漏列 111 個。
+
+缺 syft、syft 失敗、格式不符、兩次產出不同，或受測樹含尚無解析器的 `pnpm-lock.yaml`／`yarn.lock` → `incomplete`（exit 2），`VS-G1-SBOM` 記 untested。
+
 ```bash
-syft dir:. -o cyclonedx-json=reports/sbom.cdx.json
+python3 scripts/g1_sbom.py --target . --sbom reports/sbom.cdx.json \
+  --sarif reports/g1-sbom.sarif --json reports/g1-sbom.json --merge-gate reports/g1-gate.json
 grype sbom:reports/sbom.cdx.json -o sarif --file reports/grype.sarif
 trivy sbom reports/sbom.cdx.json --format sarif --output reports/trivy.sarif --scanners vuln
 trivy fs . --scanners vuln,secret,misconfig --format sarif --output reports/trivy-fs.sarif
@@ -147,7 +157,7 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 2. 計算 diff：`git diff --name-only $BASE...HEAD -- package.json package-lock.json pnpm-lock.yaml requirements*.txt pyproject.toml uv.lock .cursorrules AGENTS.md SKILL.md '**/*.md'`。
 3. 解析新增 / 變更套件 → 四層檢查（Registry 查詢快取 24h；失敗 → `incomplete`）。
 4. 全通過 → `npm ci --ignore-scripts` / `uv sync`，再對白名單內需要 build 的套件單獨允許 scripts。
-5. syft → grype / trivy → EPSS / KEV → 合併 SARIF（`rule_id` 前綴 `grype:` / `trivy:`）。
+5. `scripts/g1_sbom.py`（syft，驗證後併入 `g1-gate.json`）→ grype / trivy → EPSS / KEV → 合併 SARIF（`rule_id` 前綴 `grype:` / `trivy:`）。
 6. 寫 `reports/g1.gate-result.json`（`coverage`: `ASVS5-V15.2`、`VS-G1-SLOPSQUAT`、`VS-G1-COOLDOWN`、`VS-G1-INSTALL-HOOK`、`VS-G1-SBOM`）。
 
 本機開發者：`.pre-commit-config.yaml` 掛同一支檢查腳本（只跑第 1、2、4 層，秒級）。
@@ -187,6 +197,7 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 | `vibesec.g1.vulnerable-dependency`（`scripts/g1_kev.py` 由 grype 結果產生；KEV 以外的已知漏洞，CVSS 原樣分欄、EPSS 另記） | advisory；KEV 命中改發 `vibesec.g1.kev-hit`（blocking） | CWE-1395 |
 | `vibesec.g1.unmaintained-dependency`（nightly `scripts/g1_maintenance.py`：SBOM 套件查 deps.dev，所用版本 deprecated 或最新版發布超過 `unmaintained_days`（預設 730）天；查詢失敗或查無 → incomplete；本 repo 自身專案與 GitHub Actions 列 not_applicable） | advisory | CWE-1104 |
 | `vibesec.g1.sbom-missing-provenance`（nightly 以 `actions/attest-build-provenance` 為 SBOM 簽發 SLSA provenance，`scripts/g1_provenance.py` 以 `gh attestation verify --signer-workflow` 驗證存在、簽章有效且由本 repo 的 nightly-full 簽發；缺 SBOM／gh、權限或網路錯誤 → incomplete） | advisory | CWE-1357 |
+| `vibesec.g1.sbom-incomplete`（`scripts/g1_sbom.py`：鎖定檔釘選的套件不在 CycloneDX SBOM；一個鎖定檔一筆） | advisory | 無（MITRE CWE 沒有對應類別，見 cwe-map 的 notes） |
 | 無 lockfile / Registry API 失敗 | `fail` / `incomplete` | — |
 
 正式判定以 `config/policy/blocking-policy.yaml` 為準。
@@ -219,6 +230,6 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 1. **正例 / 反例（`evals/`）**：lockfile 含 `axois` → block；含 `axios` 最新版但發布 3 天 → cooldown block；含 allowlist 內緊急版本 → pass 並附 ticket；`.cursorrules` 指示以 pip 安裝幻覺套件 `huggingface-cli` → block（案例描述刻意不寫成可執行指令，避免文件本身被規則檔掃描命中或被 AI 助手照做）。
 2. **安裝鉤子 fixture**：假 tarball 的 postinstall 含 `curl … $NPM_TOKEN` → `vibesec.g1.postinstall-egress`。
 3. **Registry 失敗模擬**：封鎖 `registry.npmjs.org` → G1 `incomplete`，summary 顯示紅字而非綠勾。
-4. **SBOM 可重現**：同一 commit 兩次產出的 CycloneDX `components[]` 集合相同（忽略 timestamp / serialNumber）。
+4. **SBOM 可重現且完整**：同一 commit 兩次產出的 CycloneDX `components[]` 集合相同（忽略 timestamp / serialNumber），且鎖定檔釘選的套件都在 SBOM。`scripts/g1_sbom.py` 每次執行都檢查；`python3 scripts/g1_sbom.py selftest` 涵蓋可重現、格式、缺漏、只讀 commit 與無解析器鎖定檔等案例。
 5. **分欄不混算**：抽查 finding：`cvss_score` 與 `epss` 各自存在，`priority` 由政策表決定而非乘積。
 6. **時效**：PR 階段 G1 wall-clock < 3 分鐘（快取命中時 < 60 秒）。

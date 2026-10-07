@@ -44,13 +44,16 @@ for v in VIBESEC_TARGET_URL VIBESEC_TOKEN_A VIBESEC_TOKEN_B ANTHROPIC_API_KEY OP
 ### G1 供應鏈（必須最先；通過前不得執行任何安裝指令）
 
 ```bash
-syft dir:"$TARGET" -o cyclonedx-json > reports/raw/G1/sbom.cdx.json
-grype sbom:reports/raw/G1/sbom.cdx.json -o sarif > reports/raw/G1/grype.sarif
-trivy fs --scanners vuln --format sarif -o reports/raw/G1/trivy.sarif "$TARGET"
 # 四層快篩（存在性／相似度／安裝 hook／冷卻期）：只給 --target 時全量掃描目標專案追蹤中的 manifest 與 agent 規則檔；
 # diff-aware 時改給 --changed-files <清單> --base <base>（路徑相對目標專案）。exit 1 = blocking、2 = incomplete
 python3 scripts/g1_slopcheck.py --target "$TARGET" \
   --sarif reports/raw/G1/slopcheck.sarif --gate reports/raw/G1/slopcheck-gate.json > reports/raw/G1/slopcheck.json
+# SBOM（VS-G1-SBOM）：從受測 commit 匯出乾淨的樹（不讀工作目錄），syft 產生兩次比對可重現，核對鎖定檔釘選的套件
+# 都在 SBOM（含 npm devDependencies），結果併入上一步的 gate。缺 syft（$VIBESEC_SYFT 或 PATH）→ exit 2 incomplete
+python3 scripts/g1_sbom.py --target "$TARGET" --sbom reports/raw/G1/sbom.cdx.json \
+  --sarif reports/raw/G1/sbom.sarif --json reports/raw/G1/sbom.json --merge-gate reports/raw/G1/slopcheck-gate.json
+grype sbom:reports/raw/G1/sbom.cdx.json -o sarif > reports/raw/G1/grype.sarif
+trivy fs --scanners vuln --format sarif -o reports/raw/G1/trivy.sarif "$TARGET"
 # 相依變更（diff-aware）
 git -C "$TARGET" diff --name-only <base>...HEAD -- package.json package-lock.json pnpm-lock.yaml yarn.lock requirements*.txt pyproject.toml uv.lock poetry.lock
 ```
