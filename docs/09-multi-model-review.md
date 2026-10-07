@@ -12,7 +12,7 @@ def complete(messages: list[Message], json_schema: dict, temperature: float = 0)
 ```
 
 - `messages`：`[{"role": "system", "content": <角色提示>}, {"role": "user", "content": <審查包>}]`。
-- `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。
+- `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。`scripts/review_provider.py` 依審查包判斷契約：`output` 要 `{"opinions", "general"}` 者為 G4 審查摘要，否則為 §3 的單一 opinion；回應不是 JSON 或不符契約時重試一次，再不符記 `error`，不替模型改寫格式。
 - `temperature` 固定 `0`，讓同一 `prompt_version` 下的輸出可比較。
 
 五個 `family`：`anthropic`、`openai`、`google`（Gemini）、`glm`、`deepseek`（`schemas/finding.schema.json` 另允許 `fake` 供 evals 用）。`family` 是「同一基礎模型血統」的標籤；同一 family 的兩個 provider（例如雲端 OpenAI 與地端 vLLM 跑的 OpenAI 系開源模型）**不算**兩個 family。
@@ -126,7 +126,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 
 - 角色 → 偏好 family 在 `providers.yaml rotation.roles` 定義（例如 `appsec: [anthropic, openai]`、`supplychain-cicd: [openai, deepseek]`）。第一個可用且資料分級允許者為主、第二個為第二 family。
 - 每個發現的審查呼叫上限：`角色數 × 2 family × 3 round`。超過 `review.budget`（若設定）→ 剩餘發現 `pending`，`notes` 記 `review budget exhausted`，**不得**為省錢改用單 family 放行高風險控制。
-- 審查包只送 diff 周邊 ±40 行與被引用的檔案，不送整個 repo；G4 架構審查送威脅模型與元件清單。
+- 審查包只送 diff 周邊 ±40 行與被引用的檔案，不送整個 repo；G4 架構審查送威脅模型與元件清單。由 `scripts/review_packet.py` 從受測 commit 產生：full 範圍附威脅模型全文與其以 `path:line` 引用的檔案，diff 範圍附每個變更 hunk 前後 40 行；內容先經 gitleaks 掃描並遮罩命中字串，gitleaks 缺席或超過大小上限就不產生（不截斷）。
 - 同一 `rule_id + path` 在 30 天內已有 E3 人工裁決 → 不重送，沿用舊裁決並標 `retest_result`。
 - 地端 provider 不計 token 成本但計時間；`timeout_seconds` 到期即 error。
 
