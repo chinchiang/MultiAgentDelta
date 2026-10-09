@@ -212,6 +212,12 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 
 
 
+## AWS Bedrock 呼叫
+
+`anthropic-bedrock` 使用 Bedrock Converse API，與 Gemini 組成不同模型家族；AWS 與 Anthropic 直連仍算同一個 `anthropic` 家族。執行環境需有經供應鏈檢查的 `boto3`。憑證僅由 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY` 與選用的 `AWS_SESSION_TOKEN` 讀取，區域由供應者的 `aws_region` 決定，不使用隱含 AWS 帳號。臨時憑證過期、權限不足、SDK 缺席或逾時都不能產生有效意見；原始與被拒絕的模型回應都會遮罩三種憑證。
+
+`bedrock:ListFoundationModels` 與模型呼叫權限不同；無權列清單不等於不能呼叫已知模型。先以不含專案資料的最小請求驗證指定模型，再依資料分級送出審查包。此供應者只允許 `public`／`internal`；機密與個資仍限既有的地端供應者。`recorded_by` 留待實際非作者審查者填寫，成功呼叫兩個家族不等於取得人工核准。
+
 ---
 
 <a id="english"></a>
@@ -322,3 +328,9 @@ Use `schemas/human-ruling.schema.json`, its template, and `scripts/ruling.py`:
 5. After merge, `ruling.py apply` updates findings.
 
 Enforced rules (violation exits 1): human identity only; confirm requires reproduced/manual_review basis and at least one non-model evidence item; each and only actual minority opinion must be accepted/rejected with rationale; insufficient evidence means defer, not refute; defer requires `next_review_by` and retains pending/human-required; only unresolved human-required findings can be adjudicated, once. Apply changes validation, evidence grade (confirm→E3), human decision/ruling reference, and appends evidence. It never changes severity/CVSS/policy/priority or removes model opinions. Policy demotion requires a separate human policy PR.
+
+## AWS Bedrock calls
+
+`anthropic-bedrock` uses Bedrock Converse and forms a distinct family from Gemini; AWS-hosted and direct Anthropic models still count as the same `anthropic` family. The runtime requires a supply-chain-reviewed `boto3` installation. Credentials come only from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`; provider `aws_region` selects the region, without an implicit AWS identity. Expired credentials, denied access, a missing SDK, or timeouts never produce a valid opinion. All three credential values are redacted from accepted and rejected model responses.
+
+`bedrock:ListFoundationModels` and model invocation are separate permissions: denied listing does not imply a known model cannot be invoked. Verify the selected model with a minimal request containing no project data before sending an appropriately classified review packet. Only `public`/`internal` are allowed; confidential data and PII remain restricted to existing on-premises providers. Leave `recorded_by` for the actual non-author reviewer; two successful model families do not establish human approval.

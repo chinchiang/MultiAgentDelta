@@ -112,6 +112,40 @@ def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | N
         raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
 
 
+def _bedrock(p, key, system, user, env):
+    """以明確憑證呼叫 Bedrock；不使用隱含帳號。 / Call Bedrock with explicit credentials, not an implicit identity."""
+    try:
+        import boto3
+        from botocore.config import Config
+        from botocore.exceptions import BotoCoreError, ClientError, ConnectTimeoutError, ReadTimeoutError
+    except ImportError:
+        raise RuntimeError("Bedrock 需要 boto3 / Bedrock requires boto3") from None
+    region = p.get("aws_region", "us-east-1")
+    try:
+        session = boto3.Session(aws_access_key_id=key, aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
+                                aws_session_token=env.get("AWS_SESSION_TOKEN"), region_name=region)
+        client = session.client("bedrock-runtime", config=Config(connect_timeout=15,
+                                read_timeout=p.get("timeout_seconds", 120), retries={"max_attempts": 0}))
+        response = client.converse(modelId=p["model"], system=[{"text": system}],
+                                  messages=[{"role": "user", "content": [{"text": user + "\nReturn only JSON."}]}],
+                                  inferenceConfig={"maxTokens": p.get("max_tokens", 4096), "temperature": p.get("temperature", 0)})
+    except (ConnectTimeoutError, ReadTimeoutError):
+        raise TimeoutError("Bedrock timeout") from None
+    except ClientError as e:
+        raise RuntimeError("Bedrock: " + str(e.response.get("Error", {}).get("Code", "ClientError"))) from None
+    except BotoCoreError as e:
+        raise RuntimeError("Bedrock: " + type(e).__name__) from None
+    text = "".join(part.get("text", "") for part in response.get("output", {}).get("message", {}).get("content", []))
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        raise BadResponse("Bedrock 回應缺少 JSON / Bedrock response lacks JSON")
+    try:
+        opinion = json.loads(match[0])
+    except json.JSONDecodeError:
+        raise BadResponse("Bedrock JSON 格式錯誤 / Invalid Bedrock JSON") from None
+    return opinion, p["model"], ["AWS Bedrock " + region, "usage=" + json.dumps(response.get("usage", {}))]
+
+
 def output_contract(packet: dict) -> str:
     """審查包要求的輸出形狀：明列 output_contract 優先；output 說明要 general 摘要者為 review-summary。"""
     if packet.get("output_contract") in ("review-summary", "finding-opinion"):
@@ -162,8 +196,14 @@ def redact_key(value, key):
 
 
 def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
-    key = env.get(load_provider(provider, root).get("api_key_env") or "", "")
-    return redact_key(_call(provider, role, data_class, packet, root, env), key)
+    p = load_provider(provider, root)
+    names = [p.get("api_key_env") or ""]
+    if p.get("kind") == "bedrock":
+        names += ["AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
+    result = _call(provider, role, data_class, packet, root, env)
+    for name in names:
+        result = redact_key(result, env.get(name, ""))
+    return result
 
 
 def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
@@ -179,9 +219,13 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
     key = env.get(p.get("api_key_env") or "", "")
     if not key:
         return {**out, "state": "missing", "note": f"{p.get('api_key_env')} 未設定"}
+    if p.get("kind") == "bedrock" and not env.get("AWS_SECRET_ACCESS_KEY"):
+        return {**out, "state": "missing", "note": "AWS_SECRET_ACCESS_KEY 未設定 / not configured"}
     user = ("以下是審查包（JSON）。依你的角色說明審查，只回傳角色說明定義的 JSON。\n\n"
             + json.dumps(packet, ensure_ascii=False, indent=2))
     fn = {"openai_compatible": _openai, "anthropic": _anthropic}.get(p.get("kind"))
+    if p.get("kind") == "bedrock":
+        fn = lambda provider, key, system, prompt: _bedrock(provider, key, system, prompt, env)
     if fn is None:
         return {**out, "state": "error", "note": f"不支援的 kind {p.get('kind')!r}"}
     contract = output_contract(packet)

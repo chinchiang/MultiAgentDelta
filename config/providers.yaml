@@ -32,6 +32,21 @@ providers:
     allowed_data_classes: [public, internal]   # 雲端：不得送 confidential / pii / Cloud: do not send confidential or pii data.
     enabled: true
 
+  # 使用者提供 AWS 憑證供 G4 審查；與既有 Anthropic 相同分級，不允許 confidential／pii。
+  # User-supplied AWS credentials for G4; same classes as Anthropic, excluding confidential/pii.
+  anthropic-bedrock:
+    family: anthropic
+    kind: bedrock
+    aws_region: us-east-1
+    api_key_env: AWS_ACCESS_KEY_ID
+    model: us.anthropic.claude-sonnet-4-20250514-v1:0
+    timeout_seconds: 180
+    max_tokens: 12000
+    temperature: 0
+    json_mode: true
+    allowed_data_classes: [public, internal]
+    enabled: true
+
   # ------------------------------------------------------------------- openai
   openai-cloud:
     family: openai
