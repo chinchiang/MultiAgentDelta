@@ -7,12 +7,18 @@
 # G4 LLM 審查紀錄：harness 輸出，由人複製提交；紀錄不能自行宣告結論（scripts/g4_review.py 檢查），但仍需 owner 確認來源
 /reviews/                          @chinchiang
 
-# 閘門、阻擋政策、provider 與 ID 目錄
+# 閘門、阻擋政策、provider 與 ID 目錄，以及所有掃描規則與設定（gitleaks、semgrep、checkov、slopsquat allowlist、
+# zap、promptfoo、garak、harness 角色提示）：這些決定閘門的輸入，改了就能讓發現消失（第四次審視 CI-2）
 /vibesec.yaml                      @chinchiang
-/config/policy/                    @chinchiang
-/config/providers.yaml             @chinchiang
-/config/catalogs/                  @chinchiang
-/evals/baseline.yaml               @chinchiang
+/config/                           @chinchiang
+# 工具的忽略清單：同上，決定哪些發現不算數
+/.semgrepignore                    @chinchiang
+/.gitleaksignore                   @chinchiang
+/.trivyignore                      @chinchiang
+# 評測：baseline 只增不減；案例被改弱等於 baseline 被改弱
+/evals/                            @chinchiang
+# 輸出格式的 schema：放寬 schema 等於放寬紀錄的要求
+/schemas/                          @chinchiang
 
 # Claude Code 權限設定：威脅模型 c-claude 的 HITL 證據（g0_trifecta.py 驗證）
 /.claude/settings.json             @chinchiang
@@ -20,6 +26,5 @@
 # CI 執行的閘門腳本：pull_request 事件跑 PR head 的版本，改腳本即可改判定（第三次 harness 審查 N3）
 /scripts/                          @chinchiang
 
-# CI 本身與本檔
-/.github/workflows/                @chinchiang
-/.github/CODEOWNERS                @chinchiang
+# CI 本身（workflows、composite actions、通知腳本、dependabot）與本檔
+/.github/                          @chinchiang

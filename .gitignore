@@ -10,6 +10,9 @@
 # 報告輸出（執行期產物，不入版控；範例在 docs/templates/）
 reports/
 .cache/
+# 工具輸出：gitleaks-action 寫在工作區根目錄的 results.sarif；提交進來會被誤當掃描結果
+results.sarif
+*.sarif
 
 # Python
 __pycache__/

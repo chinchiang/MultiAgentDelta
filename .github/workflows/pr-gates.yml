@@ -5,6 +5,8 @@ name: VibeSec PR Gates
 
 on:
   pull_request:
+    # edited：改 PR 的目標分支也要重跑（受信任程式已改取 default branch，但 diff／過期判斷仍用 base）
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
 # 最小權限：workflow 層級只給 read；寫入權限由需要的 job 各自宣告（job 層級會整組取代這裡）。
@@ -30,24 +32,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 讀取 vibesec.yaml 設定（mode / risk_tier / cooldown_days）
-        id: cfg
-        shell: bash
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import re, pathlib
-          txt = pathlib.Path("vibesec.yaml").read_text(encoding="utf-8")
-          def scalar(key, default):
-              m = re.search(rf'^\s*{key}\s*:\s*([^\s#]+)', txt, re.M)
-              return m.group(1).strip() if m else default
-          mode = scalar("mode", "shadow")
-          tier = scalar("risk_tier", "L2")
-          cooldown = scalar("cooldown_days", "14")
-          print(f"mode={mode}")
-          print(f"risk_tier={tier}")
-          print(f"cooldown_days={cooldown}")
-          print(f"shadow={'true' if mode=='shadow' else 'false'}")
-          PY
+      # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
+      # 細節見 .github/actions/vibesec-trusted/action.yml。
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
 
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -69,20 +58,20 @@ jobs:
           if [ -z "${BASE_REF}" ]; then BASE="HEAD~1"; fi
           [ -n "${BASE_REF}" ] && git fetch origin "${BASE_REF}" 2>/dev/null || true
           CHANGED=$(git diff --name-only "${BASE}...HEAD" 2>/dev/null || git diff --name-only HEAD~1...HEAD)
-          echo "$CHANGED" > reports/_changed-files.txt
+          echo "$CHANGED" | grep -v '^_trusted/' > reports/_changed-files.txt || true
           echo "base=${BASE}" >> "$GITHUB_OUTPUT"
           echo "變更檔案："; cat reports/_changed-files.txt
 
       - name: G1 四層快篩（scripts/g1_slopcheck.py）
         id: slopcheck
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         shell: bash
         env:
           DIFF_BASE: ${{ steps.diff.outputs.base }}
         run: |
           # 與 pre-commit 共用同一支腳本：diff-aware、套用 blocking-policy exceptions、
           # 掃描變更的 agent 規則檔；輸出 SARIF 與 gate-result。exit 1 = blocking、2 = incomplete。
-          python3 scripts/g1_slopcheck.py \
+          python3 _trusted/scripts/g1_slopcheck.py --target . \
             --changed-files reports/_changed-files.txt \
             --base "$DIFF_BASE" \
             --sarif reports/g1-slopcheck.sarif \
@@ -122,9 +111,9 @@ jobs:
       # 缺 syft、syft 失敗或無法核對 → incomplete（exit 2）。與 KEV 相同：shadow 模式下不讓 job 變紅。
       - name: 產生並驗證 SBOM（scripts/g1_sbom.py）
         id: sbom
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         run: |
-          python3 scripts/g1_sbom.py --target . --sbom reports/sbom.cdx.json \
+          python3 _trusted/scripts/g1_sbom.py --target . --sbom reports/sbom.cdx.json \
             --sarif reports/g1-sbom.sarif --json reports/g1-sbom.json --merge-gate reports/g1-gate.json
 
       - name: Upload SBOM SARIF
@@ -182,9 +171,9 @@ jobs:
       # 與 slopcheck 相同：shadow 模式下不讓 job 變紅；enforce 模式下命中（exit 1）或 incomplete（exit 2）都會擋。
       - name: G1 KEV 命中（vibesec.g1.kev-hit）
         id: kev
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         run: |
-          python3 scripts/g1_kev.py --grype reports/grype.json --kev-feed .cache/kev.json \
+          python3 _trusted/scripts/g1_kev.py --grype reports/grype.json --kev-feed .cache/kev.json \
             --sarif reports/g1-kev.sarif --json reports/g1-kev.json --merge-gate reports/g1-gate.json
 
       - name: Upload KEV SARIF
@@ -201,6 +190,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          skip-dirs: _trusted
           format: sarif
           output: reports/trivy-fs.sarif
           severity: CRITICAL,HIGH,MEDIUM
@@ -236,30 +226,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 讀取 mode
-        id: cfg
-        shell: bash
-        run: |
-          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
-          echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
-          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
+      # 細節見 .github/actions/vibesec-trusted/action.yml。
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
 
       - name: Gitleaks（全歷史）
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        id: gitleaks
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: config/gitleaks.toml
+          GITLEAKS_CONFIG: _trusted/config/gitleaks.toml   # 規則取自 default branch
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
           GITLEAKS_ENABLE_SUMMARY: "true"
           # 不在 PR 留言（避免此第三方 action 需要 pull-requests: write）；結果經 SARIF 與 job summary 呈現
           GITLEAKS_ENABLE_COMMENTS: "false"
 
       - name: 檢查 .env 是否在 .gitignore 且無已追蹤的 .env 檔
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         shell: bash
         env:
-          VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
+          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
           mkdir -p reports
           fail=0
@@ -276,8 +265,8 @@ jobs:
             echo "OK: 無已追蹤的 .env 檔"
           fi
           echo "{\"gate\":\"G2\",\"rule_id\":\"vibesec.g2.env-not-ignored\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
-          # 是否擋 job 依 blocking-policy 的有效 tier（run_evals.py 在暫存目錄執行時由 VIBESEC_CONFIG 找 repo 根）
-          ROOT=$(dirname "${VIBESEC_CONFIG:-$PWD/vibesec.yaml}")
+          # 是否擋 job 依 blocking-policy 的有效 tier：CI 取 _trusted/（default branch）；run_evals.py 在暫存目錄執行時由 VIBESEC_CONFIG 找 repo 根
+          ROOT=$(dirname "${VIBESEC_CONFIG:-$PWD/_trusted/vibesec.yaml}")
           TIER=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-not-ignored | awk '{print $2}')
           echo "policy tier: ${TIER}"
           if [ "${VIBESEC_MODE}" = "enforce" ] && [ "$fail" = "1" ] && [ "$TIER" = "blocking" ]; then exit 1; fi
@@ -294,9 +283,12 @@ jobs:
       - name: 整理 G2 reports（gitleaks SARIF 複製進 reports/）
         if: always()
         shell: bash
+        env:
+          GITLEAKS_OUTCOME: ${{ steps.gitleaks.outcome }}
         run: |
           mkdir -p reports
-          if [ -f results.sarif ]; then cp results.sarif reports/gitleaks.sarif; fi
+          # 只採用 gitleaks 這一步真的產生的檔；步驟被略過時工作區的 results.sarif 不是掃描結果（vibesec-trusted 已先清掉）
+          if [ "$GITLEAKS_OUTCOME" != "skipped" ] && [ -f results.sarif ]; then cp results.sarif reports/gitleaks.sarif; fi
       - name: Upload G2 artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -315,22 +307,21 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      # 釘選版本（與 evals 的 semgrep==1.179.0 一致）。tag 仍可被發布者移動；查不到 digest 時先釘 tag，之後再補 @sha256
+      image: semgrep/semgrep:1.179.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: 讀取 mode
-        id: cfg
-        shell: bash
-        run: |
-          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
-          echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
-          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
+      # 細節見 .github/actions/vibesec-trusted/action.yml。
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
 
       - name: Semgrep（vibesec 規則 + OWASP Top Ten + security-audit，diff-aware）
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         shell: bash
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -343,9 +334,10 @@ jobs:
             BASELINE="--baseline-commit origin/${BASE_REF}"
           fi
           semgrep ci \
-            --config config/semgrep/vibesec-rules.yaml \
+            --config _trusted/config/semgrep/vibesec-rules.yaml \
             --config p/owasp-top-ten \
             --config p/security-audit \
+            --exclude _trusted \
             --sarif --output reports/semgrep.sarif ${BASELINE} || true
 
       - name: Upload Semgrep SARIF
@@ -376,23 +368,29 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: 讀取 mode
-        id: cfg
-        shell: bash
-        run: |
-          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
-          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
+      # 細節見 .github/actions/vibesec-trusted/action.yml。
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
 
       # Checkov action 在 Docker 容器內以 root 執行；若由它建立 reports/，目錄屬 root，之後以 runner 身分跑的
       # Trivy 會 permission denied、寫不出 SARIF（G3 因此 incomplete）。先以 runner 身分建立目錄。
       - name: 建立 reports/（runner 擁有）
         run: mkdir -p reports
 
+      # checkov 設定檔內的 external-checks-dir／skip-path 是相對路徑：把整個 config/checkov/ 換成 default branch 的版本，
+      # 讓設定檔與自訂檢查都來自受信任來源（PR 對 config/checkov 的修改合併後才生效）。
+      - name: 套用受信任的 Checkov 設定
+        shell: bash
+        run: rm -rf config/checkov && cp -r _trusted/config/checkov config/checkov
+
       - name: Checkov（IaC → SARIF）
         continue-on-error: true
         uses: bridgecrewio/checkov-action@cc0e17d456ef1713bbfd963ebac19dc776775cb2 # v12.3128.0
         with:
           config_file: config/checkov/.checkov.yaml
+          skip_path: _trusted
           output_format: sarif
           output_file_path: reports/
 
@@ -410,6 +408,7 @@ jobs:
         with:
           scan-type: config
           scan-ref: .
+          skip-dirs: _trusted
           format: sarif
           output: reports/trivy-config.sarif
 
@@ -444,20 +443,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 讀取 mode
-        id: cfg
-        shell: bash
-        run: |
-          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
-          echo "mode=${MODE:-shadow}" >> "$GITHUB_OUTPUT"
-          echo "shadow=$([ "${MODE:-shadow}" = shadow ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
+      # 細節見 .github/actions/vibesec-trusted/action.yml。
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
 
       - name: G4 靜態檢查（Unicode / RLS / Agent tool allow-list / 單層 middleware）
         id: g4static
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         env:
-          VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
+          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
           COMMIT_SHA: ${{ github.sha }}
+          VIBESEC_CONFIG: _trusted/vibesec.yaml   # 政策與 vibesec_policy.py 取自 default branch
         run: |
           python3 - <<'EOF'
           # G4 靜態檢查：隱形 Unicode（Rules File Backdoor）、Supabase RLS、Agent 工具 allow-list、單層 middleware 授權
@@ -472,6 +470,8 @@ jobs:
           POLICY = Policy(ROOT)
           COMMIT = os.environ.get("COMMIT_SHA", "")[:40] or None
           REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
+          # _trusted/ 是 default branch 的判定程式副本，不是被掃描的專案內容
+          def _skip(p): return str(p).startswith(("_trusted/", "./_trusted/", ".git/")) or "/node_modules/" in str(p)
 
           results = []; rules = {}
           def add(rule_id, level, msg, uri, line=1):
@@ -497,7 +497,7 @@ jobs:
           RULE_NAMES = {".cursorrules", ".windsurfrules", ".clinerules"}
           rule_files = []
           for root, dirs, files in os.walk("."):
-              dirs[:] = [x for x in dirs if x not in (".git", "node_modules")]
+              dirs[:] = [x for x in dirs if x not in (".git", "node_modules", "_trusted")]
               rel_root = os.path.relpath(root, ".")
               in_rules_dir = rel_root.startswith((".cursor/rules", ".clinerules"))
               for fn in files:
@@ -517,6 +517,7 @@ jobs:
           # 2) Supabase migrations RLS
           # 兩個 glob 會重疊（supabase/migrations 也符合 **/migrations）→ 去重，避免同一檔案重複回報
           for p in sorted(set(glob.glob("supabase/migrations/**/*.sql", recursive=True) + glob.glob("**/migrations/**/*.sql", recursive=True))):
+              if _skip(p): continue
               fp = pathlib.Path(p)
               if not fp.exists(): continue
               body = fp.read_text(encoding="utf-8", errors="replace")
@@ -531,7 +532,7 @@ jobs:
           # 3) Agent 工具 allow-list lint（高危工具暴露）
           DANGEROUS = r'(delete_user|execute_sql|drop_table)'
           for p in glob.glob("**/*.py", recursive=True) + glob.glob("**/*.ts", recursive=True) + glob.glob("**/*.js", recursive=True):
-              if "/node_modules/" in p or p.startswith(".git/"): continue
+              if _skip(p): continue
               fp = pathlib.Path(p)
               try: body = fp.read_text(encoding="utf-8", errors="replace")
               except Exception: continue
@@ -544,7 +545,7 @@ jobs:
 
           # 4) 單層 middleware 授權（CVE-2025-29927 類）— advisory
           for p in glob.glob("**/middleware.ts", recursive=True) + glob.glob("middleware.ts"):
-              if "/node_modules/" in p: continue
+              if _skip(p): continue
               add("vibesec.g4.single-middleware-authz", "note",
                   f"偵測到 Next.js {p}：請確認授權不只靠單層 middleware（CVE-2025-29927），資料層需獨立 authz", p, 1)
 
@@ -559,7 +560,7 @@ jobs:
               return n.attr if isinstance(n, ast.Attribute) else n.id if isinstance(n, ast.Name) else ""
           mw_hits, route_auth = [], False
           for p in sorted(glob.glob("**/*.py", recursive=True)):
-              if "/node_modules/" in p or "site-packages/" in p or p.startswith((".git/", "venv/")): continue
+              if _skip(p) or "site-packages/" in p or p.startswith("venv/"): continue
               try: src = pathlib.Path(p).read_text(encoding="utf-8", errors="replace")
               except Exception: continue
               if not re.search(r'^\s*(from|import)\s+(fastapi|starlette)\b', src, re.M): continue
@@ -660,26 +661,11 @@ jobs:
             core.info(`head ${pr.head.sha} 上的非作者 approve：${ok.join(', ') || '（無）'}`);
             core.setOutput('approvers', ok.join(','));
 
-      # 判定程式取自 base 分支（第四次 harness 審查 N3）：PR head 只當資料讀取，PR 不能改寫決定自己結果的腳本與政策。
-      # workflow 檔本身仍取自 PR head，由 CODEOWNERS（/.github/workflows/）與 branch protection 把關。
-      - name: 取出 base 分支的判定程式（_trusted/）
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
-          path: _trusted
-          persist-credentials: false
-          sparse-checkout: |
-            scripts
-            schemas
-            config
-            docs/templates
-            vibesec.yaml
-
       - name: G4 LLM 審查紀錄（reviews/g4/）→ 閘門狀態
         if: always()
-        continue-on-error: ${{ steps.cfg.outputs.shadow == 'true' }}
+        continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         env:
-          VIBESEC_MODE: ${{ steps.cfg.outputs.mode }}
+          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
           # pull_request 的 github.sha 是合併 commit；過期判斷要對 PR head，否則 base 分支的變更也會讓紀錄過期
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -812,20 +798,11 @@ jobs:
       - name: 安裝 PyYAML / jsonschema
         run: pip install pyyaml jsonschema
 
-      # 判定程式取自 base 分支（第四次 harness 審查 N3）：PR head 只當資料讀取，PR 不能改寫決定自己結果的腳本與政策。
-      # workflow 檔本身仍取自 PR head，由 CODEOWNERS（/.github/workflows/）與 branch protection 把關。
-      - name: 取出 base 分支的判定程式（_trusted/）
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
-          path: _trusted
-          persist-credentials: false
-          sparse-checkout: |
-            scripts
-            schemas
-            config
-            docs/templates
-            vibesec.yaml
+      # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
+      # 細節見 .github/actions/vibesec-trusted/action.yml。
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
 
       # G2、G3 的工具是第三方 action，本身不寫 gate JSON；由此從各 job 上傳的 SARIF 推導。
       # artifact 或 SARIF 缺席 → 該閘門 incomplete（incomplete ≠ pass），不再顯示為 untested。
@@ -842,15 +819,19 @@ jobs:
 
       - name: 彙整 gate-status 矩陣
         shell: bash
+        env:
+          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
-          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
+          MODE="$VIBESEC_MODE"
           mkdir -p reports
-          find _artifacts \( -name 'g1-gate.json' -o -name 'g4-gate.json' \) -exec cp {} reports/ \; 2>/dev/null || true
+          # 只取各 job 自己上傳的 gate 檔：以前用 find 混抓所有 artifact 裡的同名檔，PR head 的 G1 程式可寫一份假的 g4-gate.json 蓋掉受信任的那份
+          [ -f _artifacts/vibesec-g1-reports/g1-gate.json ] && cp _artifacts/vibesec-g1-reports/g1-gate.json reports/g1-gate.json
+          [ -f _artifacts/vibesec-g4-reports/g4-gate.json ] && cp _artifacts/vibesec-g4-reports/g4-gate.json reports/g4-gate.json
           python3 - "$MODE" <<'EOF'
           import json, glob, os, sys, pathlib, yaml
           MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
-          # incomplete 會擋的閘門以 blocking-policy 為準（原本寫死 G1、G2、G3，與政策 [G1, G2] 不一致）
-          _pol = yaml.safe_load(open("config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
+          # incomplete 會擋的閘門以 default branch 的 blocking-policy 為準（PR 自己的政策檔不能決定自己的結果）
+          _pol = yaml.safe_load(open("_trusted/config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
           BLOCKING_GATES = set(_pol.get("incomplete_gate_is_blocking_in_enforce") or [])
           rows = []; fail = False; incomplete_block = False
           seen = {}

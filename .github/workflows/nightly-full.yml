@@ -38,7 +38,8 @@ jobs:
     name: Semgrep 全量（無 baseline）
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      # 釘選版本（與 evals 的 semgrep==1.179.0 一致）。tag 仍可被發布者移動；查不到 digest 時先釘 tag，之後再補 @sha256
+      image: semgrep/semgrep:1.179.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Semgrep scan（全庫、無 diff baseline）
@@ -68,13 +69,12 @@ jobs:
   g1-full:
     name: G1 全量供應鏈（Syft/Grype/Trivy + EPSS/KEV 富化）
     runs-on: ubuntu-latest
-    # job 層級權限會整組取代 workflow 層級：保留原有三項，另加簽發 SBOM 來源證明所需的兩項（只給這個 job）
+    # job 層級權限會整組取代 workflow 層級。簽發 SBOM 來源證明的 id-token／attestations 不放在這裡：
+    # 這個 job 跑第三方 action（syft／grype／trivy），不能讓它們拿到簽章身分；簽發與驗證在 g1-attest job。
     permissions:
       contents: read
       security-events: write
       actions: read
-      id-token: write        # Sigstore 以 OIDC 身分簽章
-      attestations: write    # 寫入 GitHub attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -227,6 +227,61 @@ jobs:
           sarif_file: reports/g1-maintenance.sarif
           category: vibesec-nightly-maintenance
 
+      - name: Upload Grype full SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/grype-full.sarif
+          category: vibesec-nightly-grype
+
+      - name: Upload Trivy full SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/trivy-full.sarif
+          category: vibesec-nightly-trivy
+
+      - name: Upload nightly G1 artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-nightly-g1
+          path: reports/
+          if-no-files-found: ignore
+
+  # SBOM 來源證明獨立成 job（第四次審視 CI-8）：簽章權限（id-token／attestations）不和第三方 action 同一個 job，
+  # 否則被入侵的 syft／grype／trivy action 可用 OIDC 身分替任意 SBOM 簽出「本 workflow 簽發」的證明，
+  # scripts/g1_provenance.py 的 --signer-workflow 檢查就擋不住。這裡只跑官方 attest action 與本 repo 的驗證腳本，
+  # 輸入是 g1-full 上傳的 artifact；SBOM 缺席 → 驗證腳本退出碼 2（incomplete ≠ pass）。
+  g1-attest:
+    name: G1 SBOM 來源證明（簽發 + 驗證）
+    needs: g1-full
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write        # Sigstore 以 OIDC 身分簽章
+      attestations: write    # 寫入 GitHub attestations
+      security-events: write # upload-sarif
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            schemas
+            config
+
+      - name: 下載 g1-full 的 reports（含 sbom.cdx.json；缺席時由驗證腳本記為 incomplete）
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vibesec-nightly-g1
+          path: reports
+
       # SBOM 來源證明：以 Sigstore 為 reports/sbom.cdx.json 簽發 SLSA provenance，再以 gh 驗證
       # 「存在、簽章有效、簽發者是本 workflow」。簽發失敗不在這裡擋：下一步驗證會把它記為缺少證明（advisory）。
       - name: 簽發 SBOM 來源證明（SLSA provenance）
@@ -256,28 +311,14 @@ jobs:
           sarif_file: reports/g1-provenance.sarif
           category: vibesec-nightly-provenance
 
-      - name: Upload Grype full SARIF
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          sarif_file: reports/grype-full.sarif
-          category: vibesec-nightly-grype
-
-      - name: Upload Trivy full SARIF
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          sarif_file: reports/trivy-full.sarif
-          category: vibesec-nightly-trivy
-
-      - name: Upload nightly G1 artifacts
+      - name: Upload 來源證明 artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vibesec-nightly-g1
-          path: reports/
+          name: vibesec-nightly-g1-provenance
+          path: |
+            reports/g1-provenance.sarif
+            reports/g1-provenance.json
           if-no-files-found: ignore
 
   evals:
@@ -326,7 +367,7 @@ jobs:
   # 只在 main 執行，避免分支上手動觸發的試跑開 issue。邏輯與單元測試在 .github/scripts/nightly-issue{,.test}.js。
   notify:
     name: 失敗通知（追蹤 issue）
-    needs: [codeql, semgrep-full, g1-full, evals]
+    needs: [codeql, semgrep-full, g1-full, g1-attest, evals]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5

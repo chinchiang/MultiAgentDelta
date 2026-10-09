@@ -67,7 +67,7 @@ agents:
     exposed_to_untrusted_content: true   # PR 留言、review、CI log、外部套件說明——任何人可在公開 repo 寫入
     can_communicate_externally: true     # GitHub API、web、push
     tools: [read_repo, edit_repo, bash, git_push, github_api, dispatch_workflow, spawn_subagents, publish_artifact]
-    high_impact_tools: [merge_pull_request, force_push_own_branch, dispatch_workflow, create_or_delete_trigger]
+    high_impact_tools: [merge_pull_request, force_push_own_branch, dispatch_workflow, create_or_delete_trigger, review_pull_request, edit_pull_request]
     # tool_allowlist 已移除：repo 內沒有任何限制 c-claude 工具清單的落實（第二次 harness 審查發現 A）。
     mitigations: [human_in_the_loop]
     # 三要素全成立且未切腳 → 每項 mitigation 必須有可驗證證據，否則 G0 報 lethal-trifecta-open（scripts/g0_trifecta.py）
@@ -107,6 +107,12 @@ agents:
             - mcp__claude-code-remote__update_trigger
             - mcp__claude-code-remote__delete_trigger
             - mcp__claude-code-remote__fire_trigger
+            - mcp__github__pull_request_review_write   # approve 會餵進 G4 的信任判定（第四次審視 CI-12）
+            - "Bash(gh pr review *)"
+            - "Bash(gh -R * pr review*)"
+            - mcp__github__update_pull_request           # 改 PR 目標分支、標 ready
+            - "Bash(gh pr edit *)"
+            - "Bash(gh -R * pr edit*)"
           covers:                        # high_impact_tools → 擋住它的規則；每個工具至少一條（g0 驗證，N1）
             merge_pull_request:
               - mcp__github__merge_pull_request
@@ -143,6 +149,14 @@ agents:
               - mcp__claude-code-remote__update_trigger
               - mcp__claude-code-remote__delete_trigger
               - mcp__claude-code-remote__fire_trigger
+            review_pull_request:                  # approve／request changes：非作者 approve 是 G4 審查紀錄採信的條件
+              - mcp__github__pull_request_review_write
+              - "Bash(gh pr review *)"
+              - "Bash(gh -R * pr review*)"
+            edit_pull_request:                    # 改目標分支（base）、draft↔ready
+              - mcp__github__update_pull_request
+              - "Bash(gh pr edit *)"
+              - "Bash(gh -R * pr edit*)"
           note: 只約束在本 repo 執行的 Claude Code；以 bypassPermissions 或更高層設定（managed／user）放行時不受此約束，殘留風險見 t-hitl-bypass
     trifecta_leg_cut: null
   - id: c-reviewers
@@ -193,7 +207,7 @@ threats:
   - id: t-hitl-bypass
     category: MAESTRO-L3
     target: c-claude
-    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 bash -c／sh -c 包裝、env 前綴、shell alias、寫成腳本再執行、以 python／node 直接呼叫 API）執行高影響操作時，HITL 不生效。g0 只驗證每個 high_impact_tools 至少有一條規則（covers），不驗證等價呼叫全被涵蓋。ask 規則是前綴比對，只能縮小缺口，不能完整枚舉。
+    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 bash -c／sh -c 包裝、env 前綴、shell alias、寫成腳本再執行、以 python／node 直接呼叫 API）執行高影響操作時，HITL 不生效。g0 只驗證每個 high_impact_tools 至少有一條規則（covers），不驗證等價呼叫全被涵蓋。ask 規則是前綴比對，只能縮小缺口，不能完整枚舉。approve PR 與改 PR 目標分支（餵進 G4 信任判定的入口）已納入 ask。
     mitigation: ask 規則涵蓋已知的 merge／force push／dispatch／trigger 入口；branch protection 應禁止 force push 到 main 並要求 code owner review（GitHub 設定，靜態無法驗證）。
     status: accepted
     gate: G4
