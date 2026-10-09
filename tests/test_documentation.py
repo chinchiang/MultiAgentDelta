@@ -44,6 +44,7 @@ class Documents(unittest.TestCase):
         self.write('README.md')
         self.assertEqual(docs.check(self.root), ([], 1))
         for text in (TEXT.replace('<a id="english"></a>', ''), TEXT.replace('English operating instructions.', ''),
+                     TEXT.replace('中文操作說明。', ''),
                      TEXT.replace('](#english)', '](#missing)'), TEXT + '<a id="zh-tw"></a>'):
             with self.subTest(text=text):
                 self.write('README.md', text)

@@ -70,5 +70,17 @@ class Configuration(unittest.TestCase):
         self.assertEqual(len(report['checks']['branch_protection']['gaps']), 2)
         self.assertTrue(all(method == 'GET' for _, method, _ in self.calls))
 
+    def test_empty_success_response_does_not_authorize_creation(self):
+        calls = []
+        def request(path, method='GET', body=None):
+            calls.append(method)
+            if path == 'repos/o/r': return {'default_branch': 'main'}
+            if path.endswith('/protection'): return None
+            if '/analyses?' in path: return []
+            return {'protected': False}
+        report = config.audit('o/r', apply=True, request=request)
+        self.assertEqual(report['checks']['branch_protection']['status'], 'incomplete')
+        self.assertNotIn('PUT', calls)
+
 
 if __name__ == '__main__': unittest.main()

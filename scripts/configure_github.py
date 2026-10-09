@@ -95,6 +95,7 @@ def audit(repo, apply=False, request=api):
         return report
     path = f'repos/{repo}/branches/{quote(branch, safe="")}'
     current = None
+    confirmed_missing = False
     try:
         branch_metadata = request(path)
         try:
@@ -103,6 +104,9 @@ def audit(repo, apply=False, request=api):
             # 404 只有在分支明確未受保護時才代表可以新增。 / Only explicit unprotected metadata plus 404 permits creation.
             if e.status != 404 or branch_metadata.get('protected') is not False:
                 raise
+            confirmed_missing = True
+        if current is None and not confirmed_missing:
+            raise ValueError('保護 API 回應缺漏，不覆寫 / Missing protection response; refusing overwrite')
         if apply and current is None:
             if branch_metadata.get('protected') is not False:
                 raise ValueError('既有保護未知，不覆寫 / Existing protection unknown; refusing overwrite')

@@ -49,7 +49,10 @@ def sections(text):
     if MARKERS[1] in before:
         raise ValueError('語言順序須為中文、英文 / Chinese must precede English')
     zh, en = rest.split(MARKERS[1])
-    if not re.search(r'[\u4e00-\u9fff]', zh) or len(re.findall(r'[A-Za-z]{2,}', en)) < 3:
+    def content(section):
+        return '\n'.join(line for line in section.splitlines()
+                         if not re.match(r'^\s*(?:#{1,6}\s|<[^>]+>\s*$|[-=]{3,}\s*$)', line))
+    if not re.search(r'[\u4e00-\u9fff]', content(zh)) or len(re.findall(r'[A-Za-z]{2,}', content(en))) < 3:
         raise ValueError('雙語正文不可空白 / Both language sections need substantive text')
     if not all(f'](#{anchor})' in before for anchor in ('zh-tw', 'english')):
         raise ValueError('缺少雙語導覽 / Missing bilingual navigation')
