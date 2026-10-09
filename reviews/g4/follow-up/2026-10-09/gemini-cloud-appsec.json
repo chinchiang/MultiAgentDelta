@@ -1,0 +1,27 @@
+{
+  "provider": "gemini-cloud",
+  "family": "google",
+  "model": "gemini-3.8-flash",
+  "role": "appsec",
+  "prompt_version": "appsec@2026-10-09.1",
+  "data_class": "internal",
+  "state": "error",
+  "opinion": null,
+  "note": "回應兩次都不符輸出契約 review-summary（docs/09 §1，不採用）：回應不是合法 JSON（Expecting value）／回應不是合法 JSON（Extra data）",
+  "rejected_attempts": [
+    {
+      "problems": [
+        "回應不是合法 JSON（Expecting value）"
+      ],
+      "response": null
+    },
+    {
+      "problems": [
+        "回應不是合法 JSON（Extra data）"
+      ],
+      "response": null
+    }
+  ],
+  "packet_sha256": "2ba8525c0459ef2f8e432ebfd80293dbcfc64827fc9bed3b21fb9c7b09891b6f",
+  "duration_seconds": 222.63
+}

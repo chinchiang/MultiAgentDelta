@@ -799,6 +799,13 @@ jobs:
       - name: 安全邊界回歸測試
         run: python3 -m unittest discover -s tests -v
 
+      - name: 實際容器隔離測試 / Actual container isolation test
+        env:
+          VIBESEC_DOCKER_TEST_IMAGE: python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
+        run: |
+          docker pull "$VIBESEC_DOCKER_TEST_IMAGE"
+          python3 -m unittest discover -s tests -p test_runtime_isolation.py -v
+
       - name: 通知腳本單元測試（node --test）
         run: |
           node --version

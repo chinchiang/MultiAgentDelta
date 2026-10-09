@@ -9,6 +9,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
 import compare_reviews
+import prepare_comparison
 import eval_faults
 import g6_gate
 import control_checks
@@ -16,6 +17,33 @@ from llm_observations import assess
 from g6_observe import observe
 
 class Evaluation(unittest.TestCase):
+    def test_comparison_packets_exclude_answer_and_case_labels(self):
+        cases=[{'id':'g4-pos-secret-label','held_out':True,'title':'answer hint','notes':'gold answer',
+                'input':{'kind':'code','snippet':'do_work()'},'expected':{'should_flag':True}}]
+        with tempfile.TemporaryDirectory() as directory:
+            output=pathlib.Path(directory)/'experiment'
+            manifest=prepare_comparison.prepare(cases,output)
+            packet=(output/'packets/case-0001.json').read_text()
+            for forbidden in ('g4-pos-secret-label','answer hint','gold answer','expected','should_flag'):
+                self.assertNotIn(forbidden,packet)
+            self.assertEqual(manifest['status'],'prepared_not_executed')
+            with self.assertRaises(FileExistsError):prepare_comparison.prepare(cases,output)
+    def test_empty_or_malformed_redteam_never_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'report.json'
+            for rows in ([],{},[None],[{'success':'true'}]):
+                path.write_text(json.dumps({'results':{'results':rows}}))
+                collector=g6_gate.Collector(*g6_gate.load_catalog())
+                g6_gate.ingest_promptfoo_redteam(collector,str(path),None)
+                self.assertEqual(g6_gate.build(collector,'shadow',g6_gate.now())[0]['status'],'incomplete')
+    def test_tool_error_cannot_be_hidden_by_successful_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'report.json'
+            path.write_text(json.dumps({'results':{'results':[{'success':True}]}}))
+            collector=g6_gate.Collector(*g6_gate.load_catalog())
+            g6_gate.ingest_promptfoo_eval(collector,str(path),2)
+            self.assertEqual(collector.tools[0]['state'],'error')
+            self.assertEqual(collector.coverage['promptfoo-execution']['state'],'untested')
     def test_faults_really_return_expected_states(self):
         for p in (ROOT/'evals/cases').glob('**/*.yaml'):
             c=yaml.safe_load(p.read_text())

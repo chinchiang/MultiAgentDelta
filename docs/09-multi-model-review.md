@@ -220,6 +220,8 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 
 ---
 
+Chat Completions 的 `finish_reason` 若為內容過濾、長度截斷或其他非正常停止原因，直接記為 error，不進行格式重試。Anthropic 與 Bedrock 的停止原因也採相同原則。一般 JSON 解析失敗仍只重試一次，並保存遮蔽憑證後的原始文字供稽核。
+
 <a id="english"></a>
 
 # 09 — Multi-Model Review: Providers, Roles, Rounds, and 14 Domains
@@ -334,3 +336,5 @@ Enforced rules (violation exits 1): human identity only; confirm requires reprod
 `anthropic-bedrock` uses Bedrock Converse and forms a distinct family from Gemini; AWS-hosted and direct Anthropic models still count as the same `anthropic` family. The runtime requires a supply-chain-reviewed `boto3` installation. Credentials come only from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`; provider `aws_region` selects the region, without an implicit AWS identity. Expired credentials, denied access, a missing SDK, or timeouts never produce a valid opinion. All three credential values are redacted from accepted and rejected model responses.
 
 `bedrock:ListFoundationModels` and model invocation are separate permissions: denied listing does not imply a known model cannot be invoked. Verify the selected model with a minimal request containing no project data before sending an appropriately classified review packet. Only `public`/`internal` are allowed; confidential data and PII remain restricted to existing on-premises providers. Leave `recorded_by` for the actual non-author reviewer; two successful model families do not establish human approval.
+
+A Chat Completions `finish_reason` indicating filtering, truncation, or another non-normal termination records error without a formatting retry. Anthropic and Bedrock termination reasons follow the same principle. Ordinary JSON parsing errors still receive at most one retry, with credential-redacted raw text retained for audit.

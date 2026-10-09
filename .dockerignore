@@ -1,0 +1,7 @@
+# 僅提供紅隊工具建置所需檔案。 / Only expose files needed to build the tool image.
+**
+!config/
+!config/runtime/
+!config/runtime/Dockerfile
+!config/garak/
+!config/garak/constraints.txt

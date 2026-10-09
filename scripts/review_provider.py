@@ -28,6 +28,10 @@ VERDICTS = ("confirm", "refute", "uncertain")
 class BadResponse(ValueError):
     """模型回應不是可解析的 JSON 物件：可以重試一次（與 HTTP／設定錯誤不同）。"""
 
+    def __init__(self, message, response=None):
+        super().__init__(message)
+        self.response = response
+
 try:
     import yaml
 except ImportError:
@@ -91,10 +95,15 @@ def _openai(p: dict, key: str, system: str, user: str) -> tuple[dict, str | None
             raise RuntimeError(f"HTTP {e.code}: {msg}") from None
     else:
         raise RuntimeError("參數調整後仍失敗")
+    choice = d['choices'][0]
+    finish = choice.get('finish_reason')
+    if finish is not None and finish != 'stop':
+        # 過濾或截斷不是格式錯誤，不自動重試。 / Filtering or truncation is not a formatting retry.
+        raise RuntimeError(f'Model response incomplete / 模型回應未完成: finish_reason={str(finish)[:100]}')
     try:
-        return json.loads(d["choices"][0]["message"]["content"]), d.get("model"), notes
+        return json.loads(choice["message"]["content"]), d.get("model"), notes
     except json.JSONDecodeError as e:
-        raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
+        raise BadResponse(f"回應不是合法 JSON（{e.msg}）", choice['message']['content']) from None
 
 
 def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | None, list[str]]:
@@ -102,14 +111,16 @@ def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | N
             "temperature": p.get("temperature", 0), "messages": [{"role": "user", "content": user + "\n\n只回傳 JSON。"}]}
     d = _post(p["base_url"].rstrip("/") + "/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"},
               body, p.get("timeout_seconds", 120))
+    if d.get('stop_reason') not in (None, 'end_turn', 'stop_sequence'):
+        raise RuntimeError('Anthropic response incomplete / 回應未完成: ' + str(d['stop_reason'])[:100])
     text = "".join(b.get("text", "") for b in d.get("content") or [] if b.get("type") == "text")
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
-        raise BadResponse("回應中沒有 JSON")
+        raise BadResponse("回應中沒有 JSON", text)
     try:
         return json.loads(m.group(0)), d.get("model"), []
     except json.JSONDecodeError as e:
-        raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
+        raise BadResponse(f"回應不是合法 JSON（{e.msg}）", text) from None
 
 
 def _bedrock(p, key, system, user, env):
@@ -135,14 +146,16 @@ def _bedrock(p, key, system, user, env):
         raise RuntimeError("Bedrock: " + str(e.response.get("Error", {}).get("Code", "ClientError"))) from None
     except BotoCoreError as e:
         raise RuntimeError("Bedrock: " + type(e).__name__) from None
+    if response.get('stopReason') not in (None, 'end_turn', 'stop_sequence'):
+        raise RuntimeError('Bedrock response incomplete / 回應未完成: ' + str(response['stopReason'])[:100])
     text = "".join(part.get("text", "") for part in response.get("output", {}).get("message", {}).get("content", []))
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
-        raise BadResponse("Bedrock 回應缺少 JSON / Bedrock response lacks JSON")
+        raise BadResponse("Bedrock 回應缺少 JSON / Bedrock response lacks JSON", text)
     try:
         opinion = json.loads(match[0])
     except json.JSONDecodeError:
-        raise BadResponse("Bedrock JSON 格式錯誤 / Invalid Bedrock JSON") from None
+        raise BadResponse("Bedrock JSON 格式錯誤 / Invalid Bedrock JSON", text) from None
     return opinion, p["model"], ["AWS Bedrock " + region, "usage=" + json.dumps(response.get("usage", {}))]
 
 
@@ -241,7 +254,7 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
             st = "timeout" if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)) else "error"
             return {**out, "state": st, "note": redact_key(str(e.reason), key)[:300]}
         except BadResponse as e:
-            opinion, problems = None, [str(e)]
+            opinion, problems = e.response, [str(e)]
         except (RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
             return {**out, "state": "error", "note": str(e).replace(key, "***")[:500]}
         else:
@@ -384,8 +397,8 @@ def selftest() -> list[str]:
         r = call("nojson", "architecture", "internal", pk, root, env)
         if r["state"] != "error" or calls.get("nojson") != 2 or "JSON" not in (r["note"] or ""):
             fails.append(f"不是 JSON → 重試一次後 error：{r}")
-        if [a["response"] for a in r.get("rejected_attempts") or []] != [None, None]:
-            fails.append(f"不是 JSON 的回應記為 None（不保存無法解析的文字）：{r.get('rejected_attempts')}")
+        if [a["response"] for a in r.get("rejected_attempts") or []] != ['not json', 'not json']:
+            fails.append(f"應保存無法解析的原始文字 / Preserve malformed raw responses: {r.get('rejected_attempts')}")
         r = call("noev", "architecture", "internal", pk, root, env)
         if r["state"] != "error" or "uncertain" not in (r["note"] or ""): fails.append(f"沒有證據卻 confirm → 不符契約：{r}")
         r = call("http500", "architecture", "internal", pk, root, env)

@@ -45,6 +45,11 @@ jobs:
       - name: 安裝閘門必要套件
         run: pip install --require-hashes -r requirements-ci.txt
 
+      - name: 建置無憑證的紅隊工具映像 / Build red-team image without credentials
+        id: runtime_image
+        continue-on-error: true
+        run: docker build -f config/runtime/Dockerfile --build-arg PROMPTFOO_VERSION --build-arg GARAK_VERSION -t vibesec-redteam:local .
+
       - name: Install uv
         continue-on-error: true
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -193,8 +198,7 @@ jobs:
           mkdir -p reports
           # 退出碼 100 = 有測試失敗（正常結果，交給 g6_gate.py 判定 fail）；其他非零 = 工具錯誤
           set +e
-          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c config/promptfoo/tests.yaml --no-cache \
-            --output reports/g6-promptfoo.json </dev/null >reports/_promptfoo.log 2>&1
+          python3 scripts/isolated_redteam.py eval --image vibesec-redteam:local
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
@@ -221,24 +225,9 @@ jobs:
             echo "::notice::redteam 生成層未執行：未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret（記為 untested）"
             exit 0
           fi
-          # 依可用金鑰，從 config/providers.yaml 取模型名稱，產生臨時設定（不修改 repo 內設定檔）
-          python3 - <<'PY'
-          import os, yaml, pathlib
-          prov = yaml.safe_load(open("config/providers.yaml"))["providers"]
-          if os.environ.get("ANTHROPIC_API_KEY"):
-              pid = f"anthropic:messages:{prov['anthropic-cloud']['model']}"
-          else:
-              pid = f"openai:chat:{prov['openai-cloud']['model']}"
-          cfg = yaml.safe_load(open("config/promptfoo/promptfooconfig.yaml"))
-          cfg.setdefault("redteam", {})["provider"] = pid
-          cfg.setdefault("defaultTest", {}).setdefault("options", {})["provider"] = pid
-          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "promptfoo-redteam.yaml"
-          out.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
-          print(f"redteam provider: {pid.split(':')[0]}")
-          PY
+          # 金鑰留在容器外；第三方工具僅可呼叫受限轉接器。 / Keep keys outside the tool container.
           set +e
-          timeout 1800 npx --yes "promptfoo@${PROMPTFOO_VERSION}" redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml" --no-cache \
-            --output reports/g6-promptfoo-redteam.json </dev/null >reports/_promptfoo-redteam.log 2>&1
+          python3 scripts/isolated_redteam.py redteam --image vibesec-redteam:local
           code=$?
           set -e
           echo "redteam exit=$code"
@@ -253,18 +242,11 @@ jobs:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
           mkdir -p reports/garak
-          # 先以官方 CPU index 安裝固定 torch，再由 PyPI 裝 garak；constraint 禁止換回 CUDA wheel。
-          if ! (pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.13.0+cpu' &&
-                pip install --no-cache-dir -c config/garak/constraints.txt "garak==${GARAK_VERSION}") >reports/_garak-install.log 2>&1; then
-            echo "::warning::garak 安裝失敗（記為 untested）"
-          fi
-          if command -v garak >/dev/null 2>&1; then
-            # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
-            sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
-            timeout 1800 garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix "$GITHUB_WORKSPACE/reports/garak/g6-garak" >reports/_garak.log 2>&1 || \
-              echo "::warning::garak 回傳非零 → 依報告內容判定"
-            # garak 以資料目錄解析相對路徑；絕對 prefix 將報告固定在本工作區，合併時不搬移或重複計數。
-          fi
+          # 建置失敗或隔離失敗必須保持未完成，不回退到主機執行。 / Never fall back to host execution.
+          code=0
+          python3 scripts/isolated_redteam.py garak --image vibesec-redteam:local --output reports/garak || code=$?
+          if [ -f reports/garak/_garak.log ]; then cp reports/garak/_garak.log reports/_garak.log; fi
+          exit "$code"
 
       - name: G6 工具事件與用量遙測
         continue-on-error: true

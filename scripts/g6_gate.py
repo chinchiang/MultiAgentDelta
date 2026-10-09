@@ -100,6 +100,8 @@ def ingest_promptfoo_eval(c: Collector, path: str | None, exit_code: int | None)
     try:
         data = json.loads(pathlib.Path(path).read_text(encoding="utf-8")) if path else None
         rows = data["results"]["results"]
+        if not isinstance(rows, list) or not rows or any(not isinstance(r, dict) or type(r.get('success')) is not bool for r in rows):
+            raise ValueError('Empty or malformed evaluations / 評測為空或格式錯誤')
     except Exception as e:
         tool["state"] = "missing" if not path or not pathlib.Path(path).exists() else "error"
         c.tools.append(tool)
@@ -107,6 +109,10 @@ def ingest_promptfoo_eval(c: Collector, path: str | None, exit_code: int | None)
         c.cover("promptfoo-eval", "LLM01:2025", "untested", "promptfoo eval 未產生可解析結果")
         return
     c.tools.append(tool)
+    if exit_code is not None and exit_code not in (0, 100):
+        tool['state'] = 'error'
+        c.cover('promptfoo-execution', 'LLM01:2025', 'untested', 'Tool execution failed / 工具執行失敗')
+        c.reasons.append('promptfoo execution failed / promptfoo 執行失敗')
     for r in rows:
         md = ((r.get("testCase") or {}).get("metadata")) or r.get("metadata") or {}
         rule = md.get("vibesec_rule_id") or "promptfoo:unmapped"
@@ -136,6 +142,8 @@ def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None
         return
     try:
         rows = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))["results"]["results"]
+        if not isinstance(rows, list) or not rows or any(not isinstance(r, dict) or type(r.get('success')) is not bool for r in rows):
+            raise ValueError('Empty or malformed evaluations / 評測為空或格式錯誤')
     except Exception as e:
         c.tools.append({"name": "promptfoo-redteam", "version": None, "state": "error", "exit_code": None,
                         "output_ref": path, "duration_seconds": None})

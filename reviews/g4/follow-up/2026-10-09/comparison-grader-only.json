@@ -1,0 +1,362 @@
+{
+  "status": "prepared_not_executed",
+  "seed": 42,
+  "cases": [
+    {
+      "blind_id": "case-0001",
+      "case_id": "g4-single-mw-fastapi-pos-02",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V8.3",
+        "rule_id": "vibesec.g4.single-middleware-authz",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "2b23d06750a836b9674703c53611565687b9c5e5b2d7ddc98fe10420131d1723"
+    },
+    {
+      "blind_id": "case-0002",
+      "case_id": "g4-bola-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V8.1",
+        "rule_id": "vibesec.g4.missing-owner-filter",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "c1803bad1fa69964766227464781de539324188dbb7cf4843ff8775c227ed4d9"
+    },
+    {
+      "blind_id": "case-0003",
+      "case_id": "g3-csp-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V3.2",
+        "rule_id": "vibesec.g3.missing-csp",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "fafd418fdb5060bebf330bf981e9add1217dbdd1748ff55ab6541016e45e7ba0"
+    },
+    {
+      "blind_id": "case-0004",
+      "case_id": "g5-session-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V7.1",
+        "rule_id": "vibesec.g5.missing-session-check",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "2d8fb4eb7c8c0bafe1809c047426ea1325becad77a4165d32a99c26d358b44e6"
+    },
+    {
+      "blind_id": "case-0005",
+      "case_id": "g6-dow-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "LLM10:2025",
+        "rule_id": "vibesec.g6.denial-of-wallet",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "2781cbf5380a590cc85eabc1c318587e10c230cca69514b787fb232f94edcaba"
+    },
+    {
+      "blind_id": "case-0006",
+      "case_id": "g3-actions-prt-pos-02",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V15.1",
+        "rule_id": "vibesec.g3.actions-pull-request-target",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "62fe53ab3706e616b41041677f6fdf8589f210926d23ea895bbe9d73f918f3fd"
+    },
+    {
+      "blind_id": "case-0007",
+      "case_id": "g2-secret-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V13.1",
+        "rule_id": "vibesec.g2.hardcoded-secret",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "aef7d9bd3a2fede3f1b55c8bb2f3e8750e8aaa377fbfed13d229f7756df28cd0"
+    },
+    {
+      "blind_id": "case-0008",
+      "case_id": "g3-sqli-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V1.2",
+        "rule_id": "vibesec.g3.sql-string-concat",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "a393abb5f828aea5ac442117f83a914d397387a1d164cb8a22cd6e72da9961d7"
+    },
+    {
+      "blind_id": "case-0009",
+      "case_id": "g3-imds-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V13.2",
+        "rule_id": "vibesec.g3.imdsv1-allowed",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "7f2ed81ba106be16f1a0e29fb45e841d98f15c43b659e2224bbd0392568c9bf3"
+    },
+    {
+      "blind_id": "case-0010",
+      "case_id": "g4-hitl-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V2.3",
+        "rule_id": "vibesec.g4.missing-hitl",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "d95cc69def36e254302cbfe2e6905fbce20f7be26c94ea82ebe559047450f6a6"
+    },
+    {
+      "blind_id": "case-0011",
+      "case_id": "g3-cmdi-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V1.2",
+        "rule_id": "vibesec.g3.command-injection",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "9e691ebdb4331f11fc0c0584d70146f584efadf5013c814cb52130b9bb9cf207"
+    },
+    {
+      "blind_id": "case-0012",
+      "case_id": "g6-agency-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "LLM06:2025",
+        "rule_id": "vibesec.g6.excessive-agency",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "951541ec3bacada31194dfa474aafec9493820e7475ebace00a6d2a3dfa005de"
+    },
+    {
+      "blind_id": "case-0013",
+      "case_id": "g6-sysprompt-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "LLM07:2025",
+        "rule_id": "vibesec.g6.system-prompt-extraction",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "9745ad62591f25eca1c5921ae43175b7f68286a0ba08e5b853852a025589b2f1"
+    },
+    {
+      "blind_id": "case-0014",
+      "case_id": "g5-jwt-neg-02",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V9.1",
+        "rule_id": "vibesec.g5.jwt-alg-confusion",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "7489f6a784e00d3c971c7f9bd753d6a03b88e089f219ae03134929b73509e877"
+    },
+    {
+      "blind_id": "case-0015",
+      "case_id": "g4-owner-pos-02",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V8.2",
+        "rule_id": "vibesec.g4.missing-owner-filter",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "fde2e5b2d3d7d72b6daac381b6d96995d3ef51a03cebe054d33777d1c73a60a1"
+    },
+    {
+      "blind_id": "case-0016",
+      "case_id": "g6-indirect-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "LLM01:2025",
+        "rule_id": "vibesec.g6.indirect-prompt-injection",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "4f8e6d5f68ad3bbc05ad879cce3eecc2a3c123eb9d4130e75c602c1d08a0122f"
+    },
+    {
+      "blind_id": "case-0017",
+      "case_id": "g1-cooldown-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V15.2",
+        "rule_id": "vibesec.g1.cooldown-violation",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "09474ec25fd691e49ae2cf346edbfd8b6a69f782fe095867763d2c5130a63b0c"
+    },
+    {
+      "blind_id": "case-0018",
+      "case_id": "g4-agent-tools-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "VS-G4-AGENT-TOOL-ALLOWLIST",
+        "rule_id": "vibesec.g4.agent-tool-overexposure",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "07a3648a0771206344f01ed49b3bdb0ab6f21edaffcc1a213bfddf5dee0a29f7"
+    },
+    {
+      "blind_id": "case-0019",
+      "case_id": "g4-single-mw-fastapi-neg-02",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V8.3",
+        "rule_id": "vibesec.g4.single-middleware-authz",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "87a34e2a735b6e24236e102b70a355c3f184acebfc8443b419ff8ec6db3e8b26"
+    },
+    {
+      "blind_id": "case-0020",
+      "case_id": "g1-postinstall-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V15.2",
+        "rule_id": "vibesec.g1.postinstall-egress",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "e2330d9de35500e7e0dd461f3e2f976c1bfac6ed73cff5a6f8aad07af5b3f564"
+    },
+    {
+      "blind_id": "case-0021",
+      "case_id": "g4-rls-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V8.2",
+        "rule_id": "vibesec.g4.supabase-rls-disabled",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "754e64a25688b72c2acd9f297ab16d35d31de2d5cbaa1cec2c85b178a95caab1"
+    },
+    {
+      "blind_id": "case-0022",
+      "case_id": "g5-jwt-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V9.1",
+        "rule_id": "vibesec.g5.jwt-alg-none",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "5fd00a53cb020e27672b9f155948fcf237ee48e012c867371f2fca4bd1d061a1"
+    },
+    {
+      "blind_id": "case-0023",
+      "case_id": "g6-injection-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "LLM01:2025",
+        "rule_id": "vibesec.g6.system-prompt-extraction",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "e2c0485d9cc3decd3212b06ed56ed06e5dbbf8a4ee1f5981b3e8cd775a50aeff"
+    },
+    {
+      "blind_id": "case-0024",
+      "case_id": "g2-envignore-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V13.3",
+        "rule_id": "vibesec.g2.env-not-ignored",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "c6a7b6dd2878034b978a1b888a590d8c66523d9f73c75c0e1d5d7e4c183e425c"
+    },
+    {
+      "blind_id": "case-0025",
+      "case_id": "g5-ssrf-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V1.3",
+        "rule_id": "vibesec.g5.ssrf-metadata",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "9d11e683f0d71f866b5d747d6cf47ed6c420088d45a6e5cfa329379a34047f19"
+    },
+    {
+      "blind_id": "case-0026",
+      "case_id": "g3-actions-unpinned-neg-01",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V15.1",
+        "rule_id": "vibesec.g3.actions-unpinned-action",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "29ea873e697449c57c8086d1a6e96c108f7b6642e34012b8383d7a323f387c51"
+    },
+    {
+      "blind_id": "case-0027",
+      "case_id": "g3-actions-unpinned-neg-02",
+      "expected": {
+        "should_flag": false,
+        "control_id": "ASVS5-V15.1",
+        "rule_id": "vibesec.g3.actions-unpinned-action",
+        "policy_tier": "advisory"
+      },
+      "packet_sha256": "a2c96a110a8dc12fc3f2dce175b9bd47733ea57ebf6235cfc036e1d15338ed64"
+    },
+    {
+      "blind_id": "case-0028",
+      "case_id": "g5-jwt-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V9.1",
+        "rule_id": "vibesec.g5.jwt-alg-none",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "2792309390214afb64da1c595313f61f2dcdc901ab79fde2b9c13b2ea39ad2a8"
+    },
+    {
+      "blind_id": "case-0029",
+      "case_id": "g0-trifecta-pos-02",
+      "expected": {
+        "should_flag": true,
+        "control_id": "VS-G0-LETHAL-TRIFECTA",
+        "rule_id": "vibesec.g0.lethal-trifecta-open",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "11af1e82721006c395633cf12cc04b27241c110b66d4b7b35b94faa20f977c70"
+    },
+    {
+      "blind_id": "case-0030",
+      "case_id": "g1-slopsquat-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V10.1",
+        "rule_id": "vibesec.g1.hallucinated-package",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "22b67dd8229ff49df7677d5e43c300b4447bc893495fdb82d85b671d19577bc1"
+    },
+    {
+      "blind_id": "case-0031",
+      "case_id": "g5-cors-pos-01",
+      "expected": {
+        "should_flag": true,
+        "control_id": "ASVS5-V3.3",
+        "rule_id": "vibesec.g5.cors-reflect-origin",
+        "policy_tier": "blocking"
+      },
+      "packet_sha256": "6403c44e9390ee3b2f56ffb0b9b81ab7d7fbda50bc0e4dc19a76812f335fcbae"
+    }
+  ],
+  "arms": {
+    "single": [
+      "A1"
+    ],
+    "same_family": [
+      "A1",
+      "A2"
+    ],
+    "cross_family": [
+      "A1",
+      "B1"
+    ]
+  },
+  "note": "A1/A2/B1 必須獨立呼叫；A1/A2 同家族、B1 不同家族。人工裁決、費用與時間不得補造。 / A1/A2/B1 require independent calls; A1/A2 share a family, B1 differs. Never fabricate adjudication, costs, or human time.",
+  "dataset_sha256": "1cabf5c9ff04bc273404850203a9ea717c5e957eb7cef2453146573680d4772b"
+}

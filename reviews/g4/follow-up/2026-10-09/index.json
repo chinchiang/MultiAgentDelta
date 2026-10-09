@@ -1,0 +1,37 @@
+{
+  "status": "incomplete",
+  "formal_g4_record": false,
+  "scope": "Intermediate implementation snapshot; subsequent repairs are not covered. / 審查輸入是中途版本，不涵蓋後續修正。",
+  "model_review": "No usable reviews; AWS temporary credentials expired, Gemini responses missing/malformed. / 無可採用的審查；AWS 暫時性憑證過期，Gemini 回應缺漏或格式錯誤。",
+  "experiment": "31 blinded held-out cases prepared, not executed. Grader-only mapping must not be sent to models. / 31 案保留集已準備，未執行；答案對照不得送給模型。",
+  "files": {
+    "gemini-cloud-architecture.json": {
+      "sha256": "950426327b955c373ee1bbdeea896524db4c9da80bec74be8b95607731a7d471",
+      "bytes": 367
+    },
+    "gemini-cloud-appsec.json": {
+      "sha256": "d77c4d6a6a98c4ad84e023a781562c7bc00c2659cdd6b8d441deef3c309969ad",
+      "bytes": 776
+    },
+    "anthropic-bedrock-appsec.json": {
+      "sha256": "2fd9ec35a205731fcf61c7c4e2aec84ac35d1f47d4055fd9485624003256557c",
+      "bytes": 408
+    },
+    "anthropic-bedrock-architecture.json": {
+      "sha256": "536e228f98d81b0e91b02b6130e8c1e878bb7b4b65f0fb5fca135aea5a76bd16",
+      "bytes": 420
+    },
+    "review-input.json.gz": {
+      "sha256": "68d875688f80217c55453a4f49989157c4d9976055eee241c6c065ecde2b1439",
+      "bytes": 20399
+    },
+    "github-readiness.json": {
+      "sha256": "815f6d94240f1524f8d2c2a77ad7691fdebfc023e48b5cc545b184b6598e8f5f",
+      "bytes": 1187
+    },
+    "comparison-grader-only.json": {
+      "sha256": "a3cbc045084109255d74e2d33e6bf19e008ad04b41530b502632d502e2ef1190",
+      "bytes": 11557
+    }
+  }
+}

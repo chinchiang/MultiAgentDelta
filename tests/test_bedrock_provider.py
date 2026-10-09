@@ -68,6 +68,9 @@ class Bedrock(unittest.TestCase):
                 self.assertEqual(self.call()['state'],'error')
             with patch.object(Client,'converse',return_value={'output':None}):
                 self.assertEqual(self.call()['state'],'error')
+            with patch.object(Client,'converse',return_value={'stopReason':'guardrail_intervened'}) as invoke:
+                self.assertEqual(self.call()['state'],'error')
+                self.assertEqual(invoke.call_count,1)
 
     def test_malformed_transport_response_is_recorded_as_error(self):
         self.p['kind']='openai_compatible'
@@ -78,6 +81,24 @@ class Bedrock(unittest.TestCase):
                 result=self.call()
                 self.assertEqual(result['state'],'error')
                 self.assertIsNone(result['opinion'])
+
+    def test_filter_or_truncation_does_not_trigger_format_retry(self):
+        self.p.update(kind='openai_compatible',base_url='https://model.example.invalid/v1')
+        (self.root/'config/providers.yaml').write_text(yaml.safe_dump({'providers':{'bedrock':self.p}}))
+        for finish in ('content_filter','content_filter: OTHER','length'):
+            with patch.object(provider,'_post',return_value={'choices':[{'finish_reason':finish}]}) as post:
+                result=self.call()
+                self.assertEqual(result['state'],'error');self.assertIn(finish,result['note'])
+                self.assertEqual(post.call_count,1)
+
+    def test_invalid_json_is_preserved_without_reflected_key(self):
+        self.p.update(kind='openai_compatible',base_url='https://model.example.invalid/v1')
+        (self.root/'config/providers.yaml').write_text(yaml.safe_dump({'providers':{'bedrock':self.p}}))
+        with patch.object(provider,'_post',return_value={'choices':[{'message':{'content':'invalid '+self.env['AWS_ACCESS_KEY_ID']}}]}):
+            result=self.call()
+        self.assertEqual(result['state'],'error')
+        self.assertTrue(result['rejected_attempts'][0]['response'].startswith('invalid '))
+        self.assertNotIn(self.env['AWS_ACCESS_KEY_ID'],json.dumps(result))
 
 
 if __name__=='__main__':unittest.main()

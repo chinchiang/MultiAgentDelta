@@ -83,6 +83,8 @@ KEV 先查 CISA 官網，失敗時改查 CISA 維護的 `cisagov/kev-data` 官�
 
 ---
 
+第三方紅隊工具的容器隔離、受限轉接器與 G4 人工判定清單，見[後續修正說明](15-g4-follow-up.md#zh-tw)。
+
 <a id="english"></a>
 
 # Operation, Deployment, and Verification Boundaries
@@ -161,3 +163,5 @@ These are acceptance criteria, not claims of completion; `mode: shadow` remains 
 | Policy transition | A separate PR records scope, responsible owners, evidence, and deployment dependencies on required gates | Remain in shadow until ready; never demote blocking rules or relax incomplete semantics |
 
 Administrators can first generate a read-only configuration report, then address gaps with appropriate credentials. Supply model keys through environment or GitHub Actions secrets, never conversation text, documentation, or commits. A configured key does not establish a successful model call: rerun and preserve actual results.
+
+For third-party red-team container isolation, the restricted broker, and the G4 human decision list, see [follow-up repairs](15-g4-follow-up.md#english).

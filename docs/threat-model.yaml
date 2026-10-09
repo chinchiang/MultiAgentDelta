@@ -159,7 +159,7 @@ threats:
     category: STRIDE-E
     target: c-ci-pr
     description: "fork PR 取得可寫 GITHUB_TOKEN 或 secrets，執行不可信程式碼。 / A fork PR obtains a writable GITHUB_TOKEN or secrets and executes untrusted code."
-    mitigation: "只用 pull_request（無 pull_request_target）；fork 唯讀且無 secrets；workflow 層級僅 contents:read，寫入權限按 job 宣告（PR / Only pull_request is used, without pull_request_target; forks are read-only with no secrets. Workflow permissions are contents:read, with write scopes declared per job." #42）；vibesec.g3.actions-pull-request-target 規則。
+    mitigation: "只使用 pull_request，fork 無 secrets 且權杖唯讀；工作流程預設 contents:read，寫入權限依 job 限縮（PR #42）；靜態規則檢查 pull_request_target。 / Use pull_request with no fork secrets and read-only fork tokens; default to contents:read and scope writes per job (PR #42). Static checks detect pull_request_target."
     status: mitigated
     gate: G3
   - id: t-third-party-action
@@ -173,14 +173,14 @@ threats:
     category: MAESTRO-L4
     target: c-ci-staging
     description: "執行期下載的 promptfoo／garak 若遭上游入侵，可讀取同 job 的 LLM 金鑰與 staging token 並外傳（harness 發現：供應鏈層致命三要素）。 / Compromised promptfoo or garak downloaded at runtime could steal LLM keys and staging tokens from the same job: a supply-chain lethal trifecta found during harness review."
-    mitigation: "釘版且滿 14 天（PR / Versions are pinned and at least 14 days old." #42）；token 於 G5 結束即刪。殘留：job 出向不受限、LLM 金鑰仍與 promptfoo 同步驟，未加 egress allow-list。
+    mitigation: "固定工具版本與基底映像 digest，建置不提供模型金鑰；執行時使用無外網、非 root、唯讀容器，僅掛載專用設定與輸出。模型金鑰由外部轉接器持有，只准許固定目標與模型路徑，G5 token 在 G6 前刪除。殘留：建置遞移相依套件未全部雜湊鎖定、容器核心與授權端點仍為信任邊界；請求上限不等於精準費用預算。 / Pin tool versions and base-image digests; builds receive no model keys. Runtime containers are networkless, non-root, read-only, and mount only dedicated inputs/outputs. An external broker holds model keys and permits only fixed target/model routes; G5 tokens are deleted before G6. Residual risks include incompletely hash-locked build transitives, kernel and authorized-endpoint trust, and request limits that are not exact monetary budgets."
     status: open
     gate: G1
   - id: t-ruling-forgery
     category: STRIDE-S
     target: a-rulings
     description: "PR 作者自填人工裁決，將 requires_human 改為 false、證據升 E3，繞過人工裁決（CLAUDE.md 規則 6）。 / A PR author forges human adjudication, sets requires_human to false, and upgrades evidence to E3, bypassing human review under CLAUDE.md rule 6."
-    mitigation: "CODEOWNERS 涵蓋 rulings/；repo-validate 拒絕 decided_by 為 PR 作者（PR / CODEOWNERS covers rulings/; repo-validate rejects records whose decided_by is the PR author." #42）。殘留：需 branch protection 開啟 code owner review；單一維護者無法職責分離（VIBESEC_SINGLE_MAINTAINER 僅警告）。
+    mitigation: "CODEOWNERS 涵蓋 rulings/，驗證拒絕 PR 作者自填 decided_by（PR #42）；仍須分支保護強制 code owner review。單一維護者無法職責分離，例外設定不代表獨立人工核准。 / CODEOWNERS covers rulings/ and validation rejects PR authors as decided_by (PR #42). Branch protection must enforce code-owner review. A sole maintainer cannot provide separation of duties; an exception setting is not independent approval."
     status: open
     gate: G4
   - id: t-review-forgery

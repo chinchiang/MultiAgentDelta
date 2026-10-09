@@ -1,0 +1,13 @@
+{
+  "provider": "anthropic-bedrock",
+  "family": "anthropic",
+  "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "role": "appsec",
+  "prompt_version": "appsec@2026-10-09.1",
+  "data_class": "internal",
+  "state": "error",
+  "opinion": null,
+  "note": "Bedrock: ExpiredTokenException",
+  "packet_sha256": "2ba8525c0459ef2f8e432ebfd80293dbcfc64827fc9bed3b21fb9c7b09891b6f",
+  "duration_seconds": 0.29
+}

@@ -1,0 +1,13 @@
+{
+  "provider": "gemini-cloud",
+  "family": "google",
+  "model": "gemini-3.8-flash",
+  "role": "architecture",
+  "prompt_version": "architecture@2026-10-09.1",
+  "data_class": "internal",
+  "state": "error",
+  "opinion": null,
+  "note": "'message'",
+  "packet_sha256": "2ba8525c0459ef2f8e432ebfd80293dbcfc64827fc9bed3b21fb9c7b09891b6f",
+  "duration_seconds": 229.56
+}
