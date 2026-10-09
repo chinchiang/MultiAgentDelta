@@ -120,7 +120,9 @@ class SemgrepRunner(Runner):
                 p = subprocess.run([self.bin, "--config", str(SEMGREP_RULES), "--json", "--quiet",
                                     "--metrics=off", "--disable-version-check", str(target)],
                                    capture_output=True, text=True, timeout=180)
-                data = json.loads(p.stdout or "{}")
+                if p.returncode not in (0, 1) or not p.stdout.strip():   # 1 = 有發現；其他 = 崩潰，不是「沒發現」（第四次審視 S-12）
+                    return None, f"semgrep 執行失敗（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}"
+                data = json.loads(p.stdout)
             except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 return None, f"semgrep 執行失敗：{type(e).__name__}"
             if data.get("errors") and not data.get("results"):
@@ -172,7 +174,9 @@ class SlopcheckRunner(Runner):
             try:
                 p = subprocess.run([sys.executable, str(SLOPCHECK), "--manifest", str(mf)],
                                    capture_output=True, text=True, timeout=120, cwd=ROOT)
-                out = json.loads(p.stdout or "{}")
+                if not p.stdout.strip():
+                    return None, f"slopcheck 無輸出（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}"
+                out = json.loads(p.stdout)
             except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 return None, f"slopcheck 執行失敗：{type(e).__name__}"
             if out.get("status") == "incomplete":
@@ -264,7 +268,9 @@ class RulesFileRunner(Runner):
             try:
                 p = subprocess.run([sys.executable, str(SLOPCHECK), "--rules-file", str(target)],
                                    capture_output=True, text=True, timeout=120, cwd=ROOT)
-                out = json.loads(p.stdout or "{}")
+                if not p.stdout.strip():
+                    return None, f"slopcheck 無輸出（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}"
+                out = json.loads(p.stdout)
             except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 return None, f"slopcheck 執行失敗：{type(e).__name__}"
             if out.get("status") == "incomplete":

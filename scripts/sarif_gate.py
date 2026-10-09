@@ -59,7 +59,7 @@ def load_policy() -> dict:
             t, _, ext = str(ref).partition(":")
             impl[f"{t}:{ext}"].add(rid)
     exceptions, ignored = load_exceptions()
-    return {"mode": vb.get("mode", "shadow"), "risk_tier": tier, "blocking": blocking,
+    return {"mode": vb.get("mode", "shadow"), "risk_tier": tier, "blocking": blocking, "policy": policy,
             "default_tier": policy.default_tier, "impl": impl, "controls": controls,
             "exceptions": exceptions, "ignored_exceptions": ignored}
 
@@ -99,8 +99,7 @@ def to_findings(tool: str, results: list[dict], pol: dict) -> list[dict]:
     for r in results:
         loc = _location(r)
         for rid in map_rule(tool, r.get("ruleId") or "", pol):
-            tier = "blocking" if rid in pol["blocking"] else ("advisory" if rid.startswith("vibesec.") else pol["default_tier"])
-            f = {"rule_id": rid, "tool": tool, "location": loc, "policy_tier": tier}
+            f = {"rule_id": rid, "tool": tool, "location": loc, "policy_tier": pol["policy"].tier(rid)}   # tier 唯一來源
             for ex in pol["exceptions"]:
                 if ex["rule_id"] == rid and fnmatch.fnmatchcase(loc, ex["path_glob"]):
                     if f["policy_tier"] == "blocking":
@@ -117,6 +116,13 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
     started = started or now()
     tool_rows, findings, problems = [], [], []
     ran: set[str] = set()
+    # 閘門的每個負責工具都必須提供結果：沒列在 --tool 的工具以前被當成「不需要」而 pass（第四次審視 S-3）
+    required = {o for owners in GATE_CONTROLS.get(gate, {}).values() for o in owners}
+    for name in sorted(required - set(tools) - {"envcheck"}):
+        tool_rows.append({"name": name, "version": None, "state": "missing", "exit_code": None, "output_ref": None, "duration_seconds": None})
+        problems.append(f"{name}：未提供結果檔（--tool {name}=… 缺席）")
+    if "envcheck" in required and envcheck is None:
+        problems.append("envcheck：未提供 g2-envcheck.json")
     for name, path in tools.items():
         results, err = read_sarif(path)
         state = "ran" if results is not None else ("missing" if "不存在" in (err or "") else "error")
@@ -130,13 +136,15 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
     if envcheck is not None:
         try:
             d = json.loads(envcheck.read_text(encoding="utf-8"))
+            if not isinstance(d, dict) or "env_gitignore_fail" not in d:
+                raise json.JSONDecodeError("缺 env_gitignore_fail 欄位", "", 0)   # 空物件不是「檢查通過」
             ran.add("envcheck")
             tool_rows.append({"name": "envcheck", "version": None, "state": "ran", "exit_code": None,
                               "output_ref": str(envcheck), "duration_seconds": None})
             if d.get("env_gitignore_fail"):
                 rid = d.get("rule_id") or "vibesec.g2.env-not-ignored"
                 findings.append({"rule_id": rid, "tool": "envcheck", "location": ".gitignore",
-                                 "policy_tier": "blocking" if rid in pol["blocking"] else "advisory"})
+                                 "policy_tier": pol["policy"].tier(rid)})
         except (OSError, json.JSONDecodeError) as e:
             tool_rows.append({"name": "envcheck", "version": None, "state": "missing" if isinstance(e, OSError) else "error",
                               "exit_code": None, "output_ref": str(envcheck), "duration_seconds": None})
@@ -162,7 +170,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
         reasons.append("忽略的例外：" + "；".join(pol["ignored_exceptions"]))
     coverage = []
     for ctl, owners in GATE_CONTROLS.get(gate, {}).items():
-        if not all(o in ran for o in owners if o in tools or o == "envcheck" and envcheck is not None):
+        if not all(o in ran for o in owners):
             state, why = "untested", "負責工具未完成：" + "、".join(o for o in owners if o not in ran)
         elif any(ctl in pol["controls"].get(f["rule_id"], []) for f in blocking):
             state, why = "fail", None
@@ -243,6 +251,20 @@ def selftest() -> list[str]:
         g = run("G2", {"gitleaks": None}, env={"env_gitignore_fail": 1})
         if g["status"] != "incomplete" or g["findings_count"]["advisory"] != 1:
             fails.append("gitleaks 缺席 → incomplete；envcheck 失敗 → advisory 發現")
+        g = run("G3", {"semgrep": sarif()})
+        if g["status"] != "incomplete" or "checkov" not in (g["status_reason"] or "") or "trivy" not in (g["status_reason"] or ""):
+            fails.append("只提供 semgrep → 其他負責工具缺席 → incomplete（不是 pass）")
+        if next(c for c in g["coverage"] if c["control_id"] == "ASVS5-V13.2")["state"] != "untested":
+            fails.append("未提供結果檔的工具負責的控制 → untested")
+        g = run("G3", {})
+        if g["status"] != "incomplete":
+            fails.append("沒有任何 --tool → incomplete")
+        g = run("G2", {"gitleaks": sarif()}, env={})
+        if g["status"] != "incomplete":
+            fails.append("envcheck 結果缺 env_gitignore_fail → incomplete")
+        g = run("G2", {"gitleaks": sarif()})
+        if g["status"] != "incomplete":
+            fails.append("G2 未提供 envcheck → incomplete")
     return fails
 
 

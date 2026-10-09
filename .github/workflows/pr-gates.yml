@@ -258,7 +258,8 @@ jobs:
             echo "::error::.env* 未列入 .gitignore（require_env_in_gitignore: true）"; fail=1
           fi
           # docs/03 §4：範本 .env.example 不算（只放佔位值、本來就該提交）；其餘 .env* 被追蹤即失敗
-          TRACKED=$(git ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -Ev '(^|/)\.env\.example$' || true)
+          # core.quotepath=false：含非 ASCII 的路徑否則會被加引號跳脫，regex 比對不到（第四次審視 S-7）
+          TRACKED=$(git -c core.quotepath=false ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -Ev '(^|/)\.env\.example$' || true)
           if [ -n "$TRACKED" ]; then
             echo "::error::偵測到已追蹤的 .env 檔："; echo "$TRACKED"; fail=1
           else
