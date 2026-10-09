@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 09 — 多模型審查：Provider 抽象、四個角色、輪次規則與 14 領域覆蓋矩陣
 
 > 傳統資安控制是審查主體；多模型是提升覆蓋率、降低共同盲點的手段，不是裁判。本文件定義 harness agent 把發現送審時的 provider 介面、角色分工、輪次協定、資料駐留與失敗處理。對應 `vibesec.yaml` 的 `review.*` 區塊與 `config/providers.yaml`。
@@ -139,7 +144,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 | # | 審查領域 | 必查內容 | 驗證方式 | 主責角色 | 主要閘門 |
 |---|---|---|---|---|---|
 | 1 | Application architecture | 資料流、信任邊界、攻擊面、租戶隔離、服務權限、敏感資料生命週期、故障時安全性、復原能力 | 對照架構文件、實際程式與部署設定，建立攻擊路徑及控制缺口 | architecture | G0、G4 |
-| 2 | 一般安全弱點 | SQL／NoSQL／命令／模板注入、SSRF、路徑穿越、不安全反序列化、檔案上傳、CSRF、業務邏輯與競態 | 靜態分析、資料流追蹤、隔離環境的負面測試 | appsec | G3、G5 |
+| 2 | 一般安全弱點 | SQL／NoSQL／命令／範本注入、SSRF、路徑穿越、不安全反序列化、檔案上傳、CSRF、業務邏輯與競態 | 靜態分析、資料流追蹤、隔離環境的負面測試 | appsec | G3、G5 |
 | 3 | XSS | Reflected、Stored、DOM XSS；輸出情境編碼、危險 DOM 操作、富文字清理 | 追查輸入至輸出位置，使用瀏覽器確認執行行為與防護 | appsec | G3、G5、G6 |
 | 4 | CSP | 實際回應標頭、Enforce／Report-Only、nonce／hash、寬鬆來源、危險指令、頁面覆蓋 | 檢查有效政策及瀏覽器行為，確認阻擋效果和功能相容性 | appsec | G5 |
 | 5 | Authentication | 密碼儲存、MFA、登入節流、帳號復原、Session、Cookie、JWT、OAuth／OIDC、登出撤銷 | 帳號生命週期測試、失效 Token、Session 固定與撤銷測試 | identity-authz | G3、G5 |
@@ -205,3 +210,115 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 
 裁決不能降低 `policy_tier`。要把 blocking 降為 advisory 屬於政策變更，須由人類在獨立 PR 修改 `config/policy/blocking-policy.yaml`（CLAUDE.md #1）。
 
+
+
+---
+
+<a id="english"></a>
+
+# 09 — Multi-Model Review: Providers, Roles, Rounds, and 14 Domains
+
+Traditional security controls remain the basis of review. Model diversity aims to improve coverage and reduce shared blind spots; models are not final adjudicators. This protocol implements `review.*` and `config/providers.yaml`.
+
+## 1. Provider interface
+
+`complete(messages, json_schema, temperature=0) -> dict` must return schema-valid JSON or a provider error. Messages contain role system prompts and the user review packet. Use structured output when supported; otherwise validate afterward. `review_provider.py` selects a G4 `{opinions, general}` contract when requested, otherwise the single-opinion contract below. Retry invalid JSON/schema once with explicit correction feedback; never silently rewrite model output. Preserve rejected attempts for audit, masking credentials throughout. Temperature is fixed at zero for comparable prompt versions.
+
+Families: anthropic, openai, google/Gemini, glm, deepseek; `fake` is evaluation-only. Two providers sharing a base-model lineage still count as one family, including cloud/local deployments.
+
+Provider fields: family, API kind (Anthropic Messages or OpenAI-compatible Chat Completions), base URL, environment-key name, exact model, timeout/max tokens/temperature/JSON mode, allowed data classes, enabled flag. Inventory uncertain model versions before running. `rotation` sets role preferences, fallback order, and minimum two high-risk families.
+
+## 2. Four roles
+
+| Role | Inputs / scope | Permitted judgment / limits |
+|---|---|---|
+| architecture | Threat model, DFD, components, G4 evidence/code; trust, integrity, agent architecture, fail-open | Trace attack paths/control gaps and distinguish code flaws from missing defense layers. Do not invent CVSS or declare no other risks. |
+| appsec | Semgrep/CodeQL/ZAP and source-to-sink excerpts; injection, XSS, CSP, validation, error leakage | Confirm/refute alerts and propose catalog CWE/CVSS vectors for human review. CSP neither disproves XSS nor proves exploitability by its absence. |
+| identity-authz | Routes/middleware, owner filters, RLS, two-account evidence, tool lists; authentication/authorization/credential lifecycle/HITL | Evaluate BOLA/IDOR, tenant boundaries, middleware dependence, tool scope. UI hiding is not authorization; no E3 BOLA without dynamic proof. |
+| supplychain-cicd | SBOM/scanners/locks/workflows/registry/cooldown | Evaluate hallucinations, CVE applicability, and untrusted-input-to-privileged-job paths. Event names alone do not prove flaws; SBOM/signatures do not prove absence of vulnerabilities. |
+
+Enable roles according to scope; not every finding needs all roles or every model.
+
+## 3. Opinion contract
+
+Each response records `role`, `provider`, `family`, `model`, `prompt_version`, `round` (1–3), `verdict` (`confirm`, `refute`, `uncertain`), evidence-citing `rationale`, `cited_evidence`, proposed control/CWE/CVSS vector, `defect_kind` (`code_defect`, `defense_in_depth_gap`, `not_a_defect`), and `minority`.
+
+- Proposed IDs must exist in supplied catalog excerpts; replace unknown IDs with null and note the rejection.
+- No cited evidence means uncertain.
+- A model's confirm is an opinion, not finding validation.
+- Discard confidence percentages.
+- Persist only schema-defined fields inside `review.opinions[]`; store proposals/citations/defect kind in model-review evidence/notes.
+
+## 4. Rounds
+
+1. **Independent first round:** each assigned role/provider receives the same facts, no other model opinions or non-tool preliminary conclusions.
+2. If disagreement or uncertainty remains, **challenge round 1:** provide other rationales/citations, anonymized except family, and request evidence-based rebuttal/acceptance and overlooked evidence.
+3. If still needed, **challenge round 2:** final round.
+
+Stop early on agreement but retain every opinion. Final dissent is `minority: true`; do not delete/overwrite it. **Never majority-vote:** three confirms and one refutation still require human adjudication. Agreement supports at most E2 with direct evidence; E3 needs reproduction/human verification. Uncertain is legitimate and is not a vote for either side.
+
+## 5. High-risk family threshold
+
+At least two distinct families' first-round opinions are required for:
+
+- Blocking findings, including tier overrides.
+- P0/P1 candidates, high/critical severity, applicable KEV/high exposure.
+- All authorization controls: BOLA/IDOR, tenant isolation, middleware, RLS, agent permissions.
+- Release-trust controls: registries, signatures/provenance, privileged CI, hallucinated/young packages.
+
+Lower-risk review may use one family with the same prompt/version discipline. Missing actual families leave high-risk review pending.
+
+## 6. Rotation and cost
+
+Use the first available, classification-eligible preferred family, then a distinct second. Maximum calls per finding: role count × two families × three rounds. Exhausted budget leaves remaining high-risk findings pending/incomplete; do not silently approve with one family.
+
+`review_packet.py` builds packets from the tested commit: diff hunks ±40 lines and cited files; full architecture packets include the model and referenced path:line files. Scan/mask content with Gitleaks before sending. Missing Gitleaks or oversize content stops packet creation; do not truncate away context. Reuse an applicable E3 human ruling for the same rule/path within 30 days only with explicit retest tracking. Local providers still consume time; timeout remains error even without token billing.
+
+## 7. Prompt versions
+
+Each role file declares `prompt_version: <role>@<YYYY-MM-DD>.<n>`; record it in every opinion and group evaluation results by version. Do not tune on held-out cases. Prompt changes are reviewed through PRs under human governance.
+
+## 8. Fourteen-domain coverage matrix
+
+| Domain | Required review / verification | Owner / gates |
+|---|---|---|
+| Application architecture | Flows, boundaries, attack surface, tenants, privileges, sensitive-data lifecycle, fail safety/recovery; compare docs/code/deployment and trace attacks | architecture; G0/G4 |
+| General weaknesses | SQL/NoSQL/command/template injection, SSRF, traversal, deserialization, uploads, CSRF, business logic/races; taint and isolated negative tests | appsec; G3/G5 |
+| XSS | Reflected/stored/DOM, context encoding, unsafe DOM, rich-text sanitization; trace and verify browser execution | appsec; G3/G5/G6 |
+| CSP | Actual headers, enforced/report-only, nonce/hash, broad sources/unsafe directives, page coverage; browser blocking and compatibility | appsec; G5 |
+| Authentication | Passwords, MFA, throttling, recovery, sessions/cookies/JWT/OAuth/OIDC/logout; lifecycle, invalid tokens, fixation/revocation | identity-authz; G3/G5 |
+| Authorization | Object/function/field scope, horizontal/vertical escalation, tenants; role×resource×operation matrix across two tenants/roles | identity-authz; G4/G5 |
+| Dependencies | Direct/transitive actual versions, locks, CVEs, maintenance, malicious sources; SBOM/advisory/applicability/reachability | supplychain-cicd; G1 |
+| Build/release supply chain | Registry trust/confusion, hooks, base images, build isolation, signatures/provenance/release privileges; identities/digests/artifact consistency | supplychain-cicd; G1/G3 |
+| GitHub Actions | Least privilege, full SHA pins, untrusted PR/script injection, OIDC, runners, cache/artifacts, deployment approval; complete call-chain/event tests | supplychain-cicd; G3 |
+| Secret exposure | Code/history/config/logs/artifacts/frontend bundles/container layers; scan/trace/owner verification, masked evidence only | identity-authz; G2 |
+| Input validation | Server-side types/length/ranges/normalization/duplicate params/mass assignment/files/URLs; boundary/malformed/encoded/schema/business tests | appsec; G3/G5 |
+| Error handling | Stack/SQL/token leakage, enumeration, fail-open, rollback, log injection; inject timeout/dependency/exception failures | appsec for leakage, architecture for fail-open; G3/G5 |
+| Data trust/integrity | Webhook signatures/replay/tampering/import provenance/downstream trust; signatures/time/replay/source tracing | architecture; G4/G5 |
+| AI/agent security | Prompt injection, tools, RAG/memory poisoning, exfiltration, inter-agent trust; malicious documents/tool responses and executor-enforced permissions | architecture/identity-authz; G4/G6 |
+
+If GitHub is unused, mark its domain not applicable with the actual platform and inspect equivalent controls there.
+
+## 9. Three judgment principles
+
+Treat XSS code defects and CSP defense gaps separately. Trace `pull_request_target` from untrusted fork code/title/body through checkout/shell use to secrets/write privileges; a missing link means uncertain/refute with explanation. SBOMs enumerate components; signatures/provenance establish origin, not vulnerability absence—check affected versions and reachability.
+
+## 10. Confidence is not evidence
+
+“95% certain” affects neither evidence, grade, validation, severity, priority, nor voting weight. Discard confidence fields. Only traceable code/configuration/HTTP artifacts, reproducible tests, and human verification strengthen evidence.
+
+## 11. Failure handling
+
+Provider connection/5xx/timeout/two schema failures mean the opinion is absent, never fabricated or replaced by another same-family provider masquerading as diversity. Fewer than two high-risk families means pending, human required, pending coverage, incomplete gate, and named failure reasons. If enough families remain, complete with missing-provider notes. No eligible data destination has the same pending/incomplete outcome; never downgrade classification. Unknown IDs become null; unsupported confirms become uncertain. Budget exhaustion preserves low-risk tool findings and explains unreviewed work. Review failure never refutes a finding or passes a gate.
+
+## 12. Human adjudication
+
+Use `schemas/human-ruling.schema.json`, its template, and `scripts/ruling.py`:
+
+1. Harness writes findings and the human-required summary.
+2. `python3 scripts/ruling.py request <finding_id>` renders a request containing all opinions, including dissent.
+3. A human replays/checks evidence, writes `rulings/<finding_id>.yaml`, and responds to every minority opinion.
+4. Run `ruling.py check`, submit a PR, and obtain another person's review. The PR records who/when/why.
+5. After merge, `ruling.py apply` updates findings.
+
+Enforced rules (violation exits 1): human identity only; confirm requires reproduced/manual_review basis and at least one non-model evidence item; each and only actual minority opinion must be accepted/rejected with rationale; insufficient evidence means defer, not refute; defer requires `next_review_by` and retains pending/human-required; only unresolved human-required findings can be adjudicated, once. Apply changes validation, evidence grade (confirm→E3), human decision/ruling reference, and appends evidence. It never changes severity/CVSS/policy/priority or removes model opinions. Policy demotion requires a separate human policy PR.

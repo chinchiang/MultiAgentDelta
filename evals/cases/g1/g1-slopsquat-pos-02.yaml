@@ -1,7 +1,7 @@
 id: g1-slopsquat-pos-02
 gate: G1
 domain: dependency
-title: Python 幻覺套件 huggingface-cli
+title: "Python 幻覺套件 huggingface-cli / The hallucinated Python package huggingface-cli"
 input:
   kind: manifest
   ecosystem: pypi
@@ -13,4 +13,4 @@ expected:
   rule_id: vibesec.g1.hallucinated-package
   policy_tier: blocking
 held_out: false
-notes: blacklist.yaml 標記為 hallucination_prone；正確套件為 huggingface_hub。
+notes: "blacklist.yaml 標記為 hallucination_prone；正確套件為 huggingface_hub。 / blacklist.yaml marks it hallucination_prone; use huggingface_hub."

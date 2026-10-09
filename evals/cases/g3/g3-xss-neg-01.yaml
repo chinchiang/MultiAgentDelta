@@ -1,7 +1,7 @@
 id: g3-xss-neg-01
 gate: G3
 domain: xss
-title: textContent 寫入使用者輸入
+title: "textContent 寫入使用者輸入 / textContent receives user input"
 input:
   kind: code
   path: web/app.js

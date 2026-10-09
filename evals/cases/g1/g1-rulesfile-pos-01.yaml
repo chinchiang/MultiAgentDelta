@@ -1,7 +1,7 @@
 id: g1-rulesfile-pos-01
 gate: G1
 domain: build_supply_chain
-title: AI 規則檔要求安裝不存在的套件
+title: "AI 規則檔要求安裝不存在的套件 / An AI rules file requests a nonexistent package"
 input:
   kind: code
   path: .cursorrules
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g1.rules-file-unknown-package
   policy_tier: blocking
 held_out: false
-notes: 規則檔可被投毒以誘導幻覺套件安裝。
+notes: "規則檔可被投毒以誘導幻覺套件安裝。 / Poisoned rules can induce installation of hallucinated packages."

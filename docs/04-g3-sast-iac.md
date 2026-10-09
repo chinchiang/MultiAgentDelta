@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 04 G3 SAST 與 IaC（白箱；每次 PR）
 
 | 項目 | 值 |
@@ -22,7 +27,7 @@
 | 夜間（`nightly_full: [codeql]`） | 全 repo | CodeQL（跨檔跨函式）、Semgrep 全量、Checkov 全規則 | 不限 |
 | 手動 | 指定目錄 | 同上 | — |
 
-性質：高確定性規則（參數化 SQL、`shell=True`、`alg:none`、IMDSv2）為 blocking；需上下文判斷者（CORS、root user、缺 owner filter）為 advisory。工具缺席 / 逾時 → `incomplete`。
+性質：各規則的基礎層級與 L3 覆寫，以 `config/policy/blocking-policy.yaml` 為準；高確定性並不代表一律 blocking。工具缺席 / 逾時 → `incomplete`。
 
 ## 核心任務
 
@@ -141,7 +146,7 @@ python3 scripts/g3_sast.py --target ../MultiAgentBeta [--base <ref>] --out-dir r
 
 外部專案也不套用本 repo blocking-policy 的 `exceptions`；`checkov:skip=`、`trivy:ignore` 行內註解工具一定會採信 → 列進 `status_reason`。`config/checkov/.checkov.yaml` 的 `skip-path`（含本 repo 靶場路徑）對所有目標相同。
 
-工作流對應：`pr-gates.yml`（方式 A 或 B + Checkov + Trivy）、`nightly-full.yml`（CodeQL + 全量）。所有 SARIF 由 harness 合併進 `reports/vibesec.sarif`，`rule_id` 對 `config/catalogs/cwe-map.yaml` 補 CWE / control_id。
+工作流程對應：`pr-gates.yml`（方式 A 或 B + Checkov + Trivy）、`nightly-full.yml`（CodeQL + 全量）。所有 SARIF 由 harness 合併進 `reports/vibesec.sarif`，`rule_id` 對 `config/catalogs/cwe-map.yaml` 補 CWE / control_id。
 
 ## 工具與設定檔
 
@@ -192,3 +197,112 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 4. **時效**：PR 階段 wall-clock < 5 分鐘；超過時先移除 `p/security-audit` 的低信心規則而非關閉閘門。
 5. **跨檔案例**：source 在 `routers/`、sink 在 `services/` 的 fixture，CE 漏報、CodeQL / Pro 命中 → 在 summary 標記「需夜間全量」，不得因 CE 漏報記 pass。
 6. **SARIF 完整性**：每筆結果有 `ruleId`、`locations[].physicalLocation`、`properties.cwe`；上傳 Code Scanning 後能在 PR 看到註解。
+
+
+---
+
+<a id="english"></a>
+
+# 04 G3 SAST and IaC (White-Box; Every PR)
+
+G3 is deterministic rule/taint analysis: diff-aware PR checks target under five minutes; nightly scans cover the whole repository. Configure `gates.g3_sast_iac`: Semgrep, Checkov, Trivy config, taint mode, nightly CodeQL, 900-second timeout. Rules: `config/semgrep/vibesec-rules.yaml`, `p/owasp-top-ten`, `p/security-audit`; IaC configuration and custom IMDSv2/CORS rules live in `config/checkov/`. DevOps integrates; AppSec maintains rules.
+
+## Causes addressed
+
+Training examples favor concatenated SQL/shell/HTML over safe APIs; reported AI XSS defense is only 14%, and CWE-79 leads MITRE's 2025 Top 25. Fragmented context hides cross-file paths from request input to sinks. **LLM output is also untrusted input**: completions passed to SQL/DOM create indirect-injection-to-SQLi/XSS paths (`LLM05`). AI-generated Terraform/Docker/Kubernetes often omits IMDS controls, runs as root, or enables wildcard CORS.
+
+## Triggers and nature
+
+PRs scan changes/direct dependencies with Semgrep, Checkov, and Trivy; nightly adds full CodeQL, Semgrep, and Checkov. Manual scans target selected directories. Tune low-value rules if PR latency exceeds five minutes; do not disable gates. Missing tools/timeouts are incomplete. Actual blocking/advisory tiers come from policy, not scanner severity alone.
+
+## Core tasks
+
+### 1. Source-to-sink taint analysis
+
+| Role | Examples |
+|---|---|
+| Untrusted HTTP sources | request args/form/JSON/headers/cookies; Express query/body/params; FastAPI/Flask route arguments; Next.js searchParams/request JSON |
+| Untrusted LLM sources | choices/message content; Anthropic content text; completion/message creation; `completion()`, `llm.invoke()`, `agent.run()`, `generateText()`, tool-call arguments |
+| SQL sinks | cursor execute/executemany, session execute/text, raw ORM queries, db query/raw/execute, Prisma `$queryRawUnsafe` |
+| Command sinks | subprocess with `shell=True`, os.system/popen, child_process exec/execSync |
+| HTML sinks | innerHTML/outerHTML/insertAdjacentHTML/document.write, dangerouslySetInnerHTML, Markup, render_template_string, HTMLResponse |
+| Other sinks | eval, pickle.loads, yaml.load via security-audit rules |
+| Recognized sanitizers | int, UUID, bindparam, sql.Identifier, shlex.quote, DOMPurify, markupsafe.escape, bleach.clean (appropriate to their contexts) |
+
+Semgrep propagates taint through formatting, concatenation, and f-strings. Cross-file analysis requires Pro interfile support or CodeQL.
+
+### 2. Tool responsibilities
+
+| Capability | Semgrep CE | Semgrep Pro | CodeQL |
+|---|---|---|---|
+| Single-function taint | Yes | Yes | Yes |
+| Same-file interprocedural | Partial | Yes | Yes |
+| Cross-file/modules | No | Yes | Yes |
+| Typical speed | Seconds/minutes | Minutes | Ten minutes to hours |
+| Licensing | LGPL engine/community rules | Commercial | Public GitHub free; private use requires an eligible plan |
+| Custom rules | YAML, lower effort | YAML, lower effort | QL, higher effort |
+| Role | L1 PRs | L2/L3 PRs | Full nightly scans at all tiers |
+
+Optional SonarQube AI Code Assurance or Snyk Code can complement the chain. Preserve native prefixed IDs; custom rules use `vibesec.g3.*`.
+
+### 3. Required IaC checks
+
+**IMDSv2:** `vibesec.g3.imdsv1-allowed`, CWE-918, blocking. Require `metadata_options.http_tokens = "required"` for instances and launch templates; use `http_put_response_hop_limit = 1` where applicable. IMDSv1 makes credentials accessible through simple GET-based SSRF; IMDSv2's token exchange raises the barrier. Relevant checks: CKV_AWS_79, CKV2_VIBESEC_1, CKV_AWS_341. G5 tests metadata access through authorized URL-import endpoints.
+
+**CORS:** `cors-wildcard`, CWE-942, advisory under base policy. CKV2_VIBESEC_2 covers API Gateway v2, S3 CORS, and Lambda Function URLs. Application patterns such as wildcard origins with credentials or reflected origins are covered by security-audit and G5 response tests. Enumerate trusted origins; do not combine wildcard permission with credentialed access.
+
+**Container root:** `dockerfile-root-user`, CWE-250, advisory; CKV_DOCKER_3/8. Create an application user and ensure the final USER is non-root. Also check mutable `:latest` (CKV_DOCKER_7), COPY versus ADD (CKV_DOCKER_4), Kubernetes non-root (CKV_K8S_23), and no privilege escalation (CKV_K8S_20). The HCL/Dockerfile examples above are shared executable examples.
+
+### 4. Rule inventory
+
+| Rule suffix | Detection | CWE |
+|---|---|---|
+| sql-string-concat | HTTP/LLM taint reaching SQL | 89 |
+| sql-fstring-execute | f-string, %, format, or concatenated SQL even without known source | 89 |
+| command-injection | Taint reaching shell | 78 |
+| xss-innerhtml / xss-unescaped-render-py | Taint reaching HTML | 79 |
+| jwt-alg-none | none/disabled signature verification or decode-only authorization | 347 |
+| jwt-alg-confusion | HS256 and RS256 accepted together | 347 |
+| actions-unpinned-action | Non-40-character-SHA external action refs; local/docker refs excluded | 829 |
+| actions-pull-request-target | Privileged event referencing untrusted PR head/title/body/head_ref | 94 |
+
+The same rules file includes G2 hard-coded LLM keys and G4 ownership/RLS/tool checks; assign their results to their own gates.
+
+## Automation
+
+Use `semgrep ci` with the three configured rulesets, SARIF output, and metrics disabled, or CLI scanning with `--baseline-commit <merge-base> --timeout 300 --max-memory 4000`. Pro interfile needs its token. Run Checkov with the repository config and Trivy config for HIGH/CRITICAL misconfiguration. Nightly runs full Semgrep/CodeQL/Checkov; see the workflows for pinned executable commands and language-specific CodeQL setup.
+
+```bash
+python3 scripts/g3_sast.py --target ../MultiAgentBeta --out-dir reports/raw/G3 --gate reports/gates/G3.json
+```
+
+Optional `--base <ref>` makes only Semgrep diff-aware; Checkov/Trivy remain full scans. Shared `sarif_gate.py` derives tiers/coverage. Missing/failed/timed-out tools or a target that is not a Git root yield incomplete.
+
+External-target trust rules:
+
+- Semgrep scans from the target root with `--disable-nosem`; target `.semgrepignore` cannot be disabled through the public CLI, so disclose it for review.
+- Checkov scans a temporary tracked-file snapshot excluding target `.checkov.yaml/.yml` and symlinks, from an empty working directory. This prevents target configuration from disabling checks or executing Python external checks. Rewrite SARIF paths back to target-relative paths.
+- Trivy runs from an empty working directory to avoid target working-directory `.trivyignore`/`trivy.yaml`.
+- Do not apply this repository's path exceptions externally. Disclose `checkov:skip`/`trivy:ignore`, which the tools still honor. The trusted Checkov skip-path settings apply consistently to all targets.
+
+Merge outputs into `reports/vibesec.sarif` using catalog rule/CWE/control mappings. Dependabot updates SHA-pinned actions weekly with a 14-day cooldown; update PRs still run gates. KICS is an optional third IaC opinion.
+
+## Blocking policy
+
+Derive G3 from all three required SARIF reports. Missing/malformed output is incomplete; blocking results fail; otherwise pass. Enforce's incomplete behavior follows policy.
+
+- SQL, command, XSS, JWT algorithm, and IMDSv1 rules block according to the configured policy.
+- High-confidence Semgrep ERROR rules and specified Checkov IMDS/secret checks (CKV_AWS_79, CKV2_VIBESEC_1, CKV_AWS_41/45/46) block.
+- Base-policy CORS, container-root, and other misconfiguration findings are advisory unless overridden.
+- Rule-load failures/timeouts are incomplete.
+- Dynamic reproduction promotes E1/E2 evidence to E3 and updates priority by policy.
+
+Checkov soft-fail lets aggregation finish; it does not decide whether the PR may merge.
+
+## Mapped controls
+
+ASVS local section IDs: V1.1 encoding, V1.2 injection, V1.3 sanitization/SSRF/eval, V1.4 deserialization/XXE, V2.2 validation, V3.3 CORS/CSP, V5.2 paths, V9.1 JWT, V13.2 backend/IMDS. CWE 89/78/79/347/918/942/250/798; `LLM05:2025`; MAESTRO L4.
+
+## Verification
+
+Validate Semgrep rules, run vulnerable/safe SQL, LLM-output SQL/XSS, sanitized DOM, mixed-versus-fixed JWT algorithms, and missing-versus-required IMDSv2 fixtures. Confirm custom Checkov rules load. Keep PR latency under five minutes by tuning low-confidence rules, not gates. Include cross-file source/router-to-service cases: CE limitations must be disclosed as requiring deeper nightly analysis, not used as proof of coverage. Every SARIF result needs a rule ID, source location, and CWE mapping; verify uploaded annotations.

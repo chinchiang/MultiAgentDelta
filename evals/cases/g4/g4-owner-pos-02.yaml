@@ -1,7 +1,7 @@
 id: g4-owner-pos-02
 gate: G4
 domain: data_integrity
-title: 更新操作只以 id 查詢、未綁定 owner
+title: "更新操作只以 id 查詢、未綁定 owner / An update looks up only by ID without owner binding"
 input:
   kind: code
   path: app/repo.py
@@ -15,4 +15,4 @@ expected:
   rule_id: vibesec.g4.missing-owner-filter
   policy_tier: advisory
 held_out: true
-notes: 可竄改他人資料（完整性），與讀取型 BOLA 分開量測。
+notes: "可竄改他人資料（完整性），與讀取型 BOLA 分開量測。 / This permits modification of others' data and measures integrity separately from read BOLA."

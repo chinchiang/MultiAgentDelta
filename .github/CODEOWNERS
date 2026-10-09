@@ -1,25 +1,25 @@
-# 需要人類決定的檔案：由 owner 審核（branch protection 需開啟「Require review from Code Owners」才會強制）。
-# 依據 CLAUDE.md：規則 1（閘門與政策只能由人類在獨立 PR 決定）、規則 6（分歧交人工裁決）、規則 7（provider 資料分級）。
+# 需要人類決定的檔案：由 owner 審核（branch protection 需開啟「Require review from Code Owners」才會強制）。 / Human-decision files require owner review; enforce this with Require review from Code Owners in branch protection.
+# 依據 CLAUDE.md：規則 1（閘門與政策只能由人類在獨立 PR 決定）、規則 6（分歧交人工裁決）、規則 7（provider 資料分級）。 / CLAUDE.md rules 1, 6, and 7 cover human policy decisions, adjudication, and provider data classification.
 
-# 人工裁決紀錄：裁決者不得是 PR 作者（另由 pr-gates repo-validate 檢查 decided_by）
+# 人工裁決紀錄：裁決者不得是 PR 作者（另由 pr-gates repo-validate 檢查 decided_by） / Human adjudicators must not be the PR author; pr-gates repo-validate checks decided_by.
 /rulings/                          @chinchiang
 
-# G4 LLM 審查紀錄：harness 輸出，由人複製提交；紀錄不能自行宣告結論（scripts/g4_review.py 檢查），但仍需 owner 確認來源
+# G4 LLM 審查紀錄：harness 輸出，由人複製提交；紀錄不能自行宣告結論（scripts/g4_review.py 檢查），但仍需 owner 確認來源 / Humans submit harness G4 records; scripts/g4_review.py prevents self-adjudication, while owners verify provenance.
 /reviews/                          @chinchiang
 
-# 閘門、阻擋政策、provider 與 ID 目錄
+# 閘門、阻擋政策、provider 與 ID 目錄 / Gates, blocking policy, providers, and ID catalogs.
 /vibesec.yaml                      @chinchiang
 /config/policy/                    @chinchiang
 /config/providers.yaml             @chinchiang
 /config/catalogs/                  @chinchiang
 /evals/baseline.yaml               @chinchiang
 
-# Claude Code 權限設定：威脅模型 c-claude 的 HITL 證據（g0_trifecta.py 驗證）
+# Claude Code 權限設定：威脅模型 c-claude 的 HITL 證據（g0_trifecta.py 驗證） / Claude Code permissions provide HITL evidence for threat-model c-claude, checked by g0_trifecta.py.
 /.claude/settings.json             @chinchiang
 
-# CI 執行的閘門腳本：pull_request 事件跑 PR head 的版本，改腳本即可改判定（第三次 harness 審查 N3）
+# CI 執行的閘門腳本：pull_request 事件跑 PR head 的版本，改腳本即可改判定（第三次 harness 審查 N3） / CI gate scripts execute from the PR head on pull_request; changing them can change verdicts, as found in harness review N3.
 /scripts/                          @chinchiang
 
-# CI 本身與本檔
+# CI 本身與本檔 / CI itself and this file.
 /.github/workflows/                @chinchiang
 /.github/CODEOWNERS                @chinchiang

@@ -1,7 +1,7 @@
 id: g4-single-mw-fastapi-pos-02
 gate: G4
 domain: authorization
-title: FastAPI middleware 把授權交給同檔 helper，路由沒有授權依賴
+title: "FastAPI middleware 把授權交給同檔 helper，路由沒有授權依賴 / FastAPI middleware delegates authorization to a same-file helper without route authorization"
 input:
   kind: code
   language: python
@@ -31,4 +31,4 @@ expected:
   rule_id: vibesec.g4.single-middleware-authz
   policy_tier: advisory
 held_out: true
-notes: middleware 本身只呼叫 guard()；檢查器往下看一層同檔函式，仍判定授權只在 middleware。
+notes: "middleware 本身只呼叫 guard()；檢查器往下看一層同檔函式，仍判定授權只在 middleware。 / Middleware calls guard(); the checker follows one level of same-file calls and still identifies middleware-only authorization."

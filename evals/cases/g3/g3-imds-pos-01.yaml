@@ -1,7 +1,7 @@
 id: g3-imds-pos-01
 gate: G3
 domain: general_vulnerabilities
-title: EC2 允許 IMDSv1
+title: "EC2 允許 IMDSv1 / EC2 permits IMDSv1"
 input:
   kind: iac
   path: infra/main.tf

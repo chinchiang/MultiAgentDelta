@@ -1,7 +1,7 @@
 id: g5-jwt-pos-01
 gate: G5
 domain: authentication
-title: JWT 接受 alg:none
+title: "JWT 接受 alg:none / JWT accepts alg:none"
 input:
   kind: http
   target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測

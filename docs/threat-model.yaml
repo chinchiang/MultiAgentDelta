@@ -6,34 +6,34 @@
 
 system:
   name: multiagentdelta
-  description: VibeSec G0–G6 安全閘門框架：設定、文件、CI workflows、評測與刻意有漏洞的靶場；由單一維護者與 AI agent（Claude Code）協作維護。
+  description: "VibeSec G0–G6 安全閘門框架：設定、文件、CI workflows、評測與刻意有漏洞的靶場；由單一維護者與 AI agent（Claude Code）協作維護。 / VibeSec G0–G6 security-gate framework: configuration, documentation, CI workflows, evaluations, and an intentionally vulnerable lab; maintained by one maintainer together with an AI agent (Claude Code)."
   exposure: public                       # 公開 GitHub repo；任何人可開 fork PR
   data_sensitivity: sensitive_pii_or_secrets   # 無個資，但 CI 持有 LLM API 金鑰、staging 帳號 token、具寫入權的 GITHUB_TOKEN 與 OIDC 簽章身分
   methodologies: [STRIDE, MAESTRO]
 
 assets:
-  - { id: a-gh-token,       name: GITHUB_TOKEN（各 job 的寫入範圍：security-events／pull-requests／issues／id-token／attestations）, sensitivity: secret,       store: GitHub Actions 執行期 }
-  - { id: a-llm-keys,       name: ANTHROPIC_API_KEY／OPENAI_API_KEY（G6 redteam 生成層）,                              sensitivity: secret,       store: GitHub Actions secrets }
-  - { id: a-staging-tokens, name: staging 雙帳號 token（VIBESEC_TOKEN_A/B 或靶場登入取得）,                              sensitivity: secret,       store: "$RUNNER_TEMP/vibesec-tokens（0600，G5 結束即刪）" }
-  - { id: a-oidc,           name: Sigstore OIDC 簽章身分（SBOM 來源證明）,                                              sensitivity: secret,       store: GitHub OIDC（僅 nightly g1-full） }
-  - { id: a-policy,         name: 閘門與政策（vibesec.yaml、config/policy、providers、catalogs、evals/baseline.yaml）,  sensitivity: internal,     store: repo（CODEOWNERS） }
-  - { id: a-rulings,        name: 人工裁決紀錄 rulings/*.yaml,                                                        sensitivity: internal,     store: repo（CODEOWNERS + repo-validate 作者檢查） }
-  - { id: a-findings,       name: Code Scanning 結果與追蹤 issue（閘門結論的對外呈現）,                                   sensitivity: internal,     store: GitHub Security／Issues }
-  - { id: a-source,         name: 原始碼與文件,                                                                      sensitivity: public,       store: repo }
+  - { id: a-gh-token,       name: "GITHUB_TOKEN（各 job 的寫入範圍：security-events／pull-requests／issues／id-token／attestations） / GITHUB_TOKEN: per-job write scopes for security-events, pull-requests, issues, id-token, and attestations.", sensitivity: secret,       store: "GitHub Actions 執行期 / GitHub Actions runtime." }
+  - { id: a-llm-keys,       name: "ANTHROPIC_API_KEY／OPENAI_API_KEY（G6 redteam 生成層） / ANTHROPIC_API_KEY and OPENAI_API_KEY for the G6 red-team generation layer.",                              sensitivity: secret,       store: GitHub Actions secrets }
+  - { id: a-staging-tokens, name: "staging 雙帳號 token（VIBESEC_TOKEN_A/B 或靶場登入取得） / Two staging account tokens: VIBESEC_TOKEN_A/B or tokens obtained by logging into the lab.",                              sensitivity: secret,       store: "$RUNNER_TEMP/vibesec-tokens（0600，G5 結束即刪） / $RUNNER_TEMP/vibesec-tokens, mode 0600; deleted when G5 finishes." }
+  - { id: a-oidc,           name: "Sigstore OIDC 簽章身分（SBOM 來源證明） / Sigstore OIDC signing identity for SBOM provenance.",                                              sensitivity: secret,       store: "GitHub OIDC（僅 nightly g1-full） / GitHub OIDC, limited to nightly g1-full." }
+  - { id: a-policy,         name: "閘門與政策（vibesec.yaml、config/policy、providers、catalogs、evals/baseline.yaml） / Gates and policy: vibesec.yaml, config/policy, providers, catalogs, and evals/baseline.yaml.",  sensitivity: internal,     store: repo（CODEOWNERS） }
+  - { id: a-rulings,        name: "人工裁決紀錄 rulings/*.yaml / Human adjudication records in rulings/*.yaml.",                                                        sensitivity: internal,     store: "repo（CODEOWNERS + repo-validate 作者檢查） / Repository protected by CODEOWNERS and repo-validate author checks." }
+  - { id: a-findings,       name: "Code Scanning 結果與追蹤 issue（閘門結論的對外呈現） / Code Scanning results and tracking issues: externally visible gate conclusions.",                                   sensitivity: internal,     store: GitHub Security／Issues }
+  - { id: a-source,         name: "原始碼與文件 / Source code and documentation.",                                                                      sensitivity: public,       store: repo }
 
 components:
-  - { id: c-pr-author,   name: PR 作者（含 fork 與 Dependabot）,                  kind: external_service, zone: z-internet }
-  - { id: c-github,      name: GitHub（repo、PR、Issues、Code Scanning、Actions 變數與 secrets）, kind: external_service, zone: z-github }
-  - { id: c-ci-pr,       name: pr-gates（G1–G4、repo-validate；pull_request 觸發）,  kind: ci,               zone: z-runner }
-  - { id: c-ci-nightly,  name: nightly-full（CodeQL、全量 G1、評測、SBOM 簽章、notify）, kind: ci,           zone: z-runner }
-  - { id: c-ci-staging,  name: staging-blackbox（G5 探針、G6 promptfoo／garak、notify）, kind: ci,          zone: z-runner }
-  - { id: c-lab,         name: 靶場 examples/vulnapp（runner 內 0.0.0.0:8000）,      kind: api,              zone: z-runner }
-  - { id: c-target,      name: 外部授權目標（vars.VIBESEC_TARGET_URL，僅 admin 可設）, kind: external_service, zone: z-internet }
+  - { id: c-pr-author,   name: "PR 作者（含 fork 與 Dependabot） / PR authors, including forks and Dependabot.",                  kind: external_service, zone: z-internet }
+  - { id: c-github,      name: "GitHub（repo、PR、Issues、Code Scanning、Actions 變數與 secrets） / GitHub repository, PRs, Issues, Code Scanning, Actions variables, and secrets.", kind: external_service, zone: z-github }
+  - { id: c-ci-pr,       name: "pr-gates（G1–G4、repo-validate；pull_request 觸發） / pr-gates: G1–G4 and repo-validate, triggered by pull_request.",  kind: ci,               zone: z-runner }
+  - { id: c-ci-nightly,  name: "nightly-full（CodeQL、全量 G1、評測、SBOM 簽章、notify） / nightly-full: CodeQL, full G1, evaluations, SBOM signing, and notifications.", kind: ci,           zone: z-runner }
+  - { id: c-ci-staging,  name: "staging-blackbox（G5 探針、G6 promptfoo／garak、notify） / staging-blackbox: G5 probes, G6 promptfoo/garak, and notifications.", kind: ci,          zone: z-runner }
+  - { id: c-lab,         name: "靶場 examples/vulnapp（runner 內 0.0.0.0:8000） / examples/vulnapp lab, listening on 0.0.0.0:8000 inside the runner.",      kind: api,              zone: z-runner }
+  - { id: c-target,      name: "外部授權目標（vars.VIBESEC_TARGET_URL，僅 admin 可設） / Externally authorized target, configured only by administrators through vars.VIBESEC_TARGET_URL.", kind: external_service, zone: z-internet }
   - { id: c-llm,         name: LLM provider（Anthropic／OpenAI API）,                 kind: llm,              zone: z-vendor, maestro_layer: 1 }
-  - { id: c-registries,  name: 套件與情資來源（npm、PyPI、deps.dev、CISA KEV、FIRST EPSS、grype DB）, kind: external_service, zone: z-vendor }
+  - { id: c-registries,  name: "套件與情資來源（npm、PyPI、deps.dev、CISA KEV、FIRST EPSS、grype DB） / Package and intelligence sources: npm, PyPI, deps.dev, CISA KEV, FIRST EPSS, and the grype database.", kind: external_service, zone: z-vendor }
   - { id: c-sigstore,    name: Sigstore／GitHub attestations,                         kind: external_service, zone: z-vendor }
-  - { id: c-claude,      name: Claude Code（在 repo 上開 PR、跑 /vibesec-harness、合併經核准的 PR）, kind: agent, zone: z-agent, maestro_layer: 3 }
-  - { id: c-reviewers,   name: reviewer 子代理（architecture／appsec／identity／supplychain）, kind: agent,  zone: z-agent, maestro_layer: 3 }
+  - { id: c-claude,      name: "Claude Code（在 repo 上開 PR、跑 /vibesec-harness、合併經核准的 PR） / Claude Code: opens PRs, runs /vibesec-harness, and merges approved PRs in this repository.", kind: agent, zone: z-agent, maestro_layer: 3 }
+  - { id: c-reviewers,   name: "reviewer 子代理（architecture／appsec／identity／supplychain） / Reviewer subagents: architecture, appsec, identity, and supplychain.", kind: agent,  zone: z-agent, maestro_layer: 3 }
 
 flows:
   - { from: c-pr-author,  to: c-github,     data: [pr_code, pr_text],                       protocol: https, authenticated: true,  crosses_boundary: true }
@@ -53,10 +53,10 @@ flows:
   - { from: c-claude,     to: c-reviewers,  data: [review_package_public_internal],         protocol: in-process, authenticated: null, crosses_boundary: false }
 
 trust_boundaries:
-  - { id: tb-pr,      name: 不可信 PR 內容進入 CI（fork 唯讀權杖、無 secrets）,          zones: [z-internet, z-runner] }
-  - { id: tb-secrets, name: 持有 secrets 的 job 與執行期下載的第三方程式碼,             zones: [z-runner, z-vendor] }
-  - { id: tb-target,  name: 攻擊性探針只打靶場或授權目標（CLAUDE.md 規則 8）,           zones: [z-runner, z-internet] }
-  - { id: tb-agent,   name: AI agent 讀取不可信 GitHub 內容並持有 repo 寫入權,          zones: [z-github, z-agent] }
+  - { id: tb-pr,      name: "不可信 PR 內容進入 CI（fork 唯讀權杖、無 secrets） / Untrusted PR content enters CI; forks receive read-only tokens and no secrets.",          zones: [z-internet, z-runner] }
+  - { id: tb-secrets, name: "持有 secrets 的 job 與執行期下載的第三方程式碼 / Jobs holding secrets and third-party code downloaded at runtime.",             zones: [z-runner, z-vendor] }
+  - { id: tb-target,  name: "攻擊性探針只打靶場或授權目標（CLAUDE.md 規則 8） / Offensive probes target only the lab or authorized targets, per CLAUDE.md rule 8.",           zones: [z-runner, z-internet] }
+  - { id: tb-agent,   name: "AI agent 讀取不可信 GitHub 內容並持有 repo 寫入權 / An AI agent reads untrusted GitHub content while holding repository write access.",          zones: [z-github, z-agent] }
 
 # 致命三要素：c-claude 三者皆成立且沒有切斷任何一隻腳——靠 HITL（合併前由維護者核准、政策變更交人類）與工具限制降低風險。
 # reviewer 子代理只讀 repo、不對外通訊（只回傳 JSON 給 harness）→ 對外通訊不成立。
@@ -143,7 +143,7 @@ agents:
               - mcp__claude-code-remote__update_trigger
               - mcp__claude-code-remote__delete_trigger
               - mcp__claude-code-remote__fire_trigger
-          note: 只約束在本 repo 執行的 Claude Code；以 bypassPermissions 或更高層設定（managed／user）放行時不受此約束，殘留風險見 t-hitl-bypass
+          note: "只約束在本 repo 執行的 Claude Code；以 bypassPermissions 或更高層設定（managed／user）放行時不受此約束，殘留風險見 t-hitl-bypass / Applies only to Claude Code running in this repository. bypassPermissions or higher-level managed/user settings can bypass the constraint; see residual risk t-hitl-bypass."
     trifecta_leg_cut: null
   - id: c-reviewers
     accesses_private_data: false         # 只讀公開 repo；送審內容限 public／internal（providers.yaml）
@@ -158,115 +158,110 @@ threats:
   - id: t-fork-write
     category: STRIDE-E
     target: c-ci-pr
-    description: fork PR 取得可寫 GITHUB_TOKEN 或 secrets，執行不可信程式碼。
-    mitigation: 只用 pull_request（無 pull_request_target）；fork 唯讀且無 secrets；workflow 層級僅 contents:read，寫入權限按 job 宣告（PR #42）；vibesec.g3.actions-pull-request-target 規則。
+    description: "fork PR 取得可寫 GITHUB_TOKEN 或 secrets，執行不可信程式碼。 / A fork PR obtains a writable GITHUB_TOKEN or secrets and executes untrusted code."
+    mitigation: "只用 pull_request（無 pull_request_target）；fork 唯讀且無 secrets；workflow 層級僅 contents:read，寫入權限按 job 宣告（PR / Only pull_request is used, without pull_request_target; forks are read-only with no secrets. Workflow permissions are contents:read, with write scopes declared per job." #42）；vibesec.g3.actions-pull-request-target 規則。
     status: mitigated
     gate: G3
   - id: t-third-party-action
     category: STRIDE-T
     target: c-ci-pr
-    description: 第三方 GitHub Action 的 tag 被改寫為惡意版本（CVE-2026-33634 trivy-action 前例）。
-    mitigation: 全部釘完整 SHA（vibesec.g3.actions-unpinned-action）；Dependabot 週更且 14 天 cooldown；PR 與 nightly 的 KEV 檢查。
+    description: "第三方 GitHub Action 的 tag 被改寫為惡意版本（CVE-2026-33634 trivy-action 前例）。 / A third-party GitHub Action tag is redirected to malicious code, as in the trivy-action CVE-2026-33634 precedent."
+    mitigation: "全部釘完整 SHA（vibesec.g3.actions-unpinned-action）；Dependabot 週更且 14 天 cooldown；PR 與 nightly 的 KEV 檢查。 / Pin full SHAs, enforced by vibesec.g3.actions-unpinned-action; weekly Dependabot updates with a 14-day cooldown; KEV checks in PR and nightly runs."
     status: mitigated
     gate: G1
   - id: t-runtime-tools
     category: MAESTRO-L4
     target: c-ci-staging
-    description: 執行期下載的 promptfoo／garak 若遭上游入侵，可讀取同 job 的 LLM 金鑰與 staging token 並外傳（harness 發現：供應鏈層致命三要素）。
-    mitigation: 釘版且滿 14 天（PR #42）；token 於 G5 結束即刪。殘留：job 出向不受限、LLM 金鑰仍與 promptfoo 同步驟，未加 egress allow-list。
+    description: "執行期下載的 promptfoo／garak 若遭上游入侵，可讀取同 job 的 LLM 金鑰與 staging token 並外傳（harness 發現：供應鏈層致命三要素）。 / Compromised promptfoo or garak downloaded at runtime could steal LLM keys and staging tokens from the same job: a supply-chain lethal trifecta found during harness review."
+    mitigation: "釘版且滿 14 天（PR / Versions are pinned and at least 14 days old." #42）；token 於 G5 結束即刪。殘留：job 出向不受限、LLM 金鑰仍與 promptfoo 同步驟，未加 egress allow-list。
     status: open
     gate: G1
   - id: t-ruling-forgery
     category: STRIDE-S
     target: a-rulings
-    description: PR 作者自填人工裁決，將 requires_human 改為 false、證據升 E3，繞過人工裁決（CLAUDE.md 規則 6）。
-    mitigation: CODEOWNERS 涵蓋 rulings/；repo-validate 拒絕 decided_by 為 PR 作者（PR #42）。殘留：需 branch protection 開啟 code owner review；單一維護者無法職責分離（VIBESEC_SINGLE_MAINTAINER 僅警告）。
+    description: "PR 作者自填人工裁決，將 requires_human 改為 false、證據升 E3，繞過人工裁決（CLAUDE.md 規則 6）。 / A PR author forges human adjudication, sets requires_human to false, and upgrades evidence to E3, bypassing human review under CLAUDE.md rule 6."
+    mitigation: "CODEOWNERS 涵蓋 rulings/；repo-validate 拒絕 decided_by 為 PR 作者（PR / CODEOWNERS covers rulings/; repo-validate rejects records whose decided_by is the PR author." #42）。殘留：需 branch protection 開啟 code owner review；單一維護者無法職責分離（VIBESEC_SINGLE_MAINTAINER 僅警告）。
     status: open
     gate: G4
   - id: t-review-forgery
     category: STRIDE-S
     target: c-ci-pr
-    description: PR 作者在同一個 PR 自寫 reviews/g4/<commit>.yaml（宣稱兩個 family 都跑過、無發現），讓自己 PR 的 G4 顯示 pass（第二次 harness 審查發現，CLAUDE.md 規則 6）。
-    mitigation: g4_review.py gate 對本 PR 新增／修改的紀錄設信任上限——需非 PR 作者在目前 head SHA 上 approve 且 recorded_by 不是 PR 作者，否則 G4 最高 pending；recorded_by 空白一律不採信。殘留：單一維護者無法取得非作者 approve，此時 G4 停在 pending（fail closed，不擋 merge）。
+    description: "PR 作者在同一個 PR 自寫 reviews/g4/<commit>.yaml（宣稱兩個 family 都跑過、無發現），讓自己 PR 的 G4 顯示 pass（第二次 harness 審查發現，CLAUDE.md 規則 6）。 / A PR author writes reviews/g4/<commit>.yaml in the same PR, claims two model families ran without findings, and makes their own G4 pass; discovered in the second harness review, under CLAUDE.md rule 6."
+    mitigation: "g4_review.py gate 對本 PR 新增／修改的紀錄設信任上限——需非 PR 作者在目前 head SHA 上 approve 且 recorded_by 不是 PR 作者，否則 G4 最高 pending；recorded_by 空白一律不採信。殘留：單一維護者無法取得非作者 approve，此時 G4 停在 pending（fail closed，不擋 merge）。 / g4_review.py caps trust in records added or changed by the PR: a non-author must approve the current head SHA and recorded_by must differ from the PR author. Otherwise G4 remains pending; an empty recorded_by is never trusted. A sole maintainer cannot obtain independent approval, so G4 remains pending without blocking merge."
     status: mitigated
     gate: G4
   - id: t-hitl-bypass
     category: MAESTRO-L3
     target: c-claude
-    description: c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 bash -c／sh -c 包裝、env 前綴、shell alias、寫成腳本再執行、以 python／node 直接呼叫 API）執行高影響操作時，HITL 不生效。g0 只驗證每個 high_impact_tools 至少有一條規則（covers），不驗證等價呼叫全被涵蓋。ask 規則是前綴比對，只能縮小缺口，不能完整枚舉。
-    mitigation: ask 規則涵蓋已知的 merge／force push／dispatch／trigger 入口；branch protection 應禁止 force push 到 main 並要求 code owner review（GitHub 設定，靜態無法驗證）。
+    description: "c-claude 的 HITL 只由 .claude/settings.json 的 ask 規則落實；使用者以 bypassPermissions 啟動、或 managed／user 設定放行，或以規則未涵蓋的指令形式（例如 bash -c／sh -c 包裝、env 前綴、shell alias、寫成腳本再執行、以 python／node 直接呼叫 API）執行高影響操作時，HITL 不生效。g0 只驗證每個 high_impact_tools 至少有一條規則（covers），不驗證等價呼叫全被涵蓋。ask 規則是前綴比對，只能縮小缺口，不能完整枚舉。 / c-claude HITL relies on ask rules in .claude/settings.json. bypassPermissions, managed/user overrides, or uncovered command forms such as bash -c, sh -c, env prefixes, aliases, scripts, or direct Python/Node API calls can bypass it. G0 checks that each high_impact_tools entry has at least one covering rule, not that every equivalent invocation is covered. Prefix matching reduces gaps but cannot enumerate every invocation."
+    mitigation: "ask 規則涵蓋已知的 merge／force push／dispatch／trigger 入口；branch protection 應禁止 force push 到 main 並要求 code owner review（GitHub 設定，靜態無法驗證）。 / Ask rules cover known merge, force-push, dispatch, and trigger entry points. Branch protection should prohibit force pushes to main and require code-owner review; these GitHub settings cannot be verified statically."
     status: accepted
     gate: G4
   - id: t-policy-tamper
     category: STRIDE-T
     target: a-policy
-    description: 以 PR 放寬閘門、把 blocking 改 advisory、縮減 baseline 或改 provider 資料分級以讓檢查通過。
-    mitigation: CLAUDE.md 規則 1、7；CODEOWNERS 涵蓋政策檔與 baseline；validate.py 強制每條規則有實作；baseline 只增不減的流程約定。
+    description: "以 PR 放寬閘門、把 blocking 改 advisory、縮減 baseline 或改 provider 資料分級以讓檢查通過。 / A PR weakens gates, changes blocking to advisory, shrinks the baseline, or alters provider data classification to pass checks."
+    mitigation: "CLAUDE.md 規則 1、7；CODEOWNERS 涵蓋政策檔與 baseline；validate.py 強制每條規則有實作；baseline 只增不減的流程約定。 / CLAUDE.md rules 1 and 7; CODEOWNERS covers policy files and the baseline; validate.py requires implementation for every rule; the process requires a non-shrinking baseline."
     status: mitigated
     gate: null
   - id: t-agent-injection
     category: MAESTRO-L3
     target: c-claude
-    description: 公開 PR 留言、review、CI log 或套件內容夾帶指令，誘使 agent 推送惡意變更、合併、或動用 Actions／排程。
-    mitigation: 外部內容一律視為資料不是指令；合併、政策變更與裁決需維護者明確核准；agent 不自行裁決、不修改閘門開關；僅 push 指定分支。殘留：未切斷三要素中任何一隻腳。
+    description: "公開 PR 留言、review、CI log 或套件內容夾帶指令，誘使 agent 推送惡意變更、合併、或動用 Actions／排程。 / Instructions embedded in PR comments, reviews, CI logs, or packages trick the agent into pushing malicious changes, merging, or invoking Actions and schedules."
+    mitigation: "外部內容一律視為資料不是指令；合併、政策變更與裁決需維護者明確核准；agent 不自行裁決、不修改閘門開關；僅 push 指定分支。殘留：未切斷三要素中任何一隻腳。 / Treat external content as data rather than instructions. Merges, policy changes, and adjudication require explicit maintainer approval. Agents do not adjudicate or change gate switches, and push only the designated branch. Residual risk: no trifecta capability has been removed."
     status: accepted
     gate: null
   - id: t-probe-scope
     category: STRIDE-E
     target: c-ci-staging
-    description: 攻擊性探針（含帳號 token）被導向未授權主機。
-    mitigation: 目標只來自 admin 設定的 vars.VIBESEC_TARGET_URL，workflow 無 dispatch inputs；未設定則只打 runner 內靶場。殘留：無 host allow-list。
+    description: "攻擊性探針（含帳號 token）被導向未授權主機。 / Offensive probes, including account tokens, are redirected to an unauthorized host."
+    mitigation: "目標只來自 admin 設定的 vars.VIBESEC_TARGET_URL，workflow 無 dispatch inputs；未設定則只打 runner 內靶場。殘留：無 host allow-list。 / Targets come only from administrator-configured vars.VIBESEC_TARGET_URL, without dispatch inputs; otherwise only the runner-local lab is used. Residual risk: no host allowlist."
     status: accepted
     gate: G5
   - id: t-secret-leak
     category: STRIDE-I
     target: a-llm-keys
-    description: 祕密經 log、artifact、SARIF 或 issue 外洩。
-    mitigation: secrets 由 Actions 遮罩；token 只寫 0600 暫存檔、不進 GITHUB_ENV／outputs；notify 只傳狀態與計數；報告只留遮罩與指紋（CLAUDE.md 規則 7）；G2 gitleaks 全歷史。
+    description: "祕密經 log、artifact、SARIF 或 issue 外洩。 / Secrets leak through logs, artifacts, SARIF, or issues."
+    mitigation: "secrets 由 Actions 遮罩；token 只寫 0600 暫存檔、不進 GITHUB_ENV／outputs；notify 只傳狀態與計數；報告只留遮罩與指紋（CLAUDE.md 規則 7）；G2 gitleaks 全歷史。 / Actions masks secrets. Tokens are stored only in mode-0600 temporary files, never GITHUB_ENV or outputs. Notifications contain only status and counts; reports retain masking and fingerprints under CLAUDE.md rule 7. G2 gitleaks scans full history."
     status: mitigated
     gate: G2
   - id: t-vulnerable-deps
     category: MAESTRO-L4
     target: c-ci-nightly
-    description: 相依套件含已遭利用（KEV）或已知漏洞、或已停止維護。
-    mitigation: grype + KEV（PR 與 nightly，命中即 blocking）、vulnerable-dependency、unmaintained-dependency（deps.dev）。
+    description: "相依套件含已遭利用（KEV）或已知漏洞、或已停止維護。 / Dependencies contain exploited KEV entries or known vulnerabilities, or are no longer maintained."
+    mitigation: "grype + KEV（PR 與 nightly，命中即 blocking）、vulnerable-dependency、unmaintained-dependency（deps.dev）。 / grype plus KEV checks in PR and nightly runs block matches; vulnerable-dependency and unmaintained-dependency use deps.dev."
     status: mitigated
     gate: G1
   - id: t-attestation-forgery
     category: STRIDE-S
     target: a-oidc
-    description: 偽造或替換 SBOM 的來源證明。
-    mitigation: gh attestation verify --signer-workflow 限定本 repo 的 nightly-full；id-token／attestations 權限只給 g1-full。
+    description: "偽造或替換 SBOM 的來源證明。 / SBOM provenance is forged or replaced."
+    mitigation: "gh attestation verify --signer-workflow 限定本 repo 的 nightly-full；id-token／attestations 權限只給 g1-full。 / gh attestation verify --signer-workflow restricts verification to this repository's nightly-full; only g1-full receives id-token and attestations permissions."
     status: mitigated
     gate: G1
   - id: t-lab-exposure
     category: STRIDE-I
     target: c-lab
-    description: 刻意有漏洞的靶場被部署或對外暴露。
-    mitigation: 只在 CI runner 內啟動（短命 runner），探針經 127.0.0.1；無部署步驟。殘留：綁 0.0.0.0。
+    description: "刻意有漏洞的靶場被部署或對外暴露。 / The intentionally vulnerable lab is deployed or exposed externally."
+    mitigation: "只在 CI runner 內啟動（短命 runner），探針經 127.0.0.1；無部署步驟。殘留：綁 0.0.0.0。 / The lab runs only on an ephemeral CI runner, with probes using 127.0.0.1 and no deployment step. Residual risk: it binds to 0.0.0.0."
     status: accepted
     gate: G5
   - id: t-single-family-review
     category: MAESTRO-L7
     target: c-reviewers
-    description: 多模型審查只有一個 family（anthropic），高風險結論無法獨立交叉驗證。
-    mitigation: family < 2 時一律 pending + requires_human，G4 報 incomplete（不擋 merge）；設定第二家 provider 金鑰前不放行高風險控制。
+    description: "多模型審查只有一個 family（anthropic），高風險結論無法獨立交叉驗證。 / Multi-model review uses only one family, anthropic, preventing independent cross-validation of high-risk conclusions."
+    mitigation: "family < 2 時一律 pending + requires_human，G4 報 incomplete（不擋 merge）；設定第二家 provider 金鑰前不放行高風險控制。 / With fewer than two families, findings remain pending with requires_human, and G4 reports incomplete without blocking merge. High-risk controls are not cleared before a second provider is configured."
     status: open
     gate: G4
 
 risk_tier: L3
-risk_tier_rationale: >
-  依 docs/01 決策樹：exposure=public 且 data_sensitivity=sensitive_pii_or_secrets，且 agent c-claude 可對外通訊、
-  high_impact_tools 非空（合併、強推自己分支、dispatch workflow、排程）→ L3。HITL（合併需維護者核准）是補償控制，
-  但決策樹不因 mitigations 降級。vibesec.yaml 目前宣告 L2：是否改為 L3 屬政策決定，於獨立 PR 由維護者決定；
-  在那之前 G0 的 risk_tier 一致性檢查會標出差異。
-
+risk_tier_rationale: "依 docs/01 決策樹：公開暴露、處理敏感個資或機密，且 c-claude 可對外通訊並具高影響工具，故為 L3。HITL 是補償控制，不降低風險等級；vibesec.yaml 目前宣告 L3。 / The docs/01 decision tree yields L3: public exposure, sensitive PII or secrets, and c-claude with external communication and high-impact tools such as merge, force-push, workflow dispatch, and scheduling. HITL is a compensating control and does not lower this tier. vibesec.yaml declares L3."
 decisions:
-  - GitHub Actions 一律釘完整 commit SHA；Dependabot 週更、cooldown 14 天。
-  - 執行期下載的工具（promptfoo、garak）一律釘版，版本須已發布滿 cooldown_days。
-  - pr-gates workflow 層級只有 contents:read；寫入權限按 job 宣告；只有 G4 可在 PR 留言。
-  - 帳號 token 只在 G5 存在，G5 結束即刪。
-  - 攻擊性探針只打 runner 內靶場或 admin 設定的 VIBESEC_TARGET_URL。
-  - 人工裁決不得由 PR 作者自填；rulings/、政策檔與 baseline 由 CODEOWNERS 審核。
-  - 多模型審查 family < 2 時不放行高風險控制，交人工。
-  - AI agent 不得修改閘門開關或政策、不得自行裁決；合併須維護者明確核准。
+  - "GitHub Actions 一律釘完整 commit SHA；Dependabot 週更、cooldown 14 天。 / Pin every GitHub Action to a full commit SHA; use weekly Dependabot updates with a 14-day cooldown."
+  - "執行期下載的工具（promptfoo、garak）一律釘版，版本須已發布滿 cooldown_days。 / Pin runtime downloads such as promptfoo and garak; versions must be at least cooldown_days old."
+  - "pr-gates workflow 層級只有 contents:read；寫入權限按 job 宣告；只有 G4 可在 PR 留言。 / pr-gates grants only contents:read at workflow level and declares write scopes per job; only G4 may comment on PRs."
+  - "帳號 token 只在 G5 存在，G5 結束即刪。 / Account tokens exist only during G5 and are deleted afterward."
+  - "攻擊性探針只打 runner 內靶場或 admin 設定的 VIBESEC_TARGET_URL。 / Offensive probes target only the runner-local lab or the administrator-configured VIBESEC_TARGET_URL."
+  - "人工裁決不得由 PR 作者自填；rulings/、政策檔與 baseline 由 CODEOWNERS 審核。 / PR authors must not write their own human adjudications; CODEOWNERS reviews rulings/, policy files, and the baseline."
+  - "多模型審查 family < 2 時不放行高風險控制，交人工。 / Fewer than two model families cannot clear high-risk controls; refer them to a human."
+  - "AI agent 不得修改閘門開關或政策、不得自行裁決；合併須維護者明確核准。 / AI agents must not change gate switches or policy or adjudicate findings; merging requires explicit maintainer approval."

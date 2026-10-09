@@ -1,7 +1,7 @@
 id: g6-dow-neg-01
 gate: G6
 domain: ai_agent_security
-title: 已修補模式：超長輸入造成成本放大
+title: "已修補模式：超長輸入造成成本放大 / Patched-mode probe: oversized input amplifies cost"
 input:
   repeat_character: A
   repeat_count: 200000
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g6.denial-of-wallet
   policy_tier: advisory
 held_out: true
-notes: 以同一探針對已修補靶場驗證；用量與工具事件為明確標記的合成資料，不代表真實模型效能。
+notes: "以同一探針對已修補靶場驗證；用量與工具事件為明確標記的合成資料，不代表真實模型效能。 / Run the same probe against the repaired lab; usage and tool events are explicitly synthetic and do not measure real model performance."

@@ -1,22 +1,22 @@
-# VibeSec G6 — garak（NVIDIA，Apache-2.0，「LLM 界的 Nmap」）設定
-# 用法（只能打 VIBESEC_TARGET_URL 指向的、已授權的測試環境）：
+# VibeSec G6 — garak（NVIDIA，Apache-2.0，「LLM 界的 Nmap」）設定 / VibeSec G6 garak configuration: NVIDIA, Apache-2.0, an LLM probing tool.
+# 用法（只能打 VIBESEC_TARGET_URL 指向的、已授權的測試環境）： / Usage: only against authorized test environments selected by VIBESEC_TARGET_URL.
 #   garak --config config/garak/vibesec.probes.yaml
-#   # 或覆寫 probe：garak --config config/garak/vibesec.probes.yaml --spec probes.promptinject,probes.dan
-# 對應 garak 0.17 schema：probe 選擇用 run.spec（include/exclude），target 用 plugins.target_type / target_name。
-# 報告：reports/garak/<report_prefix>.report.jsonl 與 .hitlog.jsonl；harness 把每個 hit → finding（rule_id = garak:<probe>.<detector>）
+#   # 或覆寫 probe：garak --config config/garak/vibesec.probes.yaml --spec probes.promptinject,probes.dan / Override probes with garak --config config/garak/vibesec.probes.yaml --spec probes.promptinject,probes.dan.
+# 對應 garak 0.17 schema：probe 選擇用 run.spec（include/exclude），target 用 plugins.target_type / target_name。 / The garak 0.17 schema uses run.spec include/exclude for probes and plugins.target_type/target_name for targets.
+# 報告：reports/garak/<report_prefix>.report.jsonl 與 .hitlog.jsonl；harness 把每個 hit → finding（rule_id = garak:<probe>.<detector>） / Reports: reports/garak/<report_prefix>.report.jsonl and .hitlog.jsonl; convert each hit into garak:<probe>.<detector> findings.
 #
-# ★ 必須依環境修改的欄位（標 EDIT）：
-#   plugins.generators.rest.RestGenerator.uri          ← 靶場 chat 端點（可用環境變數 $VIBESEC_TARGET_URL 展開後填入）
-#   plugins.generators.rest.RestGenerator.headers      ← 若需要 Bearer Token
-#   plugins.generators.rest.RestGenerator.response_json_field ← 靶場回應中的文字欄位名稱
-#   run.generations                                    ← 每個 prompt 重複次數（越高越慢、越貴）
+# ★ 必須依環境修改的欄位（標 EDIT）： / Environment-specific fields marked EDIT:
+#   plugins.generators.rest.RestGenerator.uri          ← 靶場 chat 端點（可用環境變數 $VIBESEC_TARGET_URL 展開後填入） / plugins.generators.rest.RestGenerator.uri: lab chat endpoint, populated after expanding VIBESEC_TARGET_URL.
+#   plugins.generators.rest.RestGenerator.headers      ← 若需要 Bearer Token / plugins.generators.rest.RestGenerator.headers: Bearer token if required.
+#   plugins.generators.rest.RestGenerator.response_json_field ← 靶場回應中的文字欄位名稱 / plugins.generators.rest.RestGenerator.response_json_field: target response text field.
+#   run.generations                                    ← 每個 prompt 重複次數（越高越慢、越貴） / run.generations: repetitions per prompt; higher values cost more and take longer.
 
 ---
 system:
   verbose: 0
-  parallel_attempts: 4          # 同時併發；配合 Denial of Wallet 觀察時可拉到 20
-  # 只開一層 pool：parallel_attempts 與 parallel_requests 同時開啟時，generations > 1 會在 attempt worker
-  # （daemon process）內再開 request pool → AssertionError: daemonic processes are not allowed to have children
+  parallel_attempts: 4          # 同時併發；配合 Denial of Wallet 觀察時可拉到 20 / Concurrency may be raised to 20 when observing denial of wallet.
+  # 只開一層 pool：parallel_attempts 與 parallel_requests 同時開啟時，generations > 1 會在 attempt worker / Enable only one pool; with both parallel_attempts and parallel_requests and generations > 1, an attempt worker starts a nested request pool.
+  # （daemon process）內再開 request pool → AssertionError: daemonic processes are not allowed to have children / Daemon workers cannot create child processes, causing AssertionError.
   parallel_requests: false
   narrow_output: false
   show_100_pass_modules: false
@@ -25,8 +25,8 @@ run:
   seed: 42
   deprefix: true
   eval_threshold: 0.5
-  generations: 3                # EDIT：正式複測建議 5–10
-  # garak ≥ 0.15：probe 選擇改用 run.spec（舊的 plugins.probe_spec / run.probe_tags 已棄用）
+  generations: 3                # EDIT：正式複測建議 5–10 / EDIT: use 5–10 for a formal retest.
+  # garak ≥ 0.15：probe 選擇改用 run.spec（舊的 plugins.probe_spec / run.probe_tags 已棄用） / garak 0.15+ selects probes through run.spec; plugins.probe_spec and run.probe_tags are deprecated.
   spec:
     include:
       - probes.promptinject
@@ -37,14 +37,14 @@ run:
 
 plugins:
   target_type: rest
-  target_name: vibesec-chat     # 只是報告中的標籤
-  # 對應 vibesec.yaml gates.g6_ai_red_team.checks：
+  target_name: vibesec-chat     # 只是報告中的標籤 / A report label only.
+  # 對應 vibesec.yaml gates.g6_ai_red_team.checks： / Maps to gates.g6_ai_red_team.checks in vibesec.yaml:
   #   promptinject  → direct_prompt_injection（LLM01）
-  #   dan           → direct_prompt_injection / 越獄（LLM01）
-  #   encoding      → direct_prompt_injection 的編碼繞法（base64 / rot13 等）
-  #   leakreplay    → system_prompt_extraction / 訓練資料洩漏（LLM02 / LLM07）
-  #   web_injection → stored_xss_via_ai_output（LLM05；garak 0.17 起 xss probe 併入此模組：TaskXSS、MarkdownXSS、MarkdownImageExfil…）
-  # 可加：latentinjection（間接注入）、packagehallucination（LLM09；幻覺套件）、divergence（LLM10）
+  #   dan           → direct_prompt_injection / 越獄（LLM01） / dan: direct prompt injection and jailbreaks, LLM01.
+  #   encoding      → direct_prompt_injection 的編碼繞法（base64 / rot13 等） / encoding: encoded direct-injection bypasses such as base64 and rot13.
+  #   leakreplay    → system_prompt_extraction / 訓練資料洩漏（LLM02 / LLM07） / leakreplay: system-prompt extraction and training-data leakage, LLM02/LLM07.
+  #   web_injection → stored_xss_via_ai_output（LLM05；garak 0.17 起 xss probe 併入此模組：TaskXSS、MarkdownXSS、MarkdownImageExfil…） / web_injection: stored XSS via AI output, LLM05; garak 0.17 merged TaskXSS, MarkdownXSS, and MarkdownImageExfil here.
+  # 可加：latentinjection（間接注入）、packagehallucination（LLM09；幻覺套件）、divergence（LLM10） / Optional additions: latentinjection, packagehallucination for LLM09, and divergence for LLM10.
   detector_spec: auto
   extended_detectors: false
   buff_spec: null
@@ -53,17 +53,17 @@ plugins:
     rest:
       RestGenerator:
         name: vibesec-chat
-        uri: "http://localhost:8000/chat"            # EDIT：改成 $VIBESEC_TARGET_URL/chat
+        uri: "http://localhost:8000/chat"            # EDIT：改成 $VIBESEC_TARGET_URL/chat / EDIT: set to $VIBESEC_TARGET_URL/chat.
         method: post
         headers:
           Content-Type: application/json
           X-VibeSec-Run: g6-garak
-          # Authorization: "Bearer $VIBESEC_TOKEN_A"   # EDIT：需要登入時打開；garak 會展開 $ENV 變數
+          # Authorization: "Bearer $VIBESEC_TOKEN_A"   # EDIT：需要登入時打開；garak 會展開 $ENV 變數 / EDIT: enable Authorization with VIBESEC_TOKEN_A when login is required; garak expands environment variables.
         req_template_json_object:
           message: "$INPUT"
           context: ""
         response_json: true
-        response_json_field: "reply"                  # EDIT：靶場回應欄位（可用 JSONPath，例如 $.data.text）
+        response_json_field: "reply"                  # EDIT：靶場回應欄位（可用 JSONPath，例如 $.data.text） / EDIT: response field, optionally a JSONPath such as $.data.text.
         request_timeout: 60
         ratelimit_codes: [429]
         skip_codes: []
@@ -76,8 +76,8 @@ plugins:
       payloads: ["default", "xss"]
 
 reporting:
-  # 相對目錄以 garak 資料目錄為基準；CI 以絕對 --report_prefix 固定到工作區。
+  # 相對目錄以 garak 資料目錄為基準；CI 以絕對 --report_prefix 固定到工作區。 / Relative paths use garak's data directory; CI uses an absolute --report_prefix inside the workspace.
   report_dir: reports/garak
-  report_prefix: g6-garak       # staging workflow 以此前綴蒐集報告
-  taxonomy: owasp                # 報告中附 OWASP LLM Top 10 標籤
+  report_prefix: g6-garak       # staging workflow 以此前綴蒐集報告 / The staging workflow collects reports with this prefix.
+  taxonomy: owasp                # 報告中附 OWASP LLM Top 10 標籤 / Include OWASP LLM Top 10 labels in reports.
   show_100_pass_modules: false

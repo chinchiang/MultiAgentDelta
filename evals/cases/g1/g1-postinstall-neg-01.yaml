@@ -1,7 +1,7 @@
 id: g1-postinstall-neg-01
 gate: G1
 domain: build_supply_chain
-title: postinstall 僅執行本地編譯
+title: "postinstall 僅執行本地編譯 / postinstall performs only local compilation"
 input:
   kind: manifest
   ecosystem: npm
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g1.postinstall-egress
   policy_tier: blocking
 held_out: true
-notes: 無外部網路行為；安裝鉤子存在本身僅 advisory，不應觸發 egress 規則。
+notes: "無外部網路行為；安裝鉤子存在本身僅 advisory，不應觸發 egress 規則。 / No external networking; hook presence alone is advisory and must not trigger the egress rule."

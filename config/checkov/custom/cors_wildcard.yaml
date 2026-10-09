@@ -1,8 +1,8 @@
-# VibeSec 自訂 Checkov YAML 政策：CORS 不得為萬用字元
-# 對應 vibesec.g3.cors-wildcard（CWE-942、ASVS5-V3.3）
+# VibeSec 自訂 Checkov YAML 政策：CORS 不得為萬用字元 / Custom Checkov policy: prohibit wildcard CORS.
+# 對應 vibesec.g3.cors-wildcard（CWE-942、ASVS5-V3.3） / Maps to vibesec.g3.cors-wildcard, CWE-942, ASVS5-V3.3.
 # 為什麼：AI 生成的 IaC / API 設定常為了「先讓前端能跑」把 allow_origins 設成 "*"；
-#         若同時允許憑證（Allow-Credentials），任何網站都能以使用者身分呼叫 API。
-# 本政策涵蓋 Terraform 層（API Gateway v2、S3 CORS、Lambda Function URL）；
+#         若同時允許憑證（Allow-Credentials），任何網站都能以使用者身分呼叫 API。 / If credentials are also allowed, any website may call the API as the user.
+# 本政策涵蓋 Terraform 層（API Gateway v2、S3 CORS、Lambda Function URL）； / Covers Terraform API Gateway v2, S3 CORS, and Lambda Function URLs.
 # 程式層（FastAPI CORSMiddleware(allow_origins=["*"]) / Express cors()）由 Semgrep p/security-audit 與 G5 實際回應標頭驗證。
 metadata:
   id: "CKV2_VIBESEC_2"

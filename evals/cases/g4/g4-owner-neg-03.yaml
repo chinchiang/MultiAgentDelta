@@ -1,7 +1,7 @@
 id: g4-owner-neg-03
 gate: G4
 domain: authorization
-title: 路由處理函式讀 header、cookie、dict 的 .get(key, default)，不是以 id 查資源
+title: "路由處理函式讀 header、cookie、dict 的 .get(key, default)，不是以 id 查資源 / Route handlers use header, cookie, and dictionary .get(key, default), not resource lookup by ID"
 input:
   kind: code
   language: python
@@ -18,4 +18,4 @@ expected:
   rule_id: vibesec.g4.missing-owner-filter
   policy_tier: advisory
 held_out: false
-notes: 2026-10-06 對 MultiAgentBeta 的 G4 審查發現 $DB.get($MODEL, $ID) 把這類呼叫當成 ORM 查詢（9 筆皆為誤判）。
+notes: "2026-10-06 對 MultiAgentBeta 的 G4 審查發現 $DB.get($MODEL, $ID) 把這類呼叫當成 ORM 查詢（9 筆皆為誤判）。 / MultiAgentBeta G4 review on 2026-10-06 found nine false positives where $DB.get($MODEL, $ID) treated these calls as ORM lookups."

@@ -1,7 +1,7 @@
 id: g3-actions-prt-pos-01
 gate: G3
 domain: github_actions
-title: pull_request_target 檢出 PR head 並執行
+title: "pull_request_target 檢出 PR head 並執行 / pull_request_target checks out and executes the PR head"
 input:
   kind: iac
   path: .github/workflows/pr.yml

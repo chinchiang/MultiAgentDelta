@@ -1,7 +1,7 @@
 id: g3-sqli-neg-02
 gate: G3
 domain: general_vulnerabilities
-title: Map 與 HTTP client 的 .get 不是 SQL 執行點
+title: "Map 與 HTTP client 的 .get 不是 SQL 執行點 / Map and HTTP-client .get calls are not SQL sinks"
 input:
   kind: code
   language: typescript
@@ -21,4 +21,4 @@ expected:
   rule_id: vibesec.g3.sql-string-concat
   policy_tier: blocking
 held_out: false
-notes: 2026-10-06 對 MultiAgentBeta 的 G3 掃描：fixtures/web-api/server.ts:53 與 frontend/scripts/browser-smoke.cjs:44 兩筆 blocking 都是這種誤判。
+notes: "2026-10-06 對 MultiAgentBeta 的 G3 掃描：fixtures/web-api/server.ts:53 與 frontend/scripts/browser-smoke.cjs:44 兩筆 blocking 都是這種誤判。 / Two blocking findings in MultiAgentBeta on 2026-10-06, fixtures/web-api/server.ts:53 and frontend/scripts/browser-smoke.cjs:44, were this false positive."

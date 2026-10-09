@@ -1,7 +1,7 @@
 id: g4-rls-neg-01
 gate: G4
 domain: authorization
-title: Supabase 表格啟用 RLS 並以 auth.uid() 綁定
+title: "Supabase 表格啟用 RLS 並以 auth.uid() 綁定 / A Supabase table enables RLS and binds auth.uid()"
 input:
   kind: iac
   path: supabase/migrations/001.sql

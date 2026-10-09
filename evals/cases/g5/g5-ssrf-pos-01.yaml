@@ -1,7 +1,7 @@
 id: g5-ssrf-pos-01
 gate: G5
 domain: input_validation
-title: URL 抓取端點會讀取 loopback（canary）
+title: "URL 抓取端點會讀取 loopback（canary） / The URL fetch endpoint reads a loopback canary"
 input:
   kind: http
   target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g5.ssrf-internal-fetch
   policy_tier: blocking
 held_out: false
-notes: examples/vulnapp 可重現；staging run 37184141967 實證。
+notes: "examples/vulnapp 可重現；staging run 37184141967 實證。 / Reproducible in examples/vulnapp; demonstrated by staging run 37184141967."

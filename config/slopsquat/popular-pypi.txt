@@ -1,4 +1,4 @@
-# VibeSec G1：PyPI 熱門套件清單（名稱相似度比對基準；一行一個；# 開頭為註解）
+# VibeSec G1：PyPI 熱門套件清單（名稱相似度比對基準；一行一個；# 開頭為註解） / Popular PyPI names for G1 similarity checks: one per line; lines beginning with # are comments.
 # 比對前先正規化：小寫、- 與 _ 視為相同（PEP 503）。清單應定期以 pypistats / top-pypi-packages 更新。
 requests
 httpx

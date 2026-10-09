@@ -1,7 +1,7 @@
 id: g3-cmdi-neg-01
 gate: G3
 domain: input_validation
-title: subprocess 以參數陣列呼叫
+title: "subprocess 以參數陣列呼叫 / subprocess uses an argument array"
 input:
   kind: code
   path: app/tools.py

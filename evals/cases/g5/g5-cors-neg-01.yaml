@@ -1,7 +1,7 @@
 id: g5-cors-neg-01
 gate: G5
 domain: general_vulnerabilities
-title: CORS 只允許固定白名單，不反射陌生 Origin
+title: "CORS 只允許固定白名單，不反射陌生 Origin / CORS allows only a fixed allowlist and does not reflect unknown origins"
 input:
   kind: http
   target_app: vulnapp-patched

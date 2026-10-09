@@ -1,7 +1,7 @@
 id: g1-kev-pos-01
 gate: G1
 domain: dependency
-title: 相依套件含 CISA KEV 收錄的 CVE
+title: "相依套件含 CISA KEV 收錄的 CVE / A dependency has a CVE listed in CISA KEV"
 input:
   kind: manifest
   ecosystem: maven
@@ -18,4 +18,4 @@ expected:
   rule_id: vibesec.g1.kev-hit
   policy_tier: blocking
 held_out: false
-notes: CVE-2021-44228 收錄於 KEV；CVSS、EPSS、KEV 分欄記錄，不相乘。
+notes: "CVE-2021-44228 收錄於 KEV；CVSS、EPSS、KEV 分欄記錄，不相乘。 / CVE-2021-44228 is in KEV; record CVSS, EPSS, and KEV separately without multiplication."

@@ -1,7 +1,7 @@
 id: g4-unicode-neg-01
 gate: G4
 domain: ai_agent_security
-title: 規則檔僅含可見 ASCII 與正體中文
+title: "規則檔僅含可見 ASCII 與正體中文 / The rules file contains only visible ASCII and Traditional Chinese"
 input:
   kind: code
   path: .github/copilot-instructions.md

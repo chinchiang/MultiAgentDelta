@@ -1,17 +1,17 @@
-# VibeSec 控制目錄 — OWASP ASVS 5.0.0（節層級）
+# VibeSec 控制目錄 — OWASP ASVS 5.0.0（節層級） / VibeSec control catalog: OWASP ASVS 5.0.0 section-level mapping.
 #
-# ★ 免責說明（必讀）
+# ★ 免責說明（必讀） / Required disclaimer.
 # 本檔的控制 ID（ASVS5-V<章>.<節>）是 vibesec 依 ASVS 5.0.0 的「章 / 節」結構自行編派的
-# 節層級識別碼，用來讓 finding.control_id 可被程式驗證與統計覆蓋率。
-# 它們「不是」OWASP 官方的需求編號（官方需求編號為 V<章>.<節>.<需求>，三段式）。
-# 對外引用（稽核、客戶報告、合規文件）前，必須回到官方標準逐條核對：
+# 節層級識別碼，用來讓 finding.control_id 可被程式驗證與統計覆蓋率。 / Section IDs support machine validation of finding.control_id and coverage statistics.
+# 它們「不是」OWASP 官方的需求編號（官方需求編號為 V<章>.<節>.<需求>，三段式）。 / These are not official OWASP requirement IDs, which have three components: chapter, section, and requirement.
+# 對外引用（稽核、客戶報告、合規文件）前，必須回到官方標準逐條核對： / Verify each item against the official standard before citing it in audits, customer reports, or compliance documents.
 #   https://owasp.org/www-project-application-security-verification-standard/
-# 來源標記：
-#   source: asvs-5.0.0-mindmap   → 由使用者提供的 ASVS 5.0.0 心智圖（V1–V6）整理
-#   source: vibesec-extension    → vibesec 依 ASVS 5.0.0 官方章名補的占位章節（V7–V10、V13、V15、V16），
-#                                  topics 為 vibesec 摘要，非逐字引用；僅供閘門對照，引用前同樣要核對。
-# level 欄位為「最佳努力」推估（1 = 最低防線、2 = 標準實務、3 = 高保證），非官方等級標註。
-# gates 欄位：哪些執行閘門（G1–G6）會驗證本節；G0 為設計期文件化，不列入自動驗證。
+# 來源標記： / Source markers:
+#   source: asvs-5.0.0-mindmap   → 由使用者提供的 ASVS 5.0.0 心智圖（V1–V6）整理 / asvs-5.0.0-mindmap: compiled from user-supplied ASVS 5.0.0 mind maps for V1–V6.
+#   source: vibesec-extension    → vibesec 依 ASVS 5.0.0 官方章名補的占位章節（V7–V10、V13、V15、V16）， / vibesec-extension: placeholder chapters V7–V10, V13, V15, and V16 based on official chapter names.
+#                                  topics 為 vibesec 摘要，非逐字引用；僅供閘門對照，引用前同樣要核對。 / Topics are VibeSec summaries rather than quotations; use for gate mapping and verify before citation.
+# level 欄位為「最佳努力」推估（1 = 最低防線、2 = 標準實務、3 = 高保證），非官方等級標註。 / Levels are best-effort estimates: 1 minimum, 2 standard practice, 3 high assurance; not official annotations.
+# gates 欄位：哪些執行閘門（G1–G6）會驗證本節；G0 為設計期文件化，不列入自動驗證。 / gates lists automated verification gates G1–G6; G0 design documentation is not counted as automated verification.
 
 version: "5.0.0"
 id_scheme: "ASVS5-V<chapter>.<section>"
@@ -19,13 +19,13 @@ official_numbering: false
 updated: "2026-10-03"
 
 principles:
-  # 心智圖「標準範圍與原則」節點；非控制，供 G0 與報告引用語意
+  # 心智圖「標準範圍與原則」節點；非控制，供 G0 與報告引用語意 / Mind-map scope/principle nodes are explanatory references for G0 and reports, not controls.
   levels:
-    L1: "第一層防禦的最低要求（約佔 20%）"
-    L2: "標準安全實踐的全方位視角（約佔 50%）— vibesec 預設基線"
-    L3: "高級高保證需求與縱深防禦（約佔 30%）— 高價值系統；ASVS 5.0 於此層級明列正式威脅建模"
-  verification_semantics: "驗證結果必須為通過或失敗；vibesec 另加 pending / untested / not_applicable / incomplete，且 incomplete 永不等於 pass"
-  documented_security_decisions: "規劃安全設計與實作機制；定義輸入驗證與權限規則文件（對應 ASVS5-V15.1 與各章 x.1 文件化節）"
+    L1: "第一層防禦的最低要求（約佔 20%） / Minimum first-line defenses (about 20%)"
+    L2: "標準安全實踐的全方位視角（約佔 50%）— vibesec 預設基線 / Comprehensive standard security practices (about 50%); VibeSec default baseline"
+    L3: "高級高保證需求與縱深防禦（約佔 30%）— 高價值系統；ASVS 5.0 於此層級明列正式威脅建模 / Advanced high-assurance defense in depth (about 30%); high-value systems and formal L3 threat modeling"
+  verification_semantics: "驗證結果必須為通過或失敗；vibesec 另加 pending / untested / not_applicable / incomplete，且 incomplete 永不等於 pass / Verification is pass/fail; VibeSec additionally tracks pending, untested, not_applicable, and incomplete, which never means pass"
+  documented_security_decisions: "規劃安全設計與實作機制；定義輸入驗證與權限規則文件（對應 ASVS5-V15.1 與各章 x.1 文件化節） / Document secure design/implementation, input validation, and authorization rules; map to V15.1 and chapter documentation sections"
 
 chapters:
   - chapter: V1
@@ -35,38 +35,42 @@ chapters:
     controls:
       - id: ASVS5-V1.1
         title_zh: 編碼與淨化架構
+        title_en: "Encoding and sanitization architecture"
         level: 1
         topics:
-          - "正則化解碼：僅解碼一次並在處理前完成"
-          - "輸出編碼：解釋器使用前的最終步驟"
+          - "正則化解碼：僅解碼一次並在處理前完成 / Canonical decoding: decode once before processing"
+          - "輸出編碼：解釋器使用前的最終步驟 / Output encoding: the final step before interpreter use"
         gates: [G3, G6]
-        notes: "XSS 輸出編碼；AI 輸出渲染到 DOM 前同樣適用"
+        notes: "XSS 輸出編碼；AI 輸出渲染到 DOM 前同樣適用 / XSS output encoding also applies before rendering AI output into the DOM"
       - id: ASVS5-V1.2
         title_zh: 注入防範
+        title_en: "Injection prevention"
         level: 1
         topics:
-          - "HTML 與 XML：根據上下文進行相關編碼"
-          - "動態 URL：依內容進行 URL 或 base64url 編碼"
-          - "資料庫查詢：使用參數化查詢或 ORM"
-          - "OS 指令：使用參數化 OS 查詢或命令列編碼"
-          - "CSV 與公式注入：遵循 RFC 4180 轉義規則"
+          - "HTML 與 XML：根據上下文進行相關編碼 / Context-appropriate HTML and XML encoding"
+          - "動態 URL：依內容進行 URL 或 base64url 編碼 / Dynamic URLs: URL or base64url encoding appropriate to content"
+          - "資料庫查詢：使用參數化查詢或 ORM / Database queries: parameterized queries or safe ORM use"
+          - "OS 指令：使用參數化 OS 查詢或命令列編碼 / OS commands: parameterized APIs or context-appropriate command encoding"
+          - "CSV 與公式注入：遵循 RFC 4180 轉義規則 / CSV/formula injection: follow RFC 4180 escaping rules"
         gates: [G3, G5, G6]
-        notes: "AI 字串拼接 SQL / Command 的主要落點"
+        notes: "AI 字串拼接 SQL / Command 的主要落點 / Primary control for AI-generated SQL/command concatenation"
       - id: ASVS5-V1.3
         title_zh: 淨化機制
+        title_en: "Sanitization mechanisms"
         level: 1
         topics:
-          - "HTML 淨化：使用安全函式庫處理 WYSIWYG 輸入"
-          - "動態執行：避免使用 eval() 或 SpEL"
-          - "SSRF 防範：驗證協定、網域與連接埠白名單"
+          - "HTML 淨化：使用安全函式庫處理 WYSIWYG 輸入 / Use secure libraries for WYSIWYG HTML input"
+          - "動態執行：避免使用 eval() 或 SpEL / Avoid dynamic evaluation through eval or SpEL"
+          - "SSRF 防範：驗證協定、網域與連接埠白名單 / Prevent SSRF by validating protocol, domain, and port allowlists"
         gates: [G3, G5]
       - id: ASVS5-V1.4
         title_zh: 記憶體與序列化
+        title_en: "Memory and serialization"
         level: 2
         topics:
-          - "記憶體安全：防止堆疊或緩衝區溢位"
-          - "XML 解析：停用外部實體以防 XXE 攻擊"
-          - "安全反序列化：使用型別白名單限制物件"
+          - "記憶體安全：防止堆疊或緩衝區溢位 / Prevent stack and buffer overflows"
+          - "XML 解析：停用外部實體以防 XXE 攻擊 / Disable XML external entities to prevent XXE"
+          - "安全反序列化：使用型別白名單限制物件 / Restrict deserialized object types through an allowlist"
         gates: [G3]
 
   - chapter: V2
@@ -76,34 +80,38 @@ chapters:
     controls:
       - id: ASVS5-V2.1
         title_zh: 驗證與商業邏輯文件
+        title_en: "Validation and business-logic documentation"
         level: 1
         topics:
-          - "輸入驗證規則：定義預期結構的檢查方式"
-          - "商業邏輯限制：記錄全域與使用者級別限制"
+          - "輸入驗證規則：定義預期結構的檢查方式 / Define how expected input structures are validated"
+          - "商業邏輯限制：記錄全域與使用者級別限制 / Document global and per-user business constraints"
         gates: []
-        notes: "G0 設計期文件化產出"
+        notes: "G0 設計期文件化產出 / G0 design-time documentation"
       - id: ASVS5-V2.2
         title_zh: 輸入驗證
+        title_en: "Input validation"
         level: 1
         topics:
-          - "業務期望驗證：使用正面驗證與白名單"
-          - "信任服務層：於伺服器端強制執行驗證"
+          - "業務期望驗證：使用正面驗證與白名單 / Use positive validation and allowlists for business expectations"
+          - "信任服務層：於伺服器端強制執行驗證 / Enforce validation in the trusted server-side service layer"
         gates: [G3, G5]
       - id: ASVS5-V2.3
         title_zh: 商業邏輯安全
+        title_en: "Business-logic security"
         level: 2
         topics:
-          - "順序流程：按順序處理且不可略過步驟"
-          - "多人審批：高價值業務流程需多方授權"
+          - "順序流程：按順序處理且不可略過步驟 / Process sequential workflows in order without skipping steps"
+          - "多人審批：高價值業務流程需多方授權 / Require multiple parties to authorize high-value workflows"
         gates: [G4]
-        notes: "Agent 高影響動作的 Human-in-the-Loop 對應此節"
+        notes: "Agent 高影響動作的 Human-in-the-Loop 對應此節 / Maps high-impact agent HITL approval to this section"
       - id: ASVS5-V2.4
         title_zh: 防自動化
+        title_en: "Anti-automation"
         level: 2
         topics:
-          - "反自動化控制：防止過度呼叫與資源耗盡"
+          - "反自動化控制：防止過度呼叫與資源耗盡 / Prevent excessive calls and resource exhaustion"
         gates: [G5, G6]
-        notes: "登入 / 重設密碼 Rate Limiting、Captcha；LLM Denial of Wallet"
+        notes: "登入 / 重設密碼 Rate Limiting、Captcha；LLM Denial of Wallet / Login/reset throttling and CAPTCHA; LLM denial of wallet"
 
   - chapter: V3
     title_zh: 網頁前端安全
@@ -112,35 +120,39 @@ chapters:
     controls:
       - id: ASVS5-V3.1
         title_zh: 未預期內容解釋
+        title_en: "Unintended content interpretation"
         level: 1
         topics:
-          - "內容渲染控制：防止錯誤上下文呈現"
+          - "內容渲染控制：防止錯誤上下文呈現 / Render content only in its intended context"
         gates: [G5]
       - id: ASVS5-V3.2
         title_zh: Cookie 設定
+        title_en: "Cookie settings"
         level: 1
         topics:
-          - "Secure 屬性：確保 Cookie 僅透過加密傳輸"
-          - "SameSite 屬性：限制跨站請求偽造（CSRF）"
-          - "__Host- 前綴：加強 Cookie 安全性"
-          - "HttpOnly 屬性：防止前端指令碼存取敏感 Cookie"
+          - "Secure 屬性：確保 Cookie 僅透過加密傳輸 / Secure: transmit cookies only over encrypted connections"
+          - "SameSite 屬性：限制跨站請求偽造（CSRF） / SameSite: restrict cross-site request forgery"
+          - "__Host- 前綴：加強 Cookie 安全性 / The __Host- prefix strengthens cookie scoping"
+          - "HttpOnly 屬性：防止前端指令碼存取敏感 Cookie / HttpOnly: prevent scripts from reading sensitive cookies"
         gates: [G5]
       - id: ASVS5-V3.3
         title_zh: 瀏覽器安全標頭
+        title_en: "Browser security headers"
         level: 1
         topics:
-          - "CORS 設定：嚴格驗證跨來源資源共用"
-          - "Content-Security-Policy（CSP）：限制載入受信任資源"
-          - "X-Content-Type-Options：禁止 MIME 類型嗅探"
-          - "Referrer-Policy：防止敏感資料洩漏"
+          - "CORS 設定：嚴格驗證跨來源資源共用 / Strict cross-origin resource-sharing validation"
+          - "Content-Security-Policy（CSP）：限制載入受信任資源 / CSP: restrict resource loading to trusted sources"
+          - "X-Content-Type-Options：禁止 MIME 類型嗅探 / X-Content-Type-Options: prevent MIME sniffing"
+          - "Referrer-Policy：防止敏感資料洩漏 / Referrer-Policy: prevent sensitive referrer disclosure"
         gates: [G3, G5]
-        notes: "IaC / 程式層 CORS 萬用字元由 G3 靜態攔截，G5 以實際回應標頭驗證"
+        notes: "IaC / 程式層 CORS 萬用字元由 G3 靜態攔截，G5 以實際回應標頭驗證 / G3 checks wildcard CORS statically; G5 verifies actual response headers"
       - id: ASVS5-V3.4
         title_zh: 瀏覽器來源隔離
+        title_en: "Browser origin isolation"
         level: 1
         topics:
-          - "請求偽造防範：驗證防偽權杖或自訂標頭"
-          - "postMessage 驗證：確保訊息來源可信"
+          - "請求偽造防範：驗證防偽權杖或自訂標頭 / Validate anti-CSRF tokens or custom request headers"
+          - "postMessage 驗證：確保訊息來源可信 / Validate postMessage origins"
         gates: [G5]
 
   - chapter: V4
@@ -150,24 +162,27 @@ chapters:
     controls:
       - id: ASVS5-V4.1
         title_zh: 通用網頁服務安全
+        title_en: "General web-service security"
         level: 1
         topics:
-          - "Content-Type 標頭：確保與回應內容相符"
+          - "Content-Type 標頭：確保與回應內容相符 / Ensure Content-Type matches the response body"
         gates: [G5]
       - id: ASVS5-V4.2
         title_zh: HTTP 訊息結構驗證
+        title_en: "HTTP message structure validation"
         level: 2
         topics:
-          - "請求走私防範：正確判定 HTTP 訊息邊界"
+          - "請求走私防範：正確判定 HTTP 訊息邊界 / Correctly identify HTTP message boundaries to prevent request smuggling"
         gates: [G5]
       - id: ASVS5-V4.3
         title_zh: GraphQL 與 WebSocket
+        title_en: "GraphQL and WebSocket"
         level: 2
         topics:
-          - "GraphQL 限制：使用深度限制與查詢成本分析防範 DoS"
-          - "WebSocket 安全：所有連線強制使用 TLS（WSS）"
+          - "GraphQL 限制：使用深度限制與查詢成本分析防範 DoS / GraphQL depth/cost limits prevent denial of service"
+          - "WebSocket 安全：所有連線強制使用 TLS（WSS） / Require TLS (WSS) for WebSocket connections"
         gates: [G5]
-        notes: "GraphQL Introspection 外溢亦掛於此節（配合 ASVS5-V13.4）"
+        notes: "GraphQL Introspection 外溢亦掛於此節（配合 ASVS5-V13.4） / GraphQL introspection exposure also maps here and to V13.4"
 
   - chapter: V5
     title_zh: 檔案處理
@@ -176,16 +191,18 @@ chapters:
     controls:
       - id: ASVS5-V5.1
         title_zh: 檔案處理文件
+        title_en: "File-handling documentation"
         level: 1
         topics:
-          - "上傳規範：定義允許的副檔名與大小限制"
+          - "上傳規範：定義允許的副檔名與大小限制 / Define allowed upload extensions and size limits"
         gates: []
       - id: ASVS5-V5.2
         title_zh: 檔案上傳與儲存
+        title_en: "File upload and storage"
         level: 1
         topics:
-          - "解壓縮檢查：檢查未壓縮大小與檔案數量"
-          - "路徑安全：使用內部產生資料取代使用者檔名以防路徑走訪"
+          - "解壓縮檢查：檢查未壓縮大小與檔案數量 / Check decompressed size and file count"
+          - "路徑安全：使用內部產生資料取代使用者檔名以防路徑走訪 / Use internally generated paths instead of user filenames to prevent traversal"
         gates: [G3, G5]
 
   - chapter: V6
@@ -195,25 +212,27 @@ chapters:
     controls:
       - id: ASVS5-V6.1
         title_zh: 密碼安全
+        title_en: "Password security"
         level: 1
         topics:
-          - "密碼長度：最少 8 個字元，強烈建議 15 個字元以上"
-          - "密碼變更：需提供目前與新密碼"
-          - "密碼黑名單：檢查前 3000 個常見密碼"
-          - "密碼外洩檢查：比對已外洩的密碼資料庫"
+          - "密碼長度：最少 8 個字元，強烈建議 15 個字元以上 / At least eight characters; strongly recommend fifteen or more"
+          - "密碼變更：需提供目前與新密碼 / Require current and new passwords for password changes"
+          - "密碼黑名單：檢查前 3000 個常見密碼 / Check the 3,000 most common passwords"
+          - "密碼外洩檢查：比對已外洩的密碼資料庫 / Compare against breached-password databases"
         gates: [G5]
       - id: ASVS5-V6.2
         title_zh: 通用身分驗證安全
+        title_en: "General authentication security"
         level: 2
         topics:
-          - "多因數驗證（MFA）：L2 以上應用程式強制要求"
-          - "硬體驗證：L3 應用程式使用受信執行環境（TEE）"
+          - "多因數驗證（MFA）：L2 以上應用程式強制要求 / Require MFA for L2 and higher applications"
+          - "硬體驗證：L3 應用程式使用受信執行環境（TEE） / Use trusted execution environments for L3 hardware authentication"
         gates: [G5]
-        notes: "登入 / 重設密碼節流與 Captcha 的黑箱驗證掛於此節與 ASVS5-V2.4"
+        notes: "登入 / 重設密碼節流與 Captcha 的黑箱驗證掛於此節與 ASVS5-V2.4 / Login/reset throttling and CAPTCHA tests map here and to V2.4"
 
   # ---------------------------------------------------------------------------
-  # 以下為 vibesec-extension：依 ASVS 5.0.0 官方章名補的占位章節。
-  # topics 為 vibesec 摘要，不是官方需求文字；引用前請核對官方標準。
+  # 以下為 vibesec-extension：依 ASVS 5.0.0 官方章名補的占位章節。 / The following vibesec-extension entries are placeholders based on official ASVS chapter names.
+  # topics 為 vibesec 摘要，不是官方需求文字；引用前請核對官方標準。 / Topics summarize requirements; verify the official standard before citation.
   # ---------------------------------------------------------------------------
   - chapter: V7
     title_zh: Session 管理
@@ -222,12 +241,13 @@ chapters:
     controls:
       - id: ASVS5-V7.1
         title_zh: Session 管理（占位）
+        title_en: "Session management (local placeholder)"
         level: 1
         topics:
-          - "伺服器端 Session 驗證：每個受保護 API 都必須驗證 Session / Token，不可只在前端判斷"
-          - "登出與逾時撤銷"
+          - "伺服器端 Session 驗證：每個受保護 API 都必須驗證 Session / Token，不可只在前端判斷 / Validate sessions/tokens on every protected server API, not only the frontend"
+          - "登出與逾時撤銷 / Revoke sessions on logout and timeout"
         gates: [G4, G5]
-        notes: "前端防禦假象：後端 API 缺 Session 驗證"
+        notes: "前端防禦假象：後端 API 缺 Session 驗證 / Illusory frontend protection: backend lacks session validation"
 
   - chapter: V8
     title_zh: 授權
@@ -236,25 +256,28 @@ chapters:
     controls:
       - id: ASVS5-V8.1
         title_zh: 授權文件化（占位）
+        title_en: "Authorization documentation (local placeholder)"
         level: 1
         topics:
-          - "角色 × 資源 × 操作矩陣；租戶隔離規則"
+          - "角色 × 資源 × 操作矩陣；租戶隔離規則 / Role-by-resource-by-operation matrix and tenant-isolation rules"
         gates: []
       - id: ASVS5-V8.2
         title_zh: 一般授權 / 物件層級授權（占位）
+        title_en: "General and object-level authorization (local placeholder)"
         level: 1
         topics:
-          - "每筆資料存取綁定當前已驗證主體（owner binding；防 BOLA / IDOR）"
-          - "資料層強制（Row Level Security），不只依賴應用層"
+          - "每筆資料存取綁定當前已驗證主體（owner binding；防 BOLA / IDOR） / Bind every data access to the authenticated owner to prevent BOLA/IDOR"
+          - "資料層強制（Row Level Security），不只依賴應用層 / Enforce at the data layer with RLS, not only the application"
         gates: [G4, G5]
       - id: ASVS5-V8.3
         title_zh: 操作與欄位層級授權（占位）
+        title_en: "Operation- and field-level authorization (local placeholder)"
         level: 2
         topics:
-          - "功能層級授權（BFLA）；管理功能不可僅靠單一 middleware 判斷"
-          - "縱深防禦：路由層 + 服務層 + 資料層"
+          - "功能層級授權（BFLA）；管理功能不可僅靠單一 middleware 判斷 / Function-level authorization; admin functions must not depend solely on middleware"
+          - "縱深防禦：路由層 + 服務層 + 資料層 / Defense in depth: route, service, and data layers"
         gates: [G4, G5]
-        notes: "CVE-2025-29927（Next.js middleware 繞過）為代表案例"
+        notes: "CVE-2025-29927（Next.js middleware 繞過）為代表案例 / Representative case: Next.js middleware bypass CVE-2025-29927"
 
   - chapter: V9
     title_zh: 自含式權杖
@@ -263,11 +286,12 @@ chapters:
     controls:
       - id: ASVS5-V9.1
         title_zh: 自含式權杖（JWT）驗證（占位）
+        title_en: "Self-contained JWT validation (local placeholder)"
         level: 1
         topics:
-          - "拒絕 alg:none；演算法白名單固定於伺服器端"
-          - "防 RS256 / HS256 混淆：公鑰不得被當成 HMAC 密鑰"
-          - "驗證 exp / aud / iss"
+          - "拒絕 alg:none；演算法白名單固定於伺服器端 / Reject alg:none; fix the algorithm allowlist server-side"
+          - "防 RS256 / HS256 混淆：公鑰不得被當成 HMAC 密鑰 / Prevent RS256/HS256 confusion: never use public keys as HMAC secrets"
+          - "驗證 exp / aud / iss / Validate exp, aud, and iss"
         gates: [G3, G5]
 
   - chapter: V10
@@ -277,10 +301,11 @@ chapters:
     controls:
       - id: ASVS5-V10.1
         title_zh: OAuth / OIDC 受眾綁定（占位）
+        title_en: "OAuth/OIDC audience binding (local placeholder)"
         level: 2
         topics:
-          - "Access Token 必須綁定受眾（audience）；MCP 伺服器套用 RFC 8707 Resource Indicators"
-          - "拒絕非為本資源簽發的 Token（防 token passthrough / confused deputy）"
+          - "Access Token 必須綁定受眾（audience）；MCP 伺服器套用 RFC 8707 Resource Indicators / Bind access tokens to their audience; MCP uses RFC 8707 resource indicators"
+          - "拒絕非為本資源簽發的 Token（防 token passthrough / confused deputy） / Reject tokens issued for other resources to prevent passthrough/confused-deputy attacks"
         gates: [G4]
 
   - chapter: V13
@@ -290,31 +315,35 @@ chapters:
     controls:
       - id: ASVS5-V13.1
         title_zh: 組態文件化（占位）
+        title_en: "Configuration documentation (local placeholder)"
         level: 1
         topics:
-          - "記錄環境差異（dev / staging / prod）與哪些除錯功能必須在正式環境關閉"
+          - "記錄環境差異（dev / staging / prod）與哪些除錯功能必須在正式環境關閉 / Document dev/staging/production differences and debug features disabled in production"
         gates: []
       - id: ASVS5-V13.2
         title_zh: 後端通訊組態（占位）
+        title_en: "Backend communication configuration (local placeholder)"
         level: 2
         topics:
-          - "服務對服務通訊的身分與最小權限；雲端中繼資料端點（IMDS）強制 IMDSv2"
-          - "出向連線 allow-list"
+          - "服務對服務通訊的身分與最小權限；雲端中繼資料端點（IMDS）強制 IMDSv2 / Authenticate service-to-service communication with least privilege; require IMDSv2"
+          - "出向連線 allow-list / Outbound connection allowlist"
         gates: [G3, G5]
       - id: ASVS5-V13.3
         title_zh: 祕密管理（占位）
+        title_en: "Secret management (local placeholder)"
         level: 1
         topics:
-          - "祕密不得硬編碼於原始碼、Git 歷史、前端 bundle、容器層"
-          - "使用祕密管理服務或環境注入；.env 不入版控；外洩即撤銷與輪替"
+          - "祕密不得硬編碼於原始碼、Git 歷史、前端 bundle、容器層 / No hard-coded secrets in code, Git history, frontend bundles, or container layers"
+          - "使用祕密管理服務或環境注入；.env 不入版控；外洩即撤銷與輪替 / Use secret managers/environment injection; do not version .env; revoke/rotate leaked keys"
         gates: [G2]
-        notes: "對應舊版 ASVS V13.3 編號語意；正文可寫「組態／祕密管理章節」"
+        notes: "對應舊版 ASVS V13.3 編號語意；正文可寫「組態／祕密管理章節」 / Retains the older ASVS V13.3 configuration/secret-management meaning"
       - id: ASVS5-V13.4
         title_zh: 非預期資訊洩漏（占位）
+        title_en: "Unintended information disclosure (local placeholder)"
         level: 1
         topics:
-          - "正式環境關閉 Debug Mode、Stack Trace、Swagger UI / OpenAPI 文件、GraphQL Introspection"
-          - "錯誤訊息不洩漏內部實作"
+          - "正式環境關閉 Debug Mode、Stack Trace、Swagger UI / OpenAPI 文件、GraphQL Introspection / Disable debug traces, Swagger/OpenAPI, and introspection in production as specified by policy"
+          - "錯誤訊息不洩漏內部實作 / Error messages must not disclose internal implementation"
         gates: [G5]
 
   - chapter: V15
@@ -324,18 +353,20 @@ chapters:
     controls:
       - id: ASVS5-V15.1
         title_zh: 安全編碼與架構文件（占位）
+        title_en: "Secure coding and architecture documentation (local placeholder)"
         level: 1
         topics:
-          - "威脅建模（L3 明列為必要）；文件化安全決策"
-          - "資料流圖、信任邊界、Agent 能力盤點"
+          - "威脅建模（L3 明列為必要）；文件化安全決策 / Formal L3 threat modeling and documented security decisions"
+          - "資料流圖、信任邊界、Agent 能力盤點 / DFDs, trust boundaries, and agent-capability inventory"
         gates: []
-        notes: "G0 產出；NIST AI RMF Map 功能與 ISO 27001:2022 文件化決策對接點"
+        notes: "G0 產出；NIST AI RMF Map 功能與 ISO 27001:2022 文件化決策對接點 / G0 evidence maps to NIST AI RMF Map and ISO 27001 documented decisions"
       - id: ASVS5-V15.2
         title_zh: 安全架構與相依性（占位）
+        title_en: "Secure architecture and dependencies (local placeholder)"
         level: 1
         topics:
-          - "第三方元件清單（SBOM）、已知漏洞比對、來源可信度"
-          - "拒絕來源不明 / 幻覺 / 冷卻期未滿的套件；安裝腳本審查"
+          - "第三方元件清單（SBOM）、已知漏洞比對、來源可信度 / SBOM inventory, known-vulnerability checks, and source trust"
+          - "拒絕來源不明 / 幻覺 / 冷卻期未滿的套件；安裝腳本審查 / Reject unknown/hallucinated/insufficiently aged packages; review install scripts"
         gates: [G1]
 
   - chapter: V16
@@ -345,49 +376,61 @@ chapters:
     controls:
       - id: ASVS5-V16.1
         title_zh: 安全事件日誌（占位）
+        title_en: "Security event logging (local placeholder)"
         level: 2
         topics:
-          - "Agent 工具呼叫、LLM 請求量與成本必須可稽核"
-          - "用量限制 / 熔斷事件記錄"
+          - "Agent 工具呼叫、LLM 請求量與成本必須可稽核 / Audit agent tool calls, LLM request volume, and costs"
+          - "用量限制 / 熔斷事件記錄 / Log quota and circuit-breaker events"
         gates: [G4, G6]
-        notes: "MAESTRO-L5 Evaluation & Observability 對接點"
+        notes: "MAESTRO-L5 Evaluation & Observability 對接點 / Maps to MAESTRO-L5 Evaluation & Observability"
 
 # -----------------------------------------------------------------------------
-# vibesec 自有控制（VS-G<N>-<NAME>）：ASVS 未直接涵蓋、但本框架要求的控制。
-# 格式符合 schemas/finding.schema.json 的 control_id pattern。
+# vibesec 自有控制（VS-G<N>-<NAME>）：ASVS 未直接涵蓋、但本框架要求的控制。 / VibeSec-owned VS-G<N>-<NAME> controls cover framework requirements not directly addressed by ASVS.
+# 格式符合 schemas/finding.schema.json 的 control_id pattern。 / IDs match the control_id pattern in schemas/finding.schema.json.
 # -----------------------------------------------------------------------------
 vibesec_controls:
   - id: VS-G0-LETHAL-TRIFECTA
     title_zh: 致命三要素必須在設計期切斷至少一隻腳
+    title_en: "Cut at least one lethal-trifecta leg at design time"
     gates: [G4, G6]
     source: "Simon Willison, The Lethal Trifecta for AI agents"
   - id: VS-G0-RISK-TIER
     title_zh: 風險分級 L1/L2/L3 已決定並寫入 vibesec.yaml
+    title_en: "Determine L1/L2/L3 and synchronize vibesec.yaml"
     gates: []
   - id: VS-G1-SLOPSQUAT
     title_zh: 幻覺套件 / 名稱相似度 / 黑名單比對
+    title_en: "Hallucinated-package, similarity, and blacklist checks"
     gates: [G1]
   - id: VS-G1-COOLDOWN
     title_zh: 新套件版本冷卻期（cooldown_days）
+    title_en: "New-version cooldown period"
     gates: [G1]
   - id: VS-G1-INSTALL-HOOK
     title_zh: postinstall / setup.py 安裝鉤子行為審查
+    title_en: "Review postinstall/setup.py behavior"
     gates: [G1]
   - id: VS-G1-SBOM
     title_zh: CycloneDX SBOM 產出與 EPSS / KEV 加值
+    title_en: "Generate CycloneDX SBOM and enrich with EPSS/KEV"
     gates: [G1]
   - id: VS-G4-AGENT-TOOL-ALLOWLIST
     title_zh: Agent 工具 allow-list；高影響工具不暴露給通用 Agent
+    title_en: "Agent tool allowlist; no broad high-impact tools on general agents"
     gates: [G4, G6]
   - id: VS-G4-RULES-FILE-UNICODE
     title_zh: Agent 規則檔不得含隱形 Unicode（Rules File Backdoor）
+    title_en: "No invisible Unicode in agent rule files"
     gates: [G1, G4]
   - id: VS-G4-LLM-REVIEW
     title_zh: 授權類發現經多模型審查（≥ 2 family）；分歧交人工裁決（docs/09）
+    title_en: "Authorization review by at least two families; humans resolve disagreements"
     gates: [G4]
   - id: VS-G4-MCP-RESOURCE-INDICATOR
     title_zh: MCP 伺服器 OAuth 使用 RFC 8707 Resource Indicators
+    title_en: "MCP OAuth uses RFC 8707 resource indicators"
     gates: [G4]
   - id: VS-G6-DENIAL-OF-WALLET
     title_zh: LLM 用量限制：速率限制、Token 配額、熔斷
+    title_en: "LLM resource limits: rate limits, token quotas, circuit breakers"
     gates: [G6]

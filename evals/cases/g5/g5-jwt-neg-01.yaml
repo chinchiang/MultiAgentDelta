@@ -1,7 +1,7 @@
 id: g5-jwt-neg-01
 gate: G5
 domain: authentication
-title: 已修補：伺服器以固定演算法驗簽，拒絕 alg:none 偽造 token
+title: "已修補：伺服器以固定演算法驗簽，拒絕 alg:none 偽造 token / Patched: fixed-algorithm signature verification rejects forged alg:none tokens"
 input:
   kind: http
   target_app: vulnapp-patched
@@ -15,4 +15,4 @@ expected:
   rule_id: vibesec.g5.jwt-alg-none
   policy_tier: blocking
 held_out: true
-notes: examples/vulnapp 以 VIBESEC_VULNAPP_MODE=patched 啟動（jwt.decode 指定 algorithms=[HS256]）。g5-jwt-pos-01 的修補後反例。
+notes: "examples/vulnapp 以 VIBESEC_VULNAPP_MODE=patched 啟動（jwt.decode 指定 algorithms=[RS256]）。g5-jwt-pos-01 的修補後反例。 / Run examples/vulnapp with VIBESEC_VULNAPP_MODE=patched and pinned RS256 verification; the repaired counterpart of g5-jwt-pos-01."

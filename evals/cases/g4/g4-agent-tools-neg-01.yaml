@@ -1,7 +1,7 @@
 id: g4-agent-tools-neg-01
 gate: G4
 domain: ai_agent_security
-title: Agent 工具 allow-list 最小化
+title: "Agent 工具 allow-list 最小化 / The agent tool allowlist is minimal"
 input:
   kind: code
   language: python

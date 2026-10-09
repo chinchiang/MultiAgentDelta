@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # G0 威脅建模報告 — <系統名稱>
 
 > 由 G0 閘門在設計期或重大架構變更前產出。回答 Threat Modeling Manifesto 四問，輸出威脅清單、風險分級與致命三要素裁決。對應 `docs/01-g0-threat-modeling.md`。
@@ -33,7 +38,7 @@
 |---|---|---|---|---|---|---|
 | c-agent | ✅ | ✅ | ✅ | 是 | untrusted_content | 出向 allow-list + 擷取內容淨化 |
 
-> 三要素同時成立且無法切斷任一隻腳者，**設計期不得放行**；必須透過沙箱、出向 Allow-list、工具權限限制或 Human-in-the-Loop 至少切斷一隻腳。
+> 三要素同時成立且無法切斷任一隻腳者，**設計期不得放行**；必須透過沙箱、出向 Allow-list 或工具權限限制實際移除至少一項能力。Human-in-the-Loop 是補償控制，單靠人工核准不算切斷三要素。
 
 ## 5. 風險分級與閘門深度
 
@@ -47,3 +52,58 @@
 - [ ] 致命三要素已切斷至少一隻腳。
 - [ ] risk_tier 已寫回 vibesec.yaml，對應閘門已啟用。
 - [ ] 文件化安全決策已記錄（ASVS 5.0、ISO 27001:2022）。
+
+
+---
+
+<a id="english"></a>
+
+# G0 Threat-Modeling Report — <System Name>
+
+Produced at design time or before major architectural change; answers the four Threat Modeling Manifesto questions and records threats, risk tier, and lethal-trifecta decisions. See `docs/01-g0-threat-modeling.md`.
+
+- Date: <YYYY-MM-DD>
+- Participants: <architecture, AppSec, development>
+- Fixed version/commit: <hash>
+- Model: `threat-model.yaml`, conforming to `schemas/threat-model.schema.json`
+
+## 1. What are we working on? (DFD and trust boundaries)
+
+<Insert/link the DFD, labeling sources, components, stores, and boundaries. Match model components/flows/trust_boundaries.>
+
+## 2. What can go wrong? (Threats)
+
+Inventory STRIDE (general), LINDDUN (privacy), and MAESTRO (agents; see the catalog).
+
+| Threat | Category | Component | Description | Verification |
+|---|---|---|---|---|
+| T-01 | Tampering / MAESTRO-L2 | c-db | Missing RLS permits cross-tenant reads | G4/G5 |
+| T-02 | MAESTRO-L1 | c-llm | External-page indirect injection causes egress | G6 |
+| T-03 | Information Disclosure | c-api | Stack trace / Swagger exposure | G5 |
+
+## 3. What will we do? (Mitigations)
+
+| Threat | Mitigation | Status |
+|---|---|---|
+| T-01 | Enable RLS and backend owner binding | open / mitigated / accepted / transferred |
+
+## 4. Lethal-trifecta decision
+
+| Agent | Private data | Untrusted content | External communication | All three? | Cut leg | Mitigation |
+|---|---|---|---|---|---|---|
+| c-agent | Yes | Yes | Yes | Yes | untrusted_content | Egress allowlist + sanitized/extracted content; verify the claimed boundary |
+
+Do not approve a design retaining an unmitigated trifecta. Cut a leg through sandboxing, restricted egress/tools/data/content and verify it. HITL is a compensating control, not a leg cut by itself.
+
+## 5. Tier and gate depth
+
+- risk_tier: **L2**, synchronized to vibesec.yaml.
+- Rationale: <exposure × sensitivity × agent capabilities>.
+- L1: G1/G2 and justified applicability; L2: G1–G6; L3: deeper gates, formal modeling, external penetration tests.
+
+## 6. Did we do enough?
+
+- [ ] Every open threat has mitigation or signed risk acceptance.
+- [ ] At least one trifecta leg is cut and verified.
+- [ ] Tier is synchronized and corresponding gates enabled.
+- [ ] Security decisions are documented for ASVS/ISO 27001 alignment.

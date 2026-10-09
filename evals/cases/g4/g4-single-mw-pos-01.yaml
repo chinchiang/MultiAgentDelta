@@ -1,7 +1,7 @@
 id: g4-single-mw-pos-01
 gate: G4
 domain: authorization
-title: 只在 Next.js middleware 做授權，API route 無檢查
+title: "只在 Next.js middleware 做授權，API route 無檢查 / Only Next.js middleware checks authorization; API routes do not"
 input:
   kind: code
   path: middleware.ts + app/api/admin/route.ts
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g4.single-middleware-authz
   policy_tier: advisory
 held_out: false
-notes: 單層 middleware 可被路徑差異繞過（如 CVE-2025-29927 類型）。
+notes: "單層 middleware 可被路徑差異繞過（如 CVE-2025-29927 類型）。 / Path differences can bypass middleware-only authorization, as in the CVE-2025-29927 class."

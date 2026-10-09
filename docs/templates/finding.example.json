@@ -2,8 +2,8 @@
   "id": "VS-20261003-1a2b3c4d",
   "gate": "G5",
   "rule_id": "vibesec.g5.bola-cross-account",
-  "title": "帳號 B 的 Token 可讀取帳號 A 的筆記（BOLA / IDOR）",
-  "description": "GET /users/1/notes 未綁定當前已驗證主體，持帳號 B（bob）Token 可取得帳號 A（alice）的資源。",
+  "title": "帳號 B 的 Token 可讀取帳號 A 的筆記（BOLA / IDOR） / Account B's token can read account A's notes (BOLA / IDOR).",
+  "description": "GET /users/1/notes 未綁定當前已驗證主體，持帳號 B（bob）Token 可取得帳號 A（alice）的資源。 / GET /users/1/notes is not bound to the authenticated principal; account B (bob) can read account A (alice)'s resources.",
   "control_id": "ASVS5-V8.1",
   "cwe": "CWE-639",
   "cve": null,
@@ -32,15 +32,15 @@
     "commit": "0abc123"
   },
   "evidence_refs": [
-    { "kind": "http_exchange", "ref": "reports/evidence/g5-bola-exchange.http", "digest": "sha256:deadbeef", "note": "帳號 B Token 取得帳號 A 資源，HTTP 200" }
+    { "kind": "http_exchange", "ref": "reports/evidence/g5-bola-exchange.http", "digest": "sha256:deadbeef", "note": "帳號 B Token 取得帳號 A 資源，HTTP 200 / Account B's token retrieves account A's resource with HTTP 200." }
   ],
   "review": {
     "opinions": [
-      { "role": "identity-authz", "provider": "anthropic-claude", "family": "anthropic", "model": "claude-sonnet-5-5", "prompt_version": "r-identity-v1", "round": 1, "verdict": "confirm", "rationale": "回應主體 owner 與請求者不符，且無 403/404。", "minority": false },
-      { "role": "appsec", "provider": "deepseek-chat", "family": "deepseek", "model": "deepseek-chat", "prompt_version": "r-appsec-v1", "round": 1, "verdict": "confirm", "rationale": "跨帳號可讀，屬 BOLA。", "minority": false }
+      { "role": "identity-authz", "provider": "anthropic-claude", "family": "anthropic", "model": "claude-sonnet-5-5", "prompt_version": "r-identity-v1", "round": 1, "verdict": "confirm", "rationale": "回應主體 owner 與請求者不符，且無 403/404。 / The response owner differs from the requester, without a 403 or 404 response.", "minority": false },
+      { "role": "appsec", "provider": "deepseek-chat", "family": "deepseek", "model": "deepseek-chat", "prompt_version": "r-appsec-v1", "round": 1, "verdict": "confirm", "rationale": "跨帳號可讀，屬 BOLA。 / Cross-account reads constitute BOLA.", "minority": false }
     ],
     "requires_human": false,
-    "human_decision": "確認為真，列入 P1 修復。"
+    "human_decision": "確認為真，列入 P1 修復。 / Confirmed; prioritize remediation as P1."
   },
   "retest_result": "not_retested",
   "sources": {
@@ -52,5 +52,5 @@
     "queried_at": "2026-10-03T12:00:00Z"
   },
   "created_at": "2026-10-03T12:00:05Z",
-  "notes": "靶場 examples/vulnapp 的已知弱點；用於驗證 G5 雙帳號 BOLA 測試。"
+  "notes": "靶場 examples/vulnapp 的已知弱點；用於驗證 G5 雙帳號 BOLA 測試。 / Known weakness in examples/vulnapp, used to validate the G5 two-account BOLA test."
 }

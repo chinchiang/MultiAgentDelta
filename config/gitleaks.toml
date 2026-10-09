@@ -1,10 +1,10 @@
-# VibeSec gitleaks 設定（G2 機密與金鑰）
-# 用法：
-#   全 Git 歷史：  gitleaks detect --source . --config config/gitleaks.toml --report-format sarif --report-path reports/gitleaks.sarif --redact
+# VibeSec gitleaks 設定（G2 機密與金鑰） / VibeSec Gitleaks configuration for G2 secrets and keys.
+# 用法： / Usage:
+#   全 Git 歷史：  gitleaks detect --source . --config config/gitleaks.toml --report-format sarif --report-path reports/gitleaks.sarif --redact / Full Git history: gitleaks detect --source . --config config/gitleaks.toml --report-format sarif --report-path reports/gitleaks.sarif --redact.
 #   pre-commit：   gitleaks protect --staged --config config/gitleaks.toml --redact
 #   CI push：      gitleaks detect --source . --config config/gitleaks.toml --log-opts="$BASE_SHA..$HEAD_SHA" --redact
-# 本檔「延伸」gitleaks 內建預設規則（AWS、GCP、GitHub、Slack、私鑰…），再加上 Vibe Coding 常見的 LLM 供應商金鑰。
-# 命中後 finding.rule_id 以 `gitleaks:<rule id>` 記錄；報告只保留遮罩與指紋（--redact），不得貼出原始值。
+# 本檔「延伸」gitleaks 內建預設規則（AWS、GCP、GitHub、Slack、私鑰…），再加上 Vibe Coding 常見的 LLM 供應商金鑰。 / Extends built-in AWS, GCP, GitHub, Slack, and private-key rules with common LLM provider keys.
+# 命中後 finding.rule_id 以 `gitleaks:<rule id>` 記錄；報告只保留遮罩與指紋（--redact），不得貼出原始值。 / Record finding.rule_id as gitleaks:<rule id>; retain only masks and fingerprints with --redact, never raw values.
 
 title = "VibeSec gitleaks config (extends default)"
 
@@ -12,7 +12,7 @@ title = "VibeSec gitleaks config (extends default)"
 useDefault = true
 
 # ---------------------------------------------------------------------------
-# LLM / AI 供應商金鑰
+# LLM / AI 供應商金鑰 / LLM and AI provider keys.
 # ---------------------------------------------------------------------------
 
 [[rules]]
@@ -76,7 +76,7 @@ tags = ["llm", "huggingface", "CWE-798", "ASVS5-V13.3"]
 [[rules]]
 id = "vibesec-supabase-service-role-jwt"
 description = "Supabase service_role JWT（繞過 RLS 的最高權限金鑰；絕不可出現在前端或 repo）"
-# JWT = base64url(header).base64url(payload).signature；payload 含 "role":"service_role" 時其 base64url 片段固定出現 cm9sZSI6InNlcnZpY2Vfcm9sZSI
+# JWT = base64url(header).base64url(payload).signature；payload 含 "role":"service_role" 時其 base64url 片段固定出現 cm9sZSI6InNlcnZpY2Vfcm9sZSI / JWT is base64url(header).base64url(payload).signature; a service_role payload contains the listed base64url fragment.
 regex = '''\b(eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]*cm9sZSI6InNlcnZpY2Vfcm9sZSI[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]{10,})\b'''
 secretGroup = 1
 keywords = ["eyj", "service_role", "supabase"]
@@ -99,11 +99,11 @@ keywords = ["jwt_secret", "jwt-secret", "secret_key", "secret-key", "signing_key
 entropy = 3.0
 tags = ["jwt", "CWE-798", "ASVS5-V13.3", "ASVS5-V9.1"]
 [rules.allowlist]
-# synthetic：測試資料的慣用標記（2026-10-06 對 MultiAgentBeta 的 G2 全歷史掃描：17 筆 blocking 皆為 'synthetic-secret' 測試字串）
+# synthetic：測試資料的慣用標記（2026-10-06 對 MultiAgentBeta 的 G2 全歷史掃描：17 筆 blocking 皆為 'synthetic-secret' 測試字串） / synthetic marks test data; all 17 blocking findings in MultiAgentBeta's 2026-10-06 full-history scan were synthetic-secret test strings.
 regexes = ['''(?i)(change[_\-]?me|replace[_\-]?me|your[_\-]?secret|example|placeholder|dummy|synthetic|xxx+|<[^>]+>|\$\{[^}]+\}|os\.environ|process\.env)''']
 
 # ---------------------------------------------------------------------------
-# 通用高熵字串（補強預設 generic-api-key）
+# 通用高熵字串（補強預設 generic-api-key） / Generic high-entropy strings supplement generic-api-key.
 # ---------------------------------------------------------------------------
 
 [[rules]]
@@ -116,13 +116,13 @@ keywords = ["api_key", "apikey", "api-key", "access_token", "auth_token", "clien
 tags = ["generic", "CWE-798", "ASVS5-V13.3"]
 
 # ---------------------------------------------------------------------------
-# 全域 allowlist：靶場文件、評測 fixtures、本設定檔與規則檔本身
-# （gitleaks 8.21+ 亦接受 [[allowlists]]；此處用單數 [allowlist] 以相容舊版）
+# 全域 allowlist：靶場文件、評測 fixtures、本設定檔與規則檔本身 / Global allowlist: lab documentation, evaluation fixtures, this configuration, and rule files.
+# （gitleaks 8.21+ 亦接受 [[allowlists]]；此處用單數 [allowlist] 以相容舊版） / Gitleaks 8.21+ also accepts [[allowlists]]; singular [allowlist] preserves older compatibility.
 # ---------------------------------------------------------------------------
 [allowlist]
 description = "VibeSec 全域例外：刻意含假金鑰的靶場 README、評測 fixtures、文件範例"
 paths = [
-  '''^examples/vulnapp/.*''',   # 靶場全目錄：刻意的弱 JWT secret 與假金鑰
+  '''^examples/vulnapp/.*''',   # 靶場全目錄：刻意的弱 JWT secret 與假金鑰 / The entire lab contains intentional weak JWT secrets and fake keys.
   '''^evals/.*fixtures.*''',
   '''^evals/cases/.*\.(ya?ml|json)$''',
   '''^config/gitleaks\.toml$''',

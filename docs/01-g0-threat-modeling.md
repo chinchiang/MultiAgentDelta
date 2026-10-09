@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 01 G0 威脅建模（設計期前置）
 
 | 項目 | 值 |
@@ -5,8 +10,8 @@
 | 閘門 ID | `G0` |
 | 性質 | 設計期、人工為主、文件化產出；不是自動掃描 |
 | 設定 | `vibesec.yaml` → `gates.g0_threat_model`（`trigger`、`methodologies`、`lethal_trifecta_check: required`）、`project.threat_model`、`risk_tier` |
-| 輸入模板 | `docs/templates/threat-model.yaml`（符合 `schemas/threat-model.schema.json`） |
-| 輸出模板 | `docs/templates/g0-report.md` |
+| 輸入範本 | `docs/templates/threat-model.yaml`（符合 `schemas/threat-model.schema.json`） |
+| 輸出範本 | `docs/templates/g0-report.md` |
 | 負責 | AppSec / 治理（主持）、架構師（填寫）、Red Team（挑戰） |
 
 ## 對抗成因
@@ -161,7 +166,7 @@ LLM 輔助（非裁決）：harness 可請 `architecture` reviewer 依 DFD 提�
 |---|---|---|---|---|
 | `MAESTRO-L1` | Foundation Models | 越獄、幻覺、輸出被當成可信 | 直接安裝模型推薦的不存在套件（Slopsquatting）；聊天機器人被越獄 | G6、G1 |
 | `MAESTRO-L2` | Data Operations | RAG 來源植入指令、資料層無存取控制、向量庫投毒 | Supabase 未啟用 RLS 全表暴露；RAG 匯入的 PDF 含「ignore previous instructions」 | G4、G6 |
-| `MAESTRO-L3` | Agent Frameworks | 工具缺 allow-list、System Prompt 寫死金鑰、MCP 工具描述投毒 | 通用 Agent 掛 `execute_sql`；金鑰寫在 prompt 模板；MCP 未用 RFC 8707 | G4、G2 |
+| `MAESTRO-L3` | Agent Frameworks | 工具缺 allow-list、System Prompt 寫死金鑰、MCP 工具描述投毒 | 通用 Agent 掛 `execute_sql`；金鑰寫在 prompt 範本；MCP 未用 RFC 8707 | G4、G2 |
 | `MAESTRO-L4` | Deployment & Infrastructure | Agent 對正式 DB 破壞性權限、IaC 未強制 IMDSv2、容器 root | Replit 刪庫；AI 生成 Terraform 省略 `metadata_options` | G3、G4 |
 | `MAESTRO-L5` | Evaluation & Observability | 缺稽核日誌、未設用量限制（Denial of Wallet） | 聊天端點無 Token 配額；工具呼叫未記錄 | G6、治理監控 |
 | `MAESTRO-L6` | Security & Compliance | 前端防禦假象、單層授權繞過、合規證據缺失 | Base44 以 app_id 當校驗；CVE-2025-29927 middleware 繞過 | G4、G5 |
@@ -197,3 +202,170 @@ ASVS ID 為 vibesec 自編到節，非官方需求編號（見 `config/catalogs/
 - 把 LLM 輸出畫在信任邊界內：模型輸出必須視為不可信輸入（這也是 G3 污點來源包含 LLM 輸出的理由）。
 - `risk_tier` 只寫在 vibesec.yaml、threat-model 沒更新：G0 會 fail。
 - 用模型自評信心當證據等級：模型提出的威脅一律 E0/E1，人工確認後才升級（CLAUDE.md 規則 5）。
+
+
+---
+
+<a id="english"></a>
+
+# 01 G0 Threat Modeling (Design Prerequisite)
+
+| Item | Value |
+|---|---|
+| Gate | `G0`; design-time, human-led, documented—not an automatic scan |
+| Configuration | `vibesec.yaml`: `gates.g0_threat_model`, `project.threat_model`, `risk_tier` |
+| Input / output | `docs/templates/threat-model.yaml` / `docs/templates/g0-report.md`; schema: `schemas/threat-model.schema.json` |
+| Owners | AppSec/governance leads; architects document; red team challenges |
+
+## Causes addressed
+
+**Fragmented context** hides data flows and trust boundaries from an AI that sees only a file, function, or prompt. User input, LLM output, and external pages may then be treated as trusted strings. **Excessive agency** grants production DB access, service-role keys, or `execute_sql` merely to make functionality work; the Replit deletion/4,000 fake-record incident illustrates the consequences.
+
+Before implementation, document DFDs, trust boundaries, agent capabilities, and risk tiers. Without them, later gates cannot determine depth or justified `not_applicable` controls.
+
+## Triggers and nature
+
+| Trigger | Required work |
+|---|---|
+| `design` | Complete threat model and G0 report for a new service/system |
+| `major_change` | Update flows, boundaries, threats, and tier for new interfaces/stores/authentication/integrations |
+| `agent_introduction` | Update `agents[]` and rerun trifecta checks for new agents, MCP servers, tools, or capabilities |
+
+This is a blocking documentation gate. Missing/invalid `project.threat_model` yields `incomplete` (`status_reason: "threat model missing"`); do not treat the tier as established. Enforce exits 2.
+
+## Core tasks
+
+### 1. Four threat-modeling questions
+
+| Question | Fields |
+|---|---|
+| What are we working on? | `system`, `assets[]`, `components[]`, `flows[]`, `trust_boundaries[]` |
+| What can go wrong? | `threats[]`, categorized with STRIDE/LINDDUN/MAESTRO |
+| What will we do about it? | Threat mitigation/gate and agent mitigations |
+| Did we do enough? | `risk_tier`, rationale, `decisions[]`, later G1–G6 coverage |
+
+### 2. Methodologies
+
+- **STRIDE**, default for web/API: spoofing, tampering, repudiation, information disclosure, denial of service, elevation of privilege.
+- **LINDDUN**, add for `pii` or `sensitive_pii_or_secrets`: linking, identifying, non-repudiation, detecting, data disclosure, unawareness, non-compliance.
+- **MAESTRO**, required for components of kind `llm`, `agent`, `tool`, `mcp_server`, or `vector_store`: seven layers below.
+
+### 3. DFD and boundaries
+
+Record every flow's `from`, `to`, `data`, `protocol`, `authenticated`, and `crosses_boundary`:
+
+```text
+Browser --HTTP/JWT--> API --SQL--> DB
+API --prompt--> LLM --untrusted completion--> API
+API --tool call--> agent tools --> external API / DB write / shell
+External documents / pages / email --RAG--> vector store --context--> LLM
+```
+
+At minimum, show internet↔app, app↔data, and app↔LLM/agent boundaries. Models/agents occupy a separate zone because indirect injection can manipulate outputs.
+
+### 4. Risk-tier decision tree
+
+Inputs: exposure (`internal`, `partner`, `public`), sensitivity (`none`, `business`, `pii`, `sensitive_pii_or_secrets`), agent capabilities/mitigations.
+
+1. Internal + none/business sensitivity + no agents + no LLM → L1.
+2. PII/secrets + partner/public exposure + an externally communicating agent with high-impact tools → L3.
+3. Otherwise → L2; L3 is recommended for sensitive PII/secrets.
+
+Write the result and rationale to both the threat model and `vibesec.yaml`; disagreement fails G0.
+
+### 5. Lethal-trifecta rule
+
+| Capability | Field | Examples |
+|---|---|---|
+| Private-data access | `accesses_private_data` | User records, internal documents, environment variables |
+| Untrusted-content exposure | `exposed_to_untrusted_content` | Pages, email, PDFs, JSON, uploads, RAG sources |
+| External communication/execution | `can_communicate_externally` | HTTP, DB writes, external APIs, commands, email |
+
+All three true with no mitigations fails G0. At design time, cut at least one leg and record `trifecta_leg_cut`:
+
+| Mitigation | Leg / implementation |
+|---|---|
+| `sandbox` | External communication: networkless/read-only runtime |
+| `egress_allowlist` | External communication: enumerate permitted domains/methods |
+| `tool_allowlist` | External communication: remove write/delete/shell/arbitrary HTTP tools |
+| `read_only_data` | Private-data exposure: read-only, de-identified, or current-user-scoped data |
+| `no_untrusted_input` | Untrusted content: exclude it from the same context or structurally extract first |
+| `human_in_the_loop` | Compensating control for high-impact actions; does **not** cut a leg and must accompany another mitigation |
+
+Control `VS-G0-LETHAL-TRIFECTA` is verified by G4's static allowlist/HITL checks and G6's indirect-injection/egress tests.
+
+### 6. Document decisions
+
+Record accepted risks and rationales in `decisions[]`, such as allowing Swagger in staging but disabling it in production. This supports ASVS documentation sections (`ASVS5-V15.1`, `ASVS5-V2.1`, `ASVS5-V13.1`), ISO 27001 risk treatment, and NIST AI RMF Map through system context, agent capabilities, and tier rationale.
+
+## Automation
+
+Humans perform threat modeling; the harness verifies:
+
+1. File existence/schema validity.
+2. Trifecta declarations: all three true without mitigation creates blocking `vibesec.g0.lethal-trifecta-open` / `VS-G0-LETHAL-TRIFECTA`. Names alone are not evidence. An agent retaining all three capabilities must supply verifiable `mitigation_evidence`; currently `claude_permission` checks listed rules against `permissions.ask`/`deny` in the specified Claude Code settings. At least one mitigation must verify. HITL additionally maps every `high_impact_tools` entry through `covers` to a rule included in `rules`. This proves rule presence/coverage, not protection against every equivalent invocation. `scripts/g0_trifecta.py` implements deterministic checks; `validate.py` fails on findings. Humans/LLM reviewers still assess whether declarations match reality.
+3. Tier consistency and no under-classification (for example, declaring L1 for public exposure fails, with the derivation path).
+4. Threat-to-gate coverage: referenced gates must be enabled. An LLM application without MAESTRO is advisory.
+
+```bash
+python3 scripts/g0_threat_model.py --out-dir reports/raw/G0 --gate reports/gates/G0.json
+```
+
+Optional `--target <dir>` and `--threat-model <file>` support external projects. The script performs checks 1–3; `derive_tier()` records its path in `g0-findings.json`.
+
+- Resolve the model from explicit `--threat-model`, then target configuration, then target `docs/threat-model.yaml`. Absence is incomplete; never substitute this repository's model.
+- Read models/evidence from a temporary snapshot of tracked target files without following symlinks, preventing a target from pointing to the operator's local permission settings.
+- Always obtain the trifecta rule tier from this repository's blocking policy, never the target's.
+- Without target `vibesec.yaml`, enforce declared tier ≥ derived tier. G1–G4 still use this repository's tier; overrides only strengthen policy. Explain differences in `status_reason`.
+
+An architecture reviewer may suggest omitted threats from the DFD at E0/E1; humans decide whether to add them.
+
+## Tools and configuration
+
+Use the threat-model template/schema, G0 report template, `vibesec.yaml`, and `config/catalogs/maestro-layers.yaml`. Optional diagram tools: OWASP Threat Dragon, pytm, draw.io; save diagrams under `docs/threat-models/`.
+
+## Blocking policy
+
+| Condition | Result |
+|---|---|
+| Missing/invalid model | Incomplete; enforce exit 2 |
+| Open unmitigated trifecta | Blocking fail |
+| Inconsistent/understated tier | Blocking fail |
+| LLM without MAESTRO | Advisory |
+| Public exposure with empty threats | Advisory; request at least one threat per STRIDE category |
+
+## Tier-dependent depth
+
+- **L1:** G1/G2; justify other gates as not applicable. Cooldown/blacklist and full-history secrets; Semgrep CE, Trivy, Gitleaks.
+- **L2:** G1–G6; cross-file Semgrep Pro or nightly CodeQL, two-account BOLA, all five G6 checks. Add Socket/DevSentinel, Burp, PyRIT/promptfoo as appropriate.
+- **L3:** deeper G1–G6, formal threat modeling, external penetration testing, commercial AI red team, mandatory sandbox/HITL; consider three model families. Checkmarx/Snyk, SonarQube AI Code Assurance, commercial DAST; EU CRA/ISO alignment.
+
+## MAESTRO mapping (CSA, February 2025)
+
+| Layer | Threats / examples | Gates |
+|---|---|---|
+| L1 Foundation Models | Jailbreaks, hallucinated packages, trusted model output | G6/G1 |
+| L2 Data Operations | RAG/PDF instructions, poisoned vectors, Supabase without RLS | G4/G6 |
+| L3 Agent Frameworks | Missing allowlists, `execute_sql`, prompt-embedded keys, poisoned MCP descriptions, missing RFC 8707 | G4/G2 |
+| L4 Deployment & Infrastructure | Destructive DB privileges, missing IMDSv2, root containers | G3/G4 |
+| L5 Evaluation & Observability | Missing logs/tool-call records/token quotas; denial of wallet | G6/governance |
+| L6 Security & Compliance | Base44 app_id trust, CVE-2025-29927, missing compliance evidence | G4/G5 |
+| L7 Agent Ecosystem | Automation bias, rules backdoors/zero-width characters, worms abusing local AI CLIs | G0/G1 |
+
+Machine-readable catalog: `config/catalogs/maestro-layers.yaml`. Component `maestro_layer` values (1–7) map G4/G6 findings to layers.
+
+## Mapped controls
+
+- ASVS: `ASVS5-V15.1`, `ASVS5-V2.1`, `ASVS5-V5.1`, `ASVS5-V8.1`, `ASVS5-V13.1` for architecture, validation, files, authorization matrices, and environment documentation.
+- VibeSec: `VS-G0-LETHAL-TRIFECTA`, `VS-G0-RISK-TIER`.
+- CWE: 250 (excess privilege), 1427 (LLM prompt neutralization); execution gates provide formal CWE mappings.
+- OWASP: `LLM06:2025`, `LLM01:2025`, `LLM03:2025`.
+- MAESTRO L1–L7; NIST AI RMF Map; ASVS L3 formal modeling; ISO 27001 risk assessment/treatment, evidenced by decisions and G0 reports.
+
+ASVS IDs are locally defined section-level identifiers, not official requirement numbers; see the catalog disclaimer.
+
+## Verification and common mistakes
+
+Run schema checks, positive/negative trifecta cases, and tier recomputation. AppSec and red team each sign the G0 report; retain dissent without majority voting. Trace downstream coverage to modeled threats. If G6 proves egress despite a claimed external-communication cut, fail and reopen G0.
+
+Do not equate HITL with removing a trifecta leg, place LLM outputs inside the trusted zone, update only one tier declaration, or promote model confidence to evidence. Model-suggested threats remain E0/E1 until supported and reviewed.

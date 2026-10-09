@@ -1,4 +1,4 @@
-# VibeSec G1：npm 熱門套件清單（名稱相似度比對基準；一行一個；# 開頭為註解）
+# VibeSec G1：npm 熱門套件清單（名稱相似度比對基準；一行一個；# 開頭為註解） / Popular npm names for G1 similarity checks: one per line; lines beginning with # are comments.
 # 用途：對 package.json / lockfile / 規則檔中的套件名做字串距離比對（Levenshtein ≤ 2 或 difflib ratio ≥ 0.85
 #       且名稱不完全相同 → 疑似 typosquat / 幻覺）。清單應定期以 npm 下載排行更新。
 react

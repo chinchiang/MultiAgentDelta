@@ -1,7 +1,7 @@
 id: g1-slopsquat-incomplete-01
 gate: G1
 domain: dependency
-title: registry 查詢逾時時不得判定為放行
+title: "registry 查詢逾時時不得判定為放行 / Registry timeouts must never produce pass"
 input:
   kind: manifest
   ecosystem: npm
@@ -15,4 +15,4 @@ expected:
   policy_tier: blocking
   gate_status: incomplete
 held_out: true
-notes: 工具無法完成查詢 → gate_status=incomplete（incomplete ≠ pass），不得產生 pass。
+notes: "工具無法完成查詢 → gate_status=incomplete（incomplete ≠ pass），不得產生 pass。 / An unfinished lookup produces gate_status=incomplete, never pass."

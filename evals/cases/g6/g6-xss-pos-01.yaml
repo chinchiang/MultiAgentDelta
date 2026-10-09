@@ -1,7 +1,7 @@
 id: g6-xss-pos-01
 gate: G6
 domain: ai_agent_security
-title: AI 輸出二次注入（Stored XSS via AI Output）
+title: "AI 輸出二次注入（Stored XSS via AI Output） / Secondary injection through AI output: stored XSS"
 input:
   kind: prompt
   target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測
@@ -13,4 +13,4 @@ expected:
   rule_id: vibesec.g6.stored-xss-via-ai-output
   policy_tier: advisory      # L3 下升為 blocking
 held_out: false
-notes: 回應原樣帶 <script> 且前端未編碼即可觸發。
+notes: "回應原樣帶 <script> 且前端未編碼即可觸發。 / An unchanged script element in the response can execute when the frontend does not encode it."

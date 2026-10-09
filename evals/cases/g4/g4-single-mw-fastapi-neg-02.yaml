@@ -1,7 +1,7 @@
 id: g4-single-mw-fastapi-neg-02
 gate: G4
 domain: authorization
-title: FastAPI middleware 只量測耗時，不做授權
+title: "FastAPI middleware 只量測耗時，不做授權 / FastAPI middleware measures duration without checking authorization"
 input:
   kind: code
   language: python
@@ -24,4 +24,4 @@ expected:
   rule_id: vibesec.g4.single-middleware-authz
   policy_tier: advisory
 held_out: true
-notes: middleware 沒有授權判斷，不是「授權只靠 middleware」。
+notes: "middleware 沒有授權判斷，不是「授權只靠 middleware」。 / A timing-only middleware is not middleware-only authorization."

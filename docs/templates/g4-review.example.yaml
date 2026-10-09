@@ -23,11 +23,11 @@ providers:
 coverage:
   - control_id: VS-G4-LLM-REVIEW
     state: fail                        # 有未 refute 的發現 → fail；全部 refute 或無發現 → pass；family 不足 → pending
-    reason: 1 筆發現待人工裁決
+    reason: "1 筆發現待人工裁決 / One finding awaits human adjudication."
 findings:
   - id: VS-20261005-9f3e2a1c
     rule_id: vibesec.g4.missing-owner-filter
-    title: GET /users/{id}/notes 未將 id 綁定當前主體
+    title: "GET /users/{id}/notes 未將 id 綁定當前主體 / GET /users/{id}/notes does not bind id to the current principal."
     policy_tier: advisory
     evidence_grade: E1                 # 只有模型意見：最高 E2；E3 需人工核對（rulings/）
     validation_status: pending
@@ -41,7 +41,7 @@ findings:
         prompt_version: identity-authz@2026-10-03.1
         round: 1
         verdict: confirm
-        rationale: "app/main.py:142-151 只驗 token 有效，未比對 user_id == user['id']"
+        rationale: "app/main.py:142-151 只驗 token 有效，未比對 user_id == user['id'] / app/main.py:142-151 checks token validity but does not compare user_id == user['id']."
       - role: identity-authz
         provider: openai-cloud
         family: openai
@@ -49,7 +49,7 @@ findings:
         prompt_version: identity-authz@2026-10-03.1
         round: 1
         verdict: refute
-        rationale: "gateway 層已做 owner 檢查"
+        rationale: "gateway 層已做 owner 檢查 / The gateway already checks resource ownership."
       - role: identity-authz
         provider: claude-code-subagent
         family: anthropic
@@ -57,7 +57,7 @@ findings:
         prompt_version: identity-authz@2026-10-03.1
         round: 3
         verdict: confirm
-        rationale: "維持：gateway 只驗 token 有效性，app/main.py:142 仍無 owner 比對"
+        rationale: "維持：gateway 只驗 token 有效性，app/main.py:142 仍無 owner 比對 / Position maintained: the gateway only validates tokens; app/main.py:142 still lacks an owner comparison."
       - role: identity-authz
         provider: openai-cloud
         family: openai
@@ -65,10 +65,10 @@ findings:
         prompt_version: identity-authz@2026-10-03.1
         round: 3
         verdict: refute
-        rationale: "維持：gateway 已綁定 owner"
+        rationale: "維持：gateway 已綁定 owner / Position maintained: the gateway already binds the owner."
         minority: true
     notes: null
 recorded_by:
   handle: appsec-lead
-  note: 由 reports/g4-review.yaml 原樣複製
+  note: "由 reports/g4-review.yaml 原樣複製 / Copied unchanged from reports/g4-review.yaml."
 raw_ref: reports/raw/G4/review/

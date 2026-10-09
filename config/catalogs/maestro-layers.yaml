@@ -1,7 +1,7 @@
-# CSA MAESTRO 七層 Agentic AI 威脅模型（Cloud Security Alliance，2025 年 2 月，Ken Huang）
-# ID：MAESTRO-L1 … MAESTRO-L7（符合 finding.control_id pattern）
-# vibe_coding_failures：Vibe Coding 常見失守案例；gates：由哪些閘門驗證。
-# 來源：CSA「Agentic AI Threat Modeling Framework: MAESTRO」；威脅文字為 vibesec 摘要。
+# CSA MAESTRO 七層 Agentic AI 威脅模型（Cloud Security Alliance，2025 年 2 月，Ken Huang） / CSA MAESTRO seven-layer agentic AI threat model, February 2025, Ken Huang.
+# ID：MAESTRO-L1 … MAESTRO-L7（符合 finding.control_id pattern） / IDs MAESTRO-L1 through MAESTRO-L7 match finding.control_id.
+# vibe_coding_failures：Vibe Coding 常見失守案例；gates：由哪些閘門驗證。 / vibe_coding_failures lists common failures; gates lists verifying gates.
+# 來源：CSA「Agentic AI Threat Modeling Framework: MAESTRO」；威脅文字為 vibesec 摘要。 / Source: CSA Agentic AI Threat Modeling Framework: MAESTRO; threat text is summarized by VibeSec.
 
 version: 1
 framework: "CSA MAESTRO"
@@ -12,85 +12,85 @@ layers:
     name_en: Foundation Models
     name_zh: 基礎模型
     threats:
-      - "越獄（jailbreak）與直接 Prompt Injection"
-      - "幻覺（含幻覺套件名稱）"
-      - "模型輸出被當成可信資料"
+      - "越獄（jailbreak）與直接 Prompt Injection / Jailbreaks and direct prompt injection"
+      - "幻覺（含幻覺套件名稱） / Hallucinations, including fabricated package names"
+      - "模型輸出被當成可信資料 / Model output treated as trusted data"
     vibe_coding_failures:
-      - "開發者直接安裝模型『推薦』的不存在套件 → Slopsquatting"
-      - "聊天機器人被越獄後洩漏 System Prompt"
+      - "開發者直接安裝模型『推薦』的不存在套件 → Slopsquatting / Developers install nonexistent model-recommended packages: slopsquatting"
+      - "聊天機器人被越獄後洩漏 System Prompt / Jailbroken chatbot leaks its system prompt"
     gates: [G6, G1]
   - id: MAESTRO-L2
     layer: 2
     name_en: Data Operations
     name_zh: 資料操作
     threats:
-      - "RAG 資料來源被植入指令（間接 Prompt Injection）"
-      - "資料層缺乏存取控制導致全表暴露"
-      - "向量庫 / 快取投毒"
+      - "RAG 資料來源被植入指令（間接 Prompt Injection） / Instructions planted in RAG sources: indirect prompt injection"
+      - "資料層缺乏存取控制導致全表暴露 / Missing data-layer access control exposes entire tables"
+      - "向量庫 / 快取投毒 / Vector-store/cache poisoning"
     vibe_coding_failures:
-      - "Supabase 建表後未啟用 RLS，前端 anon key 可讀全表"
-      - "RAG 匯入的 PDF / 網頁含『ignore previous instructions』觸發外連"
+      - "Supabase 建表後未啟用 RLS，前端 anon key 可讀全表 / Supabase without RLS allows frontend anonymous keys to read every row"
+      - "RAG 匯入的 PDF / 網頁含『ignore previous instructions』觸發外連 / Injected instructions in imported PDFs/pages cause egress"
     gates: [G4, G6]
   - id: MAESTRO-L3
     layer: 3
     name_en: Agent Frameworks
     name_zh: Agent 框架
     threats:
-      - "工具缺 allow-list（過度代理）"
-      - "System Prompt 內寫死金鑰"
-      - "MCP 工具描述投毒 / 受眾未綁定的 Token"
+      - "工具缺 allow-list（過度代理） / Missing tool allowlists and excessive agency"
+      - "System Prompt 內寫死金鑰 / Keys hard-coded in system prompts"
+      - "MCP 工具描述投毒 / 受眾未綁定的 Token / Poisoned MCP tool descriptions or tokens without audience binding"
     vibe_coding_failures:
-      - "通用 Agent 被掛上 execute_sql / delete_user 工具"
-      - "金鑰以字串寫在 prompt 模板，G6 提取 System Prompt 時一併外洩"
-      - "MCP 伺服器未用 RFC 8707 resource indicator，Token 可被轉用"
+      - "通用 Agent 被掛上 execute_sql / delete_user 工具 / General agents expose execute_sql/delete_user"
+      - "金鑰以字串寫在 prompt 模板，G6 提取 System Prompt 時一併外洩 / Prompt-template keys leak during G6 extraction"
+      - "MCP 伺服器未用 RFC 8707 resource indicator，Token 可被轉用 / Missing RFC 8707 resource indicators allow token reuse"
     gates: [G4, G2]
   - id: MAESTRO-L4
     layer: 4
     name_en: Deployment & Infrastructure
     name_zh: 部署與基礎設施
     threats:
-      - "Agent 對正式資料庫持有破壞性權限"
-      - "IaC 未強制 IMDSv2，SSRF 可讀取雲端憑證"
-      - "容器以 root 執行、過寬 CORS"
+      - "Agent 對正式資料庫持有破壞性權限 / Agent holds destructive production-database privileges"
+      - "IaC 未強制 IMDSv2，SSRF 可讀取雲端憑證 / Missing mandatory IMDSv2 allows SSRF credential theft"
+      - "容器以 root 執行、過寬 CORS / Root containers and overly permissive CORS"
     vibe_coding_failures:
-      - "Replit AI Agent 刪除正式資料庫並生成 4000 筆假資料"
-      - "AI 生成的 Terraform 省略 metadata_options，IMDSv1 可被 SSRF 讀 169.254.169.254"
+      - "Replit AI Agent 刪除正式資料庫並生成 4000 筆假資料 / Replit agent deleted production data and generated 4,000 fake records"
+      - "AI 生成的 Terraform 省略 metadata_options，IMDSv1 可被 SSRF 讀 169.254.169.254 / Generated Terraform omits metadata_options; SSRF reaches IMDSv1"
     gates: [G3, G4]
   - id: MAESTRO-L5
     layer: 5
     name_en: Evaluation & Observability
     name_zh: 評估與可觀測性
     threats:
-      - "缺稽核日誌，事後無法重建 Agent 行為"
-      - "未設用量限制 → Denial of Wallet"
-      - "評估資料外洩或被操弄"
+      - "缺稽核日誌，事後無法重建 Agent 行為 / Missing audit logs prevent reconstruction of agent actions"
+      - "未設用量限制 → Denial of Wallet / No usage limits: denial of wallet"
+      - "評估資料外洩或被操弄 / Leaked or manipulated evaluation data"
     vibe_coding_failures:
-      - "聊天端點無 Token 配額，單一攻擊者送超長文本燒掉整月預算"
-      - "工具呼叫未記錄，事故後無法回答『Agent 到底做了什麼』"
+      - "聊天端點無 Token 配額，單一攻擊者送超長文本燒掉整月預算 / Unbounded chat inputs let one attacker exhaust a monthly budget"
+      - "工具呼叫未記錄，事故後無法回答『Agent 到底做了什麼』 / Unlogged tool calls prevent incident reconstruction"
     gates: [G6]
-    governance_note: "治理監控：用量儀表板、成本告警與熔斷屬平台治理，不只靠閘門"
+    governance_note: "治理監控：用量儀表板、成本告警與熔斷屬平台治理，不只靠閘門 / Usage dashboards, cost alerts, and circuit breakers are platform governance, not gates alone"
   - id: MAESTRO-L6
     layer: 6
     name_en: Security & Compliance
     name_zh: 安全與合規
     threats:
-      - "前端防禦假象：授權只在 UI 層"
-      - "單層授權繞過（middleware-only）"
-      - "合規證據（SBOM、日誌）缺失"
+      - "前端防禦假象：授權只在 UI 層 / Authorization exists only in the UI"
+      - "單層授權繞過（middleware-only） / Middleware-only authorization bypass"
+      - "合規證據（SBOM、日誌）缺失 / Missing SBOM/log compliance evidence"
     vibe_coding_failures:
-      - "Base44 類案例：以 app_id 當校驗依據，任何人可註冊進私有應用"
-      - "CVE-2025-29927：x-middleware-subrequest 標頭跳過 Next.js middleware 授權"
+      - "Base44 類案例：以 app_id 當校驗依據，任何人可註冊進私有應用 / Base44-like app_id trust permits unauthorized private-app registration"
+      - "CVE-2025-29927：x-middleware-subrequest 標頭跳過 Next.js middleware 授權 / CVE-2025-29927: x-middleware-subrequest bypasses Next.js middleware"
     gates: [G4, G5]
   - id: MAESTRO-L7
     layer: 7
     name_en: Agent Ecosystem
     name_zh: Agent 生態系
     threats:
-      - "過度信任 AI 產出（automation bias）"
-      - "Rules File Backdoor：規則檔隱形 Unicode 操控程式碼產生"
-      - "供應鏈蠕蟲利用本機 AI CLI 刮憑證"
+      - "過度信任 AI 產出（automation bias） / Over-trusting AI output: automation bias"
+      - "Rules File Backdoor：規則檔隱形 Unicode 操控程式碼產生 / Invisible Unicode in rule files manipulates generated code"
+      - "供應鏈蠕蟲利用本機 AI CLI 刮憑證 / Supply-chain worms abuse local AI CLIs to steal credentials"
     vibe_coding_failures:
-      - "Nx s1ngularity / Shai-Hulud：postinstall 呼叫本機 Claude / Gemini CLI 搜刮憑證"
-      - ".cursorrules 含零寬字元，讓 AI 助手悄悄加入外送程式碼"
-      - "Stanford Perry 等（ACM CCS 2023）：用 AI 助手者寫出更不安全程式碼卻更相信其安全"
+      - "Nx s1ngularity / Shai-Hulud：postinstall 呼叫本機 Claude / Gemini CLI 搜刮憑證 / Nx s1ngularity/Shai-Hulud invoke local Claude/Gemini CLIs from install hooks"
+      - ".cursorrules 含零寬字元，讓 AI 助手悄悄加入外送程式碼 / Zero-width rule-file content induces hidden exfiltration code"
+      - "Stanford Perry 等（ACM CCS 2023）：用 AI 助手者寫出更不安全程式碼卻更相信其安全 / Perry et al. (ACM CCS 2023): AI-assisted users wrote less secure code while trusting it more"
     gates: [G0, G1]

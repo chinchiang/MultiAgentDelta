@@ -1,7 +1,7 @@
 id: g2-llmkey-pos-01
 gate: G2
 domain: secret_exposure
-title: 程式碼內硬編碼 LLM API key
+title: "程式碼內硬編碼 LLM API key / An LLM API key is hardcoded in source"
 input:
   kind: code
   path: app/llm.py
@@ -13,4 +13,4 @@ expected:
   rule_id: vibesec.g2.hardcoded-llm-key
   policy_tier: blocking
 held_out: false
-notes: 報告只保留遮罩與指紋。
+notes: "報告只保留遮罩與指紋。 / Reports retain only masks and fingerprints."

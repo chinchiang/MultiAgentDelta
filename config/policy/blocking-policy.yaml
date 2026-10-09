@@ -1,133 +1,133 @@
-# config/policy/blocking-policy.yaml — 分層阻擋政策（Blocking vs Advisory）
-# 由 harness agent 的 ApplyPolicy 狀態讀取（docs/08 §3），決定每個 finding 的 policy_tier。
+# config/policy/blocking-policy.yaml — 分層阻擋政策（Blocking vs Advisory） / Tiered VibeSec blocking/advisory policy.
+# 由 harness agent 的 ApplyPolicy 狀態讀取（docs/08 §3），決定每個 finding 的 policy_tier。 / Read by harness ApplyPolicy in docs/08 §3 to assign finding.policy_tier.
 #
-# 原則（README「三大落地工程原則」第 1 條）：
+# 原則（README「三大落地工程原則」第 1 條）： / Principle 1 of README's engineering principles:
 #   blocking  = 高確定性、可機器判定、修法明確的發現；enforce 模式下擋 PR / 部署。
-#   advisory  = 需人工判斷的架構建議、縱深防禦缺口、尚待驗證的線索；只報告。
+#   advisory  = 需人工判斷的架構建議、縱深防禦缺口、尚待驗證的線索；只報告。 / advisory covers architectural judgment, defense-in-depth gaps, and unverified leads; report only.
 #
-# 不可違反（CLAUDE.md 第 1 條）：harness agent 與任何 AI 協作者不得修改本檔把 blocking 降為 advisory
-# 以讓檢查通過。政策變更必須由人類在獨立 PR 中決定。
+# 不可違反（CLAUDE.md 第 1 條）：harness agent 與任何 AI 協作者不得修改本檔把 blocking 降為 advisory / CLAUDE.md rule 1 prohibits AI collaborators from demoting blocking to advisory to pass checks.
+# 以讓檢查通過。政策變更必須由人類在獨立 PR 中決定。 / Humans must decide policy changes in a separate PR.
 #
-# 查表順序：exceptions → tier_overrides.<risk_tier> → blocking → advisory → default_tier
-# 規則 ID 命名：vibesec.g<N>.<kebab-name>；外部工具規則保留原名加前綴（gitleaks:、semgrep:、trivy:…）。
+# 查表順序：exceptions → tier_overrides.<risk_tier> → blocking → advisory → default_tier / Lookup order: exceptions, tier_overrides.<risk_tier>, blocking, advisory, default_tier.
+# 規則 ID 命名：vibesec.g<N>.<kebab-name>；外部工具規則保留原名加前綴（gitleaks:、semgrep:、trivy:…）。 / VibeSec IDs use vibesec.g<N>.<kebab-name>; external rules retain names with tool prefixes.
 
 version: 1
 
-# 不在任何清單中的規則（含所有外部工具原生規則）一律 advisory。
+# 不在任何清單中的規則（含所有外部工具原生規則）一律 advisory。 / Unlisted rules, including native external-tool rules, default to advisory.
 default_tier: advisory
 
-# 在 enforce 模式下，這些閘門 incomplete 時整體 exit 2（不知道也要擋）。
-# G1：惡意 postinstall 沒掃到就安裝等於已經中招；G2：祕密沒掃到就推上去等於已經外洩。
+# 在 enforce 模式下，這些閘門 incomplete 時整體 exit 2（不知道也要擋）。 / In enforce mode, incomplete listed gates produce overall exit 2.
+# G1：惡意 postinstall 沒掃到就安裝等於已經中招；G2：祕密沒掃到就推上去等於已經外洩。 / Unchecked installation hooks can execute malware; unchecked secrets can leak when pushed.
 incomplete_gate_is_blocking_in_enforce: [G1, G2]
 
 # ----------------------------------------------------------------------------
-# blocking：所有 risk_tier 皆阻擋
+# blocking：所有 risk_tier 皆阻擋 / Blocking rules apply at every risk tier.
 # ----------------------------------------------------------------------------
 blocking:
-  # G1 供應鏈
+  # G1 供應鏈 / G1 supply chain.
   - rule_id: vibesec.g1.hallucinated-package
-    why: 套件不存在於官方 registry 或在黑名單（Slopsquatting 直接命中）；安裝即可能執行惡意碼，無灰色地帶。
+    why: "套件不存在於官方 registry 或在黑名單（Slopsquatting 直接命中）；安裝即可能執行惡意碼，無灰色地帶。 / Absent/blacklisted registry packages may execute malicious code at installation; block slopsquatting"
   - rule_id: vibesec.g1.cooldown-violation
-    why: 套件版本發布未滿 cooldown_days（預設 14）；Shai-Hulud / Flooding Dropper 等蠕蟲多藏在剛發布的新版本。需人工審查才能放行，故先擋。
+    why: "套件版本發布未滿 cooldown_days（預設 14）；Shai-Hulud / Flooding Dropper 等蠕蟲多藏在剛發布的新版本。需人工審查才能放行，故先擋。 / Versions younger than the default 14-day cooldown may contain fresh worm payloads; require human exception review"
   - rule_id: vibesec.g1.postinstall-egress
-    why: 安裝腳本（postinstall / setup.py）靜態檢出網路外連、讀環境變數或本機憑證路徑；Nx s1ngularity 模式。
+    why: "安裝腳本（postinstall / setup.py）靜態檢出網路外連、讀環境變數或本機憑證路徑；Nx s1ngularity 模式。 / Install-hook network/environment/credential access matches credential-stealing supply-chain behavior"
   - rule_id: vibesec.g1.kev-hit
-    why: 相依套件命中 CISA KEV（已知遭實際利用）且版本在受影響範圍；不需再爭論可利用性。
-  # G2 機密
+    why: "相依套件命中 CISA KEV（已知遭實際利用）且版本在受影響範圍；不需再爭論可利用性。 / Affected version matches CISA's known-exploited catalog"
+  # G2 機密 / G2 secrets.
   - rule_id: vibesec.g2.hardcoded-secret
-    why: gitleaks 命中且通過熵值 / 格式驗證的真實憑證格式（sk-、AKIA、ghp_、私鑰 PEM 等）；即使已撤銷也必須清歷史。
+    why: "gitleaks 命中且通過熵值 / 格式驗證的真實憑證格式（sk-、AKIA、ghp_、私鑰 PEM 等）；即使已撤銷也必須清歷史。 / Credential-format/entropy match in Git history requires cleanup even after revocation"
   # G3 SAST / IaC
   - rule_id: vibesec.g3.sql-string-concat
-    why: 跨檔污點路徑確認 HTTP / LLM 輸出以字串拼接進入 SQL sink；AI 生成程式最常見的注入型態，修法明確（參數化）。
+    why: "跨檔污點路徑確認 HTTP / LLM 輸出以字串拼接進入 SQL sink；AI 生成程式最常見的注入型態，修法明確（參數化）。 / HTTP/LLM taint reaches concatenated SQL; parameterization is the clear remediation"
   - rule_id: vibesec.g3.command-injection
-    why: 污點路徑進入 subprocess / exec / os.system 等 sink 且 shell=True 或字串拼接。
+    why: "污點路徑進入 subprocess / exec / os.system 等 sink 且 shell=True 或字串拼接。 / Taint reaches shell-enabled or concatenated command execution"
   - rule_id: vibesec.g3.imdsv1-allowed
-    why: IaC 中 EC2 metadata_options.http_tokens 非 "required"；SSRF 一命中即可取雲端憑證，修法是一行設定。
+    why: "IaC 中 EC2 metadata_options.http_tokens 非 \"required\"；SSRF 一命中即可取雲端憑證，修法是一行設定。 / EC2 does not require IMDSv2, exposing metadata credentials to SSRF paths"
   # G5 DAST / API
   - rule_id: vibesec.g5.bola-cross-account
-    why: 雙帳號實測：B 的 token 成功取得 A 的資源（HTTP 200 + A 的資料）；E3 證據，前端防禦假象的直接證明。
+    why: "雙帳號實測：B 的 token 成功取得 A 的資源（HTTP 200 + A 的資料）；E3 證據，前端防禦假象的直接證明。 / Two-account HTTP 200 with A's data proves BOLA at E3"
   - rule_id: vibesec.g5.jwt-alg-none
-    why: 伺服器接受 alg:none 或未簽章 JWT；可直接偽造任意身分。
+    why: "伺服器接受 alg:none 或未簽章 JWT；可直接偽造任意身分。 / Unsigned/alg:none JWT acceptance permits identity forgery"
 
-  # --- 2026-10-05 人類決策（chinchiang）：tier 對照後補入（原本只在 cwe-map 標 blocking，政策未列）---
+  # --- 2026-10-05 人類決策（chinchiang）：tier 對照後補入（原本只在 cwe-map 標 blocking，政策未列）--- / Human decision by chinchiang on 2026-10-05: add rules previously marked blocking only in cwe-map.
   - rule_id: vibesec.g0.lethal-trifecta-open
-    why: Agent 三要素皆成立、未切腳，且沒有可驗證的 mitigation（scripts/g0_trifecta.py）；設計期不得放行（docs/01）。
+    why: "Agent 三要素皆成立、未切腳，且沒有可驗證的 mitigation（scripts/g0_trifecta.py）；設計期不得放行（docs/01）。 / All trifecta capabilities remain without verifiable mitigation; design must not pass"
   - rule_id: vibesec.g1.rules-file-unknown-package
-    why: 規則檔（.cursorrules、AGENTS.md 等）要 AI 助手安裝 registry 查無的套件；與 hallucinated-package 同性質，助手會照做。
+    why: "規則檔（.cursorrules、AGENTS.md 等）要 AI 助手安裝 registry 查無的套件；與 hallucinated-package 同性質，助手會照做。 / Agent rules instruct installation of an absent registry package"
   - rule_id: vibesec.g2.hardcoded-llm-key
-    why: 與 hardcoded-secret 由同一組 gitleaks 規則實作；LLM 金鑰外洩可直接造成費用與資料外傳。
+    why: "與 hardcoded-secret 由同一組 gitleaks 規則實作；LLM 金鑰外洩可直接造成費用與資料外傳。 / LLM key exposure enables unauthorized spending/data access; shared Gitleaks detection"
   - rule_id: vibesec.g3.jwt-alg-none
-    why: 程式層允許 alg:none 或停用簽章驗證；與 G5 jwt-alg-none（blocking）是同一個缺陷，修法明確。
+    why: "程式層允許 alg:none 或停用簽章驗證；與 G5 jwt-alg-none（blocking）是同一個缺陷，修法明確。 / Disabled JWT verification is the same flaw tested by G5; fix algorithm/signature enforcement"
   - rule_id: vibesec.g3.sql-fstring-execute
-    why: 在 execute() 當場以 f-string、%、format 或 + 組 SQL，不需追污點來源即可確認；修法明確（參數化）。
+    why: "在 execute() 當場以 f-string、%、format 或 + 組 SQL，不需追污點來源即可確認；修法明確（參數化）。 / SQL constructed at execute with formatting/concatenation needs parameterization"
   - rule_id: vibesec.g5.cors-reflect-origin
-    why: "探針實證回應反射任意 Origin 且 Access-Control-Allow-Credentials: true（E3）；任何網站可帶憑證讀回應。"
+    why: "探針實證回應反射任意 Origin 且 Access-Control-Allow-Credentials: true（E3）；任何網站可帶憑證讀回應。 / E3 probe proves arbitrary credentialed CORS reflection"
   - rule_id: vibesec.g5.jwt-alg-confusion
-    why: 探針以 JWKS 公鑰當 HMAC 金鑰偽造 HS256 token 並取得受保護資源 200（E3，PR #21 起實測）；可偽造任意身分。
+    why: "探針以 JWKS 公鑰當 HMAC 金鑰偽造 HS256 token 並取得受保護資源 200（E3，PR / E3 probe forges HS256 with JWKS public-key bytes and accesses a protected resource" #21 起實測）；可偽造任意身分。
   - rule_id: vibesec.g5.missing-session-check
-    why: 受保護端點無 token 仍回 2xx 並含資料（E3）；前端防禦假象的直接證明。
+    why: "受保護端點無 token 仍回 2xx 並含資料（E3）；前端防禦假象的直接證明。 / Protected endpoint exposes data without a token at E3"
   - rule_id: vibesec.g5.ssrf-internal-fetch
-    why: loopback canary 實證端點會替使用者存取內部位址（E3）；可轉向內網服務。
+    why: "loopback canary 實證端點會替使用者存取內部位址（E3）；可轉向內網服務。 / Loopback canary proves server-side access to internal addresses"
 
 # ----------------------------------------------------------------------------
-# advisory：明列是為了讓讀者知道「這些我們有查，但預設不擋」
+# advisory：明列是為了讓讀者知道「這些我們有查，但預設不擋」 / Explicit advisory entries show what is checked without default blocking.
 # ----------------------------------------------------------------------------
 advisory:
   - rule_id: vibesec.g1.low-download-package
-    why: 週下載低於 min_weekly_downloads 或維護者歷史單薄；可能是合法小眾套件，需人工判斷。
+    why: "週下載低於 min_weekly_downloads 或維護者歷史單薄；可能是合法小眾套件，需人工判斷。 / Low downloads/sparse history may be legitimate niche packages; human judgment required"
   - rule_id: vibesec.g1.sbom-missing-provenance
-    why: 產物缺簽章 / provenance 是來源證據缺口，不代表有漏洞（docs/09 §9 原則 3）。
+    why: "產物缺簽章 / provenance 是來源證據缺口，不代表有漏洞（docs/09 §9 原則 3）。 / Missing signature/provenance is an origin-evidence gap, not proof of a vulnerability"
   - rule_id: vibesec.g2.env-not-ignored
-    why: .env 不在 .gitignore 但尚未實際提交祕密；是預防性修正。
+    why: ".env 不在 .gitignore 但尚未實際提交祕密；是預防性修正。 / Unignored .env without committed secrets is preventive hardening"
   - rule_id: vibesec.g3.cors-wildcard
-    why: 需確認端點是否承載敏感操作；多數為設定外溢。
+    why: "需確認端點是否承載敏感操作；多數為設定外溢。 / Determine whether exposed endpoints perform sensitive operations"
   - rule_id: vibesec.g3.missing-csp
-    why: 縱深防禦缺口，與 XSS 分開報告；缺 CSP 不等於可利用 XSS。
+    why: "縱深防禦缺口，與 XSS 分開報告；缺 CSP 不等於可利用 XSS。 / Report CSP separately from XSS; missing CSP alone does not prove exploitation"
   - rule_id: vibesec.g3.xss-innerhtml
-    why: 單檔規則命中 innerHTML / dangerouslySetInnerHTML 等 sink 但污點路徑未完整；E1，待 appsec 審查或 G5 瀏覽器確認。
+    why: "單檔規則命中 innerHTML / dangerouslySetInnerHTML 等 sink 但污點路徑未完整；E1，待 appsec 審查或 G5 瀏覽器確認。 / Single-file unsafe HTML sink without a complete taint path is E1 pending source/browser review"
   - rule_id: vibesec.g3.actions-pull-request-target
-    why: 只看到 pull_request_target 不等於漏洞；supplychain-cicd 需追完整「不可信輸入 → 高權限 job」路徑後才可能升級。
+    why: "只看到 pull_request_target 不等於漏洞；supplychain-cicd 需追完整「不可信輸入 → 高權限 job」路徑後才可能升級。 / Trace the full untrusted-input-to-privileged-job path before escalating an event-name match"
   - rule_id: vibesec.g3.actions-unpinned-action
-    why: 第三方 Action 未固定完整 SHA；建議修正，但不是當下可利用的漏洞。
+    why: "第三方 Action 未固定完整 SHA；建議修正，但不是當下可利用的漏洞。 / Mutable third-party action refs need pinning but do not alone prove current exploitation"
   - rule_id: vibesec.g4.missing-owner-filter
-    why: 靜態推斷查詢缺 owner_id 綁定；在 L2 需 G5 雙帳號實測或 identity-authz 審查確認後再升級。L3 直接 blocking（見 tier_overrides）。
+    why: "靜態推斷查詢缺 owner_id 綁定；在 L2 需 G5 雙帳號實測或 identity-authz 審查確認後再升級。L3 直接 blocking（見 tier_overrides）。 / Confirm static owner gaps through G5/identity review at L2; L3 blocks directly"
   - rule_id: vibesec.g4.single-middleware-authz
-    why: 授權只依賴單一 middleware（CVE-2025-29927 模式）；是架構建議，需確認框架版本與路由。
+    why: "授權只依賴單一 middleware（CVE-2025-29927 模式）；是架構建議，需確認框架版本與路由。 / Middleware-only authorization requires framework-version and route review"
   - rule_id: vibesec.g4.supabase-rls-disabled
-    why: 資料表未啟用 RLS；是否暴露取決於 anon key 是否可達。L3 直接 blocking。
+    why: "資料表未啟用 RLS；是否暴露取決於 anon key 是否可達。L3 直接 blocking。 / RLS exposure depends on anonymous-key reachability; L3 blocks directly"
   - rule_id: vibesec.g4.agent-tool-overexposure
-    why: Agent 工具清單含 delete_user / execute_sql 等高影響工具且無 HITL；架構風險，L3 直接 blocking。
+    why: "Agent 工具清單含 delete_user / execute_sql 等高影響工具且無 HITL；架構風險，L3 直接 blocking。 / Overbroad agent tools without HITL are architectural risk; L3 blocks directly"
   - rule_id: vibesec.g4.rules-file-invisible-unicode
-    why: .cursorrules / AGENTS.md 含隱形 Unicode；多為複製貼上造成，但可能是 Rules File Backdoor，需人工看內容。
+    why: ".cursorrules / AGENTS.md 含隱形 Unicode；多為複製貼上造成，但可能是 Rules File Backdoor，需人工看內容。 / Invisible Unicode may be accidental or a rules backdoor; inspect content"
   - rule_id: vibesec.g4.mcp-missing-resource-indicator
-    why: MCP 伺服器 OAuth 未使用 RFC 8707 Resource Indicators；標準對齊建議。
+    why: "MCP 伺服器 OAuth 未使用 RFC 8707 Resource Indicators；標準對齊建議。 / MCP RFC 8707 resource indicators are an audience-binding standards control"
   - rule_id: vibesec.g5.ssrf-metadata
-    why: 需確認 169.254.169.254 回應是否真的含憑證（IMDSv2 已擋則為縱深缺口）。
+    why: "需確認 169.254.169.254 回應是否真的含憑證（IMDSv2 已擋則為縱深缺口）。 / Verify metadata actually contains credentials; an effective IMDSv2 barrier changes the evidence"
   - rule_id: vibesec.g5.swagger-exposed
-    why: 開發便利設定外溢；本身不是漏洞，但擴大攻擊面。
+    why: "開發便利設定外溢；本身不是漏洞，但擴大攻擊面。 / Development-feature exposure expands attack surface without alone proving exploitation"
   - rule_id: vibesec.g5.graphql-introspection
-    why: 同上。
+    why: "同上。 / Same development-exposure rationale as the preceding entry"
   - rule_id: vibesec.g5.debug-stacktrace
-    why: 資訊洩漏；若堆疊含祕密會另由 G2 規則接手為 blocking。
+    why: "資訊洩漏；若堆疊含祕密會另由 G2 規則接手為 blocking。 / Debug disclosure may expose secrets, which are separately handled by blocking G2 rules"
   - rule_id: vibesec.g5.missing-rate-limit
-    why: 登入 / 重設密碼缺節流；需業務判斷門檻。
+    why: "登入 / 重設密碼缺節流；需業務判斷門檻。 / Business context determines login/reset throttling thresholds"
   - rule_id: vibesec.g6.direct-prompt-injection
-    why: 越獄成功率取決於測試集；單次成功不足以阻擋，需看影響（是否觸發工具）。L3 直接 blocking。
+    why: "越獄成功率取決於測試集；單次成功不足以阻擋，需看影響（是否觸發工具）。L3 直接 blocking。 / Jailbreak findings need impact/context; L3 blocks directly"
   - rule_id: vibesec.g6.indirect-prompt-injection
-    why: 需確認外部內容是否真的能到達 Agent 且觸發外連；architecture 角色審查。
+    why: "需確認外部內容是否真的能到達 Agent 且觸發外連；architecture 角色審查。 / Verify external content actually reaches the agent and triggers egress"
   - rule_id: vibesec.g6.system-prompt-extraction
-    why: System prompt 被提取是資訊洩漏，嚴重度取決於 prompt 內容（若含祕密由 G2 規則接手）；預設 advisory。
+    why: "System prompt 被提取是資訊洩漏，嚴重度取決於 prompt 內容（若含祕密由 G2 規則接手）；預設 advisory。 / Prompt-extraction severity depends on content; leaked keys enter G2, otherwise advisory"
   - rule_id: vibesec.g6.stored-xss-via-ai-output
-    why: 需確認前端渲染路徑是否未編碼；promptfoo 只能證明模型輸出 <script>。L3 直接 blocking。
+    why: "需確認前端渲染路徑是否未編碼；promptfoo 只能證明模型輸出 <script>。L3 直接 blocking。 / Model script output alone does not prove unsafe frontend rendering; L3 blocks directly"
   - rule_id: vibesec.g6.denial-of-wallet
-    why: 缺速率限制 / token 配額是營運風險，門檻需業務決定；預設 advisory。
+    why: "缺速率限制 / token 配額是營運風險，門檻需業務決定；預設 advisory。 / Quota/rate-limit gaps are operational risk; business owners determine thresholds"
 
 # ----------------------------------------------------------------------------
-# tier_overrides：依 vibesec.yaml risk_tier 調整
+# tier_overrides：依 vibesec.yaml risk_tier 調整 / tier_overrides adjusts by vibesec.yaml risk_tier.
 # ----------------------------------------------------------------------------
 tier_overrides:
   L1:
-    # L1 純內部、不含 LLM、不處理個資：只跑 G1、G2，其餘閘門的規則不套用。
+    # L1 純內部、不含 LLM、不處理個資：只跑 G1、G2，其餘閘門的規則不套用。 / L1 is internal, without LLM or personal data: run G1/G2; other gate rules do not apply.
     applies_only_to_gates: [G1, G2]
     promote_to_blocking: []
     demote_to_advisory: []
@@ -145,23 +145,23 @@ tier_overrides:
     demote_to_advisory: []
 
 # ----------------------------------------------------------------------------
-# exceptions：有期限、有核准人的例外；到期自動失效（harness 以 expires 比對當日）。
-# 例外只能把特定路徑的特定規則降為 advisory，不能停用閘門。
+# exceptions：有期限、有核准人的例外；到期自動失效（harness 以 expires 比對當日）。 / Exceptions have an approver and expiry and automatically lapse when expired.
+# 例外只能把特定路徑的特定規則降為 advisory，不能停用閘門。 / Exceptions may demote one rule on specific paths to advisory but cannot disable gates.
 # ----------------------------------------------------------------------------
 exceptions:
   - rule_id: vibesec.g1.cooldown-violation
     path_glob: "examples/vulnapp/**"
-    reason: 靶場刻意使用舊版與新版套件做測試，不進入正式建置。
+    reason: "靶場刻意使用舊版與新版套件做測試，不進入正式建置。 / Deliberate old/new lab dependencies are not production build inputs"
     approved_by: appsec-lead@example.com
     expires: "2027-03-31"
   - rule_id: vibesec.g2.hardcoded-secret
     path_glob: "examples/vulnapp/app/main.py"
-    reason: 靶場故意放置的假金鑰（格式有效、已標註 FAKE），用於驗證 G2 偵測能力。
+    reason: "靶場故意放置的假金鑰（格式有效、已標註 FAKE），用於驗證 G2 偵測能力。 / Marked fake lab keys test G2 detection"
     approved_by: appsec-lead@example.com
     expires: "2027-03-31"
   - rule_id: vibesec.g2.hardcoded-llm-key
     path_glob: "examples/vulnapp/app/main.py"
-    # 2026-10-05：hardcoded-llm-key 升為 blocking 後延伸同一筆核准例外（與 hardcoded-secret 由同一組 gitleaks 規則偵測同一個假金鑰）
-    reason: 靶場故意放置的假金鑰（格式有效、已標註 FAKE），用於驗證 G2 偵測能力。
+    # 2026-10-05：hardcoded-llm-key 升為 blocking 後延伸同一筆核准例外（與 hardcoded-secret 由同一組 gitleaks 規則偵測同一個假金鑰） / On 2026-10-05, extend the approved exception to hardcoded-llm-key: the same Gitleaks detectors identify the same fake key as hardcoded-secret.
+    reason: "靶場故意放置的假金鑰（格式有效、已標註 FAKE），用於驗證 G2 偵測能力。 / Marked fake lab keys test G2 detection"
     approved_by: appsec-lead@example.com
     expires: "2027-03-31"

@@ -4,28 +4,28 @@
 
 system:
   name: example-project
-  description: 一句話描述系統用途與主要使用者。
+  description: "一句話描述系統用途與主要使用者。 / Describe the system's purpose and primary users in one sentence."
   exposure: public            # internal | partner | public
   data_sensitivity: pii       # none | business | pii | sensitive_pii_or_secrets
   methodologies: [STRIDE, MAESTRO]   # 隱私領域再加 LINDDUN
 
 assets:
   - id: a-user-notes
-    name: 使用者筆記
+    name: "使用者筆記 / User notes."
     sensitivity: pii          # public | internal | confidential | pii | secret
     store: postgres.notes
   - id: a-api-keys
-    name: 第三方 API 金鑰
+    name: "第三方 API 金鑰 / Third-party API keys."
     sensitivity: secret
     store: secrets-manager
 
 components:
-  - { id: c-browser,  name: 瀏覽器 SPA,      kind: browser,         zone: z-public }
-  - { id: c-api,      name: FastAPI 後端,     kind: api,             zone: z-app,    maestro_layer: 6 }
+  - { id: c-browser,  name: "瀏覽器 SPA / Browser SPA.",      kind: browser,         zone: z-public }
+  - { id: c-api,      name: "FastAPI 後端 / FastAPI backend.",     kind: api,             zone: z-app,    maestro_layer: 6 }
   - { id: c-db,       name: Postgres,        kind: db,              zone: z-data }
-  - { id: c-llm,      name: 對話 LLM,         kind: llm,             zone: z-app,    maestro_layer: 1 }
-  - { id: c-agent,    name: 客服 Agent,       kind: agent,           zone: z-app,    maestro_layer: 3 }
-  - { id: c-web,      name: 外部網頁擷取工具,  kind: tool,            zone: z-app }
+  - { id: c-llm,      name: "對話 LLM / Conversational LLM.",         kind: llm,             zone: z-app,    maestro_layer: 1 }
+  - { id: c-agent,    name: "客服 Agent / Support agent.",       kind: agent,           zone: z-app,    maestro_layer: 3 }
+  - { id: c-web,      name: "外部網頁擷取工具 / External webpage retrieval tool.",  kind: tool,            zone: z-app }
 
 flows:
   - { from: c-browser, to: c-api, data: [credentials, notes], protocol: https, authenticated: true,  crosses_boundary: true }
@@ -34,8 +34,8 @@ flows:
   - { from: c-agent,   to: c-llm, data: [prompt, rag_context], protocol: https, authenticated: true }
 
 trust_boundaries:
-  - { id: tb-edge, name: 公開網路邊界,   zones: [z-public, z-app] }
-  - { id: tb-data, name: 資料層邊界,     zones: [z-app, z-data] }
+  - { id: tb-edge, name: "公開網路邊界 / Public network boundary.",   zones: [z-public, z-app] }
+  - { id: tb-data, name: "資料層邊界 / Data boundary.",     zones: [z-app, z-data] }
 
 # 致命三要素盤點：三者皆 true 且 mitigations 無法切斷任一隻腳 → G0 不得放行（見 trifecta_leg_cut）
 agents:
@@ -52,11 +52,8 @@ agents:
 threats: []
 
 risk_tier: L2
-risk_tier_rationale: >
-  對外（exposure=public）＋處理個資（data_sensitivity=pii）→ 至少 L2；Agent 具致命三要素，
-  已於設計期切斷一隻腳並加出向 allow-list，故不升為 L3；若 Agent 取得寫入／刪除權限則升 L3。
-
+risk_tier_rationale: "對外（exposure=public）＋處理個資（data_sensitivity=pii）→ 至少 L2；Agent 具致命三要素， 已於設計期切斷一隻腳並加出向 allow-list，故不升為 L3；若 Agent 取得寫入／刪除權限則升 L3。 / Public exposure and PII processing imply at least L2. The agent's lethal trifecta is addressed by removing one capability during design and adding an egress allowlist; write or delete permissions require L3."
 decisions:
-  - 允許上傳的檔案類型：僅 .md/.txt，上限 1 MB。
-  - 密碼最短長度：15 字元；啟用 MFA（ASVS L2）。
-  - Agent 出向 allow-list：僅 api.example.com、docs.example.com。
+  - "允許上傳的檔案類型：僅 .md/.txt，上限 1 MB。 / Allowed uploads: .md and .txt only, up to 1 MB."
+  - "密碼最短長度：15 字元；啟用 MFA（ASVS L2）。 / Minimum password length: 15 characters; enable MFA (ASVS L2)."
+  - "Agent 出向 allow-list：僅 api.example.com、docs.example.com。 / Agent egress allowlist: api.example.com and docs.example.com only."

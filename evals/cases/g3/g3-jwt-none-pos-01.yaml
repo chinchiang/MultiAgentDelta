@@ -1,7 +1,7 @@
 id: g3-jwt-none-pos-01
 gate: G3
 domain: authentication
-title: JWT decode 允許 none 演算法
+title: "JWT decode 允許 none 演算法 / JWT decoding permits the none algorithm"
 input:
   kind: code
   path: app/auth.py

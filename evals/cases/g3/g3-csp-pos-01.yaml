@@ -1,7 +1,7 @@
 id: g3-csp-pos-01
 gate: G3
 domain: csp
-title: 回應缺少 Content-Security-Policy
+title: "回應缺少 Content-Security-Policy / The response lacks Content-Security-Policy"
 input:
   kind: config
   headers:

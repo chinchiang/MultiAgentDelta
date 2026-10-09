@@ -1,7 +1,7 @@
 id: g2-llmkey-neg-01
 gate: G2
 domain: secret_exposure
-title: 從環境變數讀取 LLM key
+title: "從環境變數讀取 LLM key / Read the LLM key from an environment variable"
 input:
   kind: code
   path: app/llm.py
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g2.hardcoded-llm-key
   policy_tier: blocking
 held_out: false
-notes: 無祕密字面值。
+notes: "無祕密字面值。 / No secret literal exists."

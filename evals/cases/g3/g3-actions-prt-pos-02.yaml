@@ -1,7 +1,7 @@
 id: g3-actions-prt-pos-02
 gate: G3
 domain: github_actions
-title: pull_request_target 把 PR 標題帶進 run（腳本注入）
+title: "pull_request_target 把 PR 標題帶進 run（腳本注入） / pull_request_target interpolates the PR title into run, enabling script injection"
 input:
   kind: iac
   path: .github/workflows/greet.yml

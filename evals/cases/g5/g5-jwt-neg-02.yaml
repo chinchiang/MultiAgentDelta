@@ -1,7 +1,7 @@
 id: g5-jwt-neg-02
 gate: G5
 domain: authentication
-title: 已修補：固定 RS256 驗章，拒絕 HS256 演算法混淆
+title: "已修補：固定 RS256 驗章，拒絕 HS256 演算法混淆 / Patched: fixed RS256 verification rejects HS256 algorithm confusion"
 input:
   kind: http
   target_app: vulnapp-patched
@@ -16,4 +16,4 @@ expected:
   rule_id: vibesec.g5.jwt-alg-confusion
   policy_tier: blocking
 held_out: true
-notes: examples/vulnapp 以 VIBESEC_VULNAPP_MODE=patched 啟動（jwt.decode algorithms=[RS256]）。g5-jwt-pos-02 的修補後反例。
+notes: "examples/vulnapp 以 VIBESEC_VULNAPP_MODE=patched 啟動（jwt.decode algorithms=[RS256]）。g5-jwt-pos-02 的修補後反例。 / Run examples/vulnapp with VIBESEC_VULNAPP_MODE=patched and jwt.decode algorithms=[RS256]; the repaired counterpart of g5-jwt-pos-02."

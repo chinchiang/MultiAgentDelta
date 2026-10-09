@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # CLAUDE.md — VibeSec repo 規範（給 harness agent 與所有 AI 協作者）
 
 本 repo 是「Vibe Coding 六道資安閘門（G0–G6）」框架的文件、設定與靶場。主設定在 `vibesec.yaml`，流程定義在 `docs/08-harness-agent.md`，harness skill 在 `.claude/skills/vibesec-harness/SKILL.md`。
@@ -19,7 +24,7 @@
 - 控制 ID：ASVS 用 `ASVS5-V<章>.<節>`（自編到節，非官方需求編號，見 `config/catalogs/asvs-5.0-controls.yaml` 的免責說明）；OWASP LLM Top 10 用 `LLM01:2025`…`LLM10:2025`；MAESTRO 用 `MAESTRO-L1`…`MAESTRO-L7`；vibesec 自有控制用 `VS-G<N>-<NAME>`。
 - Finding ID：`VS-YYYYMMDD-<8 hex>`。
 - 所有輸出必須符合 `schemas/finding.schema.json`、`schemas/gate-result.schema.json`。SARIF 2.1.0 給程式位置類發現；架構類發現進 `risk_register.json`。
-- 文件以正體中文撰寫，技術名詞保留英文；每份閘門文件固定章節：對抗成因 / 觸發時機與性質 / 核心任務 / 自動化作法 / 工具與設定檔 / 阻擋政策 / 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）/ 驗證方式。
+- 文件提供正體中文（臺灣慣用語）與英文雙語版本，技術名詞及程式識別碼保留原文；每份閘門文件固定章節：對抗成因 / 觸發時機與性質 / 核心任務 / 自動化作法 / 工具與設定檔 / 阻擋政策 / 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）/ 驗證方式。
 
 ## 驗證指令
 
@@ -27,3 +32,40 @@
 python3 scripts/validate.py          # YAML 語法、JSON schema、範例檔、catalogs ID 一致性
 uv run --project examples/vulnapp uvicorn app.main:app --port 8000   # 啟動靶場
 ```
+
+
+---
+
+<a id="english"></a>
+
+# CLAUDE.md — VibeSec Repository Rules for Harness Agents and AI Contributors
+
+This repository contains documentation, configuration, and a lab for the Vibe Coding security-gate framework (G0–G6). Main configuration: `vibesec.yaml`; workflow specification: `docs/08-harness-agent.md`; harness skill: `.claude/skills/vibesec-harness/SKILL.md`.
+
+## Mandatory rules
+
+1. **Never bypass gates.** Do not disable, skip, or relax any gate with `enabled: true`, or demote blocking findings in `config/policy/blocking-policy.yaml` to make checks pass. Humans must approve policy changes in a separate PR.
+2. **Incomplete is not pass.** Missing tools, timeouts, API failures, missing accounts/documents, and startup failures yield `incomplete` with a `status_reason`, never a pass.
+3. **Look up IDs in catalogs.** CWE, CVE, ASVS, and OWASP LLM Top 10 identifiers must come from `config/catalogs/`; never invent them. Use `null` and explain in `notes` when unavailable.
+4. **Keep scores separate.** Record CVSS v4.0 vector/score, EPSS/query date, and KEV/date separately. Do not multiply CVSS, EPSS, and model confidence. A model's confidence is not an evidence grade.
+5. **Separate evidence from validation.** `evidence_grade` (E0–E3) describes support; `validation_status` (pending/confirmed/refuted) describes the current conclusion. Neither is severity.
+6. **Multi-model review.** At least two different model `family` values independently review high-risk controls. Do not share first-round conclusions. Allow at most two subsequent challenge rounds; retain dissent, never majority-vote, and send disagreement to humans (`requires_human: true`).
+7. **Prevent unauthorized disclosure.** Unclassified data stays with local providers. Only send content to providers whose `allowed_data_classes` include its classification. Reports retain only masked secrets and fingerprints.
+8. **Attack only authorized labs.** `examples/vulnapp` is deliberately vulnerable. G5/G6 offensive probes may target only the authorized test environment specified by `VIBESEC_TARGET_URL`.
+
+## Naming and formatting
+
+- Gate IDs: `G0`–`G6`. Rule IDs: `vibesec.g<N>.<kebab-name>`. Preserve external rule names with prefixes `gitleaks:`, `semgrep:`, `trivy:`, `grype:`, `checkov:`, `zap:`, `promptfoo:`, or `garak:`.
+- Control IDs: ASVS `ASVS5-V<chapter>.<section>` (local section-level IDs, not official requirement numbers; see the catalog disclaimer); OWASP `LLM01:2025`…`LLM10:2025`; MAESTRO `MAESTRO-L1`…`MAESTRO-L7`; VibeSec `VS-G<N>-<NAME>`.
+- Finding IDs: `VS-YYYYMMDD-<8 hex>`.
+- Outputs must conform to `schemas/finding.schema.json` and `schemas/gate-result.schema.json`. Use SARIF 2.1.0 for source-location findings and `risk_register.json` for architectural findings.
+- Documentation is bilingual: Traditional Chinese with Taiwan terminology, followed by English. Keep technical terms and executable identifiers intact. Each gate document includes causes, trigger/nature, core tasks, automation, tools/configuration, blocking policy, mapped controls (ASVS/CWE/LLM Top 10/MAESTRO), and verification.
+
+## Verification commands
+
+```bash
+python3 scripts/validate.py
+uv run --project examples/vulnapp uvicorn app.main:app --port 8000
+```
+
+The first command checks YAML, JSON schemas, examples, and catalog IDs; the second starts the lab.

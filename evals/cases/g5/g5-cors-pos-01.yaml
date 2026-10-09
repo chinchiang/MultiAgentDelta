@@ -1,7 +1,7 @@
 id: g5-cors-pos-01
 gate: G5
 domain: general_vulnerabilities
-title: CORS 反射任意 Origin 並允許 credentials
+title: "CORS 反射任意 Origin 並允許 credentials / CORS reflects arbitrary origins and allows credentials"
 input:
   kind: http
   target_app: vulnapp

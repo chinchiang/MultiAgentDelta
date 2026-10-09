@@ -1,7 +1,7 @@
 id: g4-hitl-pos-01
 gate: G4
 domain: ai_agent_security
-title: Agent 可直接付款、無人工核准
+title: "Agent 可直接付款、無人工核准 / The agent can pay directly without human approval"
 input:
   kind: config
   snippet: 'tools: [refund_payment]  # 無 confirm 步驟'

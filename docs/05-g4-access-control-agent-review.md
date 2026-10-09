@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 05 G4 架構與存取控制審查（白箱；人工 + AI）
 
 | 項目 | 值 |
@@ -241,3 +246,113 @@ CI（`pr-gates.yml` 的 G4 job）只跑靜態部分；LLM 審查由 `/vibesec-ha
 4. **OPA 單元測試**：`opa test config/policy/` 含「general_assistant 呼叫 execute_sql → deny」「ops_agent restart_service 無 approval → deny、有 approval → allow」。
 5. **MCP**：以缺 `resource` 參數的授權請求測試 MCP server → 必須拒絕（401 / invalid_target）。
 6. **人工簽核**：AI 生成模組上線前，identity-authz 與 architecture 各一位人員在 g4 報告簽名；少數意見保留於 `risk_register.json`。
+
+
+---
+
+<a id="english"></a>
+
+# 05 G4 Architecture and Access-Control Review (White-Box; Human + AI)
+
+G4 combines static checks, LLM triage, and human adjudication for major changes and AI-generated modules before release. Configure `gates.g4_access_control_review`: owner binding, Supabase RLS, middleware-only authorization, tool allowlists, Unicode, MCP resource indicators; architecture/identity roles; HITL; diff awareness; 900-second timeout. AppSec leads with architects and identity reviewers. See `docs/09` for review protocol.
+
+## Causes addressed
+
+Client-side buttons/route guards do not authorize backend resources. Base44's app_id trust illustrates the problem. Next.js CVE-2025-29927 (CVSS 9.1) bypassed middleware through `x-middleware-subrequest`, showing why data-layer enforcement matters. Agents exposing broad `delete_user`/`execute_sql` capabilities can damage production. Invisible Unicode/bidi characters in agent rules can conceal instructions to exfiltrate data or install malicious packages.
+
+## Triggers and nature
+
+Run static checks on each PR; perform full static/LLM/human review for new endpoints, tables, agents/tools/MCP servers and AI-generated modules before release. Apply actual policy tiers and risk overrides below. Unsupported model allegations are E0/E1; source-backed evidence may qualify as E2, while E3 needs verification/adjudication. Models never self-confirm findings.
+
+## Core tasks
+
+### 1. Bind resources to the authenticated owner
+
+Queries, updates, and deletes need both object ID and authenticated user/tenant scope. Never obtain the trusted principal from request parameters. The shared Python/SQLAlchemy examples show unsafe ID-only lookup and safe `Todo.owner_id == user.id` filtering with 404 on absence. The Supabase example combines RLS with explicit authenticated user filtering. Static `missing-owner-filter` candidates (CWE-639) are dynamically verified by G5 two-account BOLA.
+
+### 2. Supabase RLS
+
+Enable RLS on every user-data table and define select/insert/update/delete policies. The shared SQL example uses `auth.uid() = owner_id`, including `WITH CHECK` for inserts/updates; tenant isolation can compare the authenticated JWT tenant claim. Explicit RLS disablement is `supabase-rls-disabled`; table creation without enabling it is `supabase-table-without-rls`. Keep service-role keys server-side; G2 detects exposure. Base/risk-tier policy decides blocking.
+
+### 3. Defense beyond middleware
+
+Review whether authorization exists only in Next.js middleware, global hooks, or gateway authorizers; whether background/RPC/alternate route calls still enforce it; and whether owner filters/RLS provide a final boundary. Enforce at route, service (`assert_owner`), and data layers. Rule: `single-middleware-authz` (CWE-287/863).
+
+Static coverage:
+
+- Next.js: presence of `middleware.ts` prompts review.
+- FastAPI/Starlette: AST inspection requires both an authorization signal in HTTP middleware/BaseHTTPMiddleware (headers, bearer/token/session, 401/403; one level of same-file helper inspection) and no route-level `Security()` or authorization-like `Depends()` anywhere in the project. `Depends(get_db)` is not authorization.
+- Route-level authorization prevents this coarse warning but does not prove every route is covered. Pure ASGI middleware and cross-file helpers require LLM/human review.
+
+### 4. Agent tool allowlists
+
+General-purpose agents must not expose broad user deletion, arbitrary SQL/table deletion, shell destruction, or unrestricted HTTP. Provide narrow tools (`get_my_todos`, `create_todo`) running as the current user, with ownership enforcement inside tools.
+
+The shared OPA/Rego example defaults to deny. General assistants can use listed low-impact todo/document tools; operations agents can check/restart services. High-impact tools require a named, unexpired approval. Executors evaluate policy before every call. Static `agent-tool-overexposure` (CWE-250) inspects actual registrations: Python decorators/tool lists and JS server/tool declarations. Python registration analysis avoids treating detector regex literals as exposed tools.
+
+### 5. Human in the loop
+
+Deletion, irreversible changes, payments, external messages/publication, deployment, permission changes, and production writes require a concrete proposed action (diff/SQL preview), human approval, expiry, then execution. Audit all steps (`ASVS5-V16.1`, MAESTRO L5). Missing HITL yields `missing-hitl`; align with threat-model high-impact tools/mitigations.
+
+### 6. Invisible Unicode in rule files
+
+Scan `.cursorrules`, `AGENTS.md`, `SKILL.md`, `CLAUDE.md`, `.cursor/rules/**/*.mdc`, and Markdown. Detect U+200B–200D, U+2060, noninitial U+FEFF, U+202A–202E, U+2066–2069, U+00AD, U+2061–2064, and U+E0000–E007F. The shared grep/Python examples display code points rather than invisible glyphs. Rule: `rules-file-invisible-unicode`, CWE-94 (instructions injected into code generators). G1's rule-file scan also checks it; apply policy rather than assuming every alert blocks.
+
+### 7. MCP OAuth resource indicators
+
+RFC 8707 requires `resource=<canonical MCP server URI>` in authorization/token requests. The server validates its own audience and rejects tokens issued for other resources; do not blindly pass upstream tokens downstream. Missing controls yield `mcp-missing-resource-indicator`, CWE-863, `ASVS5-V10.1`.
+
+## Automation
+
+1. Run G4 Semgrep rules on the diff, plus Unicode/RLS/static checks; assign metadata-gate G4 results to G4.
+2. Build a reviewer packet containing diff, routes, trust boundaries, agents, and static evidence. Identity reviewers produce subject/resource/action matrices, owner/middleware/tenant gaps. Architecture reviewers compare tool inventory and HITL against the threat model, new boundary crossings, and reopened trifecta risks. Add AppSec/supply-chain roles when relevant.
+3. High-risk controls require ≥2 distinct families, independent first rounds, at most two challenge rounds, retained dissent, no majority voting, and `requires_human: true` for disagreement. Preserve opinions; evidence promotion depends on supporting artifacts and humans.
+4. Enforce provider data classification; unclassified content stays local.
+
+```bash
+python3 scripts/g4_access.py --out-dir reports/raw/G4 --gate reports/gates/G4.json
+```
+
+Optional `--target <dir>` scans tracked-file snapshots without symlink traversal or writing reports into the target. Static CI, local execution, and evaluations share the same implementation.
+
+For this repository, `g4_review.py` finds HEAD-valid records under `reviews/g4/`; local execution has no PR approval context. For external projects, never trust target-owned reviews/rulings. Store records here at `reviews/g4/external/<commit>.yaml` and rulings here too (human decision, 2026-10-06). Require exact target HEAD, no uncommitted tracked changes, committed/valid records, and a named human recorder. Missing records leave review pending and G4 incomplete unless a blocking finding makes it fail. See [review records](../reviews/README.md#english).
+
+## Tools and configuration
+
+Semgrep rules; shared Unicode/static code; `scripts/g4_access.py`; optional AppSec-owned OPA `config/policy/agent-tools.rego`; reviewer prompts in `config/harness/` and `.claude/agents/`; CWE/ASVS/LLM/MAESTRO catalogs.
+
+## Blocking policy and review trust
+
+| Rule | Base tier / escalation | CWE |
+|---|---|---|
+| supabase-rls-disabled | Advisory; L3 blocking | 284 |
+| agent-tool-overexposure | Advisory; L3 blocking | 250 |
+| rules-file-invisible-unicode | Advisory | 94 |
+| missing-owner-filter | Advisory; L3 blocking; proven G5 BOLA blocks | 639 |
+| single-middleware-authz | Advisory | 287/863 |
+| missing-hitl | Advisory | 250 |
+| mcp-missing-resource-indicator | Advisory | 863 |
+| Missing reviewer/provider or unresolved disagreement | Incomplete/pending, never pass | — |
+
+CI runs static checks. `/vibesec-harness` produces `reports/g4-review.yaml`; a human verifies and submits it to `reviews/g4/<commit>.yaml` through CODEOWNERS review. The record commit must be an ancestor of the PR head, with only review/ruling changes afterward.
+
+| Condition | G4 status |
+|---|---|
+| Static blocking, or policy-blocking LLM finding confirmed by a valid human ruling | fail |
+| Finding requires human review without valid ruling | pending |
+| Missing/stale record, insufficient actual families, missing roles, pending/untested coverage | incomplete |
+| Otherwise | pass, subject to trust cap |
+
+`g4_review.py check` validates provider/family identity, opinions only from `state: ran` providers, mandatory human flags for dissent/insufficient families, and pending validation/E2 maximum without a ruling. A record describes a review; it cannot adjudicate itself or demote policy.
+
+**Separation of duties:** a record added/changed by the current PR can yield pass only if its recorder is a non-author eligible collaborator who personally approved the current head. A later push requires renewed approval. Blank recorders are never trusted; absence of approval caps pass at pending without hiding fail. Already-reviewed base records remain usable. Only OWNER/MEMBER/COLLABORATOR approvals count; API errors fail closed. CI uses the base branch's verdict code; PR-head workflows still require CODEOWNERS/branch protection.
+
+G4 is currently absent from `incomplete_gate_is_blocking_in_enforce`, so G4 incomplete alone does not block enforcement. Changing this requires a separate human policy PR. External records use the same rule through the literal check `外部 G4 紀錄不得自證`, reevaluated on submitted/dismissed reviews.
+
+## Mapped controls
+
+Local ASVS sections V7.1 sessions, V8.1 authorization documentation, V8.2 object authorization, V8.3 function/defense-in-depth, V2.3 approvals, V10.1 audience, V16.1 logs (some are VibeSec extensions). VibeSec tool-allowlist/Unicode/MCP/trifecta controls; CWE 639/284/287/863/250/94; LLM06/01/08:2025; MAESTRO L2/L3/L6/L7.
+
+## Verification
+
+Use owner-filter, RLS, dangerous-tool, and Unicode positive/negative fixtures, with tiers determined by policy. Audit opinions for families, first-round independence, dissent/human flags, and ruling references responding to every minority opinion. Map BOLA candidates to G5 resources. OPA tests should deny broad assistant SQL and unapproved restarts, allowing authorized unexpired restarts. Reject MCP requests without a required resource indicator. Before release, human identity and architecture reviewers sign off and preserve dissent in the risk register.

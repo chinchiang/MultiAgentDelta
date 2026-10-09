@@ -1,7 +1,7 @@
 id: g5-bola-neg-01
 gate: G5
 domain: authorization
-title: 帳號 B 讀取帳號 A 資源被 403 拒絕
+title: "帳號 B 讀取帳號 A 資源被 403 拒絕 / Account B receives 403 when reading account A's resource"
 input:
   kind: http
   target_app: vulnapp-patched   # VIBESEC_VULNAPP_MODE=patched 可重現；run_evals.py 以本機已修補靶場實測
@@ -15,4 +15,4 @@ expected:
   rule_id: vibesec.g5.bola-cross-account
   policy_tier: blocking
 held_out: false
-notes: 'A 可讀、B 被明確拒絕才可判 pass（PR #10 修正後的判定）。'
+notes: "A 可讀、B 被明確拒絕才可判 pass（PR #10 修正後的判定）。 / Pass requires A to read successfully and B to be explicitly denied, following PR #10."

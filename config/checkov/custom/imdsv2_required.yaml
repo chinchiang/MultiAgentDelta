@@ -1,12 +1,12 @@
-# VibeSec 自訂 Checkov YAML 政策：強制 AWS IMDSv2
-# 對應 vibesec.g3.imdsv1-allowed（CWE-918、ASVS5-V13.2、MAESTRO-L4）
-# 為什麼：IMDSv1 允許任何 SSRF（例如「URL 匯入」端點）直接 GET http://169.254.169.254/latest/meta-data/iam/security-credentials/
-#         取得實例角色憑證；IMDSv2 要求先 PUT 取得 session token，SSRF 通常做不到。
-# 修法（Terraform）：
+# VibeSec 自訂 Checkov YAML 政策：強制 AWS IMDSv2 / Custom Checkov policy: require AWS IMDSv2.
+# 對應 vibesec.g3.imdsv1-allowed（CWE-918、ASVS5-V13.2、MAESTRO-L4） / Maps to vibesec.g3.imdsv1-allowed, CWE-918, ASVS5-V13.2, MAESTRO-L4.
+# 為什麼：IMDSv1 允許任何 SSRF（例如「URL 匯入」端點）直接 GET http://169.254.169.254/latest/meta-data/iam/security-credentials/ / IMDSv1 lets SSRF directly fetch instance-role credentials from the metadata endpoint.
+#         取得實例角色憑證；IMDSv2 要求先 PUT 取得 session token，SSRF 通常做不到。 / IMDSv2 first requires a PUT session token, which many SSRF paths cannot obtain.
+# 修法（Terraform）： / Terraform remediation:
 #   resource "aws_instance" "app" {
 #     metadata_options {
 #       http_endpoint               = "enabled"
-#       http_tokens                 = "required"   # ← 關鍵
+#       http_tokens                 = "required"   # ← 關鍵 / Set http_tokens = "required".
 #       http_put_response_hop_limit = 1
 #     }
 #   }

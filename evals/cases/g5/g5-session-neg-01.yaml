@@ -1,7 +1,7 @@
 id: g5-session-neg-01
 gate: G5
 domain: authentication
-title: 已修補：受保護端點無 token 或無效 token 時回 401
+title: "已修補：受保護端點無 token 或無效 token 時回 401 / Patched: protected endpoints return 401 for missing or invalid tokens"
 input:
   kind: http
   target_app: vulnapp-patched
@@ -16,4 +16,4 @@ expected:
   rule_id: vibesec.g5.missing-session-check
   policy_tier: blocking
 held_out: true
-notes: examples/vulnapp 以 VIBESEC_VULNAPP_MODE=patched 啟動；g5-session-pos-01 的修補後反例。
+notes: "examples/vulnapp 以 VIBESEC_VULNAPP_MODE=patched 啟動；g5-session-pos-01 的修補後反例。 / Run examples/vulnapp with VIBESEC_VULNAPP_MODE=patched; the repaired counterpart of g5-session-pos-01."

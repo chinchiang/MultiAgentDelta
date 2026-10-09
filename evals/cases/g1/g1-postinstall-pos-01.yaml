@@ -1,7 +1,7 @@
 id: g1-postinstall-pos-01
 gate: G1
 domain: build_supply_chain
-title: postinstall 腳本對外連線下載並執行
+title: "postinstall 腳本對外連線下載並執行 / postinstall downloads and executes external code"
 input:
   kind: manifest
   ecosystem: npm
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g1.postinstall-egress
   policy_tier: blocking
 held_out: false
-notes: 安裝鉤子 + 外部網路 + 執行，為典型供應鏈投毒。
+notes: "安裝鉤子 + 外部網路 + 執行，為典型供應鏈投毒。 / An installation hook with external networking and execution is a typical supply-chain poisoning pattern."

@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 評測案例集（evals/）
 
 量化多模型審查相對單模型的增益，並校準誤報。對應 `docs/12-pilot-and-evaluation.md`。
@@ -80,3 +85,63 @@ python3 scripts/run_evals.py --no-network                                       
 任一 nightly job 失敗或被取消時，`notify` job 會開一張追蹤 issue（已有未關閉的就改成留言，不重複開），內容列出各 job 結果、相對 baseline 的退步清單和 run 連結；之後 nightly 恢復全綠時會自動留言並關閉。只在 `main` 上執行，分支上的手動試跑不會開 issue。
 
 新增可執行的案例後，先跑 `python3 scripts/run_evals.py --write-baseline evals/baseline.yaml` 重新產生 baseline，人工檢查差異後再提交。從 baseline 移除案例等於放寬檢查，必須由人類在獨立 PR 中決定。
+
+
+---
+
+<a id="english"></a>
+
+# Evaluation Suite (`evals/`)
+
+Calibrate false positives and support measurement of multi-model gains over a single model. See `docs/12-pilot-and-evaluation.md`; deterministic fixture results are not a real model comparison.
+
+## Case format
+
+One YAML case per file in `evals/cases/g<N>/`. Fields: `id` (g<gate>-<domain>-<pos|neg>-<number>), gate, domain, descriptive title, input kind (code/http/prompt/manifest/iac/config) and snippet/target/steps, expected should_flag/control_id/rule_id/policy_tier, optional expected gate_status, held_out, and notes. The shared YAML example describes account Bob reading Alice's resource using Bob's token. Optional gate_status belongs to failure-state scenarios; ordinary successful detection should not be confused with tool incompleteness.
+
+## Rules
+
+Each applicable domain needs positive and negative cases. Hold at least one third out of prompt tuning and synchronize `evals/split.yaml`. Minimum target is 60; currently 94. Domain codes: application_architecture, general_vulnerabilities, xss, csp, authentication, authorization, dependency, build_supply_chain, github_actions, secret_exposure, input_validation, error_handling, data_integrity, ai_agent_security.
+
+Incomplete cases verify that failure to execute never becomes pass. Encode invisible characters and fake keys as escapes/placeholders to avoid triggering repository scans. `validate.py` checks IDs/filenames, gate directories, split consistency, held-out ratio, positive/negative domain coverage, and catalog/rule IDs. Invalid expected IDs are configuration errors.
+
+## Three-arm comparison
+
+Tune only on held-in cases. Measure held-out recall/precision, common false negatives, per-model added valid findings, human time, and cost across tools+single model, tools+same-family agents, and tools+cross-family agents.
+
+## Running evaluations
+
+```bash
+python3 scripts/run_evals.py --md reports/evals.md --json reports/evals.json
+python3 scripts/run_evals.py --split held_out
+python3 scripts/run_evals.py --no-network
+```
+
+Only cases with a real applicable runner execute and score:
+
+| Runner | What is actually verified |
+|---|---|
+| semgrep | Code/IaC rules in the repository ruleset; normalize language variants such as -js |
+| slopcheck-rules-file | Write the snippet at its rule-file path and invoke shared G1 code against the live registry; no-network leaves untested |
+| g1-kev | Synthetic Grype matches + live CISA feed through g1_kev.py. Verifies matching/verdict logic, not Grype's detector; nightly runs real Grype. Network failure is untested/incomplete. |
+| slopcheck | Manifest ecosystem/added cases against live data; synthetic fields use the fixture runner |
+| g1-fixture | Shared cooldown_finding/install_hook_finding with synthetic publication age or hooks and trusted patterns; does not test registry transport |
+| g0-trifecta | Shared trifecta_findings over modeled agents, also used by validate.py |
+| g4-static | Preserve snippet path/directories and run the exact shared workflow implementation; all SARIF levels count as detection |
+| gitleaks / checkov | CI-identical configuration, catalog implemented_by mappings, custom policies/allowlists. Out-of-allowlist checks do not count. VIBESEC_GITLEAKS may identify the binary; nightly pins/checksums it. |
+| env-check | Temporary Git repo with specified tracked files/ignore rules; exact shared environment guard |
+| vulnapp | Start loopback on a random port; G5 shared probes exclude note-level untested results from detections; G6 deterministic assertions match promptfoo. Only actually reproducible lab cases qualify. |
+| vulnapp-patched | Separate patched instance provides safe controls; hypothetical/absent endpoints remain untested. --no-target skips lab work. |
+| config-controls | Shared CSP/header/HITL declaration checks; runtime behavior still requires G5/G6 |
+| gate-status | Inject timeout/refusal/tool/provider failures into real gate functions; matching expected status is VERIFIED, not TP/TN; mismatches are STATUS_FAIL/exit 1 |
+| G6 event/usage cases | Real HTTP responses from vulnerable/patched deterministic labs, explicitly labeled synthetic telemetry |
+
+No runner means untested with a reason; runner failure means incomplete. Neither counts as pass or enters detection metrics. Expand fake-key placeholders only in temporary files. Fixtures must include applicable context (for example a route handler for owner-filter rules), avoiding vacuous negative passes.
+
+## Nightly regression detection
+
+Nightly runs with `--baseline evals/baseline.yaml`. Any FP, FN, or STATUS_FAIL exits 1 even without a baseline. Any baseline case becoming untested/incomplete also fails, including missing scanners, lab startup failures, or registry outages. Results go to the job summary and `vibesec-nightly-evals` artifact.
+
+Main-only notification creates/updates one tracking issue for failed/canceled jobs with statuses, regressions, and run links; it closes on full recovery. Manual branch runs do not notify.
+
+After adding executable cases, regenerate with `python3 scripts/run_evals.py --write-baseline evals/baseline.yaml` and review the diff. Removing baseline cases weakens checks and requires a separate human policy decision.

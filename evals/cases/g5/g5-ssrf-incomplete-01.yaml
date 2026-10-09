@@ -1,7 +1,7 @@
 id: g5-ssrf-incomplete-01
 gate: G5
 domain: input_validation
-title: 端點回 405／無 metadata 服務時不得判 pass
+title: "端點回 405／無 metadata 服務時不得判 pass / HTTP 405 or an absent metadata service must not produce pass"
 input:
   kind: http
   target: /fetch
@@ -15,4 +15,4 @@ expected:
   policy_tier: advisory
   gate_status: incomplete
 held_out: false
-notes: 'PR #10 前的誤判情境：未實測 → untested，gate_status=incomplete，不得 pass。'
+notes: "PR #10 前的誤判情境：未實測 → untested，gate_status=incomplete，不得 pass。 / The pre-PR #10 false-positive scenario: unexecuted checks are untested with gate_status=incomplete, never pass."

@@ -1,5 +1,5 @@
 # VibeSec G5：雙帳號 BOLA / IDOR 測試情境（vibesec 自訂格式；docs/06-g5-dast-api.md 定義）
-# 原則（vibesec.yaml gates.g5_dast_api.two_account_test: required）：
+# 原則（vibesec.yaml gates.g5_dast_api.two_account_test: required）： / Principles for required gates.g5_dast_api.two_account_test in vibesec.yaml.
 #   必須持有至少兩個「不同權限 / 不同租戶」帳號的 Token，才能實證授權；缺任一 Token → G5 狀態 incomplete，不得記 pass。
 # Token 不寫在本檔，只透過環境變數注入（account_a_token_env / account_b_token_env）。
 # 執行者：harness 的 api-probes 步驟（curl / httpx）、Burp Autorize / AuthMatrix 匯入、Schemathesis 自訂 hook。
@@ -9,19 +9,19 @@ target_url_env: VIBESEC_TARGET_URL
 
 accounts:
   A:
-    description: "一般使用者，資料擁有者（victim）"
+    description: "一般使用者，資料擁有者（victim） / Ordinary user and resource owner (victim)."
     token_env: VIBESEC_TOKEN_A
     role: user
     tenant: tenant-a
     user_id_env: VIBESEC_USER_ID_A       # 可選；用於驗證回應中的 owner 欄位
   B:
-    description: "另一位一般使用者，攻擊者（同角色、不同主體；水平越權）"
+    description: "另一位一般使用者，攻擊者（同角色、不同主體；水平越權） / Another ordinary user acting as attacker: same role, different principal; horizontal privilege escalation."
     token_env: VIBESEC_TOKEN_B
     role: user
     tenant: tenant-b
     user_id_env: VIBESEC_USER_ID_B
   ANON:
-    description: "無 Token（驗證後端是否真的檢查 Session；前端防禦假象）"
+    description: "無 Token（驗證後端是否真的檢查 Session；前端防禦假象） / No token; verifies that the backend actually checks the session rather than relying on frontend controls."
     token_env: null
     role: anonymous
 
@@ -31,7 +31,7 @@ auth:
   cookie_name: null
 
 # 資源對：以 A 建立 / 擁有的資源，用 B 與 ANON 的身分嘗試存取。
-# id_from：如何取得 A 的資源 id（seed = 固定測試資料；create = 先以 A 呼叫 create_request 建立）。
+# id_from：如何取得 A 的資源 id（seed = 固定測試資料；create = 先以 A 呼叫 create_request 建立）。 / id_from retrieves A's resource ID: seed uses fixed data; create first sends create_request as A.
 resources:
   - name: todo
     id_from: create
@@ -85,10 +85,10 @@ function_level:
   - { method: GET,    path: /api/admin/users,          expect: { B: [401, 403], ANON: [401, 403] } }
   - { method: DELETE, path: "/api/admin/users/{id}",   expect: { B: [401, 403], ANON: [401, 403] }, id_from_env: VIBESEC_USER_ID_A }
 
-# 判定
+# 判定 / Verdict.
 verdict:
-  bola_confirmed_when: "任一 resources[].requests 以 B 或 ANON 取得非 expect 清單內的 2xx 回應"
+  bola_confirmed_when: "任一 resources[].requests 以 B 或 ANON 取得非 expect 清單內的 2xx 回應 / Any resources[].requests request by B or ANON returns a 2xx status outside the expect list."
   rule_id_on_fail: vibesec.g5.bola-cross-account        # B 取得 2xx
   rule_id_on_anon_fail: vibesec.g5.missing-session-check  # ANON 取得 2xx
-  evidence: "完整 HTTP 交換（遮罩 Token）存 reports/g5/<resource>-<account>.http，evidence_refs.kind = http_exchange"
+  evidence: "完整 HTTP 交換（遮罩 Token）存 reports/g5/<resource>-<account>.http，evidence_refs.kind = http_exchange / Store the complete HTTP exchange with masked tokens at reports/g5/<resource>-<account>.http; use evidence_refs.kind = http_exchange."
   evidence_grade_on_fail: E3

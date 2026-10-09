@@ -1,7 +1,7 @@
 id: g4-owner-pos-03
 gate: G4
 domain: authorization
-title: SQLAlchemy session.get(Model, id) 未綁定當前主體
+title: "SQLAlchemy session.get(Model, id) 未綁定當前主體 / SQLAlchemy session.get(Model, id) lacks principal binding"
 input:
   kind: code
   language: python
@@ -15,4 +15,4 @@ expected:
   rule_id: vibesec.g4.missing-owner-filter
   policy_tier: advisory
 held_out: false
-notes: 收緊 $DB.get($MODEL, $ID) 後仍須命中：$MODEL 是類別（含模組前綴）。
+notes: "收緊 $DB.get($MODEL, $ID) 後仍須命中：$MODEL 是類別（含模組前綴）。 / Narrowing $DB.get($MODEL, $ID) must still match class-valued $MODEL, including module-qualified classes."

@@ -1,7 +1,7 @@
 id: g5-bola-pos-01
 gate: G5
 domain: authorization
-title: 雙帳號 BOLA — 帳號 B Token 讀帳號 A 資源
+title: "雙帳號 BOLA — 帳號 B Token 讀帳號 A 資源 / Two-account BOLA: account B's token reads account A's resource"
 input:
   kind: http
   target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測
@@ -15,4 +15,4 @@ expected:
   rule_id: vibesec.g5.bola-cross-account
   policy_tier: blocking
 held_out: false
-notes: 回應 200 且主體為 alice 即確認（E2）。
+notes: "回應 200 且主體為 alice 即確認（E2）。 / HTTP 200 with alice as owner confirms the finding at E2."

@@ -12,15 +12,13 @@ basis: reproduced            # reproduced | manual_review | scope_exclusion | co
 evidence_refs:
   - kind: http_exchange
     ref: reports/raw/G5/api-probes/bola-1001.json
-    note: 人工以 bob 的 token 重放 GET /users/1/notes，得 200 並回 alice 的筆記
-rationale: >-
-  人工重放確認 bob 可讀 alice 的資源；architecture 的 refute 論點（「有 gateway 層授權」）
-  經查 gateway 只驗證 token 有效，並未綁定 owner，故不成立。
+    note: "人工以 bob 的 token 重放 GET /users/1/notes，得 200 並回 alice 的筆記 / A human replayed GET /users/1/notes with bob's token and received HTTP 200 with alice's notes."
+rationale: "人工重放確認 bob 可讀 alice 的資源；architecture 的 refute 論點（「有 gateway 層授權」） 經查 gateway 只驗證 token 有效，並未綁定 owner，故不成立。 / Human replay confirmed that bob can read alice's resources. The architecture refutation citing gateway authorization is unsupported: the gateway validates tokens but does not bind the owner."
 minority_acknowledged:
   - role: architecture
     provider: openai-cloud
     response: rejected
-    comment: gateway 僅驗 token 有效性，未做 owner 綁定（見 evidence_refs）
+    comment: "gateway 僅驗 token 有效性，未做 owner 綁定（見 evidence_refs） / The gateway validates tokens without binding ownership; see evidence_refs."
 next_review_by: null
 follow_up:
   owner: backend-team

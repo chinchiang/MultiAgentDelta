@@ -1,10 +1,10 @@
 # VibeSec G1：幻覺套件 / typosquat 黑名單
-# status 說明：
+# status 說明： / Status definitions:
 #   confirmed_malicious   — 曾被 Registry 下架或由安全廠商 / 國家級 CERT 證實為惡意（來源見 source）
-#   hallucination_prone   — LLM 常輸出但不存在、已被搶註為空殼、或與真實套件混淆的名稱（可能無害，但一律阻擋並要求人工確認）
-#   confusable_legit      — 真實存在但極易與另一套件混淆（例如 sklearn 應為 scikit-learn）；依 action 阻擋或警示並提示正確名稱
-# action：block（阻擋）/ warn（advisory，列印正確名稱）
-# 本清單是最後一道備援；主要防線是 cooldown.yaml 的 Registry 健康度與相似度檢查。更新時附來源與日期。
+#   hallucination_prone   — LLM 常輸出但不存在、已被搶註為空殼、或與真實套件混淆的名稱（可能無害，但一律阻擋並要求人工確認） / hallucination_prone: nonexistent, squatted placeholder, or confused names often emitted by LLMs; always block pending human confirmation even if harmless.
+#   confusable_legit      — 真實存在但極易與另一套件混淆（例如 sklearn 應為 scikit-learn）；依 action 阻擋或警示並提示正確名稱 / confusable_legit: real but easily confused names, such as sklearn/scikit-learn; block or warn according to action and show the correct name.
+# action：block（阻擋）/ warn（advisory，列印正確名稱） / action is block or warn; warn is advisory and prints the correct name.
+# 本清單是最後一道備援；主要防線是 cooldown.yaml 的 Registry 健康度與相似度檢查。更新時附來源與日期。 / This list is a fallback; registry health and similarity in cooldown.yaml are primary. Include sources and dates when updating.
 
 version: 1
 updated: "2026-10-04"
@@ -16,174 +16,174 @@ packages:
     status: hallucination_prone
     looks_like: axios
     action: block
-    reason: "axios 的常見拼錯／幻覺名稱；曾多次被搶註為 typosquat"
+    reason: "axios 的常見拼錯／幻覺名稱；曾多次被搶註為 typosquat / Common axios typo/hallucination repeatedly preregistered as a typosquat"
   - name: expres
     ecosystem: npm
     status: hallucination_prone
     looks_like: express
     action: block
-    reason: "express 拼錯"
+    reason: "express 拼錯 / Express misspelling"
   - name: lodahs
     ecosystem: npm
     status: hallucination_prone
     looks_like: lodash
     action: block
-    reason: "lodash 拼錯；歷史上曾有同類 typosquat（loadsh 等）被下架"
+    reason: "lodash 拼錯；歷史上曾有同類 typosquat（loadsh 等）被下架 / Lodash typo; similar names have been removed historically"
   - name: loadsh
     ecosystem: npm
     status: confirmed_malicious
     looks_like: lodash
     action: block
-    reason: "lodash typosquat，npm 已下架"
+    reason: "lodash typosquat，npm 已下架 / Lodash typosquat removed from npm"
     source: "npm advisory / Snyk 2021"
   - name: jsonwebtokens
     ecosystem: npm
     status: hallucination_prone
     looks_like: jsonwebtoken
     action: block
-    reason: "LLM 常加 s；正確名稱為 jsonwebtoken"
+    reason: "LLM 常加 s；正確名稱為 jsonwebtoken / Hallucinated plural; correct package is jsonwebtoken"
   - name: react-dom-router
     ecosystem: npm
     status: hallucination_prone
     looks_like: react-router-dom
     action: block
-    reason: "字序顛倒的幻覺名稱；正確為 react-router-dom"
+    reason: "字序顛倒的幻覺名稱；正確為 react-router-dom / Reordered hallucinated name; correct package is react-router-dom"
   - name: openai-node
     ecosystem: npm
     status: hallucination_prone
     looks_like: openai
     action: warn
-    reason: "GitHub repo 名稱被當成 npm 套件名；npm 套件為 openai"
+    reason: "GitHub repo 名稱被當成 npm 套件名；npm 套件為 openai / GitHub repository name mistaken for npm name; use openai"
   - name: "@anthropic/sdk"
     ecosystem: npm
     status: hallucination_prone
     looks_like: "@anthropic-ai/sdk"
     action: block
-    reason: "scope 錯誤；官方為 @anthropic-ai/sdk"
+    reason: "scope 錯誤；官方為 @anthropic-ai/sdk / Wrong scope; official package is @anthropic-ai/sdk"
   - name: supabase
     ecosystem: npm
     status: confusable_legit
     looks_like: "@supabase/supabase-js"
     action: warn
-    reason: "bare `supabase` 是 CLI 套件；應用程式 client 為 @supabase/supabase-js"
+    reason: "bare `supabase` 是 CLI 套件；應用程式 client 為 @supabase/supabase-js / Bare supabase is the CLI; application client is @supabase/supabase-js"
   - name: crossenv
     ecosystem: npm
     status: confirmed_malicious
     looks_like: cross-env
     action: block
-    reason: "2017 年 hacktask 系列 typosquat，postinstall 竊取環境變數外傳"
+    reason: "2017 年 hacktask 系列 typosquat，postinstall 竊取環境變數外傳 / 2017 hacktask typosquat family exfiltrated environment variables through install hooks"
     source: "npm blog 2017-08 'crossenv malware on the npm registry'"
   - name: cross-env.js
     ecosystem: npm
     status: confirmed_malicious
     looks_like: cross-env
     action: block
-    reason: "同上 hacktask 系列"
+    reason: "同上 hacktask 系列 / Same hacktask family"
     source: "npm blog 2017-08"
   - name: mongose
     ecosystem: npm
     status: confirmed_malicious
     looks_like: mongoose
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Hacktask typosquat family"
     source: "npm blog 2017-08"
   - name: babelcli
     ecosystem: npm
     status: confirmed_malicious
     looks_like: "@babel/cli"
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Hacktask typosquat family"
     source: "npm blog 2017-08"
   - name: d3.js
     ecosystem: npm
     status: confirmed_malicious
     looks_like: d3
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Hacktask typosquat family"
     source: "npm blog 2017-08"
   - name: fabric-js
     ecosystem: npm
     status: confirmed_malicious
     looks_like: fabric
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Hacktask typosquat family"
     source: "npm blog 2017-08"
   - name: ffmepg
     ecosystem: npm
     status: confirmed_malicious
     looks_like: ffmpeg
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Hacktask typosquat family"
     source: "npm blog 2017-08"
   - name: jquery.js
     ecosystem: npm
     status: confirmed_malicious
     looks_like: jquery
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Hacktask typosquat family"
     source: "npm blog 2017-08"
   - name: nodemailer-js
     ecosystem: npm
     status: confirmed_malicious
     looks_like: nodemailer
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Typosquat in the hacktask family."
     source: "npm blog 2017-08"
   - name: node-sqlite
     ecosystem: npm
     status: confirmed_malicious
     looks_like: sqlite3
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Typosquat in the hacktask family."
     source: "npm blog 2017-08"
   - name: nodesass
     ecosystem: npm
     status: confirmed_malicious
     looks_like: node-sass
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Typosquat in the hacktask family."
     source: "npm blog 2017-08"
   - name: node-openssl
     ecosystem: npm
     status: confirmed_malicious
     looks_like: openssl
     action: block
-    reason: "hacktask 系列 typosquat"
+    reason: "hacktask 系列 typosquat / Typosquat in the hacktask family."
     source: "npm blog 2017-08"
   - name: electorn
     ecosystem: npm
     status: confirmed_malicious
     looks_like: electron
     action: block
-    reason: "electron typosquat，含竊取憑證 payload"
+    reason: "electron typosquat，含竊取憑證 payload / Electron typosquat containing a credential-stealing payload."
     source: "Snyk / npm 2022"
   - name: flatmap-stream
     ecosystem: npm
     status: confirmed_malicious
     looks_like: null
     action: block
-    reason: "2018 年 event-stream 事件植入的惡意相依（竊取 Copay 錢包）"
+    reason: "2018 年 event-stream 事件植入的惡意相依（竊取 Copay 錢包） / Malicious dependency planted in the 2018 event-stream incident to steal Copay wallets."
     source: "npm advisory 2018-11 (event-stream)"
   - name: colors
     ecosystem: npm
     status: confusable_legit
     looks_like: null
     action: warn
-    reason: "2022 年 1.4.1 / 1.4.44-liberty-2 為 protestware 版本；請鎖定 1.4.0 並進冷卻期審查"
+    reason: "2022 年 1.4.1 / 1.4.44-liberty-2 為 protestware 版本；請鎖定 1.4.0 並進冷卻期審查 / Versions 1.4.1 and 1.4.44-liberty-2 were protestware in 2022; pin 1.4.0 and apply cooldown review."
     source: "GitHub advisory 2022-01"
   - name: faker
     ecosystem: npm
     status: confusable_legit
     looks_like: "@faker-js/faker"
     action: warn
-    reason: "原 faker 6.6.6 為 protestware；維護分支為 @faker-js/faker"
+    reason: "原 faker 6.6.6 為 protestware；維護分支為 @faker-js/faker / Original faker 6.6.6 was protestware; the maintained fork is @faker-js/faker."
     source: "GitHub advisory 2022-01"
   - name: node-ipc
     ecosystem: npm
     status: confusable_legit
     looks_like: null
     action: warn
-    reason: "2022 年 10.1.1–10.1.2 含依地理位置覆寫檔案的 protestware（CVE-2022-23812）；鎖定安全版本"
+    reason: "2022 年 10.1.1–10.1.2 含依地理位置覆寫檔案的 protestware（CVE-2022-23812）；鎖定安全版本 / Versions 10.1.1–10.1.2 contained geographically targeted file-overwriting protestware in 2022 (CVE-2022-23812); pin a safe version."
     source: "GitHub advisory GHSA-97m3-w2cp-4xx6"
 
   # ------------------------------------------------------------------ pypi
@@ -192,194 +192,194 @@ packages:
     status: hallucination_prone
     looks_like: requests
     action: block
-    reason: "requests 常見拼錯；同形名稱歷史上多次被搶註"
+    reason: "requests 常見拼錯；同形名稱歷史上多次被搶註 / Common misspelling of requests; similar names have repeatedly been registered by others."
   - name: requets
     ecosystem: pypi
     status: hallucination_prone
     looks_like: requests
     action: block
-    reason: "requests 拼錯"
+    reason: "requests 拼錯 / Misspelling of requests."
   - name: request
     ecosystem: pypi
     status: hallucination_prone
     looks_like: requests
     action: block
-    reason: "單數 request 曾被搶註；正確為 requests"
+    reason: "單數 request 曾被搶註；正確為 requests / The singular name request has been squatted; use requests."
   - name: python-dotenv-env
     ecosystem: pypi
     status: hallucination_prone
     looks_like: python-dotenv
     action: block
-    reason: "LLM 幻覺的疊字名稱；正確為 python-dotenv"
+    reason: "LLM 幻覺的疊字名稱；正確為 python-dotenv / Duplicated hallucinated name; use python-dotenv."
   - name: dotenv
     ecosystem: pypi
     status: confusable_legit
     looks_like: python-dotenv
     action: warn
-    reason: "PyPI 上的 dotenv 不是 python-dotenv；from dotenv import load_dotenv 需安裝 python-dotenv"
+    reason: "PyPI 上的 dotenv 不是 python-dotenv；from dotenv import load_dotenv 需安裝 python-dotenv / PyPI dotenv is not python-dotenv; from dotenv import load_dotenv requires python-dotenv."
   - name: colourama
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: colorama
     action: block
-    reason: "2018 年 typosquat，植入剪貼簿加密貨幣位址劫持程式"
+    reason: "2018 年 typosquat，植入剪貼簿加密貨幣位址劫持程式 / A 2018 typosquat that hijacked cryptocurrency addresses in the clipboard."
     source: "Medium / PyPI 2018-10"
   - name: huggingface-cli
     ecosystem: pypi
     status: hallucination_prone
     looks_like: huggingface-hub
     action: block
-    reason: "LLM 常推薦 pip install huggingface-cli；真正提供 huggingface-cli 指令的是 huggingface-hub。研究者曾註冊此幻覺名稱做空殼實驗並獲得數萬次下載"
+    reason: "LLM 常推薦 pip install huggingface-cli；真正提供 huggingface-cli 指令的是 huggingface-hub。研究者曾註冊此幻覺名稱做空殼實驗並獲得數萬次下載 / LLMs often recommend pip install huggingface-cli, but huggingface-hub provides the command. A researcher registered this hallucinated name as an empty package and received tens of thousands of downloads."
     source: "Lasso Security 2024 'Diving into AI Package Hallucinations'"
   - name: jeIlyfish
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: jellyfish
     action: block
-    reason: "以大寫 I 冒充小寫 l 的同形字 typosquat，竊取 SSH / GPG 金鑰"
+    reason: "以大寫 I 冒充小寫 l 的同形字 typosquat，竊取 SSH / GPG 金鑰 / Homoglyph typosquat substituting uppercase I for lowercase l; steals SSH and GPG keys."
     source: "ZDNet / PyPI 2019-12"
   - name: python3-dateutil
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: python-dateutil
     action: block
-    reason: "2019 年與 jeIlyfish 同一作者的惡意 typosquat"
+    reason: "2019 年與 jeIlyfish 同一作者的惡意 typosquat / A malicious 2019 typosquat by the same author as jeIlyfish."
     source: "ZDNet / PyPI 2019-12"
   - name: urlib3
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: urllib3
     action: block
-    reason: "2017 年斯洛伐克 NBU 通報的 PyPI typosquat 系列"
+    reason: "2017 年斯洛伐克 NBU 通報的 PyPI typosquat 系列 / PyPI typosquat family reported by Slovakia's NBU in 2017."
     source: "SK-CERT / NBU 2017-09"
   - name: urllib
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: urllib3
     action: block
-    reason: "同上系列（urllib 是標準庫，不需安裝）"
+    reason: "同上系列（urllib 是標準庫，不需安裝） / Same family; urllib is part of the standard library and requires no installation."
     source: "SK-CERT / NBU 2017-09"
   - name: setup-tools
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: setuptools
     action: block
-    reason: "同上系列"
+    reason: "同上系列 / Same typosquat family."
     source: "SK-CERT / NBU 2017-09"
   - name: acqusition
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: acquisition
     action: block
-    reason: "同上系列"
+    reason: "同上系列 / Same typosquat family."
     source: "SK-CERT / NBU 2017-09"
   - name: apidev-coop
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: apidev-coop_cms
     action: block
-    reason: "同上系列"
+    reason: "同上系列 / Same typosquat family."
     source: "SK-CERT / NBU 2017-09"
   - name: bzip
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: bz2file
     action: block
-    reason: "同上系列（bz2 為標準庫）"
+    reason: "同上系列（bz2 為標準庫） / Same family; bz2 is part of the standard library."
     source: "SK-CERT / NBU 2017-09"
   - name: crypt
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: cryptography
     action: block
-    reason: "同上系列（crypt 為標準庫）"
+    reason: "同上系列（crypt 為標準庫） / Same family; crypt is part of the standard library."
     source: "SK-CERT / NBU 2017-09"
   - name: telnet
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: telnetlib
     action: block
-    reason: "同上系列"
+    reason: "同上系列 / Same typosquat family."
     source: "SK-CERT / NBU 2017-09"
   - name: beautifulsoup
     ecosystem: pypi
     status: hallucination_prone
     looks_like: beautifulsoup4
     action: block
-    reason: "LLM 常省略 4；舊版 BeautifulSoup（py2）早已停止維護"
+    reason: "LLM 常省略 4；舊版 BeautifulSoup（py2）早已停止維護 / LLMs often omit the 4; the old Python 2 BeautifulSoup package is no longer maintained."
   - name: bs4
     ecosystem: pypi
     status: confusable_legit
     looks_like: beautifulsoup4
     action: warn
-    reason: "bs4 是只負責轉裝 beautifulsoup4 的空殼；請直接安裝 beautifulsoup4"
+    reason: "bs4 是只負責轉裝 beautifulsoup4 的空殼；請直接安裝 beautifulsoup4 / bs4 is a shim that installs beautifulsoup4; install beautifulsoup4 directly."
   - name: sklearn
     ecosystem: pypi
     status: confusable_legit
     looks_like: scikit-learn
     action: block
-    reason: "sklearn 為已 brownout 的 deprecated 轉接套件；正確為 scikit-learn"
-    source: "PyPI sklearn 專案頁 deprecation notice"
+    reason: "sklearn 為已 brownout 的 deprecated 轉接套件；正確為 scikit-learn / sklearn is a deprecated shim with installation brownouts; use scikit-learn."
+    source: "PyPI sklearn 專案頁 deprecation notice / Deprecation notice on the PyPI sklearn project page."
   - name: pytorch
     ecosystem: pypi
     status: confusable_legit
     looks_like: torch
     action: block
-    reason: "PyPI 的 pytorch 是刻意安裝即失敗的佔位套件；正確為 torch"
+    reason: "PyPI 的 pytorch 是刻意安裝即失敗的佔位套件；正確為 torch / PyPI pytorch is a placeholder that intentionally fails installation; use torch."
   - name: torchtriton
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: triton
     action: block
-    reason: "2022-12 PyTorch nightly 相依混淆攻擊，PyPI 上的 torchtriton 竊取系統資訊"
+    reason: "2022-12 PyTorch nightly 相依混淆攻擊，PyPI 上的 torchtriton 竊取系統資訊 / The December 2022 PyTorch nightly dependency-confusion attack used PyPI torchtriton to steal system information."
     source: "PyTorch blog 2022-12-31"
   - name: yaml
     ecosystem: pypi
     status: hallucination_prone
     looks_like: pyyaml
     action: block
-    reason: "import yaml 對應的套件是 pyyaml；LLM 常寫 pip install yaml"
+    reason: "import yaml 對應的套件是 pyyaml；LLM 常寫 pip install yaml / import yaml requires pyyaml; LLMs often suggest pip install yaml."
   - name: opencv
     ecosystem: pypi
     status: hallucination_prone
     looks_like: opencv-python
     action: block
-    reason: "import cv2 對應 opencv-python；bare opencv 為佔位"
+    reason: "import cv2 對應 opencv-python；bare opencv 為佔位 / import cv2 requires opencv-python; bare opencv is a placeholder."
   - name: pil
     ecosystem: pypi
     status: hallucination_prone
     looks_like: pillow
     action: block
-    reason: "PIL 已停止維護；正確為 pillow"
+    reason: "PIL 已停止維護；正確為 pillow / PIL is no longer maintained; use pillow."
   - name: anthropic-sdk
     ecosystem: pypi
     status: hallucination_prone
     looks_like: anthropic
     action: block
-    reason: "幻覺名稱；官方 Python 套件為 anthropic"
+    reason: "幻覺名稱；官方 Python 套件為 anthropic / Hallucinated name; the official Python package is anthropic."
   - name: openai-python
     ecosystem: pypi
     status: hallucination_prone
     looks_like: openai
     action: block
-    reason: "GitHub repo 名稱被當成套件名；官方為 openai"
+    reason: "GitHub repo 名稱被當成套件名；官方為 openai / GitHub repository name mistaken for a package name; the official package is openai."
   - name: langchain-openai-tools
     ecosystem: pypi
     status: hallucination_prone
     looks_like: langchain-openai
     action: block
-    reason: "LLM 幻覺的疊加名稱；請確認官方 langchain-* 命名"
+    reason: "LLM 幻覺的疊加名稱；請確認官方 langchain-* 命名 / Hallucinated compound name; verify official langchain-* package names."
   - name: ctx
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: null
     action: block
-    reason: "2022 年被接管後發布竊取 AWS 憑證的版本"
+    reason: "2022 年被接管後發布竊取 AWS 憑證的版本 / Taken over in 2022 to publish a version that stole AWS credentials."
     source: "PyPI / Sonatype 2022-05"
   - name: pyobfgood
     ecosystem: pypi
     status: confirmed_malicious
     looks_like: null
     action: block
-    reason: "2023 年偽裝混淆工具的惡意套件家族（pyobf* 系列）"
+    reason: "2023 年偽裝混淆工具的惡意套件家族（pyobf* 系列） / Malicious packages posing as obfuscation tools in 2023 (the pyobf* family)."
     source: "Checkmarx 2023-11"

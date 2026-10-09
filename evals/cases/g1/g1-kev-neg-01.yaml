@@ -1,7 +1,7 @@
 id: g1-kev-neg-01
 gate: G1
 domain: dependency
-title: 相依套件有 CVE，但不在 CISA KEV
+title: "相依套件有 CVE，但不在 CISA KEV / A dependency has a CVE absent from CISA KEV"
 input:
   kind: manifest
   ecosystem: maven
@@ -17,4 +17,4 @@ expected:
   rule_id: vibesec.g1.kev-hit
   policy_tier: blocking
 held_out: false
-notes: 有 CVE 不等於 KEV 命中；KEV 只列已知遭實際利用者（CVSS、EPSS、KEV 分欄記錄）。
+notes: "有 CVE 不等於 KEV 命中；KEV 只列已知遭實際利用者（CVSS、EPSS、KEV 分欄記錄）。 / A CVE does not imply known exploitation. Record CVSS, EPSS, and KEV separately."

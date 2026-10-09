@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/chinchiang/MultiAgentDelta/schemas/finding.schema.json",
-  "title": "VibeSec Finding",
-  "description": "統一 JSON 發現介面（PLAN.md §4）。技術嚴重度、處置優先序、證據可信度、驗證狀態分開呈現；不適用欄位使用 null。",
+  "title": "VibeSec 資安發現 / VibeSec Finding",
+  "description": "統一 JSON 發現介面（docs/10）。技術嚴重度、處置優先序、證據可信度、驗證狀態分開呈現；不適用欄位使用 null。 / Unified finding JSON (docs/10). Keep severity, priority, evidence strength, and validation separate; use null where inapplicable.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,25 +16,25 @@
   "properties": {
     "id": { "type": "string", "pattern": "^VS-[0-9]{8}-[0-9a-f]{8}$", "description": "VS-YYYYMMDD-<8 hex>" },
     "gate": { "$ref": "#/$defs/gate" },
-    "rule_id": { "type": "string", "description": "來源工具或 vibesec 規則 ID，例如 vibesec.g3.sql-string-concat 或 gitleaks:openai-api-key" },
+    "rule_id": { "type": "string", "description": "來源工具或 vibesec 規則 ID，例如 vibesec.g3.sql-string-concat 或 gitleaks:openai-api-key / Source-tool or VibeSec rule ID, e.g. vibesec.g3.sql-string-concat or gitleaks:openai-api-key." },
     "title": { "type": "string", "minLength": 1 },
     "description": { "type": "string" },
     "control_id": {
       "type": ["string", "null"],
       "pattern": "^(ASVS5-V[0-9]+\\.[0-9]+(\\.[0-9]+)?|LLM[0-9]{2}:2025|MAESTRO-L[1-7]|VS-G[0-6]-[A-Z0-9-]+)$",
-      "description": "必須存在於 config/catalogs 中；不得由模型猜測"
+      "description": "必須存在於 config/catalogs 中；不得由模型猜測 / Must exist in config/catalogs; models must not guess IDs."
     },
     "cwe": { "type": ["string", "null"], "pattern": "^CWE-[0-9]+$" },
     "cve": { "type": ["string", "null"], "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$" },
-    "severity": { "type": ["string", "null"], "enum": ["critical", "high", "medium", "low", "info", null], "description": "技術嚴重度（CVSS 推導或工具提供）" },
+    "severity": { "type": ["string", "null"], "enum": ["critical", "high", "medium", "low", "info", null], "description": "技術嚴重度（CVSS 推導或工具提供） / Technical severity derived from CVSS or supplied by the tool." },
     "cvss_version": { "type": ["string", "null"], "enum": ["4.0", "3.1", null] },
     "cvss_vector": { "type": ["string", "null"], "pattern": "^CVSS:(4\\.0|3\\.1)/" },
     "cvss_score": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
     "epss": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
     "epss_date": { "type": ["string", "null"], "format": "date" },
     "kev": { "type": ["boolean", "null"] },
-    "kev_date": { "type": ["string", "null"], "format": "date", "description": "KEV 收錄日或查詢日" },
-    "evidence_grade": { "type": "string", "enum": ["E0", "E1", "E2", "E3"], "description": "E0 無支持推測 / E1 候選線索 / E2 有直接支持 / E3 已確認" },
+    "kev_date": { "type": ["string", "null"], "format": "date", "description": "KEV 收錄日或查詢日 / KEV inclusion or query date." },
+    "evidence_grade": { "type": "string", "enum": ["E0", "E1", "E2", "E3"], "description": "E0 無支持推測 / E1 候選線索 / E2 有直接支持 / E3 已確認 / E0 unsupported hypothesis / E1 candidate / E2 direct support / E3 confirmed evidence." },
     "validation_status": { "type": "string", "enum": ["pending", "confirmed", "refuted"] },
     "policy_tier": { "type": "string", "enum": ["blocking", "advisory"] },
     "priority": { "type": ["string", "null"], "enum": ["P0", "P1", "P2", "P3", null] },
@@ -62,8 +62,8 @@
         "required": ["kind", "ref"],
         "properties": {
           "kind": { "type": "string", "enum": ["tool_output", "http_exchange", "code_excerpt", "advisory", "model_review", "human_note", "sbom", "trace"] },
-          "ref": { "type": "string", "description": "檔案路徑、URL 或 artifact 內的相對路徑" },
-          "digest": { "type": ["string", "null"], "description": "sha256 或 artifact digest" },
+          "ref": { "type": "string", "description": "檔案路徑、URL 或 artifact 內的相對路徑 / File path, URL, or path within an artifact." },
+          "digest": { "type": ["string", "null"], "description": "sha256 或 artifact digest / SHA-256 or artifact digest." },
           "note": { "type": ["string", "null"] }
         }
       }
@@ -93,7 +93,7 @@
         },
         "requires_human": { "type": "boolean" },
         "human_decision": { "type": ["string", "null"] },
-        "ruling_ref": { "type": ["string", "null"], "description": "人工裁決紀錄路徑，例如 rulings/VS-20261003-1a2b3c4d.yaml（docs/09 §7）" }
+        "ruling_ref": { "type": ["string", "null"], "description": "人工裁決紀錄路徑，例如 rulings/VS-20261003-1a2b3c4d.yaml（docs/09 §12） / Human ruling record path, e.g. rulings/VS-20261003-1a2b3c4d.yaml (docs/09 section 12)." }
       }
     },
     "retest_result": { "type": ["string", "null"], "enum": ["fixed", "still_present", "regressed", "not_retested", null] },

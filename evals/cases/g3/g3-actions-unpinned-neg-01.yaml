@@ -1,7 +1,7 @@
 id: g3-actions-unpinned-neg-01
 gate: G3
 domain: github_actions
-title: Action 釘選完整 commit SHA
+title: "Action 釘選完整 commit SHA / An Action is pinned to a full commit SHA"
 input:
   kind: iac
   path: .github/workflows/ci.yml
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g3.actions-unpinned-action
   policy_tier: advisory
 held_out: true
-notes: '本 repo PR #7、#11 的實際作法。'
+notes: "本 repo PR #7、#11 的實際作法。 / Actual practice in repository PRs #7 and #11."

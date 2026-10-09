@@ -1,7 +1,7 @@
 id: g3-actions-unpinned-neg-02
 gate: G3
 domain: github_actions
-title: 本地 action 與 docker:// 映像不屬於此規則
+title: "本地 action 與 docker:// 映像不屬於此規則 / Local actions and docker:// images are outside this rule"
 input:
   kind: iac
   path: .github/workflows/ci.yml
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g3.actions-unpinned-action
   policy_tier: advisory
 held_out: true
-notes: 'docker 映像的釘選屬於容器供應鏈，另由 G1／checkov 處理。'
+notes: "docker 映像的釘選屬於容器供應鏈，另由 G1／checkov 處理。 / Image pinning belongs to the container supply chain and is handled separately by G1/Checkov."

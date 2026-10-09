@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 02 G1 相依性與供應鏈（白箱；管線最前端）
 
 | 項目 | 值 |
@@ -107,7 +112,8 @@ def suspicious(name, popular):
 # npm：不執行 scripts 取得 tarball 並檢查
 npm pack <pkg>@<ver> --ignore-scripts --pack-destination /tmp/g1 && tar -xzf /tmp/g1/*.tgz -C /tmp/g1
 jq '.scripts | {preinstall, install, postinstall, prepare}' /tmp/g1/package/package.json
-# python：只下載不建置
+# Python：注意 pip download 仍可能執行來源套件的中繼資料建置程式；僅在隔離環境使用。
+# Python: pip download may execute source-package metadata builds; use an isolated environment.
 pip download <pkg>==<ver> --no-deps --no-binary :all: -d /tmp/g1 && tar -xzf /tmp/g1/*.tar.gz -C /tmp/g1
 grep -nE 'urllib|requests|socket|os\.environ|\.aws|\.npmrc|\.claude' /tmp/g1/*/setup.py
 ```
@@ -233,3 +239,142 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 4. **SBOM 可重現且完整**：同一 commit 兩次產出的 CycloneDX `components[]` 集合相同（忽略 timestamp / serialNumber），且鎖定檔釘選的套件都在 SBOM。`scripts/g1_sbom.py` 每次執行都檢查；`python3 scripts/g1_sbom.py selftest` 涵蓋可重現、格式、缺漏、只讀 commit 與無解析器鎖定檔等案例。
 5. **分欄不混算**：抽查 finding：`cvss_score` 與 `epss` 各自存在，`priority` 由政策表決定而非乘積。
 6. **時效**：PR 階段 G1 wall-clock < 3 分鐘（快取命中時 < 60 秒）。
+
+
+---
+
+<a id="english"></a>
+
+# 02 G1 Dependencies and Supply Chain (White-Box; First in the Pipeline)
+
+G1 is deterministic and runs on commits/PRs and dependency changes with `order: first`. DevOps/platform owns it. `vibesec.yaml → gates.g1_supply_chain` configures a 14-day cooldown, 1,000 weekly downloads, popular/black/allowlists, agent-rule scanning, CycloneDX JSON, Syft/Grype/Trivy, and EPSS/KEV enrichment. Detailed settings live in `config/slopsquat/`.
+
+## Causes addressed
+
+Studies report roughly 19.7–20% hallucinated package recommendations and 58% recurring hallucinated names. Attackers can preregister predictable names and wait for developers to accept generated installation commands. Nx s1ngularity/Shai-Hulud used install hooks and authenticated local Claude/Gemini CLIs to steal credentials from AWS/npm/environment files and propagate. Flooding Dropper-style malware also hides in newly released versions.
+
+**Never automatically install unknown packages emitted by an LLM or agent.**
+
+## Triggers and nature
+
+- Each commit/PR: query registries for packages added or version-changed in manifests, lockfiles, or rule-file diffs. SBOM/vulnerability checks cover the full lockfile.
+- Run before target `npm ci` or dependency installation: install hooks execute immediately. Until G1 passes, parse files without installing target packages.
+- Rerun fully each night: package age and KEV membership change over time.
+- Timeout: 600 seconds. Registry failure is `incomplete`, never pass.
+
+## Core tasks: four defensive layers
+
+Any blocking result stops installation. After all layers pass, generate an SBOM, compare CVEs, and enrich with EPSS/KEV.
+
+### 1. Official-registry existence and health
+
+| Check | Source / threshold | Result |
+|---|---|---|
+| Existence | npm `registry.npmjs.org/<pkg>`; PyPI `pypi.org/pypi/<pkg>/json`; HTTP 404 | Blocking `vibesec.g1.hallucinated-package` |
+| Weekly downloads | npm `api.npmjs.org/downloads/point/last-week/<pkg>`; PyPI `pypistats.org/api/packages/<pkg>/recent` | Below 1,000: advisory `low-download-package`; with suspicious similarity: blocking |
+| Initial publication | npm `time.created`; earliest PyPI `upload_time_iso_8601` | Under 30 days: block pending review |
+| Versions / maintainers | Fewer than two versions or maintainer change within 30 days | High-risk flag |
+
+Optional SlopCheck/DevSentinel/Socket results retain their native prefixed rule IDs.
+
+### 2. Similarity and blacklist
+
+Normalize case, PyPI `_`/`.`/`-` per PEP 503, npm scopes separately, and confusables such as I/l and 0/o. Compare against popular-package lists. Ignore exact matches and names shorter than four characters. Use optimal-string-alignment edit distance (adjacent swaps count as one): threshold one for names ≤5 characters, two otherwise, or `difflib` ratio ≥0.85. This avoids treating every short unrelated name as a typo. Matches create blocking `hallucinated-package` with `looks_like` notes.
+
+Blacklist categories:
+
+- `confirmed_malicious`: removed/CERT-confirmed packages such as `crossenv`, `colourama`, `jeIlyfish`, `torchtriton`.
+- `hallucination_prone`: `axois`, `reqeusts`, `python-dotenv-env`, `yaml`, `beautifulsoup`, and `huggingface-cli` (the actual CLI is supplied by `huggingface-hub`).
+- `confusable_legit`: real but misleading names, such as `sklearn` versus `scikit-learn`, or `pytorch` versus `torch`.
+
+Scan `.cursorrules`, `AGENTS.md`, `SKILL.md`, and `**/*.md`, because assistants may execute their installation instructions. Unknown/blacklisted packages yield `rules-file-unknown-package`. Arguments to value-taking flags are paths/URLs, not package names (`-r`, `-e`, `--index-url`, `--registry`; see `VALUE_FLAGS`). Deduplicate each package within a file. G4's invisible-Unicode rule-file check runs alongside this work.
+
+### 3. Installation hooks
+
+Inspect npm `preinstall`, `install`, `postinstall`, `prepare`, and Python setup/build hooks without executing untrusted build code.
+
+| Signal | Examples | Decision |
+|---|---|---|
+| Network | curl/wget/fetch/HTTP/axios/urllib/requests/socket | Network alone: advisory; combine with sensitive access/execution: block |
+| Environment | `process.env`, `os.environ`, `os.getenv`, token/secret/key/password variables | Network + environment: blocking `postinstall-egress` (CWE-506) |
+| Credential paths | `.aws`, `.npmrc`, `.pypirc`, `.ssh`, `.claude`, gcloud, Docker config, `.gitconfig`, `.netrc`, kubeconfig, `.env` | Blocking |
+| Local AI CLI abuse | claude/gemini/codex/aider with unattended or permission-bypass flags | Blocking |
+| Dynamic execution | child_process/execSync/subprocess/os.system/eval/new Function, base64 decoding, piping to shell | With network: blocking; alone: advisory |
+
+`scripts/g1_slopcheck.py → install_hook_finding()` classifies npm hooks. Benign hooks such as `node-gyp rebuild` do not automatically count as egress. Downloading a tarball for inspection is different from installing it; Python download/build tooling may execute metadata hooks, so handle untrusted source archives in isolation.
+
+For L2+, optional dynamic testing runs installation in a network-isolated container, observing `strace -f -e trace=network` or a proxy; any attempted external connection blocks.
+
+### 4. Release cooldown
+
+Use npm `time[version]` or PyPI release timestamps. Age below configured `cooldown_days` yields blocking `vibesec.g1.cooldown-violation`. Supported policy range is 7–14 days; default 14. It applies to new versions of old packages too. Missing lockfiles fail G1. Emergency security updates require AppSec-approved `allowlist.yaml`, `bypass: [cooldown]`, and expiry no longer than 14 days.
+
+### SBOM and vulnerability enrichment
+
+`scripts/g1_sbom.py` verifies `VS-G1-SBOM`:
+
+1. Export the tested commit with `git archive`, excluding working-tree `node_modules`/`.venv`. Generate twice; component sets must match, ignoring serial number, timestamp, and bom-ref.
+2. Require CycloneDX, spec ≥1.4, and a component list.
+3. Every pinned version in package-lock, uv.lock, poetry.lock, or pinned requirements text must appear by purl. Missing components yield one `sbom-incomplete` finding per lockfile and fail coverage. Enable `SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES`: build tools are supply-chain inputs. In one MultiAgentBeta test, disabling it omitted 111 of 119 frontend packages.
+
+Missing/failing Syft, invalid format, nondeterminism, or unsupported pnpm/yarn locks yield incomplete (exit 2), with the control untested.
+
+```bash
+python3 scripts/g1_sbom.py --target . --sbom reports/sbom.cdx.json \
+  --sarif reports/g1-sbom.sarif --json reports/g1-sbom.json --merge-gate reports/g1-gate.json
+grype sbom:reports/sbom.cdx.json -o sarif --file reports/grype.sarif
+trivy sbom reports/sbom.cdx.json --format sarif --output reports/trivy.sarif --scanners vuln
+trivy fs . --scanners vuln,secret,misconfig --format sarif --output reports/trivy-fs.sarif
+```
+
+Query FIRST EPSS and CISA KEV for each actual CVE. Keep `cvss_vector`, `cvss_score`, `epss`, `epss_date`, `kev`, and `kev_date` separate. KEV yields blocking/P1; EPSS sorts remediation without changing severity. `scripts/g1_kev.py` merges PR results according to mode; nightly emits `vibesec.g1.kev-hit`, exits 1, and triggers issue notification. Missing Grype/KEV input exits 2 and reports incomplete. Preserve feed publication time and SBOM artifacts for audit/compliance evidence.
+
+## Automation
+
+PR sequence: checkout without installing target dependencies → compute relevant manifest/lock/rule-file diffs → four-layer checks (24-hour registry cache; failure incomplete) → install with scripts disabled, enabling only explicitly allowed build scripts → validated Syft SBOM → Grype/Trivy and EPSS/KEV → SARIF/gate coverage for `ASVS5-V15.2`, slopsquatting, cooldown, hooks, and SBOM. Pre-commit performs fast layers 1/2/4.
+
+```bash
+python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
+  --sarif reports/raw/G1/slopcheck.sarif --gate reports/raw/G1/slopcheck-gate.json > reports/raw/G1/slopcheck.json
+```
+
+With only `--target`, scan all tracked manifests/rule files (`scope: full`). Changed files, staged/base options, and relative paths refer to the target. Configuration/lists/policy remain from this repository; repository-path policy exceptions do not apply externally. Unsupported pnpm/yarn locks are explicitly incomplete.
+
+Parse package-lock v1–3 entries, resolving aliases and skipping workspace links. Check existence, cooldown, hooks, downloads, and blacklist for all packages, but name similarity only for direct dependencies (root/workspace declarations; v1 uses adjacent package.json). For requirements locks, infer transitives from other packages' `requires_dist`; self-dependencies do not count. Missing metadata defaults to direct checking, not omission. Nonregistry resolved sources (git/file/tarball/private registry) or non-semver versions are incomplete. Deduplicate name/version queries, use eight concurrent registry requests, retry transport failures/timeouts/429/5xx twice, and do not retry 404.
+
+## Tools and configuration
+
+Custom checks use `config/slopsquat/*.yaml`/`*.txt`; Syft emits CycloneDX (SPDX optional); Grype compares SBOMs with NVD/GHSA; Trivy covers vulnerabilities/secrets/IaC/K8s (Apache-2.0). Optional Socket/DevSentinel tokens belong in repository secrets; SlopCheck/SlopScan inspect agent-rule documentation. EPSS/KEV settings are in `cooldown.yaml.sbom.enrich`.
+
+## Blocking policy
+
+| Rule (prefix `vibesec.g1.`) | Tier | CWE |
+|---|---|---|
+| hallucinated-package, cooldown-violation, rules-file-unknown-package | Blocking | 1357 |
+| postinstall-egress | Blocking | 506 |
+| low-download-package | Advisory; similarity can escalate | 1357 |
+| vulnerable-dependency | Advisory; KEV emits separate blocking kev-hit | 1395 |
+| unmaintained-dependency | Advisory | 1104 |
+| sbom-missing-provenance | Advisory | 1357 |
+| sbom-incomplete | Advisory | No matching CWE; see catalog notes |
+
+Nightly maintenance checks deps.dev for deprecated versions or a latest release older than `unmaintained_days` (730 by default). Unknown/failed queries are incomplete; this repository itself and GitHub Actions entries are not applicable. Nightly provenance uses `actions/attest-build-provenance`; `g1_provenance.py` verifies the signature and this repository's nightly signer with `gh attestation verify --signer-workflow`. Missing SBOM/gh, permission/network errors are incomplete. The actual policy file governs final tiers.
+
+### Package exceptions
+
+`load_allowlist()` accepts only valid, unexpired entries; rejected entries appear in `ignored_allowlist` and gate reasons.
+
+- Required: `package`, `approved_by`, `expires` (YYYY-MM-DD), `reason`, `bypass`.
+- `ecosystem`: npm/pypi; omitted means either. Normalize names as above.
+- `version`: omitted/null means all; accept exact versions (optionally `==`) or conjunctive comparisons such as `>=2,<3`. Reject caret, tilde, wildcard, and OR ranges; prereleases do not match ranges.
+- `bypass`: only `registry_health`, `low_download`, `cooldown`, `blacklist`, `similarity`. Hook and KEV bypasses invalidate the entire entry.
+
+Always execute all checks. A matching authorized exception demotes only its designated finding to advisory while retaining approver, expiry, ticket, and reason. Package exceptions are not path-bound and also apply with external targets.
+
+## Mapped controls
+
+`ASVS5-V15.2` (local section-level VibeSec extension); `VS-G1-SLOPSQUAT`, `VS-G1-COOLDOWN`, `VS-G1-INSTALL-HOOK`, `VS-G1-SBOM`, plus rule-file Unicode control. CWE 1357/829/506/1395/1104; OWASP `LLM03:2025`/`LLM09:2025`; MAESTRO L1/L7.
+
+## Verification
+
+Test typo packages, a legitimate package released three days ago, approved emergency versions with tickets, and hallucinated names in agent rules. Use non-executable prose for malicious-package examples. Test fake hooks accessing network/tokens, registry outages yielding incomplete, reproducible/complete SBOMs (`python3 scripts/g1_sbom.py selftest`), separate CVSS/EPSS fields, and policy-derived priorities. Target PR wall time under three minutes, under 60 seconds with a warm cache.

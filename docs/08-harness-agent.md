@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 08 — Harness Agent：把整條管線包起來的執行者
 
 > 本文件定義 harness agent 的職責、輸入、狀態機、閘門順序、模式語意、`incomplete ≠ pass` 規則、exit code 與報告產物。它同時是 `.claude/skills/vibesec-harness/SKILL.md`、`config/harness/harness-agent.md` 與未來 Python CLI `vibesec run` 的規格。多模型審查細節見 `docs/09-multi-model-review.md`；證據分級與評分見 `docs/10-evidence-scoring-and-findings.md`。
@@ -67,7 +72,7 @@ stateDiagram-v2
 | Normalise | 產生 `id`（`VS-YYYYMMDD-<8 hex>`，hex 取 `sha256(rule_id + path + line + commit)` 前 8 碼）、`rule_id` 前綴、`location`、`evidence_refs`、`sources` | 欄位缺失以 `null` 補，不得省略 |
 | ApplyPolicy | 查 `blocking:` / `advisory:` / `tier_overrides.<tier>` / `exceptions:` 決定 `policy_tier` | 規則不在任何清單 → `default_tier` |
 | Review | 僅對 `llm_review: true` 的閘門（G4）與 E1 / E2 且 policy_tier 為 blocking 或 P0 / P1 候選的發現送審 | provider 失敗 → 意見缺席，見 docs/09 §9 |
-| Score | 依 docs/10：CVSS v4.0 向量（工具提供或 reviewer 提議、人工確認後才填）、EPSS / KEV 查詢、E 等級、P 優先序 | 查詢 API 失敗 → `epss: null`、`kev: null`，`notes` 記原因；不影響閘門狀態 |
+| Score | 依 docs/10：CVSS v4.0 向量（工具提供或 reviewer 提議、人工確認後才填）、EPSS / KEV 查詢、E 等級、P 優先序 | 可選補充查詢失敗填 `null` 並記原因；G1 必要的 KEV 檢查失敗則為 `incomplete` |
 | GateResult | 寫 `reports/gates/G<N>.json`（符合 `schemas/gate-result.schema.json`） | — |
 | WriteReports | 合併寫出 `output.*` 四個檔案 | — |
 | ExitCode | 見 §8 | — |
@@ -83,7 +88,7 @@ PR 事件固定順序 **G1 → G2 → G3 → G4**；staging 事件 **G5 → G6**
 - **G5 → G6**：兩者都打靶場；G5 先確認目標可達、取得雙帳號 session，G6 的 Stored XSS via AI Output 也會用到 G5 建立的帳號。
 - **G0** 由 `trigger: [design, major_change, agent_introduction]` 觸發，不在 PR 管線的關鍵路徑上，但其產物（威脅模型）是 ResolveTier 的輸入。
 
-harness **不得**因 `tools[]` 中第一個工具缺席就跳到下一個閘門：要依序嘗試清單中的所有工具（例如 G1 的 `syft, grype, trivy`），全數缺席才記 `incomplete`。
+harness **不得**因 `tools[]` 中第一個工具缺席就跳到下一個閘門：要依序嘗試清單中的所有工具（例如 G1 的 `syft, grype, trivy`），任一必要工具或控制未完成，仍須記為 `incomplete`；只有經驗證的等價覆蓋才能補足。
 
 ## 5. 模式：shadow 與 enforce
 
@@ -97,14 +102,14 @@ harness **不得**因 `tools[]` 中第一個工具缺席就跳到下一個閘門
 
 shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行**完全相同**的閘門、工具、審查與評分；差別只在最後的 exit code。試點期的召回率 / 精確率數據（`docs/12-pilot-and-evaluation.md`）必須來自 shadow 模式的完整輸出。
 
-模式只能由 `vibesec.yaml` 的 `mode` 或 CLI `--mode` 參數決定；harness agent 不得自行改寫。`--mode` 只能把 shadow 升為 enforce（例如在 staging 工作流強制），**不得**把 enforce 降為 shadow。
+模式只能由 `vibesec.yaml` 的 `mode` 或 CLI `--mode` 參數決定；harness agent 不得自行改寫。`--mode` 只能把 shadow 升為 enforce（例如在 staging 工作流程強制），**不得**把 enforce 降為 shadow。
 
 ## 6. Diff-aware 與 full
 
 - `diff_aware: true` 的閘門（G1、G3、G4）在 PR 事件只處理 `git diff --name-only <base>...HEAD` 的檔案；G1 另外比對 lockfile 的新增 / 升版項目。
 - `diff_aware: false` 的閘門（G2）永遠全量：祕密可能在舊 commit。
 - G5、G6 沒有 diff 概念，永遠對目標全量。
-- 夜間工作流（`.github/workflows/nightly-full.yml`）把所有閘門以 `scope: full` 重跑，並加上 `g3_sast_iac.nightly_full: [codeql]`。
+- 夜間工作流程（`.github/workflows/nightly-full.yml`）把所有閘門以 `scope: full` 重跑，並加上 `g3_sast_iac.nightly_full: [codeql]`。
 - gate result 必須記錄 `scope` 與 `diff_base`；PR 階段 `scope: diff` 的「pass」只代表「變更部分通過」，`summary.md` 要寫明。
 
 ## 7. Timeout 與 `incomplete ≠ pass`
@@ -117,7 +122,7 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 |---|---|---|---|---|
 | 工具二進位缺席（`which gitleaks` 失敗） | `missing` | `incomplete` | `gitleaks binary not found in PATH` | 清單中所有工具都缺席才算；部分缺席要在 `tools[]` 逐一記錄 |
 | 工具逾時 | `timeout` | `incomplete` | `semgrep exceeded 900s on 1,240 files` | 記錄已完成的部分輸出，但不據此宣稱 pass |
-| 外部 API 失敗（npm registry、OSV、EPSS、KEV） | `error` | G1 `incomplete` | `registry.npmjs.org returned 503 for 3/12 packages` | EPSS / KEV 失敗只影響欄位（填 `null`），不影響閘門狀態；Registry 健康度查不到則影響 G1 狀態 |
+| 外部 API 失敗（npm registry、OSV、EPSS、KEV） | `error` | G1 `incomplete` | `registry.npmjs.org returned 503 for 3/12 packages` | 可選 EPSS 補充查詢失敗填 `null`；G1 必要的 KEV 或 Registry 檢查失敗則為 `incomplete` |
 | 缺 Token（`VIBESEC_TOKEN_B` 未設） | `api-probes: error` | G5 `incomplete` | `two_account_test required but VIBESEC_TOKEN_B unset` | `bola_idor` 控制 `untested`；其他 G5 檢查可照跑但閘門整體仍 `incomplete` |
 | 目標不可達（`VIBESEC_TARGET_URL` 連線逾時或 5xx） | `zap-baseline: error` | G5 / G6 `incomplete` | `GET https://staging.example/healthz timed out after 30s` | 不得把「目標沒回應」當成「沒有漏洞」 |
 | 威脅模型缺席 | — | G0 `incomplete` | `docs/templates/threat-model.yaml not found` | 其他閘門照跑；`risk_tier` 標「未核對」 |
@@ -137,7 +142,7 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 | `1` | `mode: enforce` 且至少一個 `policy_tier: blocking` 的發現 `validation_status != refuted` | 阻擋 PR / 部署 |
 | `2` | `mode: enforce` 且 `incomplete_gate_is_blocking_in_enforce` 內的閘門 `incomplete`；或主設定無法載入 | 「不知道」也要擋。這是 incomplete ≠ pass 的 CI 落地 |
 
-優先序：若同時有 blocking 發現與 blocking 閘門 incomplete，回 `1`（有確定的壞消息優先於不確定），但 `summary.md` 必須同時列出兩者。整體 exit code 為所有閘門 exit code 的最大值（`1` 與 `2` 同時存在時取 `1`，見上）。
+優先序：若同時有 blocking 發現與 blocking 閘門 incomplete，回 `1`（有確定的壞消息優先於不確定），但 `summary.md` 必須同時列出兩者。整體退出碼依語意優先序決定：`1` 優先於 `2`，不是取數值最大值。
 
 ## 9. 報告產物
 
@@ -199,7 +204,7 @@ INCOMPLETE 區塊永遠出現；沒有 incomplete 時寫「無」。
 
 ### (b) GitHub Actions
 
-三條工作流：`pr-gates.yml`（G1–G4，diff-aware）、`nightly-full.yml`（CodeQL + 全量）、`staging-blackbox.yml`（G5 + G6）。Actions 內**只跑確定性工具**，不呼叫 LLM；把 SARIF 上傳 Code Scanning、把 `findings.json` 與 gate results 當 artifact 保留。LLM 審查由 (a) 或 (c) 讀取 artifact 後執行。Actions 自身也是被審對象：第三方 Action 必須固定完整 SHA、`permissions:` 最小化、`pull_request_target` 需追查完整路徑（docs/09 §7）。
+三條工作流程：`pr-gates.yml`（G1–G4，diff-aware）、`nightly-full.yml`（CodeQL + 全量）、`staging-blackbox.yml`（G5 + G6）。PR 的 G4 消費已提交的審查紀錄；staging 的 G6 可選生成層可能呼叫已設定的 LLM；把 SARIF 上傳 Code Scanning、把 `findings.json` 與 gate results 當 artifact 保留。LLM 審查由 (a) 或 (c) 讀取 artifact 後執行。Actions 自身也是被審對象：第三方 Action 必須固定完整 SHA、`permissions:` 最小化、`pull_request_target` 需追查完整路徑（docs/09 §7）。
 
 ### (c) 未來 Python CLI（僅規格）
 
@@ -239,3 +244,156 @@ CLI 讀同一份 `vibesec.yaml`，實作同一個狀態機，透過 `config/prov
 `python3 scripts/gate_verdict.py --gate G5=reports/g5-gate.json --gate G6=reports/g6-gate.json` 驗證 schema 並依可信設定判定。enforce 模式下 blocking 回傳 1、政策要求的未完成閘門回傳 2；shadow 保留結果但不阻擋。`--mode enforce` 可升級，`--mode shadow` 不能降級設定。PR summary 的 `--policy-root _trusted` 使用基底提交的模式與政策；執行器與 workflow 本身仍需 CODEOWNERS 及分支保護，詳見 [操作與驗證](14-operation-and-verification.md)。
 
 宣告的 CSP／高影響工具設定可用 `python3 scripts/control_checks.py <目標設定.yaml>` 檢查；輸出 `rules` 是發現清單，由 harness 對照目錄納入 G3／G4，格式或檔案錯誤回傳 2。設定檢查不能取代 HTTP 實測或人工裁決。
+
+
+---
+
+<a id="english"></a>
+
+# 08 — Harness Agent: Pipeline Orchestration
+
+This specification covers responsibilities, inputs, states, order, modes, incomplete semantics, exit codes, and reports. It applies to `.claude/skills/vibesec-harness/SKILL.md`, `config/harness/harness-agent.md`, and the future `vibesec run` CLI. Review protocol: `docs/09`; evidence/scoring: `docs/10`.
+
+## 1. Purpose
+
+Ensure G0–G6 execute deterministically, results use a common format, and unexecuted checks are honestly incomplete; then route judgment to model reviewers and humans. Fixed responsibilities: execute gates → normalize findings → multi-model review → evidence/scoring → reports/verdict. The harness does not patch targets, weaken settings, skip gates, invent IDs, or treat model confidence as evidence.
+
+## 2. Inputs
+
+| Input | Source | If unavailable |
+|---|---|---|
+| Main configuration | `vibesec.yaml` | Cannot start; exit 2 with summary |
+| Blocking policy | `policy_file` | Cannot start; absence is not “all advisory” |
+| Providers | `providers_file` | Reviews incomplete; deterministic gates continue |
+| Catalogs | `catalogs_dir` | Null IDs and explanatory notes; do not invent references |
+| Threat model | `project.threat_model` / schema | G0 incomplete; configured tier explicitly unverified |
+| Diff base | `--diff <base>` or PR base SHA | Diff-aware gates fall back to full; `diff_base: null` |
+| Target | `--target <Git-root>`; default this repository | G0 uses target model/explicit override, never substitutes this repository's model. G0–G4 wrappers support external targets; trusted policy/lists stay here, path exceptions do not transfer. External G4 records are trusted only from this repository. |
+| Authorized URL | `VIBESEC_TARGET_URL`; CI administrator variable | G5/G6 incomplete |
+| Two account tokens | `VIBESEC_TOKEN_A/B` | BOLA untested; G5 incomplete |
+| Model keys | Provider `api_key_env` | Provider unavailable; insufficient high-risk families leave pending/incomplete |
+
+## 3. State machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Init
+    Init --> LoadConfig
+    LoadConfig --> ResolveTier
+    ResolveTier --> SelectGates
+    SelectGates --> RunGate
+    RunGate --> RunTools
+    RunTools --> ParseNative
+    RunTools --> MarkIncomplete: missing / timeout / error
+    ParseNative --> Normalise
+    Normalise --> ApplyPolicy
+    ApplyPolicy --> Review: judgment required
+    ApplyPolicy --> Score: deterministic evidence
+    Review --> Score
+    Score --> GateResult
+    MarkIncomplete --> GateResult
+    GateResult --> RunGate: gates remain
+    GateResult --> WriteReports: finished
+    WriteReports --> ExitCode
+    ExitCode --> [*]
+```
+
+| State | Work / failure handling |
+|---|---|
+| Init | Create reports, record commit/time/executor; write failure exits 2 |
+| LoadConfig | Validate required configuration/schema; invalid main config/policy prevents execution |
+| ResolveTier | Compare threat model/configured tier; report inconsistencies as G0 failure, never silently accept a lower tier; missing model stays incomplete |
+| SelectGates | PR G1–G4, staging G5/G6, design G0; apply tier/applicability with reasons. No enabled gates: report, shadow 0/enforce 2 |
+| RunTools | Track tool name/version/state/exit/output/duration within total gate budget |
+| ParseNative | Validate SARIF/native JSON; malformed output becomes tool error/incomplete |
+| Normalise | Finding ID `VS-YYYYMMDD-<sha256(rule_id+path+line+commit)[:8]>`; preserve prefixes, location, evidence, sources; required absent values use null |
+| ApplyPolicy | Blocking/advisory, tier overrides, valid exceptions; unknown rules use default tier |
+| Review | G4 LLM review and judgment-dependent E1/E2 blocking/P0/P1 candidates; provider failure is missing opinion |
+| Score | Evidence, reproducible CVSS, separate EPSS/KEV, priorities; optional enrichment failure stays null, but missing mandatory G1 KEV checks makes that control incomplete |
+| GateResult | Write `reports/gates/G<N>.json` |
+| WriteReports / ExitCode | Emit artifacts and policy-derived 0/1/2 |
+
+## 4. Gate order
+
+PR: **G1 → G2 → G3 → G4**. Staging: **G5 → G6**. Design: **G0**.
+
+G1 must precede target dependency installation because hooks can execute and steal credentials immediately. G2 is early and needs no installation; leaked credentials demand prompt revocation. G3 analyzes source; G4 consumes its context. G5 establishes reachability/accounts before G6. G0 is triggered by design/major changes/new agents and supplies tier inputs even outside the PR critical path.
+
+Attempt every configured tool rather than skipping a whole gate when the first is missing. A missing required tool/control remains incomplete even if another tool ran; only equivalent verified coverage can satisfy a control.
+
+## 5. Shadow and enforce
+
+Both modes run the same gates, tools, reviews, and scoring. Shadow reports blocking/incomplete outcomes but normally exits 0 and labels the summary `[SHADOW]`; enforce exits 1 for active blocking findings and 2 for incomplete gates listed in policy. Both preserve reports/SARIF. Read the current `incomplete_gate_is_blocking_in_enforce` list rather than assuming all gates behave alike.
+
+Only configuration or authorized CLI mode determines enforcement. `--mode enforce` may strengthen shadow; `--mode shadow` must not downgrade enforce.
+
+## 6. Diff versus full
+
+G1/G3/G4 use PR changes, with G1 comparing dependency versions. G2 always scans full history. G5/G6 test the target without a code diff. Nightly adds full configured scans and CodeQL. Record scope/base; a diff pass establishes only changed-scope coverage, not a whole-system guarantee.
+
+## 7. Timeouts and incomplete states
+
+Gate timeout is the total tool budget. Preserve partial outputs and attempt remaining tools when possible, but never infer pass for untested required work.
+
+| Situation | Tool / gate handling |
+|---|---|
+| Missing binary | `missing`; affected required controls untested, gate incomplete |
+| Timeout | `timeout`; preserve partial evidence, do not claim full pass |
+| Registry/mandatory feed error | `error`; G1 incomplete; explain affected requests |
+| Optional score enrichment error | Null fields with reason; distinct from a required KEV gate check |
+| Missing B token | API-probe error, BOLA untested, G5 incomplete; other probes may continue |
+| Unreachable/unstarted target | G5/G6 incomplete; silence is not security |
+| Missing threat model | G0 incomplete, tier unverified; other gates continue |
+| No eligible/reachable providers | G4 incomplete, judgment-dependent findings pending; deterministic findings retained |
+| Missing catalogs | Null IDs, notes, unresolved coverage; no fabricated control mapping |
+
+`not_applicable` means inapplicable by design and always needs a reason, e.g. no LLM for G6 or a different actual CI platform. “Not run” is never “not applicable.”
+
+## 8. Exit codes
+
+- **0:** shadow, or enforce without active blocking findings/policy-required incomplete gates.
+- **1:** enforce with a non-refuted blocking finding.
+- **2:** required incomplete gate in enforce, or invalid/missing main configuration.
+
+If both blocking findings and required incompleteness exist, return 1 and report both. This is an explicit precedence rule, not a numeric maximum.
+
+## 9. Reports
+
+| Artifact | Purpose |
+|---|---|
+| `reports/vibesec.sarif` | SARIF 2.1.0 for code/dependency/config locations, one run per tool |
+| `reports/findings.json` | All findings and review opinions |
+| `reports/risk_register.json` | Architecture/prompt findings and open G0 threats |
+| `reports/gates/G<N>.json` | Per-gate results and coverage |
+| `reports/summary.md` | Human-readable summary |
+| `reports/raw/<gate>/<tool>.*` | Native evidence for reproduction/audit |
+
+The summary includes project/commit/mode/tier; gate matrix with status/scope/tool states/counts/coverage; an **INCOMPLETE** section (write “None” when empty); trifecta state and mitigations; priority-sorted findings; completed/applicable controls with pass/fail/pending/untested/not-applicable counts; human-adjudication requests including `ruling.py request`; and the explained exit code. Example: 18 completed of 27 applicable is 66.7%; 15 pass + 3 fail + 4 pending + 5 untested, excluding two not-applicable controls.
+
+## 10. Execution contexts
+
+**Claude Code:** `/vibesec-harness [--gate g1,g2] [--mode shadow|enforce] [--diff <base>] [--target <path>] [--target-url <url>]`. Bash runs tools; four reviewer agents get independent first-round context and later challenges. Claude subagents all count as one Anthropic family; another actual allowed family is still required for high-risk review.
+
+**GitHub Actions:** PR gates, nightly full, staging black-box workflows save evidence/SARIF. PR G4 consumes human-submitted review records; G4 model review runs through the harness. The staging workflow may call an approved model provider for optional G6 attack generation/grading when keys exist. Review the workflows themselves: SHA pins, minimal permissions, and complete privileged-event data flows.
+
+**Future CLI (specification, not an installed executable):** `vibesec run`, `vibesec review`, and `vibesec report` would implement the same configuration/state machine/provider contract. Existing scripts are the current executable interfaces.
+
+## 11. Prohibited behavior
+
+Never weaken enabled gates/policy, fabricate pass/IDs/evidence, combine scores, equate confidence with evidence, majority-vote disagreements, conceal missing families, disclose unapproved data, or attack unauthorized/production targets. Mask secrets (retaining only permitted fragments/fingerprints). Check authorization before requests.
+
+## 12. Data residency
+
+Use the highest relevant asset sensitivity in the threat model. Without a model, treat data as confidential. Code defaults to internal; secrets—even masked—PII/customer samples elevate it to confidential/PII. Public classification is allowed only when actually established; a stale threat-model label is not proof that a private repository is public.
+
+Send only to providers explicitly allowing that class. Cloud providers default to excluding confidential/PII; use eligible on-premises providers. No eligible provider means pending/incomplete, not data downgrading to obtain two families. China-site CSL/DSL/PIPL deployments enable local providers and export only de-identified statistics.
+
+## Current executable verdict
+
+```bash
+python3 scripts/gate_verdict.py --gate G5=reports/g5-gate.json --gate G6=reports/g6-gate.json
+```
+
+Validate schemas and trusted policy, preserving shadow results and enforce exit semantics. PR summary uses `--policy-root _trusted` from the base commit; workflow/runner changes still require branch protection/CODEOWNERS. See [operations](14-operation-and-verification.md#english).
+
+`python3 scripts/control_checks.py <target-config.yaml>` checks declared CSP/high-impact-tool configuration and emits `rules` for catalog-mapped G3/G4 findings. File/format errors exit 2. Declaration checks do not replace HTTP verification or human adjudication.

@@ -1,7 +1,7 @@
 id: g2-envignore-neg-01
 gate: G2
 domain: secret_exposure
-title: .env.example 只含佔位值
+title: ".env.example 只含佔位值 / .env.example contains only placeholders"
 input:
   kind: config
   files:
@@ -15,4 +15,4 @@ expected:
   rule_id: vibesec.g2.env-not-ignored
   policy_tier: advisory
 held_out: false
-notes: 範本檔不含真實祕密。
+notes: "範本檔不含真實祕密。 / Template files contain no real secrets."

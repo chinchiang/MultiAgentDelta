@@ -11,7 +11,7 @@ repos:
     rev: v8.21.2
     hooks:
       - id: gitleaks
-        name: "G2 gitleaks protect --staged（祕密掃描）"
+        name: "G2 gitleaks protect --staged（祕密掃描） / G2 staged Gitleaks secret scanning"
         entry: gitleaks protect --staged --redact --config config/gitleaks.toml
         language: golang
         pass_filenames: false
@@ -21,7 +21,7 @@ repos:
     rev: v1.95.0
     hooks:
       - id: semgrep
-        name: "G3 semgrep（vibesec 規則，SAST 快篩）"
+        name: "G3 semgrep（vibesec 規則，SAST 快篩） / G3 Semgrep VibeSec rules: fast SAST checks"
         args:
           - "--config=config/semgrep/vibesec-rules.yaml"
           - "--config=p/owasp-top-ten"
@@ -34,9 +34,9 @@ repos:
     rev: v5.0.0
     hooks:
       - id: detect-private-key
-        name: "偵測私鑰"
+        name: "偵測私鑰 / Detect private keys"
       - id: check-added-large-files
-        name: "阻擋過大檔案"
+        name: "阻擋過大檔案 / Block oversized files"
         args: ["--maxkb=1024"]
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -45,13 +45,13 @@ repos:
   - repo: local
     hooks:
       - id: vibesec-g1-slopcheck
-        name: "G1 供應鏈快篩（存在性/相似度/冷卻期）"
+        name: "G1 供應鏈快篩（存在性/相似度/冷卻期） / G1 supply-chain checks: existence, similarity, cooldown"
         entry: python3 scripts/g1_slopcheck.py --staged
         language: system
         pass_filenames: false
         files: '(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|\.cursorrules|AGENTS\.md|SKILL\.md)$'
       - id: vibesec-env-guard
-        name: "G2 .env 防護（不得追蹤 .env，且須在 .gitignore）"
+        name: "G2 .env 防護（不得追蹤 .env，且須在 .gitignore） / G2 environment-file protection: untracked and ignored"
         entry: python3 scripts/env_guard.py
         language: system
         pass_filenames: false

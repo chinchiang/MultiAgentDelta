@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/chinchiang/MultiAgentDelta/schemas/g4-review.schema.json",
-  "title": "VibeSec G4 LLM Review Record",
-  "description": "一次 G4 LLM 審查（docs/05 自動化作法第 2 點、docs/09）的紀錄，由 harness 寫到 reports/g4-review.yaml，人工複製為 reviews/g4/<commit>.yaml 提交。CI 據此把 VS-G4-LLM-REVIEW 從 pending 推進到有結論。紀錄只陳述審查發生了什麼：意見全部保留、不多數決、requires_human 的發現仍須 rulings/ 裁決；它本身不能把閘門變成 pass。",
+  "title": "VibeSec G4 模型審查紀錄 / VibeSec G4 LLM Review Record",
+  "description": "一次 G4 LLM 審查（docs/05 自動化作法第 2 點、docs/09）的紀錄，由 harness 寫到 reports/g4-review.yaml，人工複製為 reviews/g4/<commit>.yaml 提交。CI 據此把 VS-G4-LLM-REVIEW 從 pending 推進到有結論。紀錄只陳述審查發生了什麼：意見全部保留、不多數決、requires_human 的發現仍須 rulings/ 裁決；它本身不能把閘門變成 pass。 / Record of a G4 LLM review (docs/05 and docs/09). The harness writes reports/g4-review.yaml; a human submits reviews/g4/<commit>.yaml. Retain all opinions, never majority-vote, and resolve human-required findings through rulings/. The record cannot pass a gate by itself.",
   "type": "object",
   "additionalProperties": false,
   "required": ["review_version", "gate", "commit", "scope", "reviewed_at", "roles", "providers", "coverage", "findings", "recorded_by"],
   "properties": {
     "review_version": { "const": 1 },
     "gate": { "const": "G4" },
-    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "審查時被測專案的 HEAD（完整 40 碼）。CI 只接受「此 commit 之後只動過 reviews/g4/ 與 rulings/」的 PR head" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "審查時被測專案的 HEAD（完整 40 碼）。CI 只接受「此 commit 之後只動過 reviews/g4/ 與 rulings/」的 PR head / Full 40-character reviewed target HEAD. CI accepts only later changes confined to reviews/g4/ and rulings/." },
     "diff_base": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$" },
     "scope": { "type": "string", "enum": ["diff", "full"] },
     "reviewed_at": { "type": "string", "format": "date-time" },
@@ -18,26 +18,26 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": { "type": "string", "enum": ["architecture", "appsec", "identity-authz", "supplychain-cicd"] },
-      "description": "本次實際執行的角色；必須涵蓋 vibesec.yaml gates.g4_access_control_review.roles"
+      "description": "本次實際執行的角色；必須涵蓋 vibesec.yaml gates.g4_access_control_review.roles / Roles actually executed; must cover configured G4 roles."
     },
     "prompt_versions": {
       "type": "object",
       "additionalProperties": { "type": "string", "pattern": "^[a-z-]+@[0-9]{4}-[0-9]{2}-[0-9]{2}\\.[0-9]+$" },
-      "description": "角色 → config/harness/roles/<role>.md 頂端的 prompt_version"
+      "description": "角色 → config/harness/roles/<role>.md 頂端的 prompt_version / Role to prompt_version in config/harness/roles/<role>.md frontmatter."
     },
     "providers": {
       "type": "array",
       "minItems": 1,
-      "description": "每個被呼叫的 provider 與其狀態；缺席者照實記 missing / timeout / error，資料分級不允許而未送出記 refused（docs/09 §11），不補假意見",
+      "description": "每個被呼叫的 provider 與其狀態；缺席者照實記 missing / timeout / error，資料分級不允許而未送出記 refused（docs/09 §11），不補假意見 / Actual provider states: missing/timeout/error, or refused when data policy prevented transmission. Never fabricate opinions (docs/09 section 11).",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["provider", "family", "state"],
         "properties": {
-          "provider": { "type": "string", "minLength": 1, "description": "config/providers.yaml 的 provider 名稱，或 claude-code-subagent（SKILL.md 步驟 2）" },
+          "provider": { "type": "string", "minLength": 1, "description": "config/providers.yaml 的 provider 名稱，或 claude-code-subagent（SKILL.md 步驟 2） / Provider name from config/providers.yaml, or claude-code-subagent (skill step 2)." },
           "family": { "type": "string", "enum": ["anthropic", "openai", "google", "glm", "deepseek", "fake"] },
           "model": { "type": ["string", "null"] },
-          "state": { "type": "string", "enum": ["ran", "missing", "timeout", "error", "refused"], "description": "refused：資料分級不在該 provider 的 allowed_data_classes，未送出任何內容（review_provider.py exit 3）" },
+          "state": { "type": "string", "enum": ["ran", "missing", "timeout", "error", "refused"], "description": "refused：資料分級不在該 provider 的 allowed_data_classes，未送出任何內容（review_provider.py exit 3） / Refused means data class is not allowed; no content was sent (review_provider.py exit 3)." },
           "note": { "type": ["string", "null"] }
         }
       }
@@ -45,7 +45,7 @@
     "coverage": {
       "type": "array",
       "minItems": 1,
-      "description": "LLM 審查涵蓋的控制與結論；至少要有 VS-G4-LLM-REVIEW",
+      "description": "LLM 審查涵蓋的控制與結論；至少要有 VS-G4-LLM-REVIEW / Controls and conclusions covered by LLM review; must include VS-G4-LLM-REVIEW.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -61,7 +61,7 @@
     },
     "findings": {
       "type": "array",
-      "description": "本次審查產生或審查過的 G4 發現（與 reports/findings.json 同 id）。可為空陣列",
+      "description": "本次審查產生或審查過的 G4 發現（與 reports/findings.json 同 id）。可為空陣列 / G4 findings created/reviewed here, using the same IDs as reports/findings.json; may be empty.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -71,7 +71,7 @@
           "rule_id": { "type": "string", "pattern": "^vibesec\\.g4\\.[a-z0-9-]+$" },
           "title": { "type": "string", "minLength": 1 },
           "policy_tier": { "type": "string", "enum": ["blocking", "advisory"] },
-          "evidence_grade": { "type": "string", "enum": ["E0", "E1", "E2", "E3"], "description": "只有模型意見時最高 E2（docs/09 §4）；E3 需人工裁決（rulings/）" },
+          "evidence_grade": { "type": "string", "enum": ["E0", "E1", "E2", "E3"], "description": "只有模型意見時最高 E2（docs/09 §4）；E3 需人工裁決（rulings/） / Model-only evidence is at most E2; E3 requires a human ruling." },
           "validation_status": { "type": "string", "enum": ["pending", "confirmed", "refuted"] },
           "requires_human": { "type": "boolean" },
           "ruling_ref": { "type": ["string", "null"], "pattern": "^rulings/VS-[0-9]{8}-[0-9a-f]{8}\\.yaml$" },
@@ -104,10 +104,10 @@
       "additionalProperties": false,
       "required": ["handle"],
       "properties": {
-        "handle": { "type": "string", "description": "把 reports/g4-review.yaml 複製進 reviews/g4/ 的人（GitHub 帳號）。harness 產出時留空字串；空白 = 未經人確認，紀錄不能把 G4 推到 pass。由本 PR 新增的紀錄，此值不得是 PR 作者，且必須是在目前 head 上 approve 的人之一" },
+        "handle": { "type": "string", "description": "把 reports/g4-review.yaml 複製進 reviews/g4/ 的人（GitHub 帳號）。harness 產出時留空字串；空白 = 未經人確認，紀錄不能把 G4 推到 pass。由本 PR 新增的紀錄，此值不得是 PR 作者，且必須是在目前 head 上 approve 的人之一 / Human GitHub handle copying the report into reviews/g4/. The harness leaves it blank, which is untrusted. For records added by this PR, the recorder must not be the author and must personally approve the current head." },
         "note": { "type": ["string", "null"] }
       }
     },
-    "raw_ref": { "type": ["string", "null"], "description": "原始審查輸出的位置（reports/raw/… 或 artifact），供稽核" }
+    "raw_ref": { "type": ["string", "null"], "description": "原始審查輸出的位置（reports/raw/… 或 artifact），供稽核 / Raw review output path (reports/raw/... or artifact) for auditing." }
   }
 }

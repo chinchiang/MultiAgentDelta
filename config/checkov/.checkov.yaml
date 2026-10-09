@@ -1,10 +1,10 @@
-# VibeSec Checkov 設定（G3 IaC）
-# 用法：checkov -d . --config-file config/checkov/.checkov.yaml
-# 輸出：SARIF（上傳 GitHub Code Scanning，rule_id 前綴 checkov:）+ CLI 摘要
-# soft-fail: true → 影子模式（只報告不阻擋）；切到 enforce 時由 harness 依 blocking-policy 決定 exit code，
-#              不是靠 checkov 本身的 exit code（CLAUDE.md 規則 1：不得改政策讓檢查通過）。
-# check: 為「只跑這些檢查」的 allow-list，用來把 PR 階段控制在數分鐘內並降低噪音；
-#        夜間全量（nightly-full.yml）可改用 --config-file config/checkov/.checkov.yaml --check '' 跑完整規則集。
+# VibeSec Checkov 設定（G3 IaC） / VibeSec Checkov configuration for G3 IaC.
+# 用法：checkov -d . --config-file config/checkov/.checkov.yaml / Usage: checkov -d . --config-file config/checkov/.checkov.yaml.
+# 輸出：SARIF（上傳 GitHub Code Scanning，rule_id 前綴 checkov:）+ CLI 摘要 / Output SARIF for GitHub Code Scanning with checkov: rule prefixes, plus a CLI summary.
+# soft-fail: true → 影子模式（只報告不阻擋）；切到 enforce 時由 harness 依 blocking-policy 決定 exit code， / soft-fail reports without direct blocking; in enforce mode the harness derives exits from blocking-policy.
+#              不是靠 checkov 本身的 exit code（CLAUDE.md 規則 1：不得改政策讓檢查通過）。 / Do not use Checkov's exit alone or change policy to pass checks, per CLAUDE.md rule 1.
+# check: 為「只跑這些檢查」的 allow-list，用來把 PR 階段控制在數分鐘內並降低噪音； / check is an allowlist that limits PR runtime and noise.
+#        夜間全量（nightly-full.yml）可改用 --config-file config/checkov/.checkov.yaml --check '' 跑完整規則集。 / Nightly can run the full ruleset with --config-file config/checkov/.checkov.yaml --check ''.
 
 framework:
   - terraform
@@ -34,7 +34,7 @@ check:
   - CKV_AWS_341     # Launch template: metadata hop limit ≤ 1
   - CKV_AWS_8       # Launch configuration EBS encrypted
   - CKV_AWS_135     # EC2 EBS optimized
-  # ---- AWS：網路暴露 ----
+  # ---- AWS：網路暴露 ---- / AWS network exposure.
   - CKV_AWS_23      # Security group rule has description
   - CKV_AWS_24      # No SSH (22) from 0.0.0.0/0
   - CKV_AWS_25      # No RDP (3389) from 0.0.0.0/0
@@ -81,11 +81,11 @@ check:
   - CKV_GHA_2       # No run: with injectable context（script injection）
   - CKV_GHA_7       # workflow_dispatch 不得有 inputs（建置輸出不受使用者參數影響，SLSA）
   - CKV2_GHA_1      # Workflow 頂層 permissions 不得為 write-all
-  # 注意：checkov 沒有「pull_request_target + checkout PR head」的檢查；該風險對應 vibesec.g3.actions-pull-request-target，由 semgrep 規則 vibesec.g3.actions-pull-request-target 實作（config/semgrep/vibesec-rules.yaml）
-  # ---- Secrets（Checkov 內建；G2 的第二道）----
+  # 注意：checkov 沒有「pull_request_target + checkout PR head」的檢查；該風險對應 vibesec.g3.actions-pull-request-target，由 semgrep 規則 vibesec.g3.actions-pull-request-target 實作（config/semgrep/vibesec-rules.yaml） / Checkov has no pull_request_target plus PR-head checkout detector; Semgrep implements vibesec.g3.actions-pull-request-target.
+  # ---- Secrets（Checkov 內建；G2 的第二道）---- / Built-in Checkov secret detection supplements G2.
   - CKV_SECRET_6    # Base64 high entropy string
   - CKV_SECRET_2    # AWS access key
-  # ---- VibeSec 自訂（config/checkov/custom/） ----
+  # ---- VibeSec 自訂（config/checkov/custom/） ---- / VibeSec custom rules in config/checkov/custom/.
   - CKV2_VIBESEC_1  # IMDSv2 required on aws_instance / aws_launch_template
   - CKV2_VIBESEC_2  # CORS allowed origins must not be "*"
 

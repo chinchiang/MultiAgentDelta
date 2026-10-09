@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 00 總覽 — Vibe Coding 六道資安閘門（G0–G6）
 
 > 讀者：DevOps / 平台、AppSec / 治理、Red Team，以及驅動整條管線的 harness agent。
@@ -38,7 +43,7 @@
 │   postinstall 會在       + pre-commit         Checkov / Trivy)      Agent tool allow-list / │
 │   安裝瞬間執行)          + push protection)                        LLM 輔助審查 handoff)     │
 │                                                                              │
-│  工作流：.github/workflows/pr-gates.yml；夜間全量：nightly-full.yml（CodeQL）      │
+│  工作流程：.github/workflows/pr-gates.yml；夜間全量：nightly-full.yml（CodeQL）      │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    │ 部署到 staging（VIBESEC_TARGET_URL）
                                    ▼
@@ -50,7 +55,7 @@
 │   JWT alg:none / 混淆、SSRF 169.254.169.254、 直接 / 間接注入、System Prompt 提取、  │
 │   設定外溢、rate limit)                     AI 輸出 XSS、Denial of Wallet)        │
 │                                                                              │
-│  工作流：.github/workflows/staging-blackbox.yml；只能打授權靶場（CLAUDE.md 規則 8） │
+│  工作流程：.github/workflows/staging-blackbox.yml；只能打授權靶場（CLAUDE.md 規則 8） │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -72,7 +77,7 @@
 | **白箱 → 黑箱：靜態缺陷 → 驗證可利用性** | G3 / G4 的靜態發現先記 `evidence_grade: E1`（工具告警）或 E2（有具體位置與路徑），`validation_status: pending`；harness 把對應的 G5 / G6 探針排進 staging 階段；黑箱重現成功 → E3 / `confirmed`，失敗 → 保留 pending 或 `refuted` 並記錄反證 | G4 `vibesec.g4.missing-owner-filter`（E2）→ G5 雙帳號以 `VIBESEC_TOKEN_B` 讀 A 的資源 → 200 → `vibesec.g5.bola-cross-account`（E3） |
 | | | G3 `vibesec.g3.imdsv1-allowed`（Terraform）→ G5 對 URL 匯入端點送 `http://169.254.169.254/latest/meta-data/` → 回傳角色名 → `vibesec.g5.ssrf-metadata`（E3） |
 | | | G3 `vibesec.g3.xss-innerhtml`（污點來源為 LLM 輸出）→ G6 promptfoo 誘導模型輸出 `<script>` → 前端渲染 → `vibesec.g6.stored-xss-via-ai-output` |
-| **黑箱 → 白箱：動態發現 → 回頭定位根因** | G5 / G6 的 HTTP 證據（`evidence_refs.kind: http_exchange`）附上端點與參數；harness 以路由反查原始碼（Semgrep `--include` 該檔、`git log -S` 參數名），把 finding.location 從 `kind: http` 補成 `kind: code` 的 SARIF 位置；若找不到根因，保持 `kind: http` 並在 notes 標 `root_cause: unknown`，不猜 | G6 `system_prompt_extraction` 回傳含 `sk-ant-...` → 回頭觸發 G2 針對 prompt 模板檔做 gitleaks → `vibesec.g2.hardcoded-llm-key`，撤銷輪替 |
+| **黑箱 → 白箱：動態發現 → 回頭定位根因** | G5 / G6 的 HTTP 證據（`evidence_refs.kind: http_exchange`）附上端點與參數；harness 以路由反查原始碼（Semgrep `--include` 該檔、`git log -S` 參數名），把 finding.location 從 `kind: http` 補成 `kind: code` 的 SARIF 位置；若找不到根因，保持 `kind: http` 並在 notes 標 `root_cause: unknown`，不猜 | G6 `system_prompt_extraction` 回傳含 `sk-ant-...` → 回頭觸發 G2 針對 prompt 範本檔做 gitleaks → `vibesec.g2.hardcoded-llm-key`，撤銷輪替 |
 | | | G5 `debug_stacktrace` 回應洩漏 `app/routers/todos.py:42` → 直接把 SARIF 位置指到該行，並查該檔的 G3 結果 |
 
 這個閉環也是 docs/08-harness-agent.md 的「工具掃描 → 隔離驗證 → 評分 → 人工裁決 → 修復後重測」流程在閘門層的實作。
@@ -157,3 +162,132 @@ shadow 模式下以上全部只報告並標「enforce 時會擋」；驗收後�
 ## 10. 來源
 
 OWASP ASVS 5.0.0（owasp.org）、OWASP Top 10 for LLM Applications 2025（genai.owasp.org）、OWASP Threat Modeling / Threat Modeling Manifesto、CSA MAESTRO（2025 年 2 月，Ken Huang）、NIST AI RMF 1.0、FIRST CVSS v4.0 與 EPSS（first.org）、CISA KEV（cisa.gov）、MITRE CWE Top 25 2025、Simon Willison「The Lethal Trifecta」、Perry et al.「Do Users Write More Insecure Code with AI Assistants?」（ACM CCS 2023）、Semgrep（semgrep.dev）、gitleaks（github.com/gitleaks/gitleaks）、promptfoo（promptfoo.dev）、garak（github.com/NVIDIA/garak）。
+
+
+---
+
+<a id="english"></a>
+
+# 00 Overview — Six Security Gates for Vibe Coding (G0–G6)
+
+For DevOps/platform teams, AppSec/governance, red teams, and the harness agent. This overview explains why AI-generated code fails, where it fails, and which gate addresses it. Detailed gate specifications are in `docs/01`–`docs/07`.
+
+## 1. Why gates are necessary
+
+Traditional delivery uses human implementation, peer review, and testing. Accepting AI-generated code wholesale collapses the first two safeguards. Perry et al. (ACM CCS 2023) found that AI-assisted participants produced less secure code while expressing greater confidence in its security. VulDetectBench reported roughly 80% binary vulnerability classification but under 30% root-cause localization. Consequently, testing must become non-bypassable CI/CD gates, and AI review must remain an auxiliary triage layer backed by deterministic tools and human adjudication (`CLAUDE.md` rule 1; `docs/09-multi-model-review.md`).
+
+## 2. Failure patterns mapped to gates
+
+| Pattern | Reported examples/data | Cause | Gates / representative rules |
+|---|---|---|---|
+| Hallucinated packages (slopsquatting) | Studies report roughly 19.7–20% hallucination and 58% recurring names that attackers can preregister. Nx s1ngularity/Shai-Hulud install hooks abused local Claude/Gemini CLIs to search for credentials. | Training bias; no live registry knowledge | G1: `vibesec.g1.hallucinated-package` (CWE-1357), `vibesec.g1.postinstall-egress` (CWE-506) |
+| Hard-coded keys | AI-assisted repositories reportedly have 40% higher secret leakage, with 6.4% containing leaked keys; generated `sk-...` values and unignored `.env` files | Copying examples; missing secret-management context | G2: `vibesec.g2.hardcoded-secret` (CWE-798), `vibesec.g2.env-not-ignored` (CWE-538) |
+| Static injection | SQL/command/HTML concatenation; Veracode reported 14% XSS defense; CWE-79 ranked first in MITRE's 2025 Top 25 | Training bias and fragmented cross-file context | G3: SQL concatenation/CWE-89, command injection/CWE-78, `innerHTML` XSS/CWE-79 |
+| Illusory frontend protection | Backend lacks sessions/ownership checks; Base44 trusted `app_id`; Next.js CVE-2025-29927 used `x-middleware-subrequest` to bypass middleware (CVSS 9.1) | Optimizing visible functionality, fragmented context | G4 static review + G5 proof: missing-owner-filter / bola-cross-account (CWE-639), single-middleware-authz (CWE-287) |
+| Excessive agent agency | Replit agent deleted a production DB and generated 4,000 fake records; private data + untrusted content + external communication form the lethal trifecta | Agent capabilities not bounded at design time | G0/G4/G6: `VS-G0-LETHAL-TRIFECTA`, agent-tool-overexposure (CWE-250), indirect-prompt-injection (CWE-1427) |
+
+## 3. Dual-track pipeline
+
+```text
+Design: G0 → four questions → STRIDE/LINDDUN/MAESTRO → DFD/trust boundaries
+        → lethal-trifecta checks → L1/L2/L3 in vibesec.yaml
+PR white-box, diff-aware, target <5 minutes:
+        G1 supply chain → G2 secrets → G3 SAST/IaC → G4 architecture/access
+        pr-gates.yml; nightly-full.yml adds full CodeQL analysis
+Authorized staging black-box:
+        G5 ZAP/API, two-account BOLA, JWT, SSRF, exposed settings, rate limits
+        → G6 promptfoo/garak, direct/indirect injection, prompt extraction,
+          AI-output XSS, denial of wallet
+        staging-blackbox.yml → VIBESEC_TARGET_URL only
+Harness: seven gate results → four review roles / ≥2 families → E0–E3 evidence
+        → separate CVSS v4.0, EPSS, KEV → P0–P3
+        → SARIF + findings.json + risk_register.json + summary.md
+```
+
+G1 runs first because install hooks execute immediately. G2 scans full history and adds pre-commit/push protection. G3 uses Semgrep/Checkov/Trivy; G4 checks owner binding, RLS, tool allowlists, and the LLM-review handoff.
+
+Gate states are `pass`, `fail`, `pending`, `untested`, `not_applicable`, and `incomplete` (`schemas/gate-result.schema.json`). Missing tools/accounts/documents, timeouts, API errors, or startup failures are `incomplete` with a reason, **never pass**.
+
+## 4. White-box/black-box feedback loop
+
+Static G3/G4 findings start at E1 (tool alert) or E2 (specific location/path), with validation pending. Schedule matching G5/G6 probes. Reproduction establishes E3/confirmed; unsuccessful reproduction leaves pending or refuted with counterevidence.
+
+- Missing owner filter → account B reads account A's resource → HTTP 200 proves `vibesec.g5.bola-cross-account`.
+- Terraform allows IMDSv1 → URL-import endpoint fetches `http://169.254.169.254/latest/meta-data/` → a role name proves `vibesec.g5.ssrf-metadata`.
+- LLM output reaches `innerHTML` → promptfoo induces script content and frontend execution → `vibesec.g6.stored-xss-via-ai-output`.
+
+Conversely, HTTP evidence (`evidence_refs.kind: http_exchange`) identifies endpoints/parameters. Trace routes back to code with targeted Semgrep and `git log -S`; add code/SARIF locations. If no root cause is found, retain the HTTP location and `root_cause: unknown` rather than guessing. A leaked `sk-ant-...` in a system prompt triggers G2 scanning of the prompt template and key rotation; a stack trace naming `app/routers/todos.py:42` provides a direct source location. This implements the scan → isolated verification → scoring → human adjudication → retest loop in `docs/08`.
+
+## 5. Engineering principles
+
+### 5.1 Blocking versus advisory
+
+| Tier | Meaning / examples | Behavior |
+|---|---|---|
+| blocking | High-confidence, machine-verifiable, clear remediation: keys, hallucinated/young/blacklisted packages, unparameterized SQL, JWT alg:none, proven BOLA, KEV, exposed `execute_sql` tool | Shadow reports “would block”; enforce exits 1 |
+| advisory | Architecture requiring judgment: missing owner filter on a possibly public resource, middleware-only authorization, permissive CORS, absent rate limits/HITL | Report in either mode; reviewer adjudicates in risk register |
+
+Use `config/policy/blocking-policy.yaml`. Start the pilot in shadow, then enforce after acceptance. Never demote blocking rules merely to pass; humans decide policy changes in a separate PR.
+
+### 5.2 Standardized output
+
+- Location-based findings become SARIF 2.1.0 (`reports/vibesec.sarif`) for GitHub Code Scanning/GitLab Security Dashboard, mapped through `config/catalogs/cwe-map.yaml`.
+- Findings without a single code location enter `reports/risk_register.json`.
+- Every finding follows `schemas/finding.schema.json`. Keep control IDs, CWE/CVE, CVSS vector, EPSS/date, KEV/date, evidence grade, validation status, priority, owner, due date, evidence references, and retest results separate.
+- Preserve native rule names with `gitleaks:`, `semgrep:`, `trivy:`, `grype:`, `checkov:`, `zap:`, `promptfoo:`, or `garak:` prefixes.
+
+### 5.3 Diff awareness
+
+G1/G3/G4 use PR diffs for feedback within minutes. G2 deliberately scans full history. Nightly CodeQL/full scans recover cross-file and interprocedural paths. Use `semgrep ci` or `semgrep --baseline-commit <merge-base>`; G1 queries newly added lockfile dependencies.
+
+## 6. Risk tiers
+
+| Tier | Scope | Depth |
+|---|---|---|
+| L1 | Internal, no LLM or personal data | Emphasize G1/G2; other inapplicable gates require reasons |
+| L2 | Public-facing or ordinary business-data applications | G1–G6; cross-file taint and two-account BOLA |
+| L3 | External access + personal/confidential data + privileged agents | Deeper G1–G6, formal threat modeling, external penetration testing, commercial AI red team, mandatory sandbox/HITL |
+
+## 7. Ownership
+
+| Owner | Duties | Exclusions |
+|---|---|---|
+| DevOps/platform: G1–G3 integration | Integrate all workflows; maintain slopsquatting/Gitleaks/Checkov configuration; preserve SBOMs; pin tools and expose incomplete states | Does not adjudicate advisory findings or change blocking policy |
+| AppSec/governance: G0/G4 and policy | Lead threat modeling/tiering; maintain policy/catalogs; approve allowlist exceptions; adjudicate model disagreement; align ASVS/NIST/ISO/EU CRA/CSL-DSL-PIPL | Does not replace developers in remediation |
+| Red team: G5/G6 | Maintain ZAP/promptfoo/garak, provide/rotate test tokens, attack authorized environments only, map dynamic evidence to code, coordinate L3 external testing | No offensive probes against production |
+| Developers | Fix P1 within 7 days, P2 within 30, P3 within 90 (`scoring.priority_sla_days`); retest | Must not disable gates |
+
+## 8. Document guide
+
+| Documents | Subject / readers |
+|---|---|
+| 00 | Overview / everyone |
+| 01 | G0 questions, methodologies, DFD, trifecta, tiers, MAESTRO/NIST / architects and AppSec |
+| 02 | G1 package defenses, hooks, cooldown, SBOM/EPSS/KEV / DevOps |
+| 03 | G2 history/pre-commit/push protection and incident response / developers and DevOps |
+| 04 | G3 HTTP/LLM taint, Semgrep/CodeQL, IMDSv2/CORS/Docker / DevOps and AppSec |
+| 05 | G4 ownership, RLS, middleware, tools, HITL, rules backdoors, RFC 8707 / architects and AppSec |
+| 06–07 | G5 API tests and G6's five AI red-team checks / red team |
+| 08–09 | Harness state machine and multi-model/human review / harness developers and AppSec |
+| 10 | Evidence, scoring, SLAs, finding format / everyone |
+| 11 | Tool selection / DevOps and procurement |
+| 12–13 | Four-week pilot, minimum 60 cases, acceptance; twelve-month/compliance roadmap / management |
+| `docs/templates/` | Threat model, G0 report, finding/risk-register examples / everyone |
+
+## 9. One PR end to end
+
+1. G0 classifies a public FastAPI todo service processing PII with a data-reading agent as L2. A tool allowlist cuts external communication (`trifecta_leg_cut: external_comms`).
+2. Generated code adds `reqeusts`, concatenates `todo_id` into SQL, filters only by object ID, and forgets to ignore `.env`.
+3. G1's blacklist identifies the `requests` lookalike and blocks before installation.
+4. G2 finds an earlier commit's `sk-ant-api03-…`: a blocking secret, P0 incident response; it also flags unignored `.env`.
+5. G3 flags f-string SQL execution (CWE-89, blocking).
+6. G4 flags missing owner filtering; the identity reviewer confirms the resource is private, producing E2/pending for dynamic verification.
+7. In staging, account B reads A's todo: G5 records blocking E3 BOLA and confirms the G4 finding.
+8. If chat exists, G6 tests model-induced script content rendered by the frontend.
+9. The harness aggregates seven gate results, multi-model architecture reviews, evidence/scoring, and reports to Code Scanning.
+
+Shadow reports all would-block findings. After enforcement is enabled, blocking findings in steps 3/4/5/7 fail the relevant checks.
+
+## 10. Sources
+
+OWASP ASVS 5.0.0, OWASP LLM Top 10 2025, OWASP Threat Modeling/Threat Modeling Manifesto, CSA MAESTRO (Ken Huang, February 2025), NIST AI RMF 1.0, FIRST CVSS v4.0/EPSS, CISA KEV, MITRE CWE Top 25 2025, Simon Willison's “The Lethal Trifecta,” Perry et al., “Do Users Write More Insecure Code with AI Assistants?” (ACM CCS 2023), Semgrep, Gitleaks, promptfoo, and NVIDIA garak.

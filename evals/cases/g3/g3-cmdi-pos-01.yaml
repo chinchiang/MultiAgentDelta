@@ -1,7 +1,7 @@
 id: g3-cmdi-pos-01
 gate: G3
 domain: input_validation
-title: subprocess shell=True 拼接使用者輸入
+title: "subprocess shell=True 拼接使用者輸入 / subprocess combines shell=True with user input"
 input:
   kind: code
   path: app/tools.py

@@ -10,7 +10,7 @@
       "finding_id": "VS-20261003-1a2b3c4d",
       "gate": "G5",
       "control_id": "ASVS5-V8.1",
-      "title": "帳號 B 可讀帳號 A 的筆記（BOLA / IDOR）",
+      "title": "帳號 B 可讀帳號 A 的筆記（BOLA / IDOR） / Account B can read account A's notes (BOLA / IDOR).",
       "policy_tier": "blocking",
       "priority": "P1",
       "severity": "high",
@@ -24,7 +24,7 @@
       "finding_id": "VS-20261003-9f8e7d6c",
       "gate": "G0",
       "control_id": "MAESTRO-L3",
-      "title": "客服 Agent 具致命三要素，架構缺口待確認",
+      "title": "客服 Agent 具致命三要素，架構缺口待確認 / The support agent has the lethal trifecta; the architectural gap awaits confirmation.",
       "policy_tier": "advisory",
       "priority": null,
       "severity": null,
@@ -33,7 +33,7 @@
       "owner": "architecture",
       "due_date": null,
       "retest_result": "not_retested",
-      "note": "架構類發現不硬編 CVSS 分數；記錄攻擊情境、影響與缺失控制。"
+      "note": "架構類發現不硬編 CVSS 分數；記錄攻擊情境、影響與缺失控制。 / Do not invent CVSS scores for architectural findings; record the attack scenario, impact, and missing controls."
     }
   ]
 }

@@ -1,4 +1,4 @@
-# 僅供內建靶場：沿用預植使用者，所有路徑都存在於 examples/vulnapp。
+# 僅供內建靶場：沿用預植使用者，所有路徑都存在於 examples/vulnapp。 / Built-in lab only: uses seeded users and paths in examples/vulnapp.
 version: 1
 auth:
   scheme: bearer

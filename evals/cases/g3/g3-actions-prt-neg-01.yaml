@@ -1,7 +1,7 @@
 id: g3-actions-prt-neg-01
 gate: G3
 domain: github_actions
-title: pull_request_target 只貼標籤，不檢出或引用 PR 內容
+title: "pull_request_target 只貼標籤，不檢出或引用 PR 內容 / pull_request_target only labels and never checks out or references PR content"
 input:
   kind: iac
   path: .github/workflows/labeler.yml
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g3.actions-pull-request-target
   policy_tier: advisory
 held_out: false
-notes: 'GitHub 官方建議的 pull_request_target 安全用法：只用 base repo 的程式碼。'
+notes: "GitHub 官方建議的 pull_request_target 安全用法：只用 base repo 的程式碼。 / GitHub's recommended safe pattern uses only base-repository code."

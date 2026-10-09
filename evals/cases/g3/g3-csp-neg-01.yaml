@@ -1,7 +1,7 @@
 id: g3-csp-neg-01
 gate: G3
 domain: csp
-title: 設定嚴格 CSP
+title: "設定嚴格 CSP / A strict CSP is configured"
 input:
   kind: config
   headers:

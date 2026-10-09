@@ -1,7 +1,7 @@
 id: g4-single-mw-fastapi-neg-01
 gate: G4
 domain: authorization
-title: FastAPI middleware 與 router 依賴兩層都檢查授權
+title: "FastAPI middleware 與 router 依賴兩層都檢查授權 / FastAPI checks authorization in both middleware and router dependencies"
 input:
   kind: code
   language: python
@@ -30,4 +30,4 @@ expected:
   rule_id: vibesec.g4.single-middleware-authz
   policy_tier: advisory
 held_out: false
-notes: router 層的 Depends(require_user) 是第二道授權檢查，不屬於單層 middleware。
+notes: "router 層的 Depends(require_user) 是第二道授權檢查，不屬於單層 middleware。 / Router Depends(require_user) provides a second authorization check."

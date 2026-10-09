@@ -1,7 +1,7 @@
 id: g0-trifecta-neg-02
 gate: G0
 domain: application_architecture
-title: 三要素齊備但外傳通道受 allow-list 與 HITL 阻斷
+title: "三要素齊備但外傳通道受 allow-list 與 HITL 阻斷 / The trifecta's outbound channel is blocked by an allowlist and HITL"
 input:
   kind: config
   threat_model:
@@ -20,4 +20,4 @@ expected:
   rule_id: vibesec.g0.lethal-trifecta-open
   policy_tier: blocking
 held_out: false
-notes: 外傳通道已被切斷（allow-list 僅內部 + 人工核准），預期 G0 不 blocking；若審查者意見分歧應保留少數意見。
+notes: "外傳通道已被切斷（allow-list 僅內部 + 人工核准），預期 G0 不 blocking；若審查者意見分歧應保留少數意見。 / An internal-only allowlist removes exfiltration; human approval supplements it. G0 should not block; preserve reviewer dissent."

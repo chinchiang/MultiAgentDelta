@@ -1,7 +1,7 @@
 id: g1-cooldown-neg-01
 gate: G1
 domain: dependency
-title: 發布超過冷卻期的修補版
+title: "發布超過冷卻期的修補版 / A patch release older than the cooldown"
 input:
   kind: manifest
   ecosystem: pypi
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g1.cooldown-violation
   policy_tier: blocking
 held_out: false
-notes: 已超過冷卻期，不應標記。
+notes: "已超過冷卻期，不應標記。 / The cooldown has elapsed; do not flag."

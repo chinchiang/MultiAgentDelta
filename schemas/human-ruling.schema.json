@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/chinchiang/MultiAgentDelta/schemas/human-ruling.schema.json",
-  "title": "VibeSec Human Ruling",
-  "description": "人工對 requires_human 發現的裁決紀錄（docs/09 §7）。只決定 validation_status 與（有證據時）evidence_grade；不改嚴重度、CVSS、policy_tier，也不刪除任何模型意見。",
+  "title": "VibeSec 人工裁決 / VibeSec Human Ruling",
+  "description": "人工對 requires_human 發現的裁決紀錄（docs/09 §12）。只決定 validation_status 與（有證據時）evidence_grade；不改嚴重度、CVSS、policy_tier，也不刪除任何模型意見。 / Human adjudication of a requires_human finding (docs/09 section 12). Changes validation/evidence only; never severity, CVSS, policy tier, or model opinions.",
   "type": "object",
   "additionalProperties": false,
   "required": ["ruling_version", "finding_id", "decided_by", "decided_at", "decision", "basis", "rationale", "minority_acknowledged"],
@@ -14,25 +14,25 @@
       "additionalProperties": false,
       "required": ["type", "handle", "role"],
       "properties": {
-        "type": { "const": "human", "description": "裁決者必須是人；模型或 bot 不得裁決" },
-        "handle": { "type": "string", "minLength": 2, "description": "GitHub 帳號或工號" },
-        "role": { "type": "string", "minLength": 2, "description": "例如 appsec-lead、tech-lead" }
+        "type": { "const": "human", "description": "裁決者必須是人；模型或 bot 不得裁決 / The adjudicator must be human, never a model or bot." },
+        "handle": { "type": "string", "minLength": 2, "description": "GitHub 帳號或工號 / GitHub handle or employee identifier." },
+        "role": { "type": "string", "minLength": 2, "description": "例如 appsec-lead、tech-lead / For example appsec-lead or tech-lead." }
       }
     },
     "decided_at": { "type": "string", "format": "date-time" },
     "decision": {
       "type": "string",
       "enum": ["confirm", "refute", "defer"],
-      "description": "confirm → validation_status confirmed 且 E3；refute → refuted；defer → 維持 pending 並保留 requires_human"
+      "description": "confirm → validation_status confirmed 且 E3；refute → refuted；defer → 維持 pending 並保留 requires_human / Confirm sets confirmed/E3; refute sets refuted; defer preserves pending and requires_human."
     },
     "basis": {
       "type": "string",
       "enum": ["reproduced", "manual_review", "scope_exclusion", "compensating_control", "insufficient_evidence"],
-      "description": "裁決依據。模型共識不是依據（docs/09 §4）"
+      "description": "裁決依據。模型共識不是依據（docs/09 §4） / Adjudication basis. Model consensus is not evidence (docs/09 section 4)."
     },
     "evidence_refs": {
       "type": "array",
-      "description": "裁決所依據的證據；model_review 不算",
+      "description": "裁決所依據的證據；model_review 不算 / Supporting evidence; model_review does not qualify.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -44,10 +44,10 @@
         }
       }
     },
-    "rationale": { "type": "string", "minLength": 20, "description": "為什麼這樣裁決；需回應分歧點" },
+    "rationale": { "type": "string", "minLength": 20, "description": "為什麼這樣裁決；需回應分歧點 / Explain the decision and address disputed points." },
     "minority_acknowledged": {
       "type": "array",
-      "description": "finding 中每一則 minority 意見都必須逐一回應",
+      "description": "finding 中每一則 minority 意見都必須逐一回應 / Respond to every minority opinion in the finding.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -55,12 +55,12 @@
         "properties": {
           "role": { "type": "string", "enum": ["architecture", "appsec", "identity-authz", "supplychain-cicd"] },
           "provider": { "type": "string" },
-          "response": { "type": "string", "enum": ["accepted", "rejected"], "description": "accepted = 採納其論點；rejected = 不採納" },
+          "response": { "type": "string", "enum": ["accepted", "rejected"], "description": "accepted = 採納其論點；rejected = 不採納 / Accepted adopts the argument; rejected declines it." },
           "comment": { "type": ["string", "null"] }
         }
       }
     },
-    "next_review_by": { "type": ["string", "null"], "format": "date", "description": "decision=defer 時必填" },
+    "next_review_by": { "type": ["string", "null"], "format": "date", "description": "decision=defer 時必填 / Required when decision is defer." },
     "follow_up": {
       "type": ["object", "null"],
       "additionalProperties": false,

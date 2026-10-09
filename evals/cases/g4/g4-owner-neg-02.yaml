@@ -1,7 +1,7 @@
 id: g4-owner-neg-02
 gate: G4
 domain: data_integrity
-title: 查詢以 owner_id 綁定當前主體
+title: "查詢以 owner_id 綁定當前主體 / The query binds owner_id to the current principal"
 input:
   kind: code
   path: app/repo.py

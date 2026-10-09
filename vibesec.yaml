@@ -1,24 +1,24 @@
-# VibeSec 主設定檔 — Vibe Coding 六道資安閘門（G0–G6）
-# 由 harness agent（.claude/skills/vibesec-harness）與 GitHub Actions 工作流共同讀取。
-# 詳細語意見 docs/08-harness-agent.md。
+# VibeSec 主設定檔 — Vibe Coding 六道資安閘門（G0–G6） / VibeSec main configuration: G0 modeling and six security gates G1–G6.
+# 由 harness agent（.claude/skills/vibesec-harness）與 GitHub Actions 工作流程共同讀取。 / Read by the harness agent and GitHub Actions workflows.
+# 詳細語意見 docs/08-harness-agent.md。 / See docs/08-harness-agent.md for semantics.
 
 version: 1
 
-# shadow：所有閘門只報告、不阻擋合併（試點預設）
-# enforce：命中 blocking 政策的發現會讓 PR 檢查失敗
+# shadow：所有閘門只報告、不阻擋合併（試點預設） / shadow: report all gates without blocking merges; pilot default.
+# enforce：命中 blocking 政策的發現會讓 PR 檢查失敗 / enforce: findings under blocking policy fail PR checks.
 mode: shadow
 
-# 由 G0 威脅建模決定；影響啟用的閘門與深度（docs/01-g0-threat-modeling.md）
-#   L1：純內部、不含 LLM、不處理個資       → 只跑 G1、G2
-#   L2：對外或處理業務資料的一般企業應用      → G1–G6 全開
-#   L3：對外＋個資／商業機密＋高權限 Agent    → G1–G6 全開且深度加倍，外加委外滲透與正式威脅建模
-risk_tier: L3                     # 依 docs/threat-model.yaml 以 docs/01 決策樹推導（public + 祕密 + 具對外通訊與高影響工具的 agent）
+# 由 G0 威脅建模決定；影響啟用的閘門與深度（docs/01-g0-threat-modeling.md） / G0 threat modeling determines enabled gates and depth; see docs/01-g0-threat-modeling.md.
+#   L1：純內部、不含 LLM、不處理個資       → 只跑 G1、G2 / L1: internal only, no LLM or personal data; G1 and G2.
+#   L2：對外或處理業務資料的一般企業應用      → G1–G6 全開 / L2: externally accessible or ordinary business-data applications; G1–G6.
+#   L3：對外＋個資／商業機密＋高權限 Agent    → G1–G6 全開且深度加倍，外加委外滲透與正式威脅建模 / L3: external exposure, personal data or trade secrets, and privileged agents; deeper G1–G6, external penetration testing, and formal modeling.
+risk_tier: L3                     # 依 docs/threat-model.yaml 以 docs/01 決策樹推導（public + 祕密 + 具對外通訊與高影響工具的 agent） / Derived from docs/threat-model.yaml using docs/01: public exposure, secrets, and an agent with external communication and high-impact tools.
 
 project:
   name: multiagentdelta
   owner: appsec-team
-  threat_model: docs/threat-model.yaml             # G0 輸入（本 repo 的真實模型）；不存在時 G0 記為 incomplete
-  contains_llm: true                                # 為 false 時 G6 記為 not_applicable（附理由）
+  threat_model: docs/threat-model.yaml             # G0 輸入（本 repo 的真實模型）；不存在時 G0 記為 incomplete / G0 input: this repository's actual model; absence means incomplete.
+  contains_llm: true                                # 為 false 時 G6 記為 not_applicable（附理由） / When false, G6 is not_applicable with a reason.
   languages: [python, javascript]
 
 reports_dir: reports
@@ -26,20 +26,20 @@ policy_file: config/policy/blocking-policy.yaml
 providers_file: config/providers.yaml
 catalogs_dir: config/catalogs
 
-# 每個閘門：enabled、timeout_seconds、diff_aware（PR 階段只掃變更）、tools（依序嘗試，缺席即 incomplete）
+# 每個閘門：enabled、timeout_seconds、diff_aware（PR 階段只掃變更）、tools（依序嘗試，缺席即 incomplete） / Each gate declares enabled, timeout_seconds, diff_aware for PR changes, and sequentially attempted tools; missing tools mean incomplete.
 gates:
   g0_threat_model:
     enabled: true
     trigger: [design, major_change, agent_introduction]
-    methodologies: [STRIDE, MAESTRO]      # 隱私領域加 LINDDUN
-    lethal_trifecta_check: required       # 三要素同時成立 → 必須在設計期切斷一隻腳
+    methodologies: [STRIDE, MAESTRO]      # 隱私領域加 LINDDUN / Add LINDDUN for privacy.
+    lethal_trifecta_check: required       # 三要素同時成立 → 必須在設計期切斷一隻腳 / If all three capabilities exist, remove one during design.
   g1_supply_chain:
     enabled: true
     timeout_seconds: 600
     diff_aware: true
-    order: first                          # 惡意 postinstall 會在安裝瞬間執行，G1 必須最先跑
-    cooldown_days: 14                     # 7–14；發布未滿此天數的新套件版本拒絕安裝
-    unmaintained_days: 730                # 套件最新版發布超過此天數 → vibesec.g1.unmaintained-dependency（advisory）
+    order: first                          # 惡意 postinstall 會在安裝瞬間執行，G1 必須最先跑 / Malicious postinstall executes during installation; G1 must run first.
+    cooldown_days: 14                     # 7–14；發布未滿此天數的新套件版本拒絕安裝 / Range 7–14; reject package versions younger than this number of days.
+    unmaintained_days: 730                # 套件最新版發布超過此天數 → vibesec.g1.unmaintained-dependency（advisory） / A latest release older than this threshold triggers advisory vibesec.g1.unmaintained-dependency.
     min_weekly_downloads: 1000
     popular_lists: [config/slopsquat/popular-npm.txt, config/slopsquat/popular-pypi.txt]
     blacklist: config/slopsquat/blacklist.yaml
@@ -51,7 +51,7 @@ gates:
   g2_secrets:
     enabled: true
     timeout_seconds: 300
-    diff_aware: false                     # 全 Git 歷史
+    diff_aware: false                     # 全 Git 歷史 / Full Git history.
     tools: [gitleaks]
     config: config/gitleaks.toml
     require_env_in_gitignore: true
@@ -77,38 +77,38 @@ gates:
     stage: staging
     target_url_env: VIBESEC_TARGET_URL
     tools: [zap-baseline, zap-api-scan, api-probes]
-    two_account_test: required            # 需要兩個不同權限帳號的 token
+    two_account_test: required            # 需要兩個不同權限帳號的 token / Requires tokens for two accounts with different access rights.
     account_a_token_env: VIBESEC_TOKEN_A
     account_b_token_env: VIBESEC_TOKEN_B
     checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check, cors_reflect_origin]
-    # session_check：這些路徑在「無 token」與「無效 token」時都必須回 401/403。由應用擁有者列出（探針無法從外部推斷意圖）；
-    # 未列出 → session_check 記為 untested（incomplete ≠ pass）。
+    # session_check：這些路徑在「無 token」與「無效 token」時都必須回 401/403。由應用擁有者列出（探針無法從外部推斷意圖）； / session_check: these owner-declared paths must return 401/403 for both missing and invalid tokens; probes cannot infer intended protection externally.
+    # 未列出 → session_check 記為 untested（incomplete ≠ pass）。 / Without listed paths, session_check is untested; incomplete is not pass.
     protected_paths: ["/me", "/users", "/admin/users"]
   g6_ai_red_team:
     enabled: true
     timeout_seconds: 1800
     stage: staging
     tools: [promptfoo, garak]
-    promptfoo_config: config/promptfoo/promptfooconfig.yaml      # redteam 生成層（需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY）
-    promptfoo_tests_config: config/promptfoo/tests.yaml          # 決定性測試（不需金鑰）
+    promptfoo_config: config/promptfoo/promptfooconfig.yaml      # redteam 生成層（需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY） / Red-team generation requires ANTHROPIC_API_KEY or OPENAI_API_KEY.
+    promptfoo_tests_config: config/promptfoo/tests.yaml          # 決定性測試（不需金鑰） / Deterministic tests require no keys.
     garak_config: config/garak/vibesec.probes.yaml
     checks: [direct_prompt_injection, indirect_prompt_injection, system_prompt_extraction, stored_xss_via_ai_output, denial_of_wallet]
 
 review:
   enabled: true
   roles: [architecture, appsec, identity-authz, supplychain-cicd]
-  min_families_for_high_risk: 2           # 高風險控制至少兩個不同模型家族獨立檢查
-  round1_independent: true                # 第一輪不交換結論
-  max_cross_rounds: 2                     # 之後最多兩輪交叉質疑
+  min_families_for_high_risk: 2           # 高風險控制至少兩個不同模型家族獨立檢查 / High-risk controls require independent checks from at least two model families.
+  round1_independent: true                # 第一輪不交換結論 / Do not share conclusions in round one.
+  max_cross_rounds: 2                     # 之後最多兩輪交叉質疑 / At most two subsequent cross-examination rounds.
   keep_minority_opinions: true
-  majority_vote: false                    # 不採多數決，交人工裁決
-  ids_from_catalogs_only: true            # CWE/CVE/ASVS ID 只能引用 catalogs，不得由模型猜測
+  majority_vote: false                    # 不採多數決，交人工裁決 / No majority vote; refer disagreements to human adjudication.
+  ids_from_catalogs_only: true            # CWE/CVE/ASVS ID 只能引用 catalogs，不得由模型猜測 / CWE/CVE/ASVS IDs must come from catalogs, never model guesses.
 
 scoring:
   cvss_version: "4.0"
   record_epss: true
   record_kev: true
-  combine_scores: false                   # 不做 CVSS × EPSS × 信心 的自訂乘法
+  combine_scores: false                   # 不做 CVSS × EPSS × 信心 的自訂乘法 / Do not invent CVSS × EPSS × confidence multiplication.
   priority_sla_days: {P0: 0, P1: 7, P2: 30, P3: 90}
 
 output:

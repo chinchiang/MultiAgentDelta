@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 10 — 證據分級、評分、優先序與 Finding 格式
 
 > 技術嚴重度、處置優先序、證據可信度、驗證狀態、測試覆蓋率**分開呈現**，不合成一個模糊的安全總分。本文件對應 `vibesec.yaml` 的 `scoring.*` 與 `schemas/finding.schema.json`、`schemas/gate-result.schema.json`。
@@ -214,3 +219,108 @@ coverage_ratio = (pass + fail) / (pass + fail + pending + untested)
 - `regressed`：先前 `fixed` 的發現在後續版本再度出現（以 `partialFingerprints["vibesec/stable"]` 比對）→ 自動升回原 priority，`notes` 記回歸 commit。
 - 重測前 `retest_result: not_retested`；`refuted` 的發現不重測（`null`）。
 - 重測結果寫回同一 `id`，不另開新 finding；歷史保留在 `evidence_refs[]`。
+
+
+---
+
+<a id="english"></a>
+
+# 10 — Evidence, Scoring, Priority, and Finding Format
+
+Keep technical severity, response priority, evidence strength, validation, and coverage separate. Do not collapse them into a vague security score. Configuration: `scoring.*`; schemas: finding and gate-result.
+
+## 1. Internal evidence grades
+
+| Grade | Meaning | Supported conclusion / examples |
+|---|---|---|
+| E3 confirmed | Reproducible on a fixed commit/digest or sufficient code/config/architecture evidence with human verification | Formal remediation; two-account HTTP proof, verified active secret, manually reproduced SQLi |
+| E2 directly supported | Specific location/version/plausible path, but some deployment/runtime assumptions remain | Prioritize verification, do not call confirmed; full taint path, affected imported dependency, two-family evidence-backed agreement |
+| E1 candidate | Tool/advisory/model signal without applicability confirmation | Triage; single-file alert, unmatched reachability, single reviewer suspicion |
+| E0 unsupported hypothesis | No traceable support or generic best practice | Not a confirmed weakness; retain clarification needs |
+
+E1→E2 requires direct cited evidence; E2→E3 requires reproduction/human verification. Model agreement alone reaches at most E2. Confidence percentages have no effect. This is an internal scale, not certification.
+
+## 2. Validation status
+
+`pending` is default; `confirmed` requires E3 and adjudication/reproducible evidence (high-certainty tests may set it with references); `refuted` requires human adjudication or explicit disproof without unresolved reviewer objection. E2+pending is normal; E3+refuted is valid when strong evidence disproves a claim. Uncertainty remains pending, never auto-closed.
+
+## 3. Required provenance
+
+Record source tool/evidence kind; publication/query dates; affected package/tool versions; code commit; artifact digest; tool/rule versions; model/prompt versions; test preconditions; expected/actual results; support; counterevidence; missing assumptions; and human decision/ruling reference. Use canonical vendor/NVD/GHSA advisories. Multiple reposts of one advisory count as one source; advisory scope and actual local applicability require different evidence.
+
+## 4. Scoring dimensions
+
+- **Technical severity:** store complete CVSS v4.0 vector and metric rationale, calculate deterministically. Preserve native v3.1 when supplied; do not invent a conversion.
+- **Enterprise context:** add known Threat/Environmental metrics (E, CR/IR/AR, modified base) to the vector; disclose unknowns.
+- **External signals:** CVE-linked EPSS probability/query date and KEV status/date. Without a CVE, use null.
+- **Evidence strength:** E0–E3; weak evidence does not automatically make a potentially severe issue low risk.
+- **Architecture:** describe scenario, impact, missing control; qualitative severity or null, CVSS null when unsuitable; use the risk register.
+
+`combine_scores: false`: no CVSS×EPSS×confidence, weighted average, or custom total. CVSS measures severity, EPSS estimates published-CVE exploitation in the next 30 days, KEV records known exploitation. Priority is a policy lookup.
+
+## 5. P0–P3 and SLAs
+
+| Priority | Meaning | Remediation / triage |
+|---|---|---|
+| P0 | Active compromise/leak or live privileged production secret | Immediate human incident response; zero days |
+| P1 | Confirmed high/critical, applicable exposed KEV, major authorization/release trust failure | Fix or time-limited compensating control within seven days; assign/triage within one business day |
+| P2 | Confirmed medium | Fix within 30 days; other pending triage within five business days |
+| P3 | Low/hardening | Review/action within 90 days; triage within five business days |
+
+Due date = creation time + configured SLA. Pending priority is a candidate and labeled so; refuted findings have null priority. Stricter company rules prevail.
+
+Lookup inputs: validation, severity, KEV, exposure (public/partner/internal; missing model defaults conservatively to public), verified live privileged production secret, and human-confirmed compromise. Refuted findings are excluded. Otherwise prioritize live secrets/compromise P0; exposed KEV, confirmed high/critical, confirmed authorization/release-trust flaws P1; pending high/critical/KEV P1 candidate; medium P2/candidate; low/info/hardening P3. Evidence grade is not a downgrade factor: an E1 critical candidate still needs rapid triage.
+
+## 6. Finding fields
+
+`schemas/finding.schema.json` rejects additional fields; include required fields and nulls where appropriate. The annotated example above illustrates:
+
+- `id`: `VS-YYYYMMDD-<8 hex>` based on rule/path/line/commit; `gate`: G0–G6; `rule_id`: VibeSec or prefixed native rule.
+- `title`/`description`: concrete issue and scenario; catalog-only control/CWE, optional CVE.
+- Separate severity/CVSS/EPSS/KEV, evidence/validation, trusted `policy_tier`, priority/owner/due date.
+- `location`: kind, path/lines, package/version, URL, commit.
+- `evidence_refs`: kind, path/URL, digest, expected-versus-actual note; model reviews are distinct from HTTP/code evidence.
+- `review`: all role/provider/family/model/prompt-version/round/verdict/rationale/minority opinions, human-required status, decision and ruling reference.
+- `retest_result`, source/tool/rule/advisory/query provenance, creation time, preconditions/limitations.
+
+The example describes account B reading A's order 1001 at `/orders/{id}`, missing owner filtering, high severity, E3/confirmed, blocking/P1, team-orders owner and seven-day due date. Its vector is `CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N`, score 7.1, with null CVE/EPSS/KEV. Opinions cite the order route; manual replay supports confirmation. Treat sample values as examples, not actual findings.
+
+Dependency findings use kind dependency with package/version, the actual advisory CVE when available, queried signals/dates, and an official advisory URL. Secret findings include only masks/fingerprints; raw credentials must never enter reports.
+
+## 7. SARIF 2.1.0 mapping
+
+Export code/dependency/config findings, one run per tool:
+
+| Finding | SARIF |
+|---|---|
+| rule_id | result.ruleId and driver.rules[].id |
+| title / description | shortDescription.text / result.message.text |
+| severity | critical/high→error, medium→warning, low/info→note; preserve original property |
+| cvss_score | rule properties.security-severity |
+| cwe | external/cwe tags and taxonomy relationships |
+| path/start/end line | physicalLocation URI and region |
+| package/version | logical fullyQualifiedName as purl |
+| id | fingerprints[vibesec/id]; stable partial fingerprint = hash(rule_id+path) |
+| evidence grade, validation, tier, priority, controls/CVE/signals/vector/gate | result.properties `vibesec/<field>` |
+| evidence references | related locations for code, attachments for native/HTTP artifacts |
+| source tool/version/rule version | driver fields and rule property |
+| review opinions | findings.json only |
+| commit | versionControlProvenance revisionId |
+
+## 8. Risk register
+
+Store architecture/prompt findings and open modeled threats in `reports/risk_register.json`, with generation time/project/commit/tier; each risk's finding/gate/control, attack scenario, impact, missing control, MAESTRO layer, evidence/validation/priority, owner/due date/status, and trifecta state. Example: a generic support agent can execute arbitrary production SQL without an allowlist/HITL. Architectural risks use scenario-based explanation, not fabricated CVSS; priority still follows the policy lookup.
+
+## 9. Coverage
+
+Per-control states: pass (tested/no finding), fail (tested/active finding), pending (unresolved conclusion), untested (missing tool/time/token/outside diff), not_applicable (design-based reason required).
+
+```text
+coverage_ratio = (pass + fail) / (pass + fail + pending + untested)
+```
+
+Exclude not-applicable controls from the denominator. Report all 14 domains separately so easy passes cannot hide authorization failures. Coverage failure and gate blocking are distinct: final gate status also applies policy tiers and required-tool completeness. Do not infer security from a high aggregate percentage.
+
+## 10. Retesting
+
+Use a new commit/digest, rerun the original failing case and safe controls, and record fixed/still_present/regressed. Fixed requires equivalent-strength evidence, not merely changed code. Match stable rule/path fingerprints to detect regressions, restore the original priority, and note the regression commit. Before retesting use not_retested; refuted findings use null. Update the same finding ID and append historical evidence rather than creating a replacement finding.

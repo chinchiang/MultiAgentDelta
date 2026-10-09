@@ -1,5 +1,5 @@
-# nightly 必須實測且正確：TP／TN 或 VERIFIED（狀態驗證不計入召回率）。
-# 僅擴增基準；縮減須由人類在獨立 PR 決定（CLAUDE.md 規則 1）。
+# nightly 必須實測且正確：TP／TN 或 VERIFIED（狀態驗證不計入召回率）。 / Nightly cases must execute correctly as TP/TN or VERIFIED; status verification is excluded from recall.
+# 僅擴增基準；縮減須由人類在獨立 PR 決定（CLAUDE.md 規則 1）。 / Only expand the baseline; shrinking requires a human decision in a separate PR under CLAUDE.md rule 1.
 executed:
   - g0-trifecta-neg-01
   - g0-trifecta-neg-02

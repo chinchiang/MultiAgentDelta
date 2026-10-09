@@ -1,7 +1,7 @@
 id: g0-trifecta-pos-01
 gate: G0
 domain: ai_agent_security
-title: Agent 同時具備致命三要素且未切斷任何一腳
+title: "Agent 同時具備致命三要素且未切斷任何一腳 / An agent has all three trifecta capabilities with none removed"
 input:
   kind: config
   threat_model:
@@ -18,4 +18,4 @@ expected:
   rule_id: vibesec.g0.lethal-trifecta-open
   policy_tier: blocking
 held_out: false
-notes: 設計期必須切斷至少一隻腳，否則不得放行。
+notes: "設計期必須切斷至少一隻腳，否則不得放行。 / Remove at least one capability during design before approval."

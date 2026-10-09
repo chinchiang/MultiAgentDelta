@@ -1,7 +1,7 @@
 id: g5-stacktrace-pos-01
 gate: G5
 domain: error_handling
-title: 錯誤回應洩漏 stack trace
+title: "錯誤回應洩漏 stack trace / Error responses expose a stack trace"
 input:
   kind: http
   target_app: vulnapp

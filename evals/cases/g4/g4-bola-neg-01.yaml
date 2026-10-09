@@ -1,7 +1,7 @@
 id: g4-bola-neg-01
 gate: G4
 domain: authorization
-title: 已綁定 owner 的查詢不應命中
+title: "已綁定 owner 的查詢不應命中 / An owner-bound query must not match"
 input:
   kind: code
   language: python

@@ -1,7 +1,11 @@
 ---
 name: vibesec-harness
-description: 依 vibesec.yaml 執行 G0–G6 閘門、彙整發現、呼叫 reviewer sub-agents、產出 reports/；用於 "/vibesec-harness"、"跑資安閘門"、"run the security gates"
+description: "依 vibesec.yaml 執行 G0–G6 閘門、彙整發現、呼叫 reviewer sub-agents、產出 reports/；用於 \"/vibesec-harness\"、\"跑資安閘門\"、\"run the security gates\" / Run G0–G6 from vibesec.yaml, aggregate findings, call reviewer subagents, and write reports; invoked by /vibesec-harness or run the security gates."
 ---
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
 
 # /vibesec-harness — VibeSec harness agent 操作流程
 
@@ -213,3 +217,117 @@ PY
 G3／G4 若受測專案提供 `headers` 與 `tools` 的 YAML 設定，執行 `python3 scripts/control_checks.py <目標設定.yaml>`，將輸出 `rules` 依目錄納入 finding；缺設定不得推定 CSP 或人工核准已驗證。這是宣告檢查，G5／G6 仍需實測。
 
 G5 使用 `scripts/g5_api_probes.py` 及 `scripts/g5_gate.py`；G6 另執行 `scripts/g6_observe.py --out reports/g6-observations.json`，以 `g6_gate.py --observations` 合併真實工具事件／用量。缺遙測維持 `untested`。最終退出碼使用 `scripts/gate_verdict.py`，不可用 shadow 參數降低 enforce 設定。完整引數見 staging workflow。
+
+
+---
+
+<a id="english"></a>
+
+# /vibesec-harness — Claude Code Operations
+
+First read `config/harness/harness-agent.md`. Follow docs/08 for flow, docs/09 for review, and docs/10 for evidence/format. This skill explains execution in Claude Code; editing this document does not itself invoke the harness.
+
+## Parameters
+
+```text
+/vibesec-harness [--gate g1,g2,...] [--mode shadow|enforce] [--diff <base>] [--target <path>] [--target-url <url>]
+```
+
+- Gate default: G5/G6 when a target URL exists, otherwise G1–G4; request G0 explicitly. Intersect with enabled gates. Unselected required gates remain untested, never pass.
+- Mode defaults to configuration; only shadow→enforce is allowed. Report ignored downgrade attempts.
+- Diff defaults to origin/main when available, otherwise full.
+- Target defaults to this Git root. G0–G4 support external roots; keep trusted settings/lists/policy/reports here. Do not transfer repository-path exceptions. G0 reads the target model; G4 trusts only this repository's external records.
+- Target URL defaults to VIBESEC_TARGET_URL and requires an authorized test environment.
+
+## Step 0: Inventory
+
+Read main/policy/provider/catalog files, record target HEAD/branch, create reports/raw and reports/gates, and inventory Syft/Grype/Trivy/Gitleaks/Semgrep/Checkov/ZAP/promptfoo/garak. Inspect only whether required environment variables are set, never print their values. Missing main configuration/policy aborts with summary and exit 2. Record missing tools/keys; **do not install tools/packages**. Validate the actual threat model/tier; absence means G0 incomplete and tier unverified.
+
+## Step 1: Run gates in fixed order
+
+PR G1→G2→G3→G4; staging G5→G6; design G0. Record start/finish and each tool's name/version/state/exit/output/duration within gate timeout. Missing binary is missing; timeout is timeout; execution failure without valid output is error. Save raw evidence by gate.
+
+### G1: supply chain first
+
+Use `scripts/g1_slopcheck.py --target "$TARGET"` with SARIF/gate/JSON outputs, then `g1_sbom.py` against a clean archived commit with reproducibility and lockfile completeness checks (including npm devDependencies), then Grype/Trivy/required KEV. The shared shell block provides full paths. No target installation before G1 passes.
+
+Full target mode scans tracked manifests/rules. Diff mode uses target-relative changed files/base. Parse package-lock v1–3; similarity applies to direct dependencies; unsupported pnpm/yarn/nonregistry entries remain incomplete. Query actual locked versions for registry existence, cooldown, downloads, PEP-503-normalized similarity, and blacklist. Agent-rule install instructions are scanned too; flag values are not package names. Inspect hooks for network plus sensitive access/execution, credential paths, and AI-CLI abuse. Apply only valid, unexpired, version-matching package exceptions; still run every check and never bypass hooks/KEV. Record signals separately, with nulls/reasons when unavailable; mandatory KEV failure is incomplete.
+
+### G2: full-history secrets
+
+```bash
+python3 scripts/g2_secrets.py --target "$TARGET" --out-dir reports/raw/G2 --gate reports/gates/G2.json
+```
+
+Gitleaks uses redaction plus the shared environment guard. Missing/failing tools, non-root targets, or shallow clones are incomplete. External gitleaks:allow annotations are not trusted; disclose .gitleaksignore for review. Store only masks/fingerprints.
+
+### G3: SAST / IaC
+
+```bash
+python3 scripts/g3_sast.py --target "$TARGET" --out-dir reports/raw/G3 --gate reports/gates/G3.json
+```
+
+Add optional `--base <base>` for Semgrep diff scanning. Any required scanner failure is incomplete. External scans disable nosem, isolate Checkov from target config/symlinks, and run Trivy from an empty working directory. Disclose unavoidable .semgrepignore and inline Checkov/Trivy suppression. Preserve native rule prefixes.
+
+### G4: architecture/access
+
+```bash
+python3 scripts/g4_access.py --target "$TARGET" --out-dir reports/raw/G4 --gate reports/gates/G4.json
+```
+
+The shared CI implementation scans tracked snapshots for Unicode/RLS/tool registration/middleware. Supplement owner binding, MCP audience/resource indicators, and uncovered framework details through read-only inspection. Review actual tool definitions/HITL, not mere name mentions. Distinguish explicit RLS disablement from table creation without enabling RLS. Then perform architecture/identity LLM review.
+
+For external targets, only `reviews/g4/external/<target-HEAD>.yaml` in this repository can support review. Require exact HEAD, a clean tracked tree, committed records, and human confirmation. Never trust target-owned reviews/rulings or substitute this repository's results.
+
+### G5: authorized black-box testing
+
+Verify target health, run ZAP baseline/API with the configured policy, and execute `g5_api_probes.py` plus `g5_gate.py`. Shared examples show basic requests; use the shared runner for completion/redirect safety. Configure distinct A/B tokens and real context paths/IDs. Test BOLA/session, JWT none/confusion, metadata SSRF, docs/introspection/debug, throttling, and role/list isolation. Save masked exchanges. Missing URL/token/unreachable endpoint is incomplete or untested, never “no flaw.” Reject cross-origin/downgrade credential redirects.
+
+### G6: AI/agent red team
+
+```bash
+promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json --no-cache
+mkdir -p reports/garak
+garak --config config/garak/vibesec.probes.yaml --report_prefix "$PWD/reports/garak/g6-garak"
+python3 scripts/g6_observe.py --out reports/g6-observations.json
+```
+
+Optional generated red teaming needs an eligible Anthropic/OpenAI key and internal-data permission. Aggregate promptfoo, garak, generation/skipped reason, and observations through `g6_gate.py`; see staging workflow for complete arguments. Assertion exit 100 means detected failures, not tool incompleteness. Missing telemetry/generation remains explicit. No LLM by design means not applicable with reason.
+
+### G0: threat modeling
+
+```bash
+python3 scripts/g0_threat_model.py --target "$TARGET" --out-dir reports/raw/G0 --gate reports/gates/G0.json
+```
+
+Optional `--threat-model <file>` overrides target configuration/default docs/threat-model.yaml. Validate non-template schema, trifecta/evidence, and tier not below derivation; this repository also requires config consistency. Use tracked-file snapshots without symlink traversal for target evidence. Missing model is incomplete, never replaced by the harness repository's model. Put open modeled threats into the risk register.
+
+## Step 2: Multi-model review
+
+Review all G4 findings and other E1/E2 blocking/P0/P1 candidates. Classify content first; Claude subagents count as Anthropic and currently accept only public/internal data under provider policy.
+
+Build packets with finding (without previous review), line-numbered relevant code/model/native artifacts, and catalog excerpts. Invoke applicable reviewer agents independently in round 1: architecture, appsec, identity, supplychain; G4 uses architecture/identity. Parse only valid role-contract JSON, remove confidence, null unknown IDs, turn unsupported confirm into uncertain, and record actual model/provider/family/prompt version.
+
+Disagreement/uncertainty gets at most rounds 2/3 with other rationales/citations, addressed point by point. Preserve dissent, require humans, never majority-vote or author rulings. `ruling.py request` renders the human request.
+
+High-risk review needs a genuine second family. Build a masked evidence packet with `review_packet.py build --base <packet.json> --target "$TARGET" [--diff-base <sha>] --out <packet-with-code.json>`; external providers cannot read local files themselves. Missing Gitleaks/oversize data stops packet creation—do not send an evidence-free substitute. Call `review_provider.py call --provider <name> --role <role> --data-class <class> --packet <packet.json> --out <result.json>`. Classification refusal sends no content. Record missing/timeout/error/refused states honestly; never fabricate opinions. Same-family API keys do not supply diversity. Insufficient families mean pending/human-required/incomplete. Agreement alone is at most E2.
+
+## Step 3: Assemble and validate
+
+Normalize findings per the harness prompt; validate every finding and gate with the JSON schemas. Use deterministic priority lookup and configured SLA dates; never combine CVSS/EPSS/confidence.
+
+## Step 4: Reports and review handoff
+
+Write SARIF for code/dependency/config, all findings, architecture/prompt/open-threat risks, per-gate JSON, and the mandatory seven-section bilingual summary (gate matrix, INCOMPLETE, trifecta, findings, coverage, human decisions, exit code).
+
+Write `reports/g4-review.yaml` with actual reviewed 40-character HEAD, actual providers/states, required coverage, all opinions/dissent, unresolved human flags, and empty `recorded_by.handle`. Run `g4_review.py check`. **Do not write review records into reviews/ or rulings/.** A human verifies/copies/submits them. Internal records remain valid only while later changes are limited to reviews/rulings; external records require exact clean target HEAD and belong under this repository's external directory.
+
+## Step 5: Verdict and response
+
+Use `gate_verdict.py` and trusted configuration. Shadow normally returns 0; enforce blocking returns 1; policy-required incomplete or invalid main config returns 2; 1 takes precedence if both apply. Respond with exit/reason, incomplete list, blocking count, human-required count, and report paths—not merely “done.”
+
+## Prohibitions and shared controls
+
+Never weaken configuration/policy/catalogs, invent pass/IDs/scores, use confidence as evidence, majority-vote, remove dissent, approve insufficient-family high-risk review, downgrade data, attack other hosts, install tools, expose secrets, or modify target code. Reports stay here for external targets.
+
+For declared headers/tools YAML, `control_checks.py` supplies catalog-mapped G3/G4 candidates; missing configuration does not prove CSP/HITL. Declaration checks do not replace G5/G6 runtime evidence. Missing tool events/usage remain untested, and CLI shadow cannot downgrade configured enforce.

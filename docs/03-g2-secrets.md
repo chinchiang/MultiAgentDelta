@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 03 G2 機密與金鑰（白箱；pre-commit、每次 push）
 
 | 項目 | 值 |
@@ -14,7 +19,7 @@
 
 - AI 從範例程式碼學到 `openai.api_key = "sk-..."` 的寫法，直接把使用者貼在對話裡的真金鑰寫進原始碼。
 - AI 很樂意幫你生成 `.env`，但很少順手把它加進 `.gitignore`；第一次 `git add .` 就提交了。
-- AI 生成的 System Prompt 模板常把 API key、資料庫連線字串當成「設定」寫在字串裡（MAESTRO-L3），之後 G6 一提取 System Prompt 就一起外洩。
+- AI 生成的 System Prompt 範本常把 API key、資料庫連線字串當成「設定」寫在字串裡（MAESTRO-L3），之後 G6 一提取 System Prompt 就一起外洩。
 - 金鑰一旦進入 Git 歷史，`git rm` 無法移除；fork、CI 快取、IDE 索引都可能已複製。
 
 ## 觸發時機與性質
@@ -34,7 +39,7 @@
 2. **本機 pre-commit**：`gitleaks protect --staged`，在祕密離開開發機前攔截。
 3. **CI push protection**：PR 檢查失敗，並在 enforce 模式下拒絕合併。
 4. **`.env` 檢查**（`require_env_in_gitignore: true`）：
-   - 工作樹存在 `.env*`（不含 `.env.example`）但 `.gitignore` 無對應規則 → `vibesec.g2.env-not-ignored`（CWE-538，blocking）。
+   - 工作樹存在 `.env*`（不含 `.env.example`）但 `.gitignore` 無對應規則 → `vibesec.g2.env-not-ignored`（CWE-538，基礎層級 advisory；仍須套用風險等級覆寫）。
    - `git ls-files | grep -E '^\.env($|\.)'` 有結果（`.env` 已被追蹤）→ 同一規則 + 事故 SOP。
 5. **LLM 供應商金鑰專用規則**（gitleaks 預設沒有或較舊）：見下表。
 6. **報告只保留遮罩與指紋**（CLAUDE.md 規則 7）：`--redact`；finding 記 `sha256(secret)[:12]` 作為指紋以便去重與輪替追蹤，不記原值。
@@ -61,8 +66,8 @@
 
 ```bash
 # 1) 安裝（固定版本）
-GITLEAKS_VERSION=8.24.3
-curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+# 版本與 SHA-256 驗證步驟請依 .github/workflows/pr-gates.yml。
+# Follow the pinned version and SHA-256 verification in .github/workflows/pr-gates.yml.
 
 # 2) pre-commit（.pre-commit-config.yaml 已掛；手動裝 hook）
 pre-commit install --hook-type pre-commit
@@ -144,7 +149,7 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
    ```
    通知所有協作者重新 clone；處理 fork、CI 快取、artifact、IDE / 搜尋索引。
 5. **驗證**：重跑全歷史 `gitleaks detect`，確認指紋不再出現；finding `retest_result: fixed`，`validation_status: confirmed`，記錄撤銷時間與新金鑰指紋（遮罩）。
-6. **根因**：若來源是 AI 生成的 prompt 模板或範例檔，補 G4 審查項與 `.gitignore` 範本；若是 `.env`，確認 `require_env_in_gitignore` 為何沒擋到（通常是 hook 未安裝）。
+6. **根因**：若來源是 AI 生成的 prompt 範本或範例檔，補 G4 審查項與 `.gitignore` 範本；若是 `.env`，確認 `require_env_in_gitignore` 為何沒擋到（通常是 hook 未安裝）。
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
@@ -164,3 +169,103 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 5. **遮罩**：SARIF 與 findings.json 中不得出現完整金鑰（grep 檢查 `sk-[A-Za-z0-9]{32,}` 無結果）。
 6. **hook 存在**：`git config core.hooksPath` 或 `.git/hooks/pre-commit` 含 gitleaks；CI 另驗，開發者繞過本機 hook 仍會被 CI 擋。
 7. **SOP 演練**：每季一次假金鑰演練，量測從命中到撤銷的時間（目標 < 1 小時）。
+
+
+---
+
+<a id="english"></a>
+
+# 03 G2 Secrets and Keys (White-Box; Pre-Commit and Every Push)
+
+G2 combines local pre-commit protection, CI, and full Git history. Configure `gates.g2_secrets` with `diff_aware: false`, Gitleaks, `config/gitleaks.toml`, required environment-file ignoring, and a 300-second timeout. Semgrep's `vibesec.g2.hardcoded-llm-key` provides a second PR-diff layer. DevOps integrates it; developers follow it; AppSec handles incidents.
+
+## Causes addressed
+
+Reported AI-assisted repository leakage is 40% higher, affecting about 6.4% of such repositories. AI copies key-assignment examples, embeds user-supplied keys in code, generates `.env` without ignore rules, and places credentials in system prompts later exposed by G6. Deleting a file cannot remove secrets already copied through history, forks, caches, or indexes.
+
+## Triggers and nature
+
+| Trigger | Command / scope | Failure |
+|---|---|---|
+| Pre-commit | `gitleaks protect --staged --config config/gitleaks.toml --redact` | Prevent commit; fix and retry, never bypass with `--no-verify` |
+| Push/PR | `gitleaks detect --source . --config config/gitleaks.toml --log-opts="$BASE_SHA..$HEAD_SHA" --redact --report-format sarif --report-path reports/gitleaks.sarif` | Blocking finding |
+| Full history | Same scan without range, output `reports/gitleaks-full.sarif` | Blocking; existing leaks enter incident response |
+| Nightly | Full history with current rules | Same policy |
+
+Regex/entropy/allowlist checks are deterministic and generally low-noise. Missing tools/timeouts are incomplete, never pass.
+
+## Core tasks
+
+1. Scan every commit diff using regex and Shannon entropy (generic threshold 4.0; provider-specific 3.0–3.5).
+2. Stop secrets locally with staged hooks.
+3. Repeat in CI so bypassing a local hook cannot bypass enforcement.
+4. Detect unignored or tracked `.env*` except `.env.example`, using `vibesec.g2.env-not-ignored` (CWE-538); apply the actual policy tier and investigate tracked secrets.
+5. Add current provider-specific rules.
+6. Use `--redact`; store only masks and `sha256(secret)[:12]` fingerprints for deduplication/rotation, never raw values.
+
+### Key patterns (`config/gitleaks.toml`)
+
+| Rule (Gitleaks prefix) | Pattern / notes |
+|---|---|
+| vibesec-openai-api-key | `sk-[A-Za-z0-9_-]{20,}`, including project/service/admin variants; entropy ≥3.5 |
+| vibesec-anthropic-api-key | `sk-ant-api03-[A-Za-z0-9_-]{80,}`; flexible `api\d{2}` version |
+| vibesec-deepseek-api-key | `sk-` with DeepSeek key/token context |
+| vibesec-glm-zhipu-api-key | `[0-9a-f]{32}\.[A-Za-z0-9]{16}`; exclude SHA-256/digest contexts |
+| vibesec-google-ai-studio-key | `AIza[0-9A-Za-z_-]{35}` with gemini/genai context |
+| vibesec-huggingface-token | `hf_[A-Za-z0-9]{30,}` |
+| vibesec-supabase-service-role-jwt | Base64url payload containing `"role":"service_role"`; bypasses RLS, potentially exposing the entire DB |
+| vibesec-supabase-service-role-keyword | service_role keyword plus JWT |
+| vibesec-jwt-secret-assignment | JWT_SECRET/SECRET_KEY/SIGNING_KEY literal ≥16 chars; exclude changeme/interpolation/environment references |
+| vibesec-generic-high-entropy | API key/token/client secret/password/private key literal ≥24 chars; entropy ≥4.0 |
+| Built-in defaults | AWS/GCP/Azure/GitHub/GitLab/Slack/Stripe/Twilio/PEM and others |
+
+Allowed examples include lab README, evaluation fixtures, documentation, lockfiles, and `VIBESEC-…CANARY/FAKE/EXAMPLE` markers. Lab fake keys must use approved markers.
+
+## Automation
+
+Install the pinned, checksum-verified Gitleaks release specified by the workflow. Install local hooks with `pre-commit install --hook-type pre-commit`, then use the staged/range/full-history commands above. Environment checks use Git tracking and `git check-ignore`, not filename assumptions alone. Semgrep's configured G2 rule covers Python/JS/TS/JSON/YAML/environment files in the PR diff.
+
+```bash
+python3 scripts/g2_secrets.py --target ../MultiAgentBeta --out-dir reports/raw/G2 --gate reports/gates/G2.json
+```
+
+The local harness scans the target with this repository's Gitleaks config using `gitleaks git` (full history, redacted), runs shared `env_guard.py`, and derives gate JSON with `sarif_gate.py`. Missing/failing/timed-out Gitleaks, a non-root Git target, or a shallow clone yields incomplete. Repository-local policy exceptions do not apply externally; target `gitleaks:allow` annotations cannot self-authorize exceptions. Report target `.gitleaksignore` presence in the reason.
+
+Where available, enable GitHub Secret Scanning and Push Protection alongside Gitleaks; partner verification complements local detection. Optional Trivy secret scans cover container layers/build outputs. Relevant files: `config/gitleaks.toml`, `.pre-commit-config.yaml`, `g2_secrets.py`, and Semgrep rules. Use git-filter-repo/BFG only as part of incident response.
+
+## Blocking policy
+
+The PR summary derives G2 from SARIF/environment-check outputs. Map native rules through catalog `implemented_by`, then apply blocking policy, risk overrides, and valid exceptions. Blocking findings fail; missing/unparseable required outputs are incomplete; otherwise pass. Enforce handling of incomplete follows `incomplete_gate_is_blocking_in_enforce`.
+
+| Condition | Result |
+|---|---|
+| Any Gitleaks secret → `vibesec.g2.hardcoded-secret` | Blocking, CWE-798; authorized false-positive exceptions need fingerprint/reason |
+| hardcoded-llm-key | Blocking, CWE-798 |
+| env-not-ignored | Advisory under the base policy, CWE-538; consult risk overrides |
+| Active high-privilege production secret | P0, immediate response (`priority_sla_days.P0: 0`) |
+| Missing/timed-out scanner | Incomplete |
+
+## Incident procedure
+
+**Revoke before rewriting history.** Rewriting cannot invalidate copied keys.
+
+1. Revoke at the provider immediately (OpenAI/Anthropic/Supabase/AWS IAM, etc.). Prefer a temporary outage to continued exposure.
+2. Rotate into GitHub environment secrets, Vault, or a cloud secret manager. Read via environment references; update CI and production.
+3. Audit usage/access before revocation. For Supabase service-role leakage, inspect DB activity for RLS bypass.
+4. Rewrite history using git-filter-repo or BFG with a masked replacement file; remove `.env` history or replace secret strings. Coordinate destructive history rewriting/force pushes. Reclone collaborators and address forks, caches, artifacts, IDE/search indexes. The command examples in the Chinese section illustrate the operation, not authorization to run it against an arbitrary repository.
+5. Rescan full history and verify the fingerprint is gone. Record `retest_result: fixed`, `validation_status: confirmed`, revocation time, and masked new-key fingerprint.
+6. Fix the cause: prompt/example review, ignore templates, and missing hook enforcement.
+
+## Mapped controls
+
+`ASVS5-V13.3` is a local VibeSec extension retaining the older configuration/secret-management meaning, not an official ASVS requirement number. CWE-798/538; `LLM02:2025` sensitive disclosure, `LLM07:2025` prompt leakage; MAESTRO L3 agent frameworks.
+
+## Verification
+
+- Positive fixtures: Anthropic-like prefix plus 95 random characters; GLM id.secret patterns.
+- Negative fixtures: approved EXAMPLE markers, environment interpolation, SHA-256 digests.
+- Track `.env` versus ignored/untracked `.env` controls.
+- Commit then delete a fake secret: full-history scanning must still find it.
+- Ensure SARIF/findings never contain full keys.
+- Verify installed hooks and independent CI enforcement.
+- Exercise fake-key incident response quarterly; target detection-to-revocation under one hour.

@@ -1,7 +1,7 @@
 id: g5-ssrf-neg-01
 gate: G5
 domain: input_validation
-title: URL 抓取端點以 400 拒絕私網位址
+title: "URL 抓取端點以 400 拒絕私網位址 / The URL fetch endpoint rejects private addresses with 400"
 input:
   kind: http
   target_app: vulnapp-patched   # VIBESEC_VULNAPP_MODE=patched 可重現；run_evals.py 以本機已修補靶場實測
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g5.ssrf-metadata
   policy_tier: advisory
 held_out: true
-notes: 明確拒絕才可判 pass。
+notes: "明確拒絕才可判 pass。 / Pass requires explicit denial."

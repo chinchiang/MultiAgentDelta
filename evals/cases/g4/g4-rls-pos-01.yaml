@@ -1,7 +1,7 @@
 id: g4-rls-pos-01
 gate: G4
 domain: authorization
-title: Supabase 表格停用 RLS
+title: "Supabase 表格停用 RLS / A Supabase table disables RLS"
 input:
   kind: iac
   path: supabase/migrations/001.sql

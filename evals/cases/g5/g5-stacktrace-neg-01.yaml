@@ -1,7 +1,7 @@
 id: g5-stacktrace-neg-01
 gate: G5
 domain: error_handling
-title: 錯誤回應只含通用訊息與 request id
+title: "錯誤回應只含通用訊息與 request id / Error responses contain only a generic message and request ID"
 input:
   kind: http
   target_app: vulnapp-patched

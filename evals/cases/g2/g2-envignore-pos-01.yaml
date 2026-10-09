@@ -1,7 +1,7 @@
 id: g2-envignore-pos-01
 gate: G2
 domain: secret_exposure
-title: .env 未列入 .gitignore 且已提交
+title: ".env 未列入 .gitignore 且已提交 / .env is committed and absent from .gitignore"
 input:
   kind: config
   files:

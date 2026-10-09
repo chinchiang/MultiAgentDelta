@@ -1,7 +1,7 @@
 id: g3-sqli-pos-02
 gate: G3
 domain: general_vulnerabilities
-title: sqlite 的 db.get 以樣板字串帶入 req.query（SQLi）
+title: "sqlite 的 db.get 以樣板字串帶入 req.query（SQLi） / sqlite db.get interpolates req.query into SQL"
 input:
   kind: code
   language: javascript
@@ -16,4 +16,4 @@ expected:
   rule_id: vibesec.g3.sql-string-concat
   policy_tier: blocking
 held_out: false
-notes: 與 g3-sqli-neg-02 成對：收緊 .get sink 後，含 SQL 的參數仍要命中。
+notes: "與 g3-sqli-neg-02 成對：收緊 .get sink 後，含 SQL 的參數仍要命中。 / Paired with g3-sqli-neg-02: narrowing the .get sink must still detect SQL-bearing arguments."

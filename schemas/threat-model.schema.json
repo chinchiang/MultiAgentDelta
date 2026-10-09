@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/chinchiang/MultiAgentDelta/schemas/threat-model.schema.json",
-  "title": "VibeSec G0 Threat Model",
-  "description": "G0 威脅建模輸入：資料流圖（DFD）、信任邊界、資產、Agent 能力（致命三要素）、風險分級。",
+  "title": "VibeSec G0 威脅模型 / VibeSec G0 Threat Model",
+  "description": "G0 威脅建模輸入：資料流圖（DFD）、信任邊界、資產、Agent 能力（致命三要素）、風險分級。 / G0 input: DFD, trust boundaries, assets, agent capabilities/lethal trifecta, and risk tier.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -135,7 +135,7 @@
           },
           "zone": {
             "type": "string",
-            "description": "所在信任區域 id"
+            "description": "所在信任區域 id / Identifier of the trust zone containing this component."
           },
           "maestro_layer": {
             "type": [
@@ -222,7 +222,7 @@
     },
     "agents": {
       "type": "array",
-      "description": "每個 LLM Agent 的致命三要素盤點；三者皆 true 且無 mitigation 即設計期不得放行",
+      "description": "每個 LLM Agent 的致命三要素盤點；三者皆 true 且無 mitigation 即設計期不得放行 / Inventory the three lethal-trifecta capabilities per agent; all true without mitigation must not pass design review.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -244,7 +244,7 @@
           },
           "can_communicate_externally": {
             "type": "boolean",
-            "description": "含發 HTTP、寫 DB、呼叫外部 API、執行指令"
+            "description": "含發 HTTP、寫 DB、呼叫外部 API、執行指令 / Includes HTTP requests, DB writes, external APIs, and command execution."
           },
           "tools": {
             "type": "array",
@@ -257,7 +257,7 @@
             "items": {
               "type": "string"
             },
-            "description": "需 Human-in-the-Loop 的工具"
+            "description": "需 Human-in-the-Loop 的工具 / Tools requiring human-in-the-loop approval."
           },
           "mitigations": {
             "type": "array",
@@ -287,7 +287,7 @@
           },
           "mitigation_evidence": {
             "type": "object",
-            "description": "三要素全成立且未切腳時，mitigation 必須有可驗證的落實證據（scripts/g0_trifecta.py）；沒有證據的 mitigation 不算數。key 為 mitigations 中的項目",
+            "description": "三要素全成立且未切腳時，mitigation 必須有可驗證的落實證據（scripts/g0_trifecta.py）；沒有證據的 mitigation 不算數。key 為 mitigations 中的項目 / When all three capabilities remain, mitigations require verifiable implementation evidence (g0_trifecta.py). Unsupported labels do not count; keys name declared mitigations.",
             "propertyNames": {
               "enum": [
                 "sandbox",
@@ -312,12 +312,12 @@
                 "properties": {
                   "kind": {
                     "const": "claude_permission",
-                    "description": "Claude Code 設定檔中的權限規則；每條 rules 都必須出現在該檔 permissions.ask 或 permissions.deny"
+                    "description": "Claude Code 設定檔中的權限規則；每條 rules 都必須出現在該檔 permissions.ask 或 permissions.deny / Claude Code permission rules; every rule must occur in permissions.ask or permissions.deny in the referenced file."
                   },
                   "ref": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "repo 內的設定檔路徑，例如 .claude/settings.json"
+                    "description": "repo 內的設定檔路徑，例如 .claude/settings.json / Repository configuration path, e.g. .claude/settings.json."
                   },
                   "rules": {
                     "type": "array",
@@ -329,7 +329,7 @@
                   },
                   "covers": {
                     "type": "object",
-                    "description": "high_impact_tools 中的工具 → 擋住它的規則（必須是本筆 rules 的子集）。human_in_the_loop 必須讓 agent 的每個 high_impact_tools 都至少被一條規則涵蓋（scripts/g0_trifecta.py）",
+                    "description": "high_impact_tools 中的工具 → 擋住它的規則（必須是本筆 rules 的子集）。human_in_the_loop 必須讓 agent 的每個 high_impact_tools 都至少被一條規則涵蓋（scripts/g0_trifecta.py） / Maps high-impact tools to blocking rules, a subset of this entry's rules. HITL must cover every high-impact tool with at least one rule.",
                     "additionalProperties": {
                       "type": "array",
                       "minItems": 1,
@@ -371,7 +371,7 @@
           },
           "category": {
             "type": "string",
-            "description": "STRIDE 類別、LINDDUN 類別或 MAESTRO-Lx"
+            "description": "STRIDE 類別、LINDDUN 類別或 MAESTRO-Lx / STRIDE/LINDDUN category or MAESTRO-Lx."
           },
           "target": {
             "type": "string"
@@ -405,7 +405,7 @@
               "G6",
               null
             ],
-            "description": "由哪道執行閘門驗證"
+            "description": "由哪道執行閘門驗證 / Execution gate that verifies this threat."
           }
         }
       }
@@ -426,7 +426,7 @@
       "items": {
         "type": "string"
       },
-      "description": "文件化安全決策（ASVS 5.0 要求）"
+      "description": "文件化安全決策（ASVS 5.0 要求） / Documented security decisions for ASVS 5.0 alignment."
     }
   }
 }

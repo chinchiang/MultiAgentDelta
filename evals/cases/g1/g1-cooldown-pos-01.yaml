@@ -1,7 +1,7 @@
 id: g1-cooldown-pos-01
 gate: G1
 domain: dependency
-title: 發布不到 24 小時的新版本
+title: "發布不到 24 小時的新版本 / A version released less than 24 hours ago"
 input:
   kind: manifest
   ecosystem: npm
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g1.cooldown-violation
   policy_tier: blocking
 held_out: true
-notes: 冷卻期內版本應阻擋，避免惡意版本搶在偵測前被安裝。
+notes: "冷卻期內版本應阻擋，避免惡意版本搶在偵測前被安裝。 / Block releases within cooldown to avoid installing malicious versions before detection."

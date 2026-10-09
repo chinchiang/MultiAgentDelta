@@ -1,7 +1,7 @@
 id: g4-agent-tools-pos-01
 gate: G4
 domain: ai_agent_security
-title: Agent 可呼叫 shell 與任意檔案寫入
+title: "Agent 可呼叫 shell 與任意檔案寫入 / The agent can invoke a shell and write arbitrary files"
 input:
   kind: code
   language: python

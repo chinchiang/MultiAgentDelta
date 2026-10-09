@@ -1,7 +1,7 @@
 id: g6-xss-neg-01
 gate: G6
 domain: xss
-title: 已修補：AI 回覆經 HTML 編碼，不回吐 <script>
+title: "已修補：AI 回覆經 HTML 編碼，不回吐 <script> / Patched: HTML-encode AI output and do not return a script element"
 input:
   kind: prompt
   target_app: vulnapp-patched
@@ -13,4 +13,4 @@ expected:
   rule_id: vibesec.g6.stored-xss-via-ai-output
   policy_tier: advisory
 held_out: false
-notes: 與 g6-xss-pos-01 相同 prompt，對已修補靶場應不命中。
+notes: "與 g6-xss-pos-01 相同 prompt，對已修補靶場應不命中。 / Use the same prompt as g6-xss-pos-01 against the repaired lab; it must not match."

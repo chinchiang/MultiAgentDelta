@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # reviews/ — G4 LLM 審查紀錄
 
 `/vibesec-harness` 執行 G4 LLM 審查後寫出 `reports/g4-review.yaml`（`reports/` 不入版控）。人確認內容後複製為 `reviews/g4/<commit>.yaml` 提交（格式：`schemas/g4-review.schema.json`，範例：`docs/templates/g4-review.example.yaml`，`<commit>` = 紀錄的 `commit`，40 碼）。
@@ -21,3 +26,29 @@
   - 紀錄通過 `scripts/g4_review.py check`。
 - 紀錄尚未提交到本 repo（未經 PR 與 CODEOWNERS），或 `recorded_by.handle` 空白 → G4 最高 `pending`。
 - `validate.py` 會檢查這裡每一份紀錄的規則與檔名。
+
+
+---
+
+<a id="english"></a>
+
+# reviews/ — G4 LLM Review Records
+
+After a G4 LLM review, `/vibesec-harness` writes `reports/g4-review.yaml`; `reports/` is not versioned. A human verifies it and copies it to `reviews/g4/<commit>.yaml`. Schema: `schemas/g4-review.schema.json`; example: `docs/templates/g4-review.example.yaml`. `<commit>` is the record's full 40-character commit.
+
+- Harnesses, models, and bots must not write review records here. `recorded_by.handle` identifies the human copying/submitting the record. The harness leaves it empty; empty records are not trusted.
+- **No self-attestation:** for a record added/changed by a PR, a non-author must approve the PR's current head, and `recorded_by` must not be the author, before G4 can pass. Otherwise its review status remains at most `pending`.
+- The G4 CI job (`scripts/g4_review.py gate`) accepts a record only if its commit is an ancestor of the PR head and later changes affect only `reviews/g4/` or `rulings/`. Any subsequent code change requires a new review.
+- Records describe what happened: retain every opinion, never majority-vote, and mark disagreements `requires_human: true`. Only human rulings in `rulings/` settle them. Invalid records fail `validate.py`.
+- Before submitting: `python3 scripts/g4_review.py check reviews/g4/<commit>.yaml`.
+- See the blocking-policy section of `docs/05-g4-access-control-agent-review.md` for status derivation.
+
+## External projects: `reviews/g4/external/<commit>.yaml`
+
+For `scripts/g4_access.py --target <dir>`, place G4 records in **this repository's** `reviews/g4/external/<commit>.yaml` (human decision dated 2026-10-06). Never trust the target's own `reviews/g4/` or `rulings/` as self-attestation.
+
+- Apply the same format, human submission, and CODEOWNERS review rules. `<commit>` is the target's reviewed HEAD. The recorder must be a non-author collaborator who approved the current PR head. `.github/workflows/review-record-trust.yml` checks this under the literal check name `外部 G4 紀錄不得自證`. Approval, change requests, and dismissed reviews trigger reevaluation; pushing after approval requires reapproval. Make the check required in branch protection for it to block merging. Identify the target in `recorded_by.note`, for example `chinchiang/MultiAgentBeta`.
+- External findings' human rulings also belong in this repository's `rulings/`.
+- A record is usable only when its commit exactly matches the target's current HEAD, the target has no uncommitted tracked changes, and `scripts/g4_review.py check` passes. Records are not committed to the target; every new target commit requires another review. Otherwise `VS-G4-LLM-REVIEW` remains `pending`.
+- A record not yet committed here through PR/CODEOWNERS review, or an empty `recorded_by.handle`, cannot advance G4 beyond `pending`.
+- `validate.py` checks all records and filenames here.

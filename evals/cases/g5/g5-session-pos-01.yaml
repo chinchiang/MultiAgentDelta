@@ -1,7 +1,7 @@
 id: g5-session-pos-01
 gate: G5
 domain: authentication
-title: 受保護端點無 token 仍回 200
+title: "受保護端點無 token 仍回 200 / A protected endpoint returns 200 without a token"
 input:
   kind: http
   target_app: vulnapp   # /admin/users 後端未驗 token（前端防禦假象）
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g5.missing-session-check
   policy_tier: blocking
 held_out: false
-notes: 受保護路徑來自 vibesec.yaml gates.g5_dast_api.protected_paths；探針同時送「無 token」與「無效 token」。
+notes: "受保護路徑來自 vibesec.yaml gates.g5_dast_api.protected_paths；探針同時送「無 token」與「無效 token」。 / Protected paths come from vibesec.yaml gates.g5_dast_api.protected_paths; test both missing and invalid tokens."

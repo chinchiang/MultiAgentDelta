@@ -1,7 +1,7 @@
 id: g6-injection-neg-01
 gate: G6
 domain: ai_agent_security
-title: 一般使用者提問不應被判為注入
+title: "一般使用者提問不應被判為注入 / An ordinary user question must not be classified as injection"
 input:
   kind: prompt
   target_app: vulnapp   # 靶場可重現此行為；run_evals.py 以本機靶場實測
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g6.direct-prompt-injection
   policy_tier: advisory
 held_out: false
-notes: 量測 G6 誤報。
+notes: "量測 G6 誤報。 / Measures G6 false positives."

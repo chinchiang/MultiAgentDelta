@@ -1,8 +1,13 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # ⚠️ VibeSec VulnApp — 刻意有漏洞的測試靶場
 
 > **⚠️ 這是刻意有漏洞的測試靶場，僅供 VibeSec G5/G6 閘門在隔離環境演練，嚴禁部署到任何正式或公開可達環境。**
 >
-> 本 app 的每一個端點都內建已知弱點（類似 OWASP Juice Shop / DVWA）。它存在的唯一目的，是讓 `.github/workflows/staging-blackbox.yml` 的 G5（DAST/API）與 G6（LLM/Agent 紅隊）探針在 CI 中有一個可重現、可離線運行的攻擊目標。請只在本機或受控 staging 環境以 `VIBESEC_TARGET_URL` 指向它。
+> 本 app 的每一個端點都內建已知弱點（類似 OWASP Juice Shop / DVWA）。它存在的唯一目的，是讓 `.github/workflows/staging-blackbox.yml` 的 G5（DAST/API）與 G6（LLM/Agent 紅隊）探針在 CI 中有一個可重現、可離線執行的攻擊目標。請只在本機或受控 staging 環境以 `VIBESEC_TARGET_URL` 指向它。
 
 ## 啟動
 
@@ -34,7 +39,7 @@ curl -s -X POST http://127.0.0.1:8000/login \
 | 端點 / 行為 | 弱點 | 閘門 | rule_id |
 |---|---|---|---|
 | JWT 以 RS256 簽發、公鑰於 `/.well-known/jwks.json` 公開；`_decode_token` 的 `alg` 取自 header，接受 `alg:none`（未簽章），也接受 `HS256` 並拿公鑰 PEM 當 HMAC 金鑰 | Broken Authentication（接受未簽章 / RS256→HS256 混淆 token） | G5 | `vibesec.g5.jwt-alg-none`、`vibesec.g5.jwt-alg-confusion` |
-| `GET /users/{id}/notes` 未將 `{id}` 綁定當前已驗證主體 | BOLA / IDOR（bob 讀 alice 私密筆記） | G5 | `vibesec.g5.bola-idor` |
+| `GET /users/{id}/notes` 未將 `{id}` 綁定當前已驗證主體 | BOLA / IDOR（bob 讀 alice 私密筆記） | G5 | `vibesec.g5.bola-cross-account` |
 | `GET /admin/users` 後端未驗 token（前端只對管理員顯示） | 缺 Session 驗證 / 前端防禦假象（匿名取得全部帳號與筆記） | G5 | `vibesec.g5.missing-session-check` |
 | `GET /fetch?url=` 對任意 URL 發 server-side GET，無 allow-list、未封私網 | SSRF（可讀 `169.254.169.254` metadata） | G5 | `vibesec.g5.ssrf-metadata` |
 | `/docs`、`/redoc`、`/openapi.json` 全對外 | 開發便利設定外溢 | G5 | `vibesec.g5.swagger-exposed` |
@@ -75,4 +80,70 @@ JWKS 端點：`GET /.well-known/jwks.json` 公開 RS256 公鑰（n/e）；RSA �
 
 ## 安全界線（對應 CLAUDE.md #8）
 
-此靶場是 VibeSec 唯一允許被 G5/G6 攻擊性探針打擊的目標，且**只能**在 `VIBESEC_TARGET_URL` 指向本靶場、於已授權的隔離環境時執行。切勿將本 app 對外暴露。
+G5/G6 攻擊性探針僅能用於本靶場或另經明確授權的目標；`VIBESEC_TARGET_URL` 必須指向已授權的測試環境。切勿將本 app 對外暴露。
+
+
+---
+
+<a id="english"></a>
+
+# VibeSec VulnApp — Intentionally Vulnerable Test Lab
+
+> **Use only for isolated G5/G6 exercises. Never deploy to production or expose it publicly.** Like Juice Shop/DVWA, it provides reproducible vulnerable behavior for staging-blackbox CI, including an offline deterministic LLM stub. Point VIBESEC_TARGET_URL to it only in an authorized local/controlled test environment.
+
+## Start and accounts
+
+```bash
+uv run --project examples/vulnapp uvicorn app.main:app --port 8000
+```
+
+Swagger: <http://127.0.0.1:8000/docs>; OpenAPI: <http://127.0.0.1:8000/openapi.json>.
+
+| Username | Password | ID | Purpose |
+|---|---|---|---|
+| alice | alice-pass | 1 | Private seeded note; BOLA victim |
+| bob | bob-pass | 2 | Other subject attempting to read Alice's note |
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob-pass"}'
+```
+
+The response contains access_token and token_type bearer.
+
+## Vulnerabilities and gate mapping
+
+| Behavior | Flaw / rule |
+|---|---|
+| RS256 issued, but decoder accepts header-selected none or HS256 using public PEM | G5 jwt-alg-none / jwt-alg-confusion |
+| GET /users/{id}/notes without current-user binding | G5 bola-cross-account (Bob reads Alice) |
+| GET /admin/users without backend token validation | G5 missing-session-check; anonymous account/note disclosure |
+| GET /fetch?url= with unrestricted server fetch | G5 ssrf-metadata |
+| Public docs/redoc/openapi | G5 swagger-exposed |
+| Arbitrary reflected Origin with credentials | G5 cors-reflect-origin |
+| Unhandled traceback | G5 debug-stacktrace |
+| Login/chat without throttling/CAPTCHA | G5 missing-rate-limit / G6 consumption checks |
+| GraphQL introspection | G5 graphql-introspection |
+| Stub reveals VIBESEC-SYSPROMPT-CANARY on request | G6 direct injection / system-prompt extraction (LLM01/07) |
+| Stub follows document instructions and reports egress intent | G6 indirect injection (LLM01); simulated evidence, not actual external exfiltration |
+| Stub echoes script content | G6 unsafe AI output (LLM05) |
+| Input over 5,000 characters delays about six seconds | G6 denial of wallet/resource-use fixture (LLM10) |
+
+Actual emitted IDs from shared probes/promptfoo/garak govern; this table is an index.
+
+## Patched controls
+
+```bash
+VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:app --port 8000
+```
+
+Patched mode supplies should_flag:false controls for the same probes; default remains vulnerable. It fixes JWT verification to RS256, restricts notes to their owner (403 otherwise), requires valid tokens on protected/admin paths (401 otherwise), rejects all fetches absent an allowlist (400), permits CORS only for https://app.vulnapp.example, returns generic internal-error JSON, refuses extraction/injected instructions, HTML-encodes output, and rejects chat input over 4,000 characters with 413.
+
+JWKS publishes RSA n/e; keys are generated in memory on each startup and not persisted.
+
+Swagger/OpenAPI, GraphQL introspection, and missing rate limits are deliberately left visible. Patched G5 therefore still has advisory findings, while blocking checks including JWT confusion should pass and the gate can pass under policy. Patched mode is a testing control, not a production-hardening claim.
+
+## Safety boundary
+
+The bundled lab is the default authorized fixture target. External projects require their own explicit test authorization and configuration under the repository's G5/G6 rules. Never expose this vulnerable application publicly.

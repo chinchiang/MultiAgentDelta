@@ -1,7 +1,7 @@
 id: g1-slopsquat-pos-01
 gate: G1
 domain: dependency
-title: AI 推薦了不存在的幻覺套件（typosquat）
+title: "AI 推薦了不存在的幻覺套件（typosquat） / AI recommends a nonexistent hallucinated package or typosquat"
 input:
   kind: manifest
   ecosystem: npm
@@ -12,4 +12,4 @@ expected:
   rule_id: vibesec.g1.hallucinated-package
   policy_tier: blocking
 held_out: true
-notes: difflib ratio 對 axios ≥ 0.85 且 registry 查無或週下載 < 1000。
+notes: "difflib ratio 對 axios ≥ 0.85 且 registry 查無或週下載 < 1000。 / The difflib ratio to axios is at least 0.85, and the registry entry is absent or has fewer than 1,000 weekly downloads."

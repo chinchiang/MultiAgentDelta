@@ -1,7 +1,7 @@
 id: g5-ssrf-neg-02
 gate: G5
 domain: input_validation
-title: 已修補：URL 抓取端點拒絕 loopback canary
+title: "已修補：URL 抓取端點拒絕 loopback canary / Patched: the URL fetch endpoint rejects the loopback canary"
 input:
   kind: http
   target_app: vulnapp-patched
@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g5.ssrf-internal-fetch
   policy_tier: blocking
 held_out: false
-notes: 已修補模式的 /fetch 使用空 allow-list，一律明確拒絕。g5-ssrf-pos-01 的修補後反例。
+notes: "已修補模式的 /fetch 使用空 allow-list，一律明確拒絕。g5-ssrf-pos-01 的修補後反例。 / Patched /fetch uses an empty allowlist and explicitly denies every request; the repaired counterpart of g5-ssrf-pos-01."

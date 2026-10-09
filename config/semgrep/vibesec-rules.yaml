@@ -1,10 +1,10 @@
 # VibeSec 自訂 Semgrep 規則（G2 / G3 / G4）
-# 用法：
+# 用法： / Usage:
 #   PR（diff-aware）：semgrep ci --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit
-#   本機：          semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $(git merge-base HEAD origin/main) --sarif -o reports/semgrep.sarif .
-# 命名：id = vibesec.g<N>.<kebab-name>；metadata.vibesec_rule_id 與 id 相同，供 cwe-map.yaml 查表。
-# policy_tier 只是預設建議；是否阻擋以 config/policy/blocking-policy.yaml 為準。
-# 污點來源刻意同時納入「HTTP 請求參數」與「LLM 輸出」：對 Vibe Coding 應用而言，模型輸出與使用者輸入一樣不可信。
+#   本機：          semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $(git merge-base HEAD origin/main) --sarif -o reports/semgrep.sarif . / Locally run Semgrep with the baseline commit, repository rules, and SARIF output shown here.
+# 命名：id = vibesec.g<N>.<kebab-name>；metadata.vibesec_rule_id 與 id 相同，供 cwe-map.yaml 查表。 / IDs use vibesec.g<N>.<kebab-name>; metadata.vibesec_rule_id matches id for catalog lookup.
+# policy_tier 只是預設建議；是否阻擋以 config/policy/blocking-policy.yaml 為準。 / policy_tier is a recommendation; blocking-policy.yaml controls enforcement.
+# 污點來源刻意同時納入「HTTP 請求參數」與「LLM 輸出」：對 Vibe Coding 應用而言，模型輸出與使用者輸入一樣不可信。 / Both HTTP request parameters and LLM output are taint sources: model output is as untrusted as user input.
 
 rules:
   # ===========================================================================
@@ -14,9 +14,7 @@ rules:
     mode: taint
     languages: [python]
     severity: ERROR
-    message: >-
-      [G3] 不可信資料（HTTP 參數或 LLM 輸出）經字串拼接 / f-string / format 流入 SQL 執行點 `$SINK`。
-      請改用參數化查詢（cursor.execute("... WHERE id = %s", (id,)) 或 SQLAlchemy bindparam / ORM）。
+    message: "[G3] 不可信資料（HTTP 參數或 LLM 輸出）經字串拼接 / f-string / format 流入 SQL 執行點 `$SINK`。 請改用參數化查詢（cursor.execute(\"... WHERE id = %s\", (id,)) 或 SQLAlchemy bindparam / ORM）。 / [G3] HTTP/LLM taint reaches SQL sink $SINK through concatenation/formatting. Use parameterized queries, bind parameters, or safe ORM calls."
     metadata:
       cwe: "CWE-89"
       control_ids: ["ASVS5-V1.2"]
@@ -95,9 +93,7 @@ rules:
     mode: taint
     languages: [javascript, typescript]
     severity: ERROR
-    message: >-
-      [G3] 不可信資料（req.* 或 LLM 輸出）經樣板字串 / 拼接流入 SQL 執行點。
-      請改用參數化查詢（db.query("... WHERE id = $1", [id]) / knex 綁定 / Prisma $queryRaw 樣板標籤）。
+    message: "[G3] 不可信資料（req.* 或 LLM 輸出）經樣板字串 / 拼接流入 SQL 執行點。 請改用參數化查詢（db.query(\"... WHERE id = $1\", [id]) / knex 綁定 / Prisma $queryRaw 樣板標籤）。 / [G3] Request/LLM input reaches SQL through JS template/concatenation. Use bound query parameters, knex bindings, or safe Prisma templates."
     metadata:
       cwe: "CWE-89"
       control_ids: ["ASVS5-V1.2"]
@@ -145,8 +141,8 @@ rules:
               - pattern: $DB.exec($Q, ...)
               - pattern: $DB.prepare($Q, ...)
           - focus-metavariable: $Q
-      # sqlite 的 db.get(sql, …)：Map／Headers／URLSearchParams／HTTP client 也都有 .get，所以參數本身要看得出是 SQL
-      # （2026-10-06 對 MultiAgentBeta 的 G3 掃描：sessions.get(token)、page.request.get(url) 兩筆皆為誤判）
+      # sqlite 的 db.get(sql, …)：Map／Headers／URLSearchParams／HTTP client 也都有 .get，所以參數本身要看得出是 SQL / sqlite db.get arguments must visibly contain SQL because Map, Headers, URLSearchParams, and HTTP clients also expose .get.
+      # （2026-10-06 對 MultiAgentBeta 的 G3 掃描：sessions.get(token)、page.request.get(url) 兩筆皆為誤判） / MultiAgentBeta's 2026-10-06 scan incorrectly flagged sessions.get(token) and page.request.get(url).
       - patterns:
           - pattern: $DB.get($Q, ...)
           - metavariable-regex:
@@ -160,9 +156,7 @@ rules:
   - id: vibesec.g3.sql-fstring-execute
     languages: [python]
     severity: ERROR
-    message: >-
-      [G3] SQL 執行點直接使用 f-string / % / .format / + 組字串，這正是 AI 生成程式碼最常見的注入型態。
-      即使變數目前看似安全，仍必須改為參數化查詢。
+    message: "[G3] SQL 執行點直接使用 f-string / % / .format / + 組字串，這正是 AI 生成程式碼最常見的注入型態。 即使變數目前看似安全，仍必須改為參數化查詢。 / [G3] SQL execution constructs strings with f-string/percent/format/concatenation. Parameterize even when current variables appear safe."
     metadata:
       cwe: "CWE-89"
       control_ids: ["ASVS5-V1.2"]
@@ -200,9 +194,7 @@ rules:
     mode: taint
     languages: [python]
     severity: ERROR
-    message: >-
-      [G3] 不可信資料流入 shell 指令執行（subprocess shell=True / os.system / os.popen）。
-      請改為 subprocess.run([...], shell=False) 傳陣列參數，並以 allow-list 驗證。
+    message: "[G3] 不可信資料流入 shell 指令執行（subprocess shell=True / os.system / os.popen）。 請改為 subprocess.run([...], shell=False) 傳陣列參數，並以 allow-list 驗證。 / [G3] Untrusted data reaches shell execution. Use subprocess argument arrays with shell=False and allowlist validation."
     metadata:
       cwe: "CWE-78"
       control_ids: ["ASVS5-V1.2"]
@@ -256,8 +248,7 @@ rules:
     mode: taint
     languages: [javascript, typescript]
     severity: ERROR
-    message: >-
-      [G3] 不可信資料流入 child_process.exec / execSync。請改用 execFile / spawn 傳陣列參數並以 allow-list 驗證。
+    message: "[G3] 不可信資料流入 child_process.exec / execSync。請改用 execFile / spawn 傳陣列參數並以 allow-list 驗證。 / [G3] Untrusted data reaches child_process.exec/execSync. Use execFile/spawn argument arrays and allowlists."
     metadata:
       cwe: "CWE-78"
       control_ids: ["ASVS5-V1.2"]
@@ -295,9 +286,7 @@ rules:
     mode: taint
     languages: [javascript, typescript]
     severity: WARNING
-    message: >-
-      [G3] 不可信資料（含 LLM 回覆）未經編碼即寫入 innerHTML / dangerouslySetInnerHTML / document.write。
-      AI 輸出是 LLM05 Improper Output Handling 的典型來源；請改用 textContent 或先以 DOMPurify.sanitize() 淨化。
+    message: "[G3] 不可信資料（含 LLM 回覆）未經編碼即寫入 innerHTML / dangerouslySetInnerHTML / document.write。 AI 輸出是 LLM05 Improper Output Handling 的典型來源；請改用 textContent 或先以 DOMPurify.sanitize() 淨化。 / [G3] Untrusted HTTP/LLM output reaches unsafe DOM HTML. Use textContent or appropriate DOMPurify sanitization."
     metadata:
       cwe: "CWE-79"
       control_ids: ["ASVS5-V1.1", "LLM05:2025"]
@@ -359,9 +348,7 @@ rules:
     mode: taint
     languages: [python]
     severity: WARNING
-    message: >-
-      [G3] 不可信資料（含 LLM 回覆）未經編碼即以 Markup / render_template_string / HTMLResponse 輸出成 HTML。
-      請以 markupsafe.escape() 或 bleach.clean() 處理，或改回傳 JSON 由前端以 textContent 顯示。
+    message: "[G3] 不可信資料（含 LLM 回覆）未經編碼即以 Markup / render_template_string / HTMLResponse 輸出成 HTML。 請以 markupsafe.escape() 或 bleach.clean() 處理，或改回傳 JSON 由前端以 textContent 顯示。 / [G3] Python emits unencoded input as HTML. Use contextual escaping/sanitization or JSON rendered as textContent."
     metadata:
       cwe: "CWE-79"
       control_ids: ["ASVS5-V1.1", "LLM05:2025"]
@@ -416,9 +403,7 @@ rules:
   - id: vibesec.g3.jwt-alg-none
     languages: [python]
     severity: ERROR
-    message: >-
-      [G3] jwt.decode 允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）。
-      任何人都能偽造 Token。請固定 algorithms=["RS256"]（或單一 HS256）並保留簽章驗證。
+    message: "[G3] jwt.decode 允許 alg:none 或停用簽章驗證（verify=False / verify_signature: False）。 任何人都能偽造 Token。請固定 algorithms=[\"RS256\"]（或單一 HS256）並保留簽章驗證。 / [G3] JWT none/disabled signatures allow forgery. Fix a single allowed algorithm and verify signatures."
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
@@ -439,9 +424,7 @@ rules:
   - id: vibesec.g3.jwt-alg-none-js
     languages: [javascript, typescript]
     severity: ERROR
-    message: >-
-      [G3] jsonwebtoken.verify 允許 "none" 演算法，或以 jwt.decode()（不驗簽）結果做授權判斷。
-      請使用 jwt.verify(token, key, { algorithms: ["RS256"] })。
+    message: "[G3] jsonwebtoken.verify 允許 \"none\" 演算法，或以 jwt.decode()（不驗簽）結果做授權判斷。 請使用 jwt.verify(token, key, { algorithms: [\"RS256\"] })。 / [G3] JWT none or decode-only authorization is unsafe. Use signature-verifying jwt.verify with a fixed algorithm."
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
@@ -465,9 +448,7 @@ rules:
   - id: vibesec.g3.jwt-alg-confusion
     languages: [python]
     severity: WARNING
-    message: >-
-      [G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。
-      請只允許單一非對稱演算法，例如 algorithms=["RS256"]。
+    message: "[G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。 請只允許單一非對稱演算法，例如 algorithms=[\"RS256\"]。 / [G3] Mixed HS256/RS256 validation enables public-key-as-HMAC confusion. Allow only the intended asymmetric algorithm."
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
@@ -489,9 +470,7 @@ rules:
   - id: vibesec.g3.jwt-alg-confusion-js
     languages: [javascript, typescript]
     severity: WARNING
-    message: >-
-      [G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。
-      請只允許單一非對稱演算法，例如 { algorithms: ["RS256"] }。
+    message: "[G3] JWT 驗證同時接受 HS256 與 RS256：攻擊者可拿公鑰當 HMAC 密鑰簽出 HS256 Token 通過驗證（演算法混淆）。 請只允許單一非對稱演算法，例如 { algorithms: [\"RS256\"] }。 / [G3] Mixed HS256/RS256 validation enables public-key-as-HMAC confusion. Fix the JS verification algorithm allowlist."
     metadata:
       cwe: "CWE-347"
       control_ids: ["ASVS5-V9.1"]
@@ -512,15 +491,12 @@ rules:
             - pattern: '[..., "RS256", ...]'
 
   # ===========================================================================
-  # G4 — 缺 owner binding（pattern，advisory，Python SQLAlchemy）
+  # G4 — 缺 owner binding（pattern，advisory，Python SQLAlchemy） / G4 missing owner binding: advisory Python SQLAlchemy patterns.
   # ===========================================================================
   - id: vibesec.g4.missing-owner-filter
     languages: [python]
     severity: WARNING
-    message: >-
-      [G4] 路由處理函式中的查詢只以資源 id 篩選（$MODEL），未綁定 owner_id / user_id / tenant_id = 當前已驗證主體。
-      這是 BOLA / IDOR 的典型形態（前端防禦假象）。請加上 `.filter($MODEL.owner_id == current_user.id)` 或改走資料層 RLS。
-      本規則為 advisory：若該資源本來就是公開資源，請在 PR 說明並由 identity-authz reviewer 確認。
+    message: "[G4] 路由處理函式中的查詢只以資源 id 篩選（$MODEL），未綁定 owner_id / user_id / tenant_id = 當前已驗證主體。 這是 BOLA / IDOR 的典型形態（前端防禦假象）。請加上 `.filter($MODEL.owner_id == current_user.id)` 或改走資料層 RLS。 本規則為 advisory：若該資源本來就是公開資源，請在 PR 說明並由 identity-authz reviewer 確認。 / [G4] Route lookup on $MODEL lacks authenticated owner/user/tenant binding. Add owner filtering or RLS; publicly intended resources require documented identity review and policy-based tiering."
     metadata:
       cwe: "CWE-639"
       control_ids: ["ASVS5-V8.2"]
@@ -538,8 +514,8 @@ rules:
           - pattern: $DB.query($MODEL).filter($MODEL.id == $ID)
           - pattern: $DB.query($MODEL).filter_by(id=$ID)
           - pattern: $DB.query($MODEL).get($ID)
-          # SQLAlchemy 的 session.get(Model, id)：$MODEL 必須像類別名稱（User、models.User），
-          # 否則 dict／header／cookie 的 .get(key, default) 也會命中（2026-10-06 對 MultiAgentBeta 的 G4 審查：9 筆皆為誤判）
+          # SQLAlchemy 的 session.get(Model, id)：$MODEL 必須像類別名稱（User、models.User）， / For SQLAlchemy session.get(Model, id), $MODEL must resemble a class such as User or models.User.
+          # 否則 dict／header／cookie 的 .get(key, default) 也會命中（2026-10-06 對 MultiAgentBeta 的 G4 審查：9 筆皆為誤判） / Otherwise dictionary/header/cookie .get(key, default) calls match; nine such false positives occurred in MultiAgentBeta on 2026-10-06.
           - patterns:
               - pattern: $DB.get($MODEL, $ID)
               - metavariable-regex:
@@ -562,9 +538,7 @@ rules:
   - id: vibesec.g4.missing-owner-filter-supabase-js
     languages: [javascript, typescript]
     severity: WARNING
-    message: >-
-      [G4] Supabase 查詢只以 id 篩選，未加 user_id / owner_id 條件。若該表未啟用 RLS，任何持有 anon key 的人都能讀寫他人資料。
-      請確認：(1) 該表已 `enable row level security` 且有 policy；或 (2) 查詢加上 `.eq('user_id', session.user.id)`。
+    message: "[G4] Supabase 查詢只以 id 篩選，未加 user_id / owner_id 條件。若該表未啟用 RLS，任何持有 anon key 的人都能讀寫他人資料。 請確認：(1) 該表已 `enable row level security` 且有 policy；或 (2) 查詢加上 `.eq('user_id', session.user.id)`。 / [G4] Supabase ID-only lookup may expose other users' data without RLS. Verify enabled policies or bind to the authenticated user."
     metadata:
       cwe: "CWE-639"
       control_ids: ["ASVS5-V8.2"]
@@ -590,9 +564,7 @@ rules:
   - id: vibesec.g4.supabase-rls-disabled
     languages: [generic]
     severity: WARNING
-    message: >-
-      [G4] SQL migration 停用 Row Level Security（$1）。Supabase 以 anon key 直連資料庫時，RLS 是唯一的資料層授權；
-      停用等於全表對所有使用者開放（MAESTRO-L2）。
+    message: "[G4] SQL migration 停用 Row Level Security（$1）。Supabase 以 anon key 直連資料庫時，RLS 是唯一的資料層授權； 停用等於全表對所有使用者開放（MAESTRO-L2）。 / [G4] Migration disables RLS ($1), removing Supabase's data-layer authorization for anonymous-key access."
     metadata:
       cwe: "CWE-284"
       control_ids: ["ASVS5-V8.2", "MAESTRO-L2"]
@@ -611,9 +583,7 @@ rules:
   - id: vibesec.g4.supabase-table-without-rls
     languages: [generic]
     severity: WARNING
-    message: >-
-      [G4] 在同一 migration 檔中建立資料表 $TABLE 但找不到對應的 `alter table ... enable row level security`。
-      Supabase 新建表預設不啟用 RLS；請於同一 migration 內啟用並建立至少一條 policy（best-effort 檢查，跨檔啟用請在 PR 註明）。
+    message: "[G4] 在同一 migration 檔中建立資料表 $TABLE 但找不到對應的 `alter table ... enable row level security`。 Supabase 新建表預設不啟用 RLS；請於同一 migration 內啟用並建立至少一條 policy（best-effort 檢查，跨檔啟用請在 PR 註明）。 / [G4] Table $TABLE lacks RLS enablement in the same migration. Enable RLS/policy or document cross-file enforcement; best-effort check."
     metadata:
       cwe: "CWE-284"
       control_ids: ["ASVS5-V8.2", "MAESTRO-L2"]
@@ -626,19 +596,16 @@ rules:
       include:
         - "**/supabase/migrations/**"
         - "**/migrations/**/*.sql"
-    # 建表後（同檔任何位置）找不到 `alter table [public.]<TABLE> enable row level security` 才命中
+    # 建表後（同檔任何位置）找不到 `alter table [public.]<TABLE> enable row level security` 才命中 / Match only when no enabling alter table statement for the created table exists anywhere in the same file.
     pattern-regex: (?is)create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?"?(?P<TABLE>\w+)"?\s*\((?!.*alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:public\.)?"?(?P=TABLE)"?\s+enable\s+row\s+level\s+security)
 
   # ===========================================================================
-  # G4 — Agent 工具過度暴露（pattern，Python + JS）
+  # G4 — Agent 工具過度暴露（pattern，Python + JS） / G4 excessive agent-tool exposure: Python and JavaScript patterns.
   # ===========================================================================
   - id: vibesec.g4.agent-tool-overexposure
     languages: [python]
     severity: WARNING
-    message: >-
-      [G4] Agent 工具清單或工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。
-      通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency；Replit 刪庫案例）。
-      請改為 allow-list 內的細粒度工具，並對高影響動作加 Human-in-the-Loop。
+    message: "[G4] Agent 工具清單或工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。 通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency；Replit 刪庫案例）。 請改為 allow-list 內的細粒度工具，並對高影響動作加 Human-in-the-Loop。 / [G4] Agent registration exposes high-impact tool $NAME. Replace broad destructive capabilities with narrow allowlisted tools and human approval."
     metadata:
       cwe: "CWE-250"
       control_ids: ["VS-G4-AGENT-TOOL-ALLOWLIST", "LLM06:2025", "MAESTRO-L3"]
@@ -681,9 +648,7 @@ rules:
   - id: vibesec.g4.agent-tool-overexposure-js
     languages: [javascript, typescript]
     severity: WARNING
-    message: >-
-      [G4] Agent 工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。
-      通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency）。請改為 allow-list 內的細粒度工具並加 Human-in-the-Loop。
+    message: "[G4] Agent 工具定義含高影響工具 `$NAME`（delete_user / execute_sql / drop_table / rm -rf 類）。 通用 Agent 不得直接取得破壞性能力（LLM06 Excessive Agency）。請改為 allow-list 內的細粒度工具並加 Human-in-the-Loop。 / [G4] Agent tool $NAME exposes broad high-impact capabilities. Use narrow allowlisted tools and HITL."
     metadata:
       cwe: "CWE-250"
       control_ids: ["VS-G4-AGENT-TOOL-ALLOWLIST", "LLM06:2025", "MAESTRO-L3"]
@@ -707,14 +672,12 @@ rules:
           regex: (?i)^["'`]?(delete_user|delete_users|deleteUser|drop_table|dropTable|drop_database|execute_sql|executeSql|run_sql|runSql|exec_sql|raw_sql|rm_rf|rm -rf|shell_exec|run_shell|runShell|execute_command|executeCommand|exec_command|run_command|sudo|transfer_funds|transferFunds|delete_all)["'`]?$
 
   # ===========================================================================
-  # G2 — 硬編碼 LLM 金鑰（regex；gitleaks 之外的第二道，涵蓋 PR diff 階段）
+  # G2 — 硬編碼 LLM 金鑰（regex；gitleaks 之外的第二道，涵蓋 PR diff 階段） / G2 hardcoded LLM keys: regex detection supplements Gitleaks for PR diffs.
   # ===========================================================================
   - id: vibesec.g2.hardcoded-llm-key
     languages: [generic]   # generic 模式對任何檔案做正則比對（.py/.js/.ts/.json/.yaml/.env …）
     severity: ERROR
-    message: >-
-      [G2] 原始碼含疑似 LLM 供應商金鑰（OpenAI sk-… / sk-proj-…、Anthropic sk-ant-api03-…、GLM id.secret）。
-      請立即到供應商後台撤銷並輪替，改由環境變數或祕密管理服務注入；報告只保留遮罩與指紋。
+    message: "[G2] 原始碼含疑似 LLM 供應商金鑰（OpenAI sk-… / sk-proj-…、Anthropic sk-ant-api03-…、GLM id.secret）。 請立即到供應商後台撤銷並輪替，改由環境變數或祕密管理服務注入；報告只保留遮罩與指紋。 / [G2] Possible hard-coded model-provider key. Revoke/rotate at the provider and inject via environment/secret manager; report masks/fingerprints only."
     metadata:
       cwe: "CWE-798"
       control_ids: ["ASVS5-V13.3", "MAESTRO-L3"]
@@ -736,16 +699,13 @@ rules:
       - pattern-regex: \b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b
 
   # ===========================================================================
-  # G3 — GitHub Actions 供應鏈（generic + regex；同時涵蓋 workflow 與 composite action.yml）
-  # 不以路徑過濾：`uses: owner/repo@ref` 本身就是 Actions 專屬語法；文件中的範例另行排除。
+  # G3 — GitHub Actions 供應鏈（generic + regex；同時涵蓋 workflow 與 composite action.yml） / G3 GitHub Actions supply chain: generic/regex patterns cover workflows and composite actions.
+  # 不以路徑過濾：`uses: owner/repo@ref` 本身就是 Actions 專屬語法；文件中的範例另行排除。 / No path filter: uses: owner/repo@ref is Actions-specific syntax; documentation examples are excluded separately.
   # ===========================================================================
   - id: vibesec.g3.actions-unpinned-action
     languages: [generic]
     severity: WARNING
-    message: >-
-      [G3] Action `$1@$2` 以可變 ref（tag / branch）引用，而非完整 40 字元 commit SHA。
-      tag 可被改指向惡意 commit（例：CVE-2026-33634，trivy-action 76 個 tag 遭改寫為竊取憑證程式）。
-      請改為 `$1@<完整 SHA> # <版本>`；本地 action（./）與 docker:// 映像不在此規則範圍。
+    message: "[G3] Action `$1@$2` 以可變 ref（tag / branch）引用，而非完整 40 字元 commit SHA。 tag 可被改指向惡意 commit（例：CVE-2026-33634，trivy-action 76 個 tag 遭改寫為竊取憑證程式）。 請改為 `$1@<完整 SHA> # <版本>`；本地 action（./）與 docker:// 映像不在此規則範圍。 / [G3] Action $1@$2 uses a mutable ref instead of a full 40-character SHA. Pin the commit and annotate its version; local/docker references are excluded."
     metadata:
       cwe: "CWE-829"
       control_ids: ["ASVS5-V15.1"]
@@ -758,16 +718,13 @@ rules:
       exclude:
         - "docs/**"
         - "**/*.md"
-    # 擷取 owner/repo[/path]@ref；ref 不是 40 位十六進位 SHA 就命中
+    # 擷取 owner/repo[/path]@ref；ref 不是 40 位十六進位 SHA 就命中 / Extract owner/repo[/path]@ref; match refs that are not 40 hexadecimal SHA characters.
     pattern-regex: (?m)^[ \t]*-?[ \t]*uses:[ \t]*["']?([A-Za-z0-9][\w.\-]*/[\w.\-/]+)@(?![0-9a-fA-F]{40}(?![\w.\-]))([^\s"'#]+)
 
   - id: vibesec.g3.actions-pull-request-target
     languages: [generic]
     severity: WARNING
-    message: >-
-      [G3] workflow 由 pull_request_target 觸發（具 base repo 的 secrets 與寫入權杖），卻引用 PR 提供的內容
-      （`$1`）：檢出並執行 PR head，或把 title / body / head_ref 帶進 run。fork 的 PR 可藉此執行任意程式並外洩祕密。
-      請改用 pull_request 觸發；確需寫入權限時拆成 pull_request + workflow_run，且不要執行 PR 程式碼。
+    message: "[G3] workflow 由 pull_request_target 觸發（具 base repo 的 secrets 與寫入權杖），卻引用 PR 提供的內容 （`$1`）：檢出並執行 PR head，或把 title / body / head_ref 帶進 run。fork 的 PR 可藉此執行任意程式並外洩祕密。 請改用 pull_request 觸發；確需寫入權限時拆成 pull_request + workflow_run，且不要執行 PR 程式碼。 / [G3] Privileged pull_request_target references untrusted PR input $1. Trace checkout/shell execution and avoid executing PR code with secrets/write tokens; separate unprivileged testing from privileged follow-up."
     metadata:
       cwe: "CWE-94"
       control_ids: ["ASVS5-V15.1"]

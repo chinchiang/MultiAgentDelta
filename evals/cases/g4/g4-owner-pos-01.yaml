@@ -1,7 +1,7 @@
 id: g4-owner-pos-01
 gate: G4
 domain: authorization
-title: 查詢未綁定當前主體（缺 owner 過濾）
+title: "查詢未綁定當前主體（缺 owner 過濾） / A query lacks an owner filter binding the current principal"
 input:
   kind: code
   language: python
@@ -16,4 +16,4 @@ expected:
   rule_id: vibesec.g4.missing-owner-filter
   policy_tier: advisory      # L3 下升為 blocking（見 blocking-policy.yaml）
 held_out: false
-notes: 應為 .filter(Note.id == note_id, Note.owner_id == current_user.id)。
+notes: "應為 .filter(Note.id == note_id, Note.owner_id == current_user.id)。 / Use .filter(Note.id == note_id, Note.owner_id == current_user.id)."

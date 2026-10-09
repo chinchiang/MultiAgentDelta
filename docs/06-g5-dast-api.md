@@ -1,3 +1,8 @@
+
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # 06 G5 DAST 與 API（黑箱；部署至 Staging 後、上線前）
 
 | 項目 | 值 |
@@ -7,7 +12,7 @@
 | 設定 | `vibesec.yaml` → `gates.g5_dast_api`（`stage: staging`、`target_url_env: VIBESEC_TARGET_URL`、`tools: [zap-baseline, zap-api-scan, api-probes]`、`two_account_test: required`、`account_a_token_env: VIBESEC_TOKEN_A`、`account_b_token_env: VIBESEC_TOKEN_B`、`checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit]`、`timeout_seconds: 1800`） |
 | 設定檔 | `config/zap/api-scan.conf`、`config/zap/two-account-context.yaml` |
 | 負責 | Red Team |
-| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流不接受手動輸入的目標 |
+| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流程不接受手動輸入的目標 |
 
 ## 對抗成因
 
@@ -222,8 +227,112 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 
 ## 執行器與完整性
 
-`python3 scripts/g5_api_probes.py` 是工作流程與本機評測共用的 API 探針。HTTP 用戶端拒絕跨來源及 HTTPS 降級重新導向，認證資訊只送到授權來源；所有 JWT 候選端點都回 404／405 時記 `untested`，不能證明驗證成功。
+`python3 scripts/g5_api_probes.py` 是工作流程程與本機評測共用的 API 探針。HTTP 用戶端拒絕跨來源及 HTTPS 降級重新導向，認證資訊只送到授權來源；所有 JWT 候選端點都回 404／405 時記 `untested`，不能證明驗證成功。
 
-探針讀取 `config/zap/two-account-context.yaml`，亦可用 `VIBESEC_ACCESS_CONTEXT` 指定受測專案設定。支援建立／預植資源、B／ANON 的讀寫刪除請求、A 的讀取對照、清單隔離及功能層級權限；A、B 必須使用不同權杖。路徑、資源 ID 與標記須符合受測專案，模板不能直接當成完成證據。
+探針讀取 `config/zap/two-account-context.yaml`，亦可用 `VIBESEC_ACCESS_CONTEXT` 指定受測專案設定。支援建立／預植資源、B／ANON 的讀寫刪除請求、A 的讀取對照、清單隔離及功能層級權限；A、B 必須使用不同權杖。路徑、資源 ID 與標記須符合受測專案，範本不能直接當成完成證據。
 
 ZAP API 與 Baseline 使用 `config/zap/api-scan.conf`。Action 完成後立即另存各自的 `report_json.json`；`scripts/g5_gate.py` 合併 API 探針與兩份 ZAP 報告，並核對步驟 outcome。缺報告或失敗不會算完成，警示依政策計數。最終由 `scripts/gate_verdict.py` 執行 shadow／enforce 判定。
+
+
+---
+
+<a id="english"></a>
+
+# 06 G5 DAST and API Testing (Black-Box; Staging / Pre-Release)
+
+G5 tests running services from outside and requires two distinct subjects' tokens. Red team owns it. Configure `gates.g5_dast_api`: staging, `VIBESEC_TARGET_URL`, ZAP baseline/API scan and API probes, required two-account tests, `VIBESEC_TOKEN_A/B`, check list, and 1,800-second timeout. Settings: `config/zap/api-scan.conf`, `two-account-context.yaml`.
+
+**Only attack the authorized test environment.** CI gets its target from administrator-controlled `vars.VIBESEC_TARGET_URL`, never an arbitrary manual workflow input.
+
+## Causes addressed
+
+AI-generated development conveniences—Swagger, GraphQL introspection, debug modes, stack traces—can leak into deployment. Static authorization findings remain candidates until HTTP tests demonstrate actual ownership checks, JWT rejection, or metadata access. G5 supplies reproducible dynamic evidence for the white-box/black-box loop.
+
+## Triggers and nature
+
+Run after staging deployment, before release, and periodically. Missing target or either required token makes G5 incomplete, never pass. Proven BOLA/JWT bypasses provide E3 evidence; actual blocking tiers come from policy. Information exposure is usually advisory.
+
+## Core tasks
+
+### 1. Two-account BOLA/IDOR
+
+Define A (resource owner), B (other same-role subject), and ANON (no token) in the context file. A creates a marked resource and captures its ID. B attempts read/update/delete: expect 403/404, never 2xx. ANON attempts read: expect 401/403. B's list must not contain A's marker. The shared shell example illustrates these requests.
+
+- Cross-account success: blocking `vibesec.g5.bola-cross-account`, CWE-639, E3.
+- Anonymous success: blocking `missing-session-check`, CWE-287, E3.
+- `protected_paths` session checks send absent and invalid tokens: any 2xx fails; both 401/403 pass; 404/5xx/network failure is untested. An empty configured path list is untested because the probe cannot infer which endpoints should be private.
+- Save masked HTTP exchanges under `reports/g5/`, with `http_exchange` evidence references.
+- Test vertical/function authorization too: ordinary users must not access admin functions.
+- Tools: shared probes/curl/httpx, Burp Autorize/AuthMatrix, and Schemathesis two-account hooks.
+
+### 2. JWT none and algorithm confusion
+
+Test an unsigned JWT declaring `alg: none` and an administrative identity against an actual protected endpoint. Acceptance yields blocking `jwt-alg-none`. Test asymmetric/symmetric confusion by signing an HS256 token using the server's public-key PEM as the HMAC secret; acceptance yields `jwt-alg-confusion`. Both map to CWE-347/E3 and G3 JWT rules.
+
+Confusion-test states:
+
+- An HS-family login token has no asymmetric public key to confuse: `not_applicable`, with reason.
+- For asymmetric tokens, try standard JWKS endpoints and OIDC `jwks_uri`; select the matching RSA `kid`, build SubjectPublicKeyInfo PEM, and resign the same payload. The PEM bytes must match the server's representation. HTTP 200 fails; explicit 401/403 passes; other responses are untested.
+- No usable key: untested with a recommendation for manual/Burp validation.
+
+The lab issues RS256 tokens and publishes JWKS. Vulnerable mode accepts HS256 using public-key bytes; patched mode fixes algorithms to RS256. If all candidate endpoints return 404/405, no successful verification has occurred.
+
+### 3. Metadata SSRF
+
+Probe authorized server-fetch features such as URL import/preview/webhooks/avatar fetches with AWS IPv4 metadata, IMDS token path, GCP metadata token path, and AWS IPv6 metadata. Role names, AccessKeyId, or tokens demonstrate `ssrf-metadata` (CWE-918/E3); its base-policy tier is advisory, subject to overrides. Correlate with G3 IMDSv1 findings. The shared examples are for isolated authorized environments only.
+
+### 4. Development exposure
+
+Check anonymous `/docs`, `/redoc`, Swagger/OpenAPI variants; GraphQL `__schema`; and malformed inputs that expose Python/JS/Werkzeug debug traces. CI first requests a nonexistent path, then up to five OpenAPI POST endpoints without path parameters using type-confused JSON (`query`, `message`, `input`, `id` set to zero). Any trace marker flags `debug-stacktrace`.
+
+Swagger/introspection/debug findings are advisory (CWE-200/209). If a trace identifies source files/lines, attach SARIF locations for root-cause work.
+
+### 5. Rate limits and CAPTCHA
+
+In an authorized test, send 50 failed login/password-reset requests and look for 429 or a challenge. No throttling yields advisory `missing-rate-limit`, CWE-770. G5 checks HTTP throttling; G6 checks token/cost quotas.
+
+### 5a. Reflected CORS origin
+
+Send `Origin: https://vibesec-cors-probe.invalid`. Reflection of that reserved untrusted origin together with `Access-Control-Allow-Credentials: true` yields blocking `cors-reflect-origin` (CWE-942). No reflection passes; network failure is untested. Reflection without credentials is left to ZAP's broader 40040 rule.
+
+### 6. ZAP
+
+Run `zap-api-scan.py` against the OpenAPI document and `zap-baseline.py` against the target, using `config/zap/api-scan.conf` and separate JSON/HTML outputs. Shared Docker examples show the invocation. The configuration marks SQL/command/SSTI/XSS/CORS/metadata issues FAIL, information/header issues WARN, and timestamp/user-agent fuzzers IGNORE. Preserve `zap:<id>` and native `cweid`. ZAP does not test prompt injection; G6 does.
+
+### 7. Additional tools
+
+Nuclei offers fast CVE/exposure/misconfiguration templates; Schemathesis provides OpenAPI property/fuzz tests and account hooks; Burp Pro adds interactive Autorize/AuthMatrix checks for L2/L3. These are optional additions, not evidence that absent tools ran.
+
+## Automation
+
+Wait for a healthy authorized staging deployment; validate target/tokens; run ZAP baseline/API and shared API probes, with configured optional tools; merge outputs/HTTP evidence into a gate result; map dynamic findings back to code. Coverage includes authorization, session/JWT, exposure, CORS, anti-automation, and authentication throttling. ZAP settings live in `api-scan.conf`; resource/role scenarios live in the access-context YAML.
+
+## Blocking policy
+
+| Rule suffix (`vibesec.g5.`) | Base tier | CWE |
+|---|---|---|
+| bola-cross-account / missing-session-check | Blocking, E3 | 639/287 |
+| jwt-alg-none / jwt-alg-confusion | Blocking, E3 | 347 |
+| ssrf-metadata | Advisory, E3 | 918 |
+| cors-reflect-origin | Blocking | 942 |
+| swagger-exposed / graphql-introspection / debug-stacktrace | Advisory | 200/209 |
+| missing-rate-limit | Advisory | 770 |
+| Missing target/token/unavailable staging | Incomplete | — |
+
+## Mapped controls
+
+Local ASVS section IDs: V8.2 object authorization, V7.1 sessions, V9.1 JWT, V1.3/V13.2 SSRF, V13.4 exposure, V3.3 CORS, V2.4/V6.2 automation/authentication throttling. V7–V9/V13 include VibeSec extensions, not official requirement IDs. CWE 639/287/347/918/200/209/770/942; `LLM10:2025`; MAESTRO L6/L4.
+
+## Verification
+
+Main-only notifications use `.github/scripts/staging-issue.js`: lab G5/G6 must demonstrate expected blocking failures; external targets must pass; failed jobs/missing results produce or update tracking issues, closed on recovery.
+
+Test missing B token → incomplete; vulnerable lab BOLA/JWT/SSRF/docs; patched BOLA 404/JWT 401/blocked egress; authorized-target restrictions; masked HTTP evidence for blocking findings; and dynamic-to-code mappings. Retests confirm the original flaw and mark it fixed when remediation succeeds.
+
+## Shared runner and completeness
+
+`python3 scripts/g5_api_probes.py` serves workflows and local evaluations. Its HTTP client rejects cross-origin and HTTPS-downgrade redirects; credentials go only to the authorized origin.
+
+Read `two-account-context.yaml` or override with `VIBESEC_ACCESS_CONTEXT`. Supported scenarios include created/preseeded resources, B/ANON CRUD, A read controls, list isolation, and function-level permissions. A/B tokens must differ. Configure actual paths, IDs, and markers; a template is not completed evidence. The bundled lab has its own matching context.
+
+After each ZAP action, immediately preserve its native `report_json.json` separately. `scripts/g5_gate.py` combines both reports and probe results and validates step outcomes. Missing reports/tool failures cannot count as completed; alerts follow policy. `scripts/gate_verdict.py` applies shadow/enforce behavior.

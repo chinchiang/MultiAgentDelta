@@ -1,7 +1,7 @@
 id: g3-xss-pos-01
 gate: G3
 domain: xss
-title: innerHTML 寫入未跳脫的使用者輸入
+title: "innerHTML 寫入未跳脫的使用者輸入 / innerHTML receives unescaped user input"
 input:
   kind: code
   path: web/app.js
