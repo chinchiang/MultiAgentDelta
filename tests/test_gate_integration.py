@@ -42,6 +42,17 @@ class GateIntegration(unittest.TestCase):
             bad = gate('G1'); bad['status'] = 'bogus'
             self.assertEqual(verdict({'G1': bad}, root)[0], 2)
 
+    def test_lab_requires_completed_tools_even_when_findings_exist(self):
+        g = gate('G6', 1)
+        g['tools'] = [{'name': n, 'state': 'ran'} for n in ('promptfoo-eval', 'garak', 'agent-observations')]
+        g['coverage'] = []
+        self.assertEqual(verdict({'G6': g}, lab=True)[0], 0)
+        g['tools'][1]['state'] = 'missing'
+        self.assertEqual(verdict({'G6': g}, lab=True)[0], 1)
+        g['tools'][1]['state'] = 'ran'
+        g['coverage'] = [{'control_id': 'LLM01:2025', 'state': 'untested', 'reason': 'probe 未完成'}]
+        self.assertEqual(verdict({'G6': g}, lab=True)[0], 1)
+
     def test_zap_is_required_and_alerts_are_counted(self):
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / 'zap.json'

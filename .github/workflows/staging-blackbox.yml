@@ -151,6 +151,8 @@ jobs:
           HAS_A: ${{ steps.tokens.outputs.has_a }}
           HAS_B: ${{ steps.tokens.outputs.has_b }}
           VIBESEC_TOKEN_DIR: ${{ steps.tokens.outputs.token_dir }}
+          VIBESEC_ACCESS_CONTEXT: ${{ steps.target.outputs.is_vulnapp == 'true' && 'config/zap/vulnapp-context.yaml' || 'config/zap/two-account-context.yaml' }}
+          VIBESEC_USER_ID_A: ${{ steps.target.outputs.is_vulnapp == 'true' && '1' || vars.VIBESEC_USER_ID_A }}
         run: |
           python3 scripts/g5_api_probes.py
 
@@ -251,11 +253,15 @@ jobs:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
           mkdir -p reports
-          pip install "garak==${GARAK_VERSION}" >reports/_garak-install.log 2>&1 || echo "::warning::garak 安裝失敗（記為 untested）"
+          # 先以官方 CPU index 安裝固定 torch，再由 PyPI 裝 garak；constraint 禁止換回 CUDA wheel。
+          if ! (pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.13.0+cpu' &&
+                pip install --no-cache-dir -c config/garak/constraints.txt "garak==${GARAK_VERSION}") >reports/_garak-install.log 2>&1; then
+            echo "::warning::garak 安裝失敗（記為 untested）"
+          fi
           if command -v garak >/dev/null 2>&1; then
             # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
             sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
-            garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
+            timeout 1800 garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
               echo "::warning::garak 回傳非零 → 依報告內容判定"
             # garak 預設把報告寫在 ~/.local/share/garak/garak_runs/
             find "$HOME/.local/share/garak" . -name 'g6-garak*.jsonl' -not -path './reports/*' -exec cp {} reports/ \; 2>/dev/null || true

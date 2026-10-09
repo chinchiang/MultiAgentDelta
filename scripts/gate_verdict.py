@@ -31,7 +31,15 @@ def verdict(gates, root=ROOT, requested=None, lab=False):
         incomplete |= gate['status'] in ('incomplete', 'untested') and gid in policy.incomplete_blocking_gates
     if lab:
         # 內建漏洞靶場必須真的偵測到兩個閘門的 blocking；這是偵測器驗收，不是部署核准。
-        return (0 if all(g['status'] == 'fail' and g['findings_count']['blocking'] > 0 for g in rows) else 1), rows, mode
+        required = {'G5': {'vibesec-g5-api-probes', 'zap-api', 'zap-baseline'},
+                    'G6': {'promptfoo-eval', 'garak', 'agent-observations'}}
+        def completed(g):
+            ran = {t['name'] for t in g.get('tools', []) if t.get('state') == 'ran'}
+            # 模型生成層須另提供金鑰；決定性靶場驗收可保留這一項缺口，其餘未實測項目不可掩蓋。
+            missing = [c for c in g.get('coverage', []) if c['state'] == 'untested'
+                       and not (g['gate'] == 'G6' and str(c.get('reason') or '').startswith('未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret'))]
+            return required.get(g['gate'], set()) <= ran and not missing
+        return (0 if rows and all(g['status'] == 'fail' and g['findings_count']['blocking'] > 0 and completed(g) for g in rows) else 1), rows, mode
     return (2 if mode == 'enforce' and incomplete else 1 if mode == 'enforce' and blocking else 0), rows, mode
 
 

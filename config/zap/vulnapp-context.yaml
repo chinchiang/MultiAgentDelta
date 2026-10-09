@@ -1,0 +1,20 @@
+# 僅供內建靶場：沿用預植使用者，所有路徑都存在於 examples/vulnapp。
+version: 1
+auth:
+  scheme: bearer
+resources:
+  - name: alice_notes
+    id_from: seed
+    seed_id_env: VIBESEC_USER_ID_A
+    requests:
+      - {method: GET, path: "/users/{id}/notes"}
+    expect:
+      A: [200]
+      B: [403, 404]
+      ANON: [401, 403]
+function_level:
+  - method: GET
+    path: /admin/users
+    expect:
+      B: [401, 403]
+      ANON: [401, 403]

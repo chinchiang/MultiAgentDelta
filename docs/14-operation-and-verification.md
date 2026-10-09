@@ -34,7 +34,7 @@ jobs:
 
 此片段放入目標專案既有的部署工作流程。先設定授權測試環境 `vars.VIBESEC_TARGET_URL`、雙帳號 secret、模型金鑰與目標專案的 API 情境，再經獨立政策變更將 `vibesec.yaml` 設為 enforce。未設定 URL 時只跑內建漏洞靶場，成功表示偵測器抓到預期漏洞，**不代表任何正式系統通過安全驗證**。本專案沒有正式環境部署指令，因此不加入虛構部署工作。
 
-shadow 只報告；enforce 依 blocking 與必要閘門未完成狀態決定退出碼。ZAP、API 探針、promptfoo、garak、模型生成層與用量遙測分別保留完成狀態。缺模型金鑰仍會記為未完成，即使決定性靶場測試正常。
+shadow 只報告；enforce 依 blocking 與必要閘門未完成狀態決定退出碼。ZAP、API 探針、promptfoo、garak、模型生成層與用量遙測分別保留完成狀態。缺模型金鑰仍會記為未完成，即使決定性靶場測試正常。靶場驗收只容許模型生成層缺金鑰，其餘必要工具與控制必須完成；抓到 blocking 不能掩蓋 garak 等工具缺席。garak 使用官方 CPU 版 torch 及 constraint，避免安裝 CUDA 套件耗盡 runner 磁碟。
 
 ## 可重現驗證
 

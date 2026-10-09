@@ -1,0 +1,3 @@
+# REST 探針不需要 CUDA；固定 CPU wheel，避免 GitHub runner 被 GPU 相依套件耗盡磁碟。
+# garak 0.17.0 requires torch >= 2.13.0。
+torch==2.13.0+cpu
