@@ -37,31 +37,29 @@ runs:
           config
           docs/templates
 
-    # semgrep 容器等環境可能沒有 PyYAML：裝不起來就讓下一步以 exit 2 失敗（incomplete ≠ pass），不預設 shadow
-    - name: 確認 PyYAML 可用
-      shell: bash
-      run: python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml || true
-
-    # 不用 awk／regex：`mode: "enforce"` 帶引號時 awk 會得到含引號的值，enforce 就不擋。
-    # PyYAML 缺席或檔案缺席 → exit 2：不預設 shadow（在 enforce 下預設 shadow 等於靜默放行）。
+    # 不依賴 PyYAML：semgrep 容器沒有，pip 也不一定裝得起來。只讀「最上層」的 mode／risk_tier（行首無縮排），
+    # 去掉尾端註解與引號（`mode: "enforce"` 帶引號時 awk 會得到含引號的值，enforce 就不擋）。
+    # 檔案缺席、找不到 mode 或值不合法 → exit 2：不預設 shadow（在 enforce 下預設 shadow 等於靜默放行）。
     - name: 讀取受信任的 mode / risk_tier
       id: cfg
       shell: bash
       run: |
         python3 - <<'PY' >> "$GITHUB_OUTPUT"
-        import sys, pathlib
-        try:
-            import yaml
-        except ImportError:
-            print("::error::PyYAML 缺席，無法讀取 _trusted/vibesec.yaml（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
+        import sys, re, pathlib
         p = pathlib.Path("_trusted/vibesec.yaml")
         if not p.is_file():
             print("::error::_trusted/vibesec.yaml 不存在", file=sys.stderr); sys.exit(2)
-        vb = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        mode = str(vb.get("mode") or "").strip()
+        txt = p.read_text(encoding="utf-8")
+        def top(key):
+            m = re.search(rf'^{key}[ \t]*:[ \t]*(.*)$', txt, re.M)
+            if not m: return None
+            v = re.sub(r'[ \t]+#.*$', '', m.group(1)).strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'": v = v[1:-1].strip()
+            return v
+        mode = top("mode")
         if mode not in ("shadow", "enforce"):
-            print(f"::error::_trusted/vibesec.yaml 的 mode 不合法：{mode!r}", file=sys.stderr); sys.exit(2)
-        tier = str(vb.get("risk_tier") or "L2").strip()
+            print(f"::error::_trusted/vibesec.yaml 的 mode 缺席或不合法：{mode!r}", file=sys.stderr); sys.exit(2)
+        tier = top("risk_tier") or "L2"
         print(f"mode={mode}")
         print(f"shadow={'true' if mode == 'shadow' else 'false'}")
         print(f"risk_tier={tier}")
