@@ -252,7 +252,7 @@ jobs:
         env:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
-          mkdir -p reports
+          mkdir -p reports/garak
           # 先以官方 CPU index 安裝固定 torch，再由 PyPI 裝 garak；constraint 禁止換回 CUDA wheel。
           if ! (pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.13.0+cpu' &&
                 pip install --no-cache-dir -c config/garak/constraints.txt "garak==${GARAK_VERSION}") >reports/_garak-install.log 2>&1; then
@@ -261,9 +261,9 @@ jobs:
           if command -v garak >/dev/null 2>&1; then
             # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
             sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
-            timeout 1800 garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
+            timeout 1800 garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix "$GITHUB_WORKSPACE/reports/garak/g6-garak" >reports/_garak.log 2>&1 || \
               echo "::warning::garak 回傳非零 → 依報告內容判定"
-            # reporting.report_dir 已設定為 reports/garak；合併時直接讀原始報告，不搬移或重複計數。
+            # garak 以資料目錄解析相對路徑；絕對 prefix 將報告固定在本工作區，合併時不搬移或重複計數。
           fi
 
       - name: G6 工具事件與用量遙測

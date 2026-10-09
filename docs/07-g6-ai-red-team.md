@@ -90,7 +90,8 @@ promptfoo eval -c config/promptfoo/tests.yaml --output reports/g6-promptfoo.json
 # 2) 紅隊生成層（選用）：需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY
 promptfoo redteam run -c config/promptfoo/promptfooconfig.yaml --output reports/g6-promptfoo-redteam.json
 # 3) garak
-garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
+mkdir -p reports/garak
+garak --config config/garak/vibesec.probes.yaml --report_prefix "$PWD/reports/garak/g6-garak"
 # 4) 彙整成單一 G6 結果
 python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6-promptfoo-redteam.json \
   --garak-glob 'reports/garak/g6-garak*.report.jsonl' --gate reports/g6-gate.json --sarif reports/g6.sarif

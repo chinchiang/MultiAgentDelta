@@ -76,6 +76,7 @@ plugins:
       payloads: ["default", "xss"]
 
 reporting:
+  # 相對目錄以 garak 資料目錄為基準；CI 以絕對 --report_prefix 固定到工作區。
   report_dir: reports/garak
   report_prefix: g6-garak       # staging workflow 以此前綴蒐集報告
   taxonomy: owasp                # 報告中附 OWASP LLM Top 10 標籤
