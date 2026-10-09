@@ -1,0 +1,79 @@
+# VibeSec：取出「受信任」的判定程式與設定，並讀取閘門模式。
+#
+# 判定閘門結果的程式（scripts/）、掃描規則與設定（config/、.semgrepignore 等）、政策（vibesec.yaml、
+# config/policy/）一律取自 default branch（main），放在 _trusted/；PR head 只當「被掃描的資料」。
+# 這樣 PR 不能改寫決定自己結果的腳本、規則、忽略清單或模式（第四次審視 CI-1／2／4／5）。
+# 以前取自 PR 的 base 分支：base 由 PR 作者決定，可先指向舊分支拿綠燈再改回 main。
+#
+# 已接受的殘留：workflow 檔與本 action 本身仍取自 PR head，由 CODEOWNERS（/.github/）加 branch protection
+# 的 code owner review 把關（docs/threat-model.yaml t-gate-script-tamper）。
+#
+# 注意：_trusted/ 位於 workspace 內，掃整個目錄的工具（semgrep、checkov、trivy、G4 靜態檢查、syft）都要排除它。
+name: vibesec-trusted
+description: 取出 default branch 的判定程式與設定到 _trusted/，讀取 mode／risk_tier，套用受信任的忽略清單，清掉可能被提交的工具輸出
+outputs:
+  mode:
+    description: vibesec.yaml 的 mode（shadow／enforce），取自 default branch
+    value: ${{ steps.cfg.outputs.mode }}
+  shadow:
+    description: mode 是否為 shadow（"true"／"false"）
+    value: ${{ steps.cfg.outputs.shadow }}
+  risk_tier:
+    description: vibesec.yaml 的 risk_tier，取自 default branch
+    value: ${{ steps.cfg.outputs.risk_tier }}
+runs:
+  using: composite
+  steps:
+    - name: 取出 default branch 的判定程式與設定（_trusted/）
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: refs/heads/${{ github.event.repository.default_branch }}
+        path: _trusted
+        persist-credentials: false
+        # cone mode：根目錄的檔案（vibesec.yaml、.semgrepignore、.gitleaksignore、.trivyignore）一律包含
+        sparse-checkout: |
+          scripts
+          schemas
+          config
+          docs/templates
+
+    # 不依賴 PyYAML：semgrep 容器沒有，pip 也不一定裝得起來。只讀「最上層」的 mode／risk_tier（行首無縮排），
+    # 去掉尾端註解與引號（`mode: "enforce"` 帶引號時 awk 會得到含引號的值，enforce 就不擋）。
+    # 檔案缺席、找不到 mode 或值不合法 → exit 2：不預設 shadow（在 enforce 下預設 shadow 等於靜默放行）。
+    - name: 讀取受信任的 mode / risk_tier
+      id: cfg
+      shell: bash
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import sys, re, pathlib
+        p = pathlib.Path("_trusted/vibesec.yaml")
+        if not p.is_file():
+            print("::error::_trusted/vibesec.yaml 不存在", file=sys.stderr); sys.exit(2)
+        txt = p.read_text(encoding="utf-8")
+        def top(key):
+            m = re.search(rf'^{key}[ \t]*:[ \t]*(.*)$', txt, re.M)
+            if not m: return None
+            v = re.sub(r'[ \t]+#.*$', '', m.group(1)).strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'": v = v[1:-1].strip()
+            return v
+        mode = top("mode")
+        if mode not in ("shadow", "enforce"):
+            print(f"::error::_trusted/vibesec.yaml 的 mode 缺席或不合法：{mode!r}", file=sys.stderr); sys.exit(2)
+        tier = top("risk_tier") or "L2"
+        print(f"mode={mode}")
+        print(f"shadow={'true' if mode == 'shadow' else 'false'}")
+        print(f"risk_tier={tier}")
+        PY
+
+    # 忽略清單決定「哪些發現不算數」，所以也只能來自 default branch：有就覆蓋到工作區，沒有就刪掉 PR 帶來的那份。
+    # 同時清掉工作區可能被 PR 提交進來、會被誤當成掃描結果的工具輸出（reports/、results.sarif）。
+    - name: 套用受信任的忽略清單並清掉工具輸出
+      shell: bash
+      run: |
+        for f in .semgrepignore .gitleaksignore .trivyignore; do
+          if [ -f "_trusted/$f" ]; then cp "_trusted/$f" "$f"; echo "套用 _trusted/$f"
+          elif [ -e "$f" ]; then rm -f "$f"; echo "移除 PR head 的 $f（default branch 沒有這個檔）"
+          fi
+        done
+        rm -rf reports results.sarif
+        mkdir -p reports

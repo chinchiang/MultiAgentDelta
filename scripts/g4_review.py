@@ -327,6 +327,12 @@ def changed_since(base: str, head: str, path: str) -> bool:
     return r.returncode != 0 or bool(r.stdout.strip())
 
 
+def record_changed(base: str | None, head: str, path: str) -> bool:
+    """紀錄是否該視為「由本次變更引入」。沒有 base 可比對（workflow_dispatch、本機）→ True：
+    分不出紀錄是不是作者自己剛加的，就不採信（fail closed；第四次審視 CI-3）。"""
+    return (not base) or changed_since(base, head, path)
+
+
 def comment_markdown(gate: dict, record_ref: str | None) -> str:
     st = gate["status"]
     lines = ["<!-- vibesec-g4-llm-review -->", "### VibeSec G4 — 存取控制", "",
@@ -487,6 +493,8 @@ def selftest() -> list[str]:
         fails.append("recorded_by 不是核准者（只填別人的帳號）→ 應不可信")
     if trust_cap(False, "", "author", ["reviewer"]) is None:
         fails.append("recorded_by.handle 空白 → 應不可信")
+    if record_changed(None, "HEAD", "reviews/g4/x.yaml") is not True or record_changed("", "HEAD", "reviews/g4/x.yaml") is not True:
+        fails.append("沒有 base 可比對 → 紀錄應視為本次變更引入（fail closed）")
     g4p = gate_of(r4, ev4)
     if apply_cap(g4p, "x")["status"] != "pending" or next(c for c in g4p["coverage"] if c["control_id"] == LLM_CONTROL)["state"] != "pending":
         fails.append("不可信的 pass → pending，且 VS-G4-LLM-REVIEW coverage 降為 pending")
@@ -599,9 +607,11 @@ def main(argv=None) -> int:
     record, ev, ref, reason = find_record(head, cfg, controls)
     gate = derive_gate(static, record, ev, reason, ref)
     if record is not None:
-        changed = bool(a.base) and changed_since(a.base, head, ref)
+        changed = record_changed(a.base, head, ref)
         cap = trust_cap(changed, record["recorded_by"].get("handle", ""), a.pr_author,
                         [x for x in a.approvers.split(",") if x])
+        if cap and not a.base:
+            cap = "無 base 可比對（非 pull_request 事件），無法確認紀錄不是本次變更引入；" + cap
         if cap:
             apply_cap(gate, cap)
     md = comment_markdown(gate, ref)

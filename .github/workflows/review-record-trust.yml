@@ -1,7 +1,7 @@
 # 外部專案的 G4 審查紀錄（reviews/g4/external/*.yaml）不能自證（CLAUDE.md 規則 6：職責分離）。
 # 本 PR 新增或修改的外部紀錄，recorded_by 必須是「在目前 head SHA 上 approve、且不是 PR 作者、有 repo 寫入關係」的人。
 # 本 repo 自己的紀錄（reviews/g4/<commit>.yaml）由 pr-gates.yml 的 G4 job 檢查；外部紀錄不進 G4 job 的閘門推導，
-# 所以在這裡單獨檢查。判定程式取自 base 分支（_trusted/），PR head 只當資料讀取。
+# 所以在這裡單獨檢查。判定程式取自 default branch（_trusted/），PR head 只當資料讀取。
 # 另外監聽 review 事件：有人 approve、request changes 或 dismiss 時重新判定，不必重跑整組閘門。
 # 這個 check 要擋 merge，需在 branch protection 把「外部 G4 紀錄不得自證」設為 required。
 name: VibeSec Review Record Trust
@@ -34,18 +34,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: 取出 base 分支的判定程式（_trusted/）
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: _trusted
-          persist-credentials: false
-          sparse-checkout: |
-            scripts
-            schemas
-            config
-            docs/templates
-            vibesec.yaml
+      # 判定程式取自 default branch（不是 base：base 由 PR 作者決定），見 .github/actions/vibesec-trusted
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
 
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

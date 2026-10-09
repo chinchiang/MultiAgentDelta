@@ -32,7 +32,13 @@
       "mcp__github__create_or_update_file",
       "mcp__github__delete_file",
       "mcp__github__update_pull_request_branch",
-      "Bash(gh -R * workflow run*)"
+      "Bash(gh -R * workflow run*)",
+      "mcp__github__pull_request_review_write",
+      "Bash(gh pr review *)",
+      "Bash(gh -R * pr review*)",
+      "mcp__github__update_pull_request",
+      "Bash(gh pr edit *)",
+      "Bash(gh -R * pr edit*)"
     ]
   }
 }
