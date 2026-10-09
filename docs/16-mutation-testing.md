@@ -17,7 +17,7 @@ python3 scripts/run_mutations.py --profile full --out reports/mutations-full.jso
 
 執行器先在暫存副本確認各組原始測試通過，再逐一修改單一位置並啟動新的 Python 程序；不修改工作目錄中的正式程式。修改位置必須唯一，程式重構造成位置不符時會失敗，不能靜默略過。子程序不繼承模型金鑰、代理設定或 Docker 測試開關，測試中的 Python socket 連線僅允許回送位址。這是測試防呆，並非用來執行不可信程式的安全沙箱。
 
-PR 執行核心範圍；每日排程與手動觸發執行完整範圍，並保存 JSON 產物。GitHub Actions 的簽出、套件安裝與產物上傳仍需要網路；離線的是測試執行本身。新工作流程須合併至預設分支後，排程才會生效。
+突變測試預設關閉：PR 與每日排程均不會自動執行。需要時可執行上述本機指令，或在 GitHub Actions 手動啟動工作流程，選擇 `core`（16 案，預選）或 `full`（19 案），並保存 JSON 產物。工作流程須存在於預設分支，才能使用 GitHub 的手動啟動功能。GitHub Actions 的簽出、套件安裝與產物上傳仍需要網路；離線的是測試執行本身。一般單元測試仍會驗證突變執行器本身，但不會啟動正式程式的突變清單。
 
 ## 結果判讀
 
@@ -49,7 +49,7 @@ The [fixed manifest](../config/mutations.json) defines 19 security mutations: 16
 
 The runner first verifies baseline test groups in a temporary copy, then changes one location at a time and starts a fresh Python process. Production files in the working tree are never changed. Each replacement must match exactly once; refactoring cannot silently skip a case. Workers do not inherit model credentials, proxy settings, or the Docker test switch. Python socket connections in the worker are limited to loopback. This is an accidental-network-use guard, not a sandbox for untrusted code.
 
-Pull requests run the core profile; daily and manual runs use the full profile and save JSON artifacts. GitHub Actions checkout, dependency installation, and artifact upload still need network access; test execution itself is offline. Scheduled execution begins only after the workflow reaches the default branch.
+Mutation testing is disabled by default: neither pull requests nor daily schedules start it automatically. Run the local commands above when needed, or manually dispatch the GitHub Actions workflow with `core` (16 cases, preselected) or `full` (19 cases); JSON artifacts are retained. The workflow must exist on the default branch for GitHub manual dispatch to be available. GitHub Actions checkout, dependency installation, and artifact upload still need network access; test execution itself is offline. Ordinary unit tests still verify the mutation runner itself but do not execute the production-code mutation manifest.
 
 ## Interpreting results
 

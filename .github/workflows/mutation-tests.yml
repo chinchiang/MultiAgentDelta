@@ -1,10 +1,15 @@
 name: Offline mutation tests
 
 on:
-  pull_request:
-  schedule:
-    - cron: '30 18 * * *'
   workflow_dispatch:
+    inputs:
+      profile:
+        description: '測試範圍 / Test profile'
+        type: choice
+        default: core
+        options:
+          - core
+          - full
 
 permissions:
   contents: read
@@ -25,7 +30,7 @@ jobs:
         run: pip install --require-hashes -r requirements-ci.txt
       - name: 執行突變測試 / Run mutation tests
         env:
-          PROFILE: ${{ github.event_name == 'pull_request' && 'core' || 'full' }}
+          PROFILE: ${{ inputs.profile }}
         run: python3 scripts/run_mutations.py --profile "$PROFILE"
       - name: 保存結果 / Save results
         if: always()
