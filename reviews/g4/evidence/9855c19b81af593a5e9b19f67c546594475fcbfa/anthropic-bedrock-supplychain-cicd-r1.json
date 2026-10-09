@@ -1,0 +1,17 @@
+{
+  "provider": "anthropic-bedrock",
+  "family": "anthropic",
+  "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "role": "supplychain-cicd",
+  "prompt_version": "supplychain-cicd@2026-10-09.1",
+  "data_class": "internal",
+  "state": "error",
+  "opinion": null,
+  "note": "Bedrock: ThrottlingException",
+  "request_started_at": "2026-10-09T06:45:13.225087+00:00",
+  "duration_seconds": 0.478,
+  "round": 1,
+  "packet_sha256": "d6f85783535bd5f734d1c05814d63c8f408d6ef51864baadad18ab0098ffaea1",
+  "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55",
+  "round1_independent": true
+}

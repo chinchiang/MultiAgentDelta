@@ -1,0 +1,9 @@
+{
+  "errors": [],
+  "incomplete": [
+    "recorded_by.handle 未填：紀錄尚未經人確認（harness 產出時留空，由複製提交的人填寫）",
+    "coverage VS-G4-LLM-REVIEW: pending（兩家族必要角色已審查，仍有架構／防禦深度分歧待人工確認；附加供應鏈範圍未全數完成。 / Required roles reviewed by two families; architectural/defense-depth disagreements await human review; optional supply-chain scope remains incomplete.）"
+  ],
+  "findings": [],
+  "families": 2
+}

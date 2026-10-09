@@ -1,0 +1,48 @@
+{
+  "review_version": 1,
+  "gate": "G4",
+  "commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+  "scope": "full",
+  "reviewed_at": "2026-10-09T06:55:41.196115+00:00",
+  "roles": [
+    "architecture",
+    "appsec",
+    "identity-authz",
+    "supplychain-cicd"
+  ],
+  "prompt_versions": {
+    "architecture": "architecture@2026-10-09.1",
+    "appsec": "appsec@2026-10-09.1",
+    "identity-authz": "identity-authz@2026-10-09.1",
+    "supplychain-cicd": "supplychain-cicd@2026-10-09.1"
+  },
+  "providers": [
+    {
+      "provider": "anthropic-bedrock",
+      "family": "anthropic",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "state": "ran",
+      "note": "Required roles completed; throttled attempts are retained separately."
+    },
+    {
+      "provider": "gemini-cloud",
+      "family": "google",
+      "model": "gemini-3.8-flash",
+      "state": "ran",
+      "note": "Required roles completed. Optional supplychain role failed with content filtering; no substitute opinion."
+    }
+  ],
+  "coverage": [
+    {
+      "control_id": "VS-G4-LLM-REVIEW",
+      "state": "pending",
+      "reason": "兩家族必要角色已審查，仍有架構／防禦深度分歧待人工確認；附加供應鏈範圍未全數完成。 / Required roles reviewed by two families; architectural/defense-depth disagreements await human review; optional supply-chain scope remains incomplete."
+    }
+  ],
+  "findings": [],
+  "recorded_by": {
+    "handle": "",
+    "note": "草稿，未經人工確認；未將模型提案自動正規化為已裁決發現。 / Unapproved draft; model proposals have not been promoted to adjudicated findings."
+  },
+  "raw_ref": "reviews/g4/evidence/9855c19b81af593a5e9b19f67c546594475fcbfa/evidence-index.json"
+}

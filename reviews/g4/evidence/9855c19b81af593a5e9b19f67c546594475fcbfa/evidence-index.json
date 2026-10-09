@@ -1,0 +1,309 @@
+{
+  "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+  "first_round_independent": true,
+  "scope": "Listed files only; no whole-repository assurance",
+  "data_class": "internal",
+  "credential_values_exported": false,
+  "gitleaks_packet_matches": 0,
+  "model_review_status": "required_roles_completed_with_unresolved_human_questions",
+  "human_approval": "missing",
+  "optional_supplychain_google": "incomplete: content_filter: OTHER after truncated response; not bypassed",
+  "code_fix": {
+    "commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+    "issue": "Malformed provider transport response raised uncaught TypeError; now returns error with no opinion. Reproduced locally and regression tested; both AppSec reviewers examined the repaired source."
+  },
+  "source_revision_checks": {
+    "packet-appsec-r1.json": {
+      "original_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55",
+      "current_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+      "changed_files": [
+        "scripts/review_provider.py"
+      ],
+      "followup": "Changed review_provider.py is included in round-two architecture/appsec packets; other retained files are identical."
+    },
+    "packet-architecture-r1.json": {
+      "original_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55",
+      "current_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+      "changed_files": [
+        "scripts/review_provider.py"
+      ],
+      "followup": "Changed review_provider.py is included in round-two architecture/appsec packets; other retained files are identical."
+    },
+    "packet-identity-authz-r1.json": {
+      "original_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55",
+      "current_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+      "changed_files": [],
+      "followup": "Changed review_provider.py is included in round-two architecture/appsec packets; other retained files are identical."
+    },
+    "packet-supplychain-cicd-r1.json": {
+      "original_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55",
+      "current_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+      "changed_files": [],
+      "followup": "Changed review_provider.py is included in round-two architecture/appsec packets; other retained files are identical."
+    }
+  },
+  "runs": [
+    {
+      "file": "anthropic-bedrock-appsec-r1.json",
+      "provider": "anthropic-bedrock",
+      "role": "appsec",
+      "round": 1,
+      "state": "ran",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "anthropic-bedrock-appsec-r2-retry.json",
+      "provider": "anthropic-bedrock",
+      "role": "appsec",
+      "round": 2,
+      "state": "ran",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa"
+    },
+    {
+      "file": "anthropic-bedrock-appsec-r2.json",
+      "provider": "anthropic-bedrock",
+      "role": "appsec",
+      "round": 2,
+      "state": "error",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa"
+    },
+    {
+      "file": "anthropic-bedrock-architecture-r1.json",
+      "provider": "anthropic-bedrock",
+      "role": "architecture",
+      "round": 1,
+      "state": "ran",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "anthropic-bedrock-architecture-r2.json",
+      "provider": "anthropic-bedrock",
+      "role": "architecture",
+      "round": 2,
+      "state": "ran",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa"
+    },
+    {
+      "file": "anthropic-bedrock-identity-authz-r1.json",
+      "provider": "anthropic-bedrock",
+      "role": "identity-authz",
+      "round": 1,
+      "state": "ran",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "anthropic-bedrock-identity-authz-r2.json",
+      "provider": "anthropic-bedrock",
+      "role": "identity-authz",
+      "round": 2,
+      "state": "ran",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa"
+    },
+    {
+      "file": "anthropic-bedrock-supplychain-cicd-r1-retry.json",
+      "provider": "anthropic-bedrock",
+      "role": "supplychain-cicd",
+      "round": 1,
+      "state": "ran",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "anthropic-bedrock-supplychain-cicd-r1.json",
+      "provider": "anthropic-bedrock",
+      "role": "supplychain-cicd",
+      "round": 1,
+      "state": "error",
+      "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "gemini-cloud-appsec-r1.json",
+      "provider": "gemini-cloud",
+      "role": "appsec",
+      "round": 1,
+      "state": "ran",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "gemini-cloud-appsec-r2.json",
+      "provider": "gemini-cloud",
+      "role": "appsec",
+      "round": 2,
+      "state": "ran",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa"
+    },
+    {
+      "file": "gemini-cloud-architecture-r1.json",
+      "provider": "gemini-cloud",
+      "role": "architecture",
+      "round": 1,
+      "state": "ran",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "gemini-cloud-architecture-r2.json",
+      "provider": "gemini-cloud",
+      "role": "architecture",
+      "round": 2,
+      "state": "ran",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa"
+    },
+    {
+      "file": "gemini-cloud-identity-authz-r1.json",
+      "provider": "gemini-cloud",
+      "role": "identity-authz",
+      "round": 1,
+      "state": "ran",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "gemini-cloud-identity-authz-r2.json",
+      "provider": "gemini-cloud",
+      "role": "identity-authz",
+      "round": 2,
+      "state": "ran",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa"
+    },
+    {
+      "file": "gemini-cloud-supplychain-cicd-r1-retry.json",
+      "provider": "gemini-cloud",
+      "role": "supplychain-cicd",
+      "round": 1,
+      "state": "error",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    },
+    {
+      "file": "gemini-cloud-supplychain-cicd-r1.json",
+      "provider": "gemini-cloud",
+      "role": "supplychain-cicd",
+      "round": 1,
+      "state": "error",
+      "model": "gemini-3.8-flash",
+      "reviewed_commit": "71a0f22406498579ee215b3ba22f57151d6c1e55"
+    }
+  ],
+  "files": {
+    "anthropic-bedrock-appsec-r1.json": {
+      "sha256": "d4c27f99917553ef779740907c9b7e4d72437792c2bb912c79a7b7a7099a1e1d",
+      "size": 4557
+    },
+    "anthropic-bedrock-appsec-r2-retry.json": {
+      "sha256": "ee5ca89830f8d1822d4a0f070a38984ea79a62b2a1864d34ed419ae7726e1809",
+      "size": 6855
+    },
+    "anthropic-bedrock-appsec-r2.json": {
+      "sha256": "e6c97c9f2e0f8a61ae5a6cc675543623267529fd12c62247e11b3e5713ec6e4d",
+      "size": 541
+    },
+    "anthropic-bedrock-architecture-r1.json": {
+      "sha256": "84a90355e2e073a920ea074dcfe3f978b9b068c2f17fc159b198c1c86face768",
+      "size": 4048
+    },
+    "anthropic-bedrock-architecture-r2.json": {
+      "sha256": "cf4c6ada5b8ec5a9072600a18d97fef51756da5707b5e8bec929ee07f9aa59f4",
+      "size": 7286
+    },
+    "anthropic-bedrock-identity-authz-r1.json": {
+      "sha256": "a4f5b92e9488c4ff78d53b8498103ab4af7c391897c42c394592ab12e74c41d2",
+      "size": 6152
+    },
+    "anthropic-bedrock-identity-authz-r2.json": {
+      "sha256": "7d5d474d506921597fc89cd651817d03ea30ef87815c8706774481a25932279c",
+      "size": 6704
+    },
+    "anthropic-bedrock-supplychain-cicd-r1-retry.json": {
+      "sha256": "983b43959a92ff38752c5acf7574ea46182d5d45fc3c11fca74f43e2f9c8f620",
+      "size": 5593
+    },
+    "anthropic-bedrock-supplychain-cicd-r1.json": {
+      "sha256": "22e08a631651fae9b98aa599e0412c7737830f2d0e68105bfbe09e753648d93d",
+      "size": 596
+    },
+    "gemini-cloud-appsec-r1.json": {
+      "sha256": "4d347470be6eaba43363c9b98b8467ce9d0c8a3737443df854a83f619f362852",
+      "size": 1316
+    },
+    "gemini-cloud-appsec-r2.json": {
+      "sha256": "cf703a61409e18d08485379c96d414f2d33aaae11915a7ecf29029a9c689800b",
+      "size": 5125
+    },
+    "gemini-cloud-architecture-r1.json": {
+      "sha256": "91d41f91565c9aa5c607c1710d1ca7e7a20fd4267ac139a342b7a36980d0ff47",
+      "size": 4327
+    },
+    "gemini-cloud-architecture-r2.json": {
+      "sha256": "70d4be7e6b677adae0400c1380ae293b22a06c9a9b54fd5a2dd49ae7adb59a4b",
+      "size": 8708
+    },
+    "gemini-cloud-identity-authz-r1.json": {
+      "sha256": "7afb564111d131eba7697a6500d49d649f60be65b2bb1aee3b753b2f59f40ae2",
+      "size": 1038
+    },
+    "gemini-cloud-identity-authz-r2.json": {
+      "sha256": "4bb9d18048b648b3f3a6ef87d4ffe6e0ec9dd4a6682d269213b91d0ef681d109",
+      "size": 6687
+    },
+    "gemini-cloud-supplychain-cicd-r1-retry.json": {
+      "sha256": "9c091d69ad831eb96358ed51a8af1e32571d17cea5230da92b5460190d2154d1",
+      "size": 1537
+    },
+    "gemini-cloud-supplychain-cicd-r1.json": {
+      "sha256": "14ea0d7a4eb4cec74b22b7bed79c2bac68583e606dbc50fa4e5311ca665fb575",
+      "size": 545
+    },
+    "manifest.json": {
+      "sha256": "22653f588839f547b41f13cfe440ae455f868f0bd08002fcb0901f8b3f94b705",
+      "size": 1189
+    },
+    "packet-appsec-r1.json.gz": {
+      "sha256": "646596bfdd513bba06c33d439fd112d5c1c6efb1ead65daf29dc995e78ea7376",
+      "size": 69098,
+      "uncompressed_sha256": "2727b0af80cbbc9bc836cb36d12b87dd33fb9cf27a9e718799125f7fda320b09"
+    },
+    "packet-appsec-r2.json.gz": {
+      "sha256": "8b696401136282339e154a53c09e6869c5a5bce38a9ee25c5b1f1040f0050028",
+      "size": 75255,
+      "uncompressed_sha256": "9ea6ad25364d725e55b386e8e488e3de6f5de89b819763d924eadbec563f071b"
+    },
+    "packet-architecture-r1.json.gz": {
+      "sha256": "a52f48e4177ecf471fa9017440f39f6cd0c9997767fa957632ea672e7b8738a3",
+      "size": 87762,
+      "uncompressed_sha256": "d09699b5a79ba27fdd596fba7a7977a80c0532077d78950811a221ef455756f6"
+    },
+    "packet-architecture-r2.json.gz": {
+      "sha256": "56898ab982f052861d063f23ee509cc164ce0a6d7f733dfa44b646c2e1621ca3",
+      "size": 94055,
+      "uncompressed_sha256": "0f86c50110587ece67550482f79161bb5fa6e7dd88e828e945c304fabda82ebc"
+    },
+    "packet-identity-authz-r1.json.gz": {
+      "sha256": "d8cc93d1557053b1adf7b802e236b11d992d68237b7ee20a39f1ed9f4f342be1",
+      "size": 68662,
+      "uncompressed_sha256": "a584d09d364d3ffe3f347103611932fb39d94a1cf8a314598a072349198556ec"
+    },
+    "packet-identity-authz-r2.json.gz": {
+      "sha256": "43c223a0e11b50ce961b6125257f74935e5d6c6e77ec8f6a988b78c522619bcf",
+      "size": 73335,
+      "uncompressed_sha256": "46b9d0e2503ee79dae3466dafc72262d79e558351ddeb84676aa6a85b2da5dbd"
+    },
+    "packet-supplychain-cicd-r1.json.gz": {
+      "sha256": "02d02e2bc5a6db1fbd72918176862a83463a05fe0fa7c809ff77bab79758acbb",
+      "size": 108358,
+      "uncompressed_sha256": "d6f85783535bd5f734d1c05814d63c8f408d6ef51864baadad18ab0098ffaea1"
+    }
+  }
+}

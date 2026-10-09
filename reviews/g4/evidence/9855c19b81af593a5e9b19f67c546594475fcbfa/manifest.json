@@ -1,0 +1,27 @@
+{
+  "commit": "71a0f22406498579ee215b3ba22f57151d6c1e55",
+  "prepared_at": "2026-10-09T06:43:59.479187+00:00",
+  "data_class": "internal",
+  "classification_basis": "Only repository source/configuration and threat metadata; no operational credential values or customer/PII data. Uploaded credentials remain outside all packets. Gitleaks reported zero matches.",
+  "gitleaks_matches": 0,
+  "first_round_independent": true,
+  "packets": [
+    {
+      "file": "packet-appsec-r1.json",
+      "sha256": "2727b0af80cbbc9bc836cb36d12b87dd33fb9cf27a9e718799125f7fda320b09"
+    },
+    {
+      "file": "packet-architecture-r1.json",
+      "sha256": "d09699b5a79ba27fdd596fba7a7977a80c0532077d78950811a221ef455756f6"
+    },
+    {
+      "file": "packet-identity-authz-r1.json",
+      "sha256": "a584d09d364d3ffe3f347103611932fb39d94a1cf8a314598a072349198556ec"
+    },
+    {
+      "file": "packet-supplychain-cicd-r1.json",
+      "sha256": "d6f85783535bd5f734d1c05814d63c8f408d6ef51864baadad18ab0098ffaea1"
+    }
+  ],
+  "export_note": "Packet digest mapping reformatted as explicit file/sha256 entries; values unchanged. / 輸入雜湊對照改為明確的檔名與 SHA-256 欄位，值未變更。"
+}

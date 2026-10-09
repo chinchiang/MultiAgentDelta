@@ -1,0 +1,150 @@
+{
+  "provider": "anthropic-bedrock",
+  "family": "anthropic",
+  "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "role": "architecture",
+  "prompt_version": "architecture@2026-10-09.1",
+  "data_class": "internal",
+  "state": "ran",
+  "opinion": {
+    "opinions": [
+      {
+        "id": "anthropic-bedrock:architecture:0",
+        "verdict": "confirm",
+        "classification": "code_defect",
+        "rationale": "威脅模型 docs/threat-model.yaml:65-72 明確記錄 c-claude agent 三要素皆為 true（accesses_private_data、exposed_to_untrusted_content、can_communicate_externally）且 trifecta_leg_cut 為 null。雖然有 mitigation_evidence 列出 .claude/settings.json 的 ask 規則，但威脅模型自身在 t-hitl-bypass（行 193-199）承認這些規則可被 bypassPermissions、環境變數包裝、shell alias 或直接 API 呼叫繞過。scripts/g0_trifecta.py 會檢查此狀態並產生 vibesec.g0.lethal-trifecta-open 發現。這是設計期不得放行的架構缺陷。",
+        "cited_evidence": [
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:65-72"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:147"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:193-199"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": "scripts/g0_trifecta.py:73-91"
+          }
+        ]
+      },
+      {
+        "id": "anthropic-bedrock:architecture:1",
+        "verdict": "refute",
+        "classification": "not_a_defect",
+        "rationale": "審查包顯示目前有兩個不同 family 正在執行審查：anthropic-bedrock（anthropic family）和 gemini-cloud（google family）。威脅模型 t-single-family-review 描述的是歷史狀況，但當前執行狀態已有兩個 family。config/providers.yaml:131-134 的 rotation 設定也支援多個 family。雖然威脅模型記錄此為 open 狀態，但實際執行已解決單一 family 問題。",
+        "cited_evidence": [
+          {
+            "kind": "code_excerpt",
+            "ref": "config/providers.yaml:131-134"
+          }
+        ]
+      },
+      {
+        "id": "anthropic-bedrock:architecture:2",
+        "verdict": "confirm",
+        "classification": "defense_in_depth_gap",
+        "rationale": "威脅模型 t-runtime-tools（docs/threat-model.yaml:172-178）明確記錄執行期下載的 promptfoo/garak 可讀取同 job 的 LLM 金鑰與 staging token，且「job 出向不受限、LLM 金鑰仍與 promptfoo 同步驟，未加 egress allow-list」。這是已知的縱深防禦缺口，威脅狀態為 open。雖然有版本釘選和 cooldown 緩解，但缺乏網路層隔離。",
+        "cited_evidence": [
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:172-178"
+          }
+        ]
+      },
+      {
+        "id": "anthropic-bedrock:architecture:3",
+        "verdict": "uncertain",
+        "classification": "defense_in_depth_gap",
+        "rationale": "威脅模型定義了信任邊界 tb-pr、tb-secrets、tb-target、tb-agent（docs/threat-model.yaml:55-59），但缺乏具體證據顯示這些邊界的控制措施不足。t-agent-injection（行 207-213）提到外部內容視為資料不是指令的緩解措施，但未有明確的技術控制缺口。需要更具體的邊界穿越路徑證據才能確認此架構風險。",
+        "cited_evidence": [
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:55-59"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:207-213"
+          }
+        ]
+      },
+      {
+        "id": "gemini-cloud:architecture:0",
+        "verdict": "confirm",
+        "classification": "code_defect",
+        "rationale": "與 anthropic-bedrock:architecture:0 相同的致命三要素問題。威脅模型明確記錄 c-claude 三要素皆成立且未切腳，mitigation 依賴可繞過的客戶端規則。這是同一個架構設計缺陷的不同描述。",
+        "cited_evidence": [
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:65-72"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:147"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": "docs/threat-model.yaml:193-199"
+          }
+        ]
+      },
+      {
+        "id": "gemini-cloud:architecture:1",
+        "verdict": "confirm",
+        "classification": "defense_in_depth_gap",
+        "rationale": "scripts/g4_review.py:597-600 和 .github/workflows/review-record-trust.yml:79-100 確實在 SINGLE_MAINTAINER=true 時將阻擋降級為警告。但這是管理員明確授權的例外設定，不是預設行為。在 scripts/g4_review.py:314-325 的 apply_cap 函式中，不可信的紀錄會將 pass 降為 pending，但 fail/pending/incomplete 狀態不變。這是已知的縱深防禦缺口，在單一維護者環境下職責分離機制退化。",
+        "cited_evidence": [
+          {
+            "kind": "code_excerpt",
+            "ref": "scripts/g4_review.py:597-600"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": ".github/workflows/review-record-trust.yml:79-100"
+          },
+          {
+            "kind": "code_excerpt",
+            "ref": "scripts/g4_review.py:314-325"
+          }
+        ]
+      }
+    ],
+    "general": {
+      "summary": "架構審查發現主要風險集中在 AI Agent 的致命三要素未切斷，以及部分縱深防禦機制的缺口。c-claude agent 同時具備存取私有資料、暴露於不可信內容、對外通訊三項能力且未在架構層切斷，僅依賴可繞過的客戶端規則。執行期工具供應鏈和單一維護者環境下的審查信任機制也存在已知缺口。多模型審查家族不足的歷史問題已通過當前兩個不同 family 的執行得到解決。",
+      "concerns": [
+        {
+          "title": "致命三要素架構設計缺陷",
+          "severity": "high",
+          "description": "c-claude agent 三要素皆成立且未切腳，依賴可繞過的 HITL 規則，需在設計期切斷一隻腳或改用不可繞過的隔離架構",
+          "cited_evidence": [
+            {
+              "kind": "code_excerpt",
+              "ref": "docs/threat-model.yaml:65-72"
+            }
+          ]
+        },
+        {
+          "title": "執行期工具網路隔離缺口",
+          "severity": "medium",
+          "description": "promptfoo/garak 等執行期工具可存取 LLM 金鑰且無 egress allow-list 限制",
+          "cited_evidence": [
+            {
+              "kind": "code_excerpt",
+              "ref": "docs/threat-model.yaml:172-178"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "note": "AWS Bedrock us-east-1；usage={\"inputTokens\": 108893, \"outputTokens\": 2277, \"totalTokens\": 111170}",
+  "round": 2,
+  "reviewed_commit": "9855c19b81af593a5e9b19f67c546594475fcbfa",
+  "packet_sha256": "0f86c50110587ece67550482f79161bb5fa6e7dd88e828e945c304fabda82ebc",
+  "completed_at": "2026-10-09T06:50:41.969165+00:00",
+  "duration_seconds": 29.797
+}
