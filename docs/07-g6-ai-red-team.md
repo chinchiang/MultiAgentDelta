@@ -93,7 +93,7 @@ promptfoo redteam run -c config/promptfoo/promptfooconfig.yaml --output reports/
 garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
 # 4) 彙整成單一 G6 結果
 python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6-promptfoo-redteam.json \
-  --garak-glob 'reports/g6-garak*.report.jsonl' --gate reports/g6-gate.json --sarif reports/g6.sarif
+  --garak-glob 'reports/garak/g6-garak*.report.jsonl' --gate reports/g6-gate.json --sarif reports/g6.sarif
 ```
 
 `.github/workflows/staging-blackbox.yml` 的 G6 步驟依序執行上述四步，產出 `reports/g6-gate.json` 與 `reports/g6.sarif`（上傳至 Code Scanning，category `vibesec-g6-ai-red-team`）。

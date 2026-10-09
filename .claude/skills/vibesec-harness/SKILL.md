@@ -130,7 +130,7 @@ promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json -
 # promptfoo redteam run -c config/promptfoo/promptfooconfig.yaml -o reports/raw/G6/promptfoo-redteam.json
 garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
 python3 scripts/g6_gate.py --eval reports/raw/G6/promptfoo.json --redteam-skipped "<原因>" \
-  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --gate reports/raw/G6/g6-gate.json
+  --garak-glob 'reports/garak/g6-garak*.report.jsonl' --gate reports/raw/G6/g6-gate.json
 ```
 
 `project.contains_llm: false` → `not_applicable`，`status_reason: "project.contains_llm is false"`。對應 `checks` → `vibesec.g6.<check-kebab>`。

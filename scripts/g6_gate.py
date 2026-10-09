@@ -10,7 +10,7 @@
 用法：
   python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json \
       [--redteam reports/g6-promptfoo-redteam.json | --redteam-skipped "未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret"] \
-      [--garak-glob 'reports/g6-garak*.report.jsonl'] \
+      [--garak-glob 'reports/garak/g6-garak*.report.jsonl'] \
       --gate reports/g6-gate.json --sarif reports/g6.sarif [--mode shadow]
 退出碼：0 已寫出結果（不論 pass/fail/incomplete；shadow 模式由彙整步驟決定是否阻擋）。
 """

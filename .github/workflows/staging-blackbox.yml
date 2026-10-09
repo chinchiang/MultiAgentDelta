@@ -263,8 +263,7 @@ jobs:
             sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
             timeout 1800 garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
               echo "::warning::garak 回傳非零 → 依報告內容判定"
-            # garak 預設把報告寫在 ~/.local/share/garak/garak_runs/
-            find "$HOME/.local/share/garak" . -name 'g6-garak*.jsonl' -not -path './reports/*' -exec cp {} reports/ \; 2>/dev/null || true
+            # reporting.report_dir 已設定為 reports/garak；合併時直接讀原始報告，不搬移或重複計數。
           fi
 
       - name: G6 工具事件與用量遙測
@@ -280,7 +279,7 @@ jobs:
           PF_EXIT: ${{ steps.pfeval.outputs.exit_code }}
           PF_RED_SKIPPED: ${{ steps.pfred.outputs.skipped }}
         run: |
-          args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config config/garak/vibesec.probes.yaml
+          args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/garak/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config config/garak/vibesec.probes.yaml
                 --gate reports/g6-gate.json --sarif reports/g6.sarif --observations reports/g6-observations.json)
           [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
           if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
