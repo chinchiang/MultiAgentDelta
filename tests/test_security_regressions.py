@@ -17,6 +17,7 @@ import g1_kev
 import g1_slopcheck
 import g4_review
 import review_provider
+import agent_tool_lint
 from safe_http import TargetClient
 
 
@@ -78,6 +79,17 @@ class Reports(unittest.TestCase):
             output = review_provider.call('test', 'architecture', 'internal', {}, env={"TEST_KEY": secret})
         self.assertNotIn(secret, json.dumps(output))
         self.assertIn('sha256:', output['opinion']['rationale'])
+
+    def test_tool_registration_not_detection_patterns(self):
+        for filename in ('control_checks.py', 'llm_observations.py', 'agent_tool_lint.py'):
+            self.assertEqual(agent_tool_lint.exposures((ROOT/'scripts'/filename).read_text()), [])
+        for source in ('@tool\ndef execute_sql(query): pass', 'agent = Agent(tools=[execute_sql])',
+                       'tools = [{"function": {"name": "delete_user"}}]',
+                       'registry.register_tool(drop_table)', 'Tool(name="execute_sql", func=handler)',
+                       'tools.append(execute_sql)', 'danger = execute_sql\nagent = Agent(tools=[danger])'):
+            with self.subTest(source=source): self.assertTrue(agent_tool_lint.exposures(source))
+        self.assertFalse(agent_tool_lint.exposures('agent = Agent(tools=[get_ticket])'))
+        with self.assertRaises(SyntaxError): agent_tool_lint.exposures('tools = [')
 
     def test_record_cannot_demote_l3_policy(self):
         r = g4_review._example()

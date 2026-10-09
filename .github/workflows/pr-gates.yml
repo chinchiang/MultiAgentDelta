@@ -529,12 +529,16 @@ jobs:
               fp = pathlib.Path(p)
               try: body = fp.read_text(encoding="utf-8", errors="replace")
               except Exception: continue
-              if re.search(r'(tool|register_tool|tools\s*=|@tool)', body) and re.search(DANGEROUS, body, re.I):
-                  for i, ln in enumerate(body.splitlines(), 1):
-                      if re.search(DANGEROUS, ln, re.I):
-                          add("vibesec.g4.agent-tool-overexposure", "warning",
-                              f"{p} 第 {i} 行疑似向 Agent 註冊高危工具（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i)
-                          break
+              if fp.suffix == ".py":
+                  from agent_tool_lint import exposures
+                  matches = exposures(body)
+              else:
+                  matches = [(i, "高影響工具") for i, ln in enumerate(body.splitlines(), 1)
+                             if re.search(DANGEROUS, ln, re.I)] if re.search(r'(tool|register_tool|tools\s*=|@tool)', body) else []
+              if matches:
+                  i, tool_name = matches[0]
+                  add("vibesec.g4.agent-tool-overexposure", "warning",
+                      f"{p} 第 {i} 行疑似向 Agent 註冊高危工具 {tool_name}；應限制 allow-list + HITL", p, i)
 
           # 4) 單層 middleware 授權（CVE-2025-29927 類）— advisory
           for p in glob.glob("**/middleware.ts", recursive=True) + glob.glob("middleware.ts"):
