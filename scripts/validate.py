@@ -181,7 +181,12 @@ if yaml is not None:
         for ref in (meta or {}).get("implemented_by") or []:
             tool, _, ext = str(ref).partition(":")
             if tool == "gitleaks":
-                good = ext in _gl; why = "config/gitleaks.toml 沒有此規則"
+                if ext == "*":   # 內建規則：要 config/gitleaks.toml 真的載入預設規則集
+                    good = bool(re.search(r"^\s*useDefault\s*=\s*true", (ROOT / "config/gitleaks.toml").read_text(encoding="utf-8"), re.M)) \
+                        if (ROOT / "config/gitleaks.toml").exists() else False
+                    why = "gitleaks:* 需要 config/gitleaks.toml 的 [extend] useDefault = true"
+                else:
+                    good = ext in _gl; why = "config/gitleaks.toml 沒有此規則"
             elif tool == "checkov":
                 good = ext in _ck_allow and (not ext.startswith("CKV2_VIBESEC_") or ext in _ck_custom)
                 why = "不在 .checkov.yaml 的 check allow-list，或自訂政策不存在"

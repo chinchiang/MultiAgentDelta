@@ -26,7 +26,7 @@
         1 指定 --baseline 且退步：任何 FP／FN，或 baseline 中應實測的案例變成 untested／incomplete（nightly 用）。
 """
 from __future__ import annotations
-import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time
+import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time, fnmatch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SEMGREP_RULES = ROOT / "config/semgrep/vibesec-rules.yaml"
@@ -501,7 +501,15 @@ class _MappedToolRunner(Runner):
         return None
 
     def to_vibesec(self, tool_ids: set[str]) -> set[str]:
-        return set().union(*(self.map.get(t, set()) for t in tool_ids)) if tool_ids else set()
+        out: set[str] = set()
+        for t in tool_ids:
+            if t in self.map:
+                out |= self.map[t]
+            else:   # 萬用字元（gitleaks:*）：精確對應優先
+                for pat, rids in self.map.items():
+                    if "*" in pat and fnmatch.fnmatchcase(str(t), pat):
+                        out |= rids
+        return out
 
 
 class GitleaksRunner(_MappedToolRunner):
