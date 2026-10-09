@@ -32,6 +32,10 @@
     "comparison-grader-only.json": {
       "sha256": "a3cbc045084109255d74e2d33e6bf19e008ad04b41530b502632d502e2ef1190",
       "bytes": 11557
+    },
+    "runtime-validation.json": {
+      "sha256": "dbb2b81f41e9522e90d9b35d1cd2c97e996d31b3c6cffc2e732acdbf42ccc25b",
+      "bytes": 22721
     }
   }
 }
