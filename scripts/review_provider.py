@@ -242,7 +242,7 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
             return {**out, "state": st, "note": redact_key(str(e.reason), key)[:300]}
         except BadResponse as e:
             opinion, problems = None, [str(e)]
-        except (RuntimeError, ValueError, KeyError, IndexError) as e:
+        except (RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
             return {**out, "state": "error", "note": str(e).replace(key, "***")[:500]}
         else:
             problems = contract_errors(opinion, contract)

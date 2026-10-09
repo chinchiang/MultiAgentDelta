@@ -66,6 +66,18 @@ class Bedrock(unittest.TestCase):
                 self.assertEqual(self.call()['state'],'timeout')
             with patch.object(Client,'converse',return_value={'output':{'message':{'content':[{'text':'no JSON'}]}}}):
                 self.assertEqual(self.call()['state'],'error')
+            with patch.object(Client,'converse',return_value={'output':None}):
+                self.assertEqual(self.call()['state'],'error')
+
+    def test_malformed_transport_response_is_recorded_as_error(self):
+        self.p['kind']='openai_compatible'
+        self.p['base_url']='https://model.example.invalid/v1'
+        (self.root/'config/providers.yaml').write_text(yaml.safe_dump({'providers':{'bedrock':self.p}}))
+        for response in ({'choices':None}, {'choices':[None]}, {'choices':[{'message':None}]}, None):
+            with self.subTest(response=response), patch.object(provider,'_post',return_value=response):
+                result=self.call()
+                self.assertEqual(result['state'],'error')
+                self.assertIsNone(result['opinion'])
 
 
 if __name__=='__main__':unittest.main()
