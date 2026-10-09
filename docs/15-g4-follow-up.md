@@ -20,6 +20,8 @@
 
 `config/runtime/Dockerfile` 在沒有模型金鑰的建置階段安裝固定版本工具，基底映像釘定 digest；`.dockerignore` 只允許必要建置檔。轉接器啟動後不再安裝套件。工具容器使用非 root、唯讀檔案系統、移除 Linux capabilities、禁止新增權限、限制程序數／記憶體／CPU，並設定 `--network none`。
 
+容器健康檢查只經本機轉接器檢查 `/health`，不呼叫靶場或模型，也不消耗請求額度。Checkov 與 Trivy 對缺少 HEALTHCHECK 的提醒已據此修正。既有 Semgrep 的 CISA 下載提醒涉及固定的官方來源，保留提醒且未新增掃描例外。
+
 容器僅掛載生成的工具設定、本機轉接程式、專用輸出目錄與 Unix socket。真正的模型金鑰留在容器外，不掛載工作區、主機家目錄或 Docker socket。容器只能經轉接器 POST 到指定目標的 `/chat`，或指定供應商及模型的固定 API。轉接器不轉送客戶端驗證標頭、不接受重新導向、限制單次資料大小、輸出 token 與總請求數。garak 上限為 50,000 次目標請求，其他模式為 1,000 次；用量耗盡即保持 incomplete。缺少映像、金鑰或隔離能力時保持 incomplete，不回退到主機執行。
 
 限制：供應商與授權目標仍可接收測試內容；這不是禁止所有資料外傳的證明。模型請求可能產生費用，請求次數限制不等於精準金額預算。建置階段的遞移相依套件尚未全部雜湊鎖定。容器不防禦主機管理員或核心漏洞。garak 若需要執行期下載資料集或模型，會失敗並保持 incomplete；應另行審查並在建置階段提供資產，不能臨時開放容器外網。
@@ -62,6 +64,8 @@ This document records reproducible code assessments and pending approvals. It is
 ## Third-party tool isolation
 
 `config/runtime/Dockerfile` installs pinned tools without model keys during build, with digest-pinned base images. `.dockerignore` exposes only required build files. No packages are installed after the broker starts. Tool containers are non-root, read-only, capability-free, prohibit privilege escalation, limit processes/memory/CPU, and use `--network none`.
+
+Container health checks use the local bridge’s `/health` endpoint without contacting the target/model or consuming request budget. This addresses both Checkov and Trivy missing-HEALTHCHECK findings. The existing Semgrep CISA-download advisory concerns fixed official sources; it remains visible without a new suppression.
 
 Containers mount only generated configuration, the loopback bridge, a dedicated output directory, and a Unix socket. Real model keys remain outside; the workspace, host home, and Docker socket are not mounted. The broker allows only POST to the selected target's `/chat` or a fixed provider API using the selected model. It does not forward caller authentication headers, rejects redirects, and bounds request size, output tokens, and request count. garak permits at most 50,000 target calls; other modes allow 1,000. Exhausting the budget remains incomplete. Missing images, keys, or isolation capabilities remain incomplete without host-execution fallback.
 

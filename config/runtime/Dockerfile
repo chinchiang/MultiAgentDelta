@@ -13,3 +13,5 @@ RUN --mount=type=secret,id=proxy_ca \
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.13.0+cpu' && \
     pip install --no-cache-dir -c /opt/constraints.txt "garak==${GARAK_VERSION}"
 USER 65532:65532
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=2 \
+    CMD python -c "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3); assert r.status == 200"

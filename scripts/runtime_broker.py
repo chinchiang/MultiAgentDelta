@@ -84,6 +84,12 @@ def handler(broker):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args): pass
 
+        def do_GET(self):
+            # 僅檢查本機轉接器，不呼叫目標或模型。 / Health checks never contact targets or models.
+            self.send_response(200 if self.path == '/health' else 403)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
         def do_POST(self):
             self.connection.settimeout(100)
             try:

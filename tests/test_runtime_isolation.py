@@ -113,6 +113,7 @@ assert 'AWS_SECRET_ACCESS_KEY' not in os.environ
 assert 'GITHUB_TOKEN' not in os.environ
 assert not os.path.exists('/workspace/MultiAgentDelta/.git/config')
 assert not os.path.exists('/var/run/docker.sock')
+assert urllib.request.urlopen('http://127.0.0.1:8080/health').status==200
 try:
  socket.create_connection(('1.1.1.1',443),timeout=1)
 except OSError: pass
