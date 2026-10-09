@@ -404,6 +404,17 @@ if yaml is not None:
                     err(f"{pathlib.Path(_f).name}:{_i}: {_m.group(1)} 政策表寫 {_m2.group(1)}，政策基礎 tier 為 {_P.base_tier(_m.group(1))}")
         ok("docs 政策表的 tier 與政策一致")
 
+# 雙語結構與本機連結；翻譯語意仍需人工審閱。 / Bilingual structure and local links; semantics need review.
+from check_documents import check as check_documents
+try:
+    _doc_errors, _doc_count = check_documents(ROOT)
+    for _doc_error in _doc_errors:
+        err(_doc_error)
+    if not _doc_errors:
+        ok(f"雙語文件與連結 / Bilingual documents and links: {_doc_count}")
+except (ValueError, OSError, UnicodeError) as _doc_exception:
+    err(f"文件檢查未完成 / Document check incomplete: {_doc_exception}")
+
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
 for w in warns: print(f"  WARN {w}")

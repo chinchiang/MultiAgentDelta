@@ -227,7 +227,7 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 
 ## 執行器與完整性
 
-`python3 scripts/g5_api_probes.py` 是工作流程程與本機評測共用的 API 探針。HTTP 用戶端拒絕跨來源及 HTTPS 降級重新導向，認證資訊只送到授權來源；所有 JWT 候選端點都回 404／405 時記 `untested`，不能證明驗證成功。
+`python3 scripts/g5_api_probes.py` 是工作流程與本機評測共用的 API 探針。HTTP 用戶端拒絕跨來源及 HTTPS 降級重新導向，認證資訊只送到授權來源；所有 JWT 候選端點都回 404／405 時記 `untested`，不能證明驗證成功。
 
 探針讀取 `config/zap/two-account-context.yaml`，亦可用 `VIBESEC_ACCESS_CONTEXT` 指定受測專案設定。支援建立／預植資源、B／ANON 的讀寫刪除請求、A 的讀取對照、清單隔離及功能層級權限；A、B 必須使用不同權杖。路徑、資源 ID 與標記須符合受測專案，範本不能直接當成完成證據。
 
@@ -237,6 +237,8 @@ ZAP API 與 Baseline 使用 `config/zap/api-scan.conf`。Action 完成後立即�
 ---
 
 <a id="english"></a>
+
+The workflow and local evaluations use the same API probe implementation in `scripts/g5_api_probes.py`.
 
 # 06 G5 DAST and API Testing (Black-Box; Staging / Pre-Release)
 

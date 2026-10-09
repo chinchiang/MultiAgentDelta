@@ -7,7 +7,7 @@
 system:
   name: multiagentdelta
   description: "VibeSec G0–G6 安全閘門框架：設定、文件、CI workflows、評測與刻意有漏洞的靶場；由單一維護者與 AI agent（Claude Code）協作維護。 / VibeSec G0–G6 security-gate framework: configuration, documentation, CI workflows, evaluations, and an intentionally vulnerable lab; maintained by one maintainer together with an AI agent (Claude Code)."
-  exposure: public                       # 公開 GitHub repo；任何人可開 fork PR
+  exposure: public                       # 保守涵蓋網際網路上的 GitHub／CI 介面；不表示私有原始碼公開。 / Conservatively model Internet-facing GitHub/CI interfaces; private source is not public.
   data_sensitivity: sensitive_pii_or_secrets   # 無個資，但 CI 持有 LLM API 金鑰、staging 帳號 token、具寫入權的 GITHUB_TOKEN 與 OIDC 簽章身分
   methodologies: [STRIDE, MAESTRO]
 
@@ -19,7 +19,7 @@ assets:
   - { id: a-policy,         name: "閘門與政策（vibesec.yaml、config/policy、providers、catalogs、evals/baseline.yaml） / Gates and policy: vibesec.yaml, config/policy, providers, catalogs, and evals/baseline.yaml.",  sensitivity: internal,     store: repo（CODEOWNERS） }
   - { id: a-rulings,        name: "人工裁決紀錄 rulings/*.yaml / Human adjudication records in rulings/*.yaml.",                                                        sensitivity: internal,     store: "repo（CODEOWNERS + repo-validate 作者檢查） / Repository protected by CODEOWNERS and repo-validate author checks." }
   - { id: a-findings,       name: "Code Scanning 結果與追蹤 issue（閘門結論的對外呈現） / Code Scanning results and tracking issues: externally visible gate conclusions.",                                   sensitivity: internal,     store: GitHub Security／Issues }
-  - { id: a-source,         name: "原始碼與文件 / Source code and documentation.",                                                                      sensitivity: public,       store: repo }
+  - { id: a-source,         name: "私有原始碼與文件 / Private source code and documentation.",                                                              sensitivity: internal,       store: repo }
 
 components:
   - { id: c-pr-author,   name: "PR 作者（含 fork 與 Dependabot） / PR authors, including forks and Dependabot.",                  kind: external_service, zone: z-internet }
