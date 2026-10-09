@@ -842,8 +842,10 @@ jobs:
         run: |
           mkdir -p reports
           find _artifacts \( -name 'g1-gate.json' -o -name 'g4-gate.json' \) -exec cp {} reports/ \; 2>/dev/null || true
-          # workflow 與此腳本由 CODEOWNERS 審查；有效政策只取 base，不採信 PR 的 mode。
-          python3 scripts/gate_verdict.py --policy-root _trusted \
+          # 首次導入時由 CODEOWNERS 審查；後續使用 base 的判定程式與政策。
+          VERDICT=_trusted/scripts/gate_verdict.py
+          [ -f "$VERDICT" ] || VERDICT=scripts/gate_verdict.py
+          python3 "$VERDICT" --policy-root _trusted \
             --gate G1=reports/g1-gate.json --gate G2=reports/g2-gate.json \
             --gate G3=reports/g3-gate.json --gate G4=reports/g4-gate.json
 
