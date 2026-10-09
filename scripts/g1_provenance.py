@@ -55,16 +55,27 @@ def run(sbom: pathlib.Path, repo: str, signer_workflow: str, verify=gh_verify) -
     return {**base, "status": "incomplete", "status_reason": f"gh attestation verify 失敗且無法判定原因（exit {code}）：{tail}"}, False
 
 
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def _policy_tier() -> str:
+    """tier 唯一來源是 blocking-policy（第四次審視 S-11）。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
+    return Policy(ROOT).tier(RULE)
+
+
 def to_sarif(summary: dict, hit: bool) -> dict:
+    _TIER = _policy_tier(); _LEVEL = "error" if _TIER == "blocking" else "warning"
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "SBOM 缺少可驗證的 SLSA provenance 來源證明"},
-            "defaultConfiguration": {"level": "warning"}, "properties": {"policy_tier": "advisory"}}
+            "defaultConfiguration": {"level": _LEVEL}, "properties": {"policy_tier": _TIER}}
     results = []
     if hit:
-        results.append({"ruleId": RULE, "level": "warning",
+        results.append({"ruleId": RULE, "level": _LEVEL,
                         "message": {"text": f"{summary['subject']} 沒有由 {summary['signer_workflow']} 簽發的有效來源證明："
                                             f"{summary.get('detail') or ''}"},
                         "locations": [{"physicalLocation": {"artifactLocation": {"uri": ".github/workflows/nightly-full.yml"}}}],
-                        "properties": {"policy_tier": "advisory", "subject": summary["subject"],
+                        "properties": {"policy_tier": _TIER, "subject": summary["subject"],
                                        "signer_workflow": summary["signer_workflow"]}})
     return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
             "version": "2.1.0",

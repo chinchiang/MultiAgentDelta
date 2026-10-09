@@ -20,8 +20,9 @@ def warn(m): warns.append(m)
 try:
     import yaml
 except ImportError:
-    yaml = None
-    warn("PyYAML 未安裝，略過 YAML 語法檢查")
+    # 工具缺席不能等於通過（CLAUDE.md 規則 2）：以前只 warn 並 exit 0，所有檢查與 selftest 都被略過（第四次審視 S-14）
+    print("ERROR: PyYAML 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr)
+    sys.exit(2)
 
 def load_yaml(p: pathlib.Path):
     if yaml is None:
@@ -85,7 +86,7 @@ try:
             for e in errs: err(f"threat-model.yaml 不符 schema: {e.message} @ {list(e.path)}")
         else: ok("threat-model.yaml 通過 schema")
 except ImportError:
-    warn("jsonschema 未安裝，略過 schema 驗證")
+    print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
 # --- catalogs 與規則 ID 一致性 ---
 def flatten_strings(obj):
@@ -129,9 +130,9 @@ if yaml is not None:
         exp = (c.get("expected") or {})
         cid, rid = exp.get("control_id"), exp.get("rule_id")
         if cid and known_controls and cid not in known_controls:
-            warn(f"{rel}: control_id {cid} 不在 catalogs（待 catalogs 補齊）")
+            err(f"{rel}: control_id {cid} 不在 catalogs（CLAUDE.md 規則 3：ID 只能查目錄）")
         if rid and known_rules and rid not in known_rules:
-            warn(f"{rel}: rule_id {rid} 不在 cwe-map/semgrep（待補齊）")
+            err(f"{rel}: rule_id {rid} 不在 cwe-map/semgrep（CLAUDE.md 規則 3：ID 只能查目錄）")
 
     # 範例 finding 的 control_id/cwe 一致性
     ex = ROOT / "docs/templates/finding.example.json"
@@ -312,12 +313,12 @@ try:
             for e in _ev["errors"]: err(f"{_f.relative_to(ROOT)}: {e}")
             if not _ev["errors"]: ok(f"G4 審查紀錄 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py", "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py", "g4_access.py", "g0_threat_model.py"):
+        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py", "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py", "g4_access.py", "g0_threat_model.py", "env_guard.py"):
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
 except ImportError:
-    warn("jsonschema 未安裝，略過人工裁決驗證")
+    print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
 # --- G0 威脅模型：vibesec.yaml 引用的必須是本 repo 的真實模型（不是範本），通過 schema，risk_tier 一致性 ---
 # 範本（docs/templates/、system.name: example-project）也能通過 schema，所以要另外擋，否則 G0 的輸入是虛構系統。
@@ -355,7 +356,7 @@ try:
                     else:
                         warn(_msg)
 except ImportError:
-    warn("jsonschema 未安裝，略過威脅模型驗證")
+    print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
 # --- tier 一致性：blocking-policy 是唯一來源（scripts/vibesec_policy.py）；cwe-map／semgrep metadata／evals／docs 政策表
 #     的 tier 必須等於政策的「基礎 tier」（不含 tier_overrides），否則文件說會擋、CI 實際不擋（或相反）。

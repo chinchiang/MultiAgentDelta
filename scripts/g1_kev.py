@@ -21,6 +21,7 @@
 from __future__ import annotations
 import argparse, datetime, json, pathlib, re, sys
 
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 RULE = "vibesec.g1.kev-hit"
 VULN_RULE = "vibesec.g1.vulnerable-dependency"
 CVE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
@@ -102,27 +103,39 @@ def find_vulns(grype: dict, kev: dict[str, str | None]) -> list[dict]:
     return sorted(out, key=lambda h: (h["id"], h["package"] or "", h["version"] or ""))
 
 
+def _tier(rule: str) -> str:
+    """tier 唯一來源是 blocking-policy（第四次審視 S-11）；政策檔讀不到時退回規則預設（只影響標籤）。"""
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from vibesec_policy import Policy
+        return Policy(ROOT).tier(rule)
+    except Exception:
+        return "blocking" if rule == RULE else "advisory"
+
+
 def to_sarif(hits: list[dict], vulns: list[dict] | None = None) -> dict:
+    kev_tier, vuln_tier = _tier(RULE), _tier(VULN_RULE)
+    lvl = lambda t: "error" if t == "blocking" else "warning"
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "相依套件 CVE 收錄於 CISA KEV（已遭實際利用）"},
-            "defaultConfiguration": {"level": "error"}, "properties": {"policy_tier": "blocking"}}
+            "defaultConfiguration": {"level": lvl(kev_tier)}, "properties": {"policy_tier": kev_tier}}
     results = [{
-        "ruleId": RULE, "level": "error",
+        "ruleId": RULE, "level": lvl(kev_tier),
         "message": {"text": f"{h['package']}@{h['version']} 含 {h['cve']}，已收錄於 CISA KEV（{h['kev_date']}）"
                             + (f"；可升級至 {', '.join(h['fixed_versions'])}" if h["fixed_versions"] else "；尚無修正版")},
         "locations": [{"physicalLocation": {"artifactLocation": {"uri": h["uri"]}}}],
         # 分欄記錄（CLAUDE.md #4）：KEV 與日期各自一欄，不與 CVSS／EPSS 混算
-        "properties": {"policy_tier": "blocking", "cve": h["cve"], "kev": True, "kev_date": h["kev_date"],
+        "properties": {"policy_tier": kev_tier, "cve": h["cve"], "kev": True, "kev_date": h["kev_date"],
                        "package": h["package"], "version": h["version"], "ecosystem": h["ecosystem"]},
     } for h in hits]
     vrule = {"id": VULN_RULE, "name": VULN_RULE, "shortDescription": {"text": "相依套件含已知漏洞（未收錄於 KEV）"},
-             "defaultConfiguration": {"level": "warning"}, "properties": {"policy_tier": "advisory"}}
+             "defaultConfiguration": {"level": lvl(vuln_tier)}, "properties": {"policy_tier": vuln_tier}}
     results += [{
-        "ruleId": VULN_RULE, "level": "warning",
+        "ruleId": VULN_RULE, "level": lvl(vuln_tier),
         "message": {"text": f"{h['package']}@{h['version']} 含 {h['id']}（{h['severity'] or '嚴重度未知'}）"
                             + (f"；可升級至 {', '.join(h['fixed_versions'])}" if h["fixed_versions"] else "；尚無修正版")},
         "locations": [{"physicalLocation": {"artifactLocation": {"uri": h["uri"]}}}],
         # CVSS 原樣分欄；EPSS 由 nightly 富化另記（enrichment.json），這裡不混算
-        "properties": {"policy_tier": "advisory", "vuln_id": h["id"], "cves": h["cves"], "kev": False,
+        "properties": {"policy_tier": vuln_tier, "vuln_id": h["id"], "cves": h["cves"], "kev": False,
                        "grype_severity": h["severity"], "cvss": h["cvss"],
                        "package": h["package"], "version": h["version"], "ecosystem": h["ecosystem"]},
     } for h in (vulns or [])]
@@ -146,6 +159,9 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
         grype = json.loads(grype_path.read_text(encoding="utf-8"))
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
         return {**base, "status": "incomplete", "status_reason": f"輸入無法解析：{type(e).__name__}: {e}"}, []
+    if not isinstance(grype, dict) or not isinstance(grype.get("matches"), list):
+        # {} 或 [] 不是「沒有命中」：grype 沒掃完或輸出格式不符（第四次審視 S-9）
+        return {**base, "status": "incomplete", "status_reason": "grype 輸出沒有 matches 陣列（掃描未完成或格式不符）"}, []
     hits, vulns = find_hits(grype, kev), find_vulns(grype, kev)
     return {**base, "status": "fail" if hits else "pass", "status_reason": None, "kev_catalog_size": len(kev),
             "kev_catalog_released": released,
@@ -171,8 +187,8 @@ def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | Non
         g["status"] = kev_status
     g["status_reason"] = "；".join(reasons) or None
     fc = g.setdefault("findings_count", {"blocking": 0, "advisory": 0})
-    fc["blocking"] = int(fc.get("blocking") or 0) + len(hits)
-    fc["advisory"] = int(fc.get("advisory") or 0) + len(summary.get("vulnerable") or [])
+    fc[_tier(RULE)] = int(fc.get(_tier(RULE)) or 0) + len(hits)
+    fc[_tier(VULN_RULE)] = int(fc.get(_tier(VULN_RULE)) or 0) + len(summary.get("vulnerable") or [])
     g.setdefault("tools", []).append({"name": "vibesec-g1-kev", "version": "1.0.0", "state": "ran",
                                       "exit_code": {"pass": 0, "fail": 1, "incomplete": 2}[kev_status],
                                       "output_ref": sarif_ref, "duration_seconds": None})

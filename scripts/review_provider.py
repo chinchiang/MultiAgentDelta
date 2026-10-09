@@ -126,8 +126,14 @@ def contract_errors(opinion, contract: str) -> list[str]:
         return ["回應不是 JSON 物件"]
     errs = []
     if contract == "review-summary":
-        if not isinstance(opinion.get("opinions"), list):
+        ops = opinion.get("opinions")
+        if not isinstance(ops, list):
             errs.append("缺 opinions 陣列")
+        else:
+            for i, o in enumerate(ops):   # 每則意見都要有 verdict／rationale／cited_evidence（第四次審視 S-13）
+                sub = contract_errors(o, "finding-opinion")
+                if sub:
+                    errs.append(f"opinions[{i}]：" + "；".join(sub)); break
         g = opinion.get("general")
         if not isinstance(g, dict) or not isinstance(g.get("summary"), str) or not isinstance(g.get("concerns"), list):
             errs.append("缺 general.summary 或 general.concerns")

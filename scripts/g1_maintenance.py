@@ -208,16 +208,24 @@ def run(sbom_path: pathlib.Path, fetch=fetch_deps_dev, days: int | None = None,
     return summary, hits
 
 
+def _policy_tier() -> str:
+    """tier 唯一來源是 blocking-policy（第四次審視 S-11）。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
+    return Policy(ROOT).tier(RULE)
+
+
 def to_sarif(hits: list[dict]) -> dict:
+    _TIER = _policy_tier(); _LEVEL = "error" if _TIER == "blocking" else "warning"
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "相依套件已停止維護或被標記 deprecated"},
-            "defaultConfiguration": {"level": "warning"}, "properties": {"policy_tier": "advisory"}}
+            "defaultConfiguration": {"level": _LEVEL}, "properties": {"policy_tier": _TIER}}
     def msg(h):
         parts = [("已被標記 deprecated" + (f"（{s['detail']}）" if s["detail"] else "")) if s["signal"] == "deprecated"
                  else s["detail"] for s in h["signals"]]
         return f"{h['name']}@{h['version']}：" + "；".join(parts)
-    results = [{"ruleId": RULE, "level": "warning", "message": {"text": msg(h)},
+    results = [{"ruleId": RULE, "level": _LEVEL, "message": {"text": msg(h)},
                 "locations": [{"physicalLocation": {"artifactLocation": {"uri": h["uri"]}}}],
-                "properties": {"policy_tier": "advisory", "purl": h["purl"], "signals": [s["signal"] for s in h["signals"]],
+                "properties": {"policy_tier": _TIER, "purl": h["purl"], "signals": [s["signal"] for s in h["signals"]],
                                "latest_version": h["latest_version"], "latest_published_at": h["latest_published_at"]}}
                for h in hits]
     return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
