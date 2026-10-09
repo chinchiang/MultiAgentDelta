@@ -1063,14 +1063,15 @@ def main(argv):
     base = (_opt(args, "--base") or [None])[-1]
     sarif_out = (_opt(args, "--sarif") or [None])[-1]
     gate_out = (_opt(args, "--gate") or [None])[-1]
+    input_errors = [f"指定輸入不存在或不是檔案：{p}" for p in manifests + rule_files if not resolve(p).is_file()]
     changed = []
     if "--staged" in args:
         changed += staged_files()
     for lst in _opt(args, "--changed-files"):
         try:
             changed += [l.strip() for l in Path(lst).read_text().splitlines() if l.strip()]
-        except OSError:
-            pass
+        except OSError as e:
+            input_errors.append(f"變更清單無法讀取：{lst}（{type(e).__name__}）")
     selected = manifests or rule_files or changed or "--staged" in args or _opt(args, "--changed-files")
     if target and not selected:
         changed = discover(TARGET)          # 只給 --target：全量掃描目標專案
@@ -1079,8 +1080,8 @@ def main(argv):
             manifests.append(f)
         elif is_rule_file(f) and not (f.startswith("config/slopsquat/") and not external_target()):
             rule_files.append(f)
-    manifests = [resolve(m) for m in dict.fromkeys(manifests) if resolve(m).exists()]
-    rule_files = [resolve(r) for r in dict.fromkeys(rule_files) if resolve(r).exists()]
+    manifests = [resolve(m) for m in dict.fromkeys(manifests) if resolve(m).is_file()]
+    rule_files = [resolve(r) for r in dict.fromkeys(rule_files) if resolve(r).is_file()]
     scope = "diff" if base else "full"
     notes = []
     if external_target():
@@ -1094,7 +1095,10 @@ def main(argv):
         if sarif_out:
             write_sarif(sarif_out, [])
         if gate_out:
-            write_gate(gate_out, [], [], started, base, scope, sarif_out, notes)
+            write_gate(gate_out, [], input_errors, started, base, scope, sarif_out, notes)
+        if input_errors:
+            print("G1 slopcheck：" + "；".join(input_errors) + " → incomplete", file=sys.stderr)
+            return 2
         print("G1 slopcheck：無相依清單或規則檔變更，略過。", file=sys.stderr)
         return 0
 
@@ -1107,7 +1111,7 @@ def main(argv):
         notes.append("忽略的 allowlist 條目：" + "；".join(ignored_allowlist))
     exceptions, ignored_exceptions = load_exceptions() if not external_target() else ([], [])
 
-    targets, incomplete = [], []
+    targets, incomplete = [], list(input_errors)
     for path, from_rules in [(m, False) for m in manifests] + [(r, True) for r in rule_files]:
         try:
             packages = rule_file_mentions(path) if from_rules else added_packages(path, base)

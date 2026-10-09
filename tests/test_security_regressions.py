@@ -54,6 +54,15 @@ class Reports(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertEqual(json.loads(gate.read_text())['status'], 'incomplete')
 
+    def test_missing_explicit_inputs_are_incomplete(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, gate = pathlib.Path(d) / 'missing', pathlib.Path(d) / 'gate.json'
+            for option in ('--manifest', '--rules-file', '--changed-files'):
+                with self.subTest(option=option):
+                    result = subprocess.run([sys.executable, str(ROOT / 'scripts/g1_slopcheck.py'), option, str(p), '--gate', str(gate)], capture_output=True)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(json.loads(gate.read_text())['status'], 'incomplete')
+
     def test_all_install_arguments_are_checked(self):
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / 'AGENTS.md'
