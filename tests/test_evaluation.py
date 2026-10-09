@@ -36,6 +36,15 @@ class Evaluation(unittest.TestCase):
                 collector=g6_gate.Collector(*g6_gate.load_catalog())
                 g6_gate.ingest_promptfoo_redteam(collector,str(path),None)
                 self.assertEqual(g6_gate.build(collector,'shadow',g6_gate.now())[0]['status'],'incomplete')
+    def test_empty_eval_report_is_not_a_successful_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory)/'report.json'
+            path.write_text(json.dumps({'results': {'results': []}}))
+            collector = g6_gate.Collector(*g6_gate.load_catalog())
+            g6_gate.ingest_promptfoo_eval(collector, str(path), 0)
+            self.assertEqual(collector.tools[0]['state'], 'error')
+            self.assertEqual(collector.coverage['promptfoo-eval']['state'], 'untested')
+
     def test_tool_error_cannot_be_hidden_by_successful_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             path=pathlib.Path(directory)/'report.json'

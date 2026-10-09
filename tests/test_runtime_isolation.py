@@ -67,6 +67,20 @@ class RuntimeIsolation(unittest.TestCase):
             self.assertEqual(broker.dispatch('/target/chat',b'{}')[0],429)
             self.assertEqual(request.call_count,1)
 
+    def test_multiple_generations_are_rejected_before_request(self):
+        broker = Broker('https://target.example', 'openai', 'approved', 'synthetic')
+        with patch.object(broker.opener, 'open', return_value=Response(b'{}')) as request:
+            self.assertEqual(broker.dispatch('/provider/v1/chat/completions',
+                b'{"model":"approved","n":2}')[0], 400)
+            request.assert_not_called()
+
+    def test_oversized_response_is_rejected(self):
+        broker = Broker('https://target.example')
+        with patch.object(broker.opener, 'open', return_value=Response(b'x' * (MAX_BODY + 1))):
+            self.assertEqual(broker.dispatch('/target/chat', b'{}')[0], 502)
+        with patch.object(broker.opener, 'open', return_value=Response(b'x' * MAX_BODY)):
+            self.assertEqual(broker.dispatch('/target/chat', b'{}')[0], 200)
+
     def test_key_is_not_returned_and_target_gets_no_provider_key(self):
         broker=Broker('https://target.example','anthropic','approved','synthetic-broker-secret')
         with patch.object(broker.opener,'open',return_value=Response(b'synthetic-broker-secret')) as request:
@@ -84,7 +98,7 @@ class RuntimeIsolation(unittest.TestCase):
     def test_provider_data_policy_is_checked_before_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);(root/'config').mkdir()
-            (root/'config/providers.yaml').write_text('providers:\n  openai-cloud:\n    enabled: true\n    allowed_data_classes: [public]\n    model: test\n')
+            (root/'config/providers.yaml').write_text('providers:\n  openai-cloud:\n    enabled: true\n    allowed_data_classes: [public]\n    base_url: https://api.openai.com/v1\n    api_key_env: OPENAI_API_KEY\n    model: test\n')
             with self.assertRaises(ValueError):isolated_redteam.provider_config({'OPENAI_API_KEY':'synthetic'},root)
 
     def test_custom_endpoint_is_not_silently_replaced_with_cloud(self):

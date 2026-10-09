@@ -3,6 +3,8 @@
 
 <a id="zh-tw"></a>
 
+離線測試補強：見[突變測試與結果判讀](16-mutation-testing.md)。
+
 # 操作、部署與驗證界線
 
 ## GitHub 必要設定
@@ -86,6 +88,8 @@ KEV 先查 CISA 官網，失敗時改查 CISA 維護的 `cisagov/kev-data` 官�
 第三方紅隊工具的容器隔離、受限轉接器與 G4 人工判定清單，見[後續修正說明](15-g4-follow-up.md#zh-tw)。
 
 <a id="english"></a>
+
+For offline test strengthening, see [mutation testing and result interpretation](16-mutation-testing.md).
 
 # Operation, Deployment, and Verification Boundaries
 

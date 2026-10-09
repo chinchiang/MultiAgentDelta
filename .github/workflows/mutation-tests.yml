@@ -1,0 +1,36 @@
+name: Offline mutation tests
+
+on:
+  pull_request:
+  schedule:
+    - cron: '30 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutations:
+    name: 離線突變測試 / Offline mutation tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: 安裝鎖定相依套件 / Install locked dependencies
+        run: pip install --require-hashes -r requirements-ci.txt
+      - name: 執行突變測試 / Run mutation tests
+        env:
+          PROFILE: ${{ github.event_name == 'pull_request' && 'core' || 'full' }}
+        run: python3 scripts/run_mutations.py --profile "$PROFILE"
+      - name: 保存結果 / Save results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-results
+          path: reports/mutations.json
+          if-no-files-found: error

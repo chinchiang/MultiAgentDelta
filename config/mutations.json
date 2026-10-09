@@ -1,0 +1,154 @@
+[
+  {
+    "id": "redirect-origin",
+    "file": "scripts/safe_http.py",
+    "before": "if origin(newurl) != self.allowed:",
+    "after": "if False:",
+    "test": "test_security_regressions",
+    "core": true
+  },
+  {
+    "id": "request-origin",
+    "file": "scripts/safe_http.py",
+    "before": "if origin(request.full_url) != self.allowed:",
+    "after": "if False:",
+    "test": "test_security_regressions",
+    "core": true
+  },
+  {
+    "id": "incomplete-exit",
+    "file": "scripts/gate_verdict.py",
+    "before": "2 if mode == 'enforce' and incomplete",
+    "after": "0 if mode == 'enforce' and incomplete",
+    "test": "test_gate_integration",
+    "core": true
+  },
+  {
+    "id": "blocking-exit",
+    "file": "scripts/gate_verdict.py",
+    "before": "1 if mode == 'enforce' and blocking",
+    "after": "0 if mode == 'enforce' and blocking",
+    "test": "test_gate_integration",
+    "core": true
+  },
+  {
+    "id": "lab-tool-completion",
+    "file": "scripts/gate_verdict.py",
+    "before": "required.get(g['gate'], set()) <= ran and not missing",
+    "after": "True",
+    "test": "test_gate_integration",
+    "core": true
+  },
+  {
+    "id": "report-empty",
+    "file": "scripts/g6_gate.py",
+    "before": "rows = data[\"results\"][\"results\"]\n        if not isinstance(rows, list) or not rows or any",
+    "after": "rows = data[\"results\"][\"results\"]\n        if not isinstance(rows, list) or any",
+    "test": "test_evaluation",
+    "core": true
+  },
+  {
+    "id": "report-exit",
+    "file": "scripts/g6_gate.py",
+    "before": "if exit_code is not None and exit_code not in (0, 100):",
+    "after": "if False:",
+    "test": "test_evaluation",
+    "core": true
+  },
+  {
+    "id": "model-allowlist",
+    "file": "scripts/runtime_broker.py",
+    "before": "data.get('model') != self.model or data.get('stream', False) is not False",
+    "after": "data.get('stream', False) is not False",
+    "test": "test_runtime_isolation",
+    "core": true
+  },
+  {
+    "id": "token-cap",
+    "file": "scripts/runtime_broker.py",
+    "before": "not 1 <= data[field] <= 4096",
+    "after": "not 1 <= data[field]",
+    "test": "test_runtime_isolation",
+    "core": true
+  },
+  {
+    "id": "request-budget",
+    "file": "scripts/runtime_broker.py",
+    "before": "if self.remaining <= 0:",
+    "after": "if self.remaining < 0:",
+    "test": "test_runtime_isolation",
+    "core": true
+  },
+  {
+    "id": "multiple-generations",
+    "file": "scripts/runtime_broker.py",
+    "before": "if data.get('n', 1) != 1:",
+    "after": "if False:",
+    "test": "test_runtime_isolation",
+    "core": false
+  },
+  {
+    "id": "response-limit",
+    "file": "scripts/runtime_broker.py",
+    "before": "if len(output) > MAX_BODY:",
+    "after": "if False:",
+    "test": "test_runtime_isolation",
+    "core": false
+  },
+  {
+    "id": "redaction",
+    "file": "scripts/runtime_broker.py",
+    "before": "output.replace(self.key.encode(), b'[REDACTED]')",
+    "after": "output",
+    "test": "test_runtime_isolation",
+    "core": true
+  },
+  {
+    "id": "stale-report",
+    "file": "scripts/isolated_redteam.py",
+    "before": "if path.exists() or path.is_symlink(): path.unlink()",
+    "after": "if False: path.unlink()",
+    "test": "test_runtime_isolation",
+    "core": true
+  },
+  {
+    "id": "data-class",
+    "file": "scripts/isolated_redteam.py",
+    "before": "not config.get('enabled') or 'internal' not in config.get('allowed_data_classes', [])",
+    "after": "not config.get('enabled')",
+    "test": "test_runtime_isolation",
+    "core": true
+  },
+  {
+    "id": "current-head",
+    "file": "scripts/g4_review.py",
+    "before": " and r.get(\"commit_id\") == head_sha",
+    "after": "",
+    "test": "test_mutation_boundaries",
+    "core": true
+  },
+  {
+    "id": "independent-author",
+    "file": "scripts/g4_review.py",
+    "before": "login != author and r.get(\"state\")",
+    "after": "r.get(\"state\")",
+    "test": "test_mutation_boundaries",
+    "core": true
+  },
+  {
+    "id": "trusted-reviewer",
+    "file": "scripts/g4_review.py",
+    "before": "and r.get(\"author_association\") in TRUSTED_ASSOCIATIONS",
+    "after": "and True",
+    "test": "test_mutation_boundaries",
+    "core": true
+  },
+  {
+    "id": "review-family",
+    "file": "scripts/g4_review.py",
+    "before": "if len(families) < cfg[\"min_families\"]:",
+    "after": "if False:",
+    "test": "test_mutation_boundaries",
+    "core": false
+  }
+]
