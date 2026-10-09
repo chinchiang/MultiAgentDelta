@@ -31,7 +31,7 @@ notes: 靶場 examples/vulnapp 可重現。
 
 - 每個適用領域**至少一正例與一反例**。
 - 至少 **1/3** 案例 `held_out: true`；清單集中於 `evals/split.yaml`。
-- 總數目標 **≥ 60**（目前 91）。
+- 總數目標 **≥ 60**（目前 94）。
 - `domain` 使用 14 審查領域的固定代碼：`application_architecture`、`general_vulnerabilities`、`xss`、`csp`、`authentication`、`authorization`、`dependency`、`build_supply_chain`、`github_actions`、`secret_exposure`、`input_validation`、`error_handling`、`data_integrity`、`ai_agent_security`。
 - `gate_status: incomplete` 案例驗證「incomplete ≠ pass」：工具或環境無法完成時，評測期望閘門回報 incomplete，而非 pass。
 - 含隱形字元或假金鑰的 fixture 以 YAML 跳脫或佔位值表示，避免觸發本 repo 自身的 G2／G4 掃描。
@@ -61,7 +61,10 @@ python3 scripts/run_evals.py --no-network                                       
   - `gitleaks`／`checkov`：預期規則在 `config/catalogs/cwe-map.yaml` 有 `implemented_by`（例如 `checkov:CKV2_VIBESEC_1`）。執行器以 CI **同一份**設定檔（`config/gitleaks.toml`、`config/checkov/.checkov.yaml` 含 check allow-list 與自訂政策）掃 fixture，再依 `implemented_by` 對回 vibesec 規則；allow-list 外的檢查不算偵測。本機沒有 gitleaks 時可設 `VIBESEC_GITLEAKS=<路徑>`；nightly 會下載固定版本並驗證 SHA-256。
   - `env-check`：`vibesec.g2.env-not-ignored`。在暫存 git repo 依 `input.files`／`input.gitignore` 建立並追蹤檔案，再執行 `pr-gates.yml` 中**同一份** `.env` 檢查步驟。
   - `vulnapp`：標記 `input.target_app: vulnapp` 的 G5／G6 案例。執行器在 127.0.0.1 隨機埠啟動 `examples/vulnapp`；G5 執行 staging workflow 中**同一份** api-probes 程式碼（level=note 的「未能實測」結果不算偵測），G6 把 prompt 送到 `/chat`，以與 `config/promptfoo/tests.yaml` 相同的決定性斷言判定。只有靶場確實可重現該行為的案例才可標記；描述假想目標（例如期望 403 的反例、靶場沒有的端點）的案例維持 untested。`input.target_app: vulnapp-patched` 的案例改以 `VIBESEC_VULNAPP_MODE=patched` 另起一個實例，作為同一探針的反例。`--no-target` 可跳過。
-- 其餘案例（`http`、`prompt`、`config`、需 gitleaks／G4 內嵌檢查的規則、`gate_status: incomplete` 情境）記為 **untested** 並列出原因；執行器失敗記 **incomplete**。兩者都不計入召回率／精確率，也不算通過。
+  - `config-controls`：CSP 標頭與高影響工具的人工核准設定，呼叫 `scripts/control_checks.py`；僅證明宣告設定，執行期仍需 G5／G6。
+  - `gate-status`：以逾時、拒絕存取、工具錯誤與缺 provider 的注入情境，實際呼叫閘門程式，核對 `expected.gate_status`。通過記 `VERIFIED`，不加入 TP／TN；錯誤記 `STATUS_FAIL`，退出碼 1。
+  - G6 間接注入、代理權限與用量：對漏洞版及修補版靶場送出請求；使用實際回應的 `tool_events` 與 `usage`，靶場資料明確標記為合成遙測。
+- 尚無執行器的新增案例記為 **untested** 並列原因；執行器失敗記 **incomplete**。兩者不計分、不算通過。
 - 金鑰類 fixture 用佔位符（`{{FAKE_ANTHROPIC_KEY}}`、`{{FAKE_OPENAI_KEY}}`），由執行器在暫存檔中展開，repo 內不放金鑰形字串。
 - 程式碼 fixture 需包含規則的適用脈絡（例如 `missing-owner-filter` 只在路由處理函式內生效），否則反例會「空洞地」通過。
 
@@ -69,7 +72,7 @@ python3 scripts/run_evals.py --no-network                                       
 
 `nightly-full.yml` 的 `evals` job 每晚執行 `run_evals.py --baseline evals/baseline.yaml`。以下任一情況會讓 job 失敗（退出碼 1）：
 
-- 出現任何 FP 或 FN；
+- 出現任何 FP、FN 或 STATUS_FAIL（即使沒有提供 baseline 也回傳失敗）；
 - `evals/baseline.yaml` 列出的案例變成 `untested` 或 `incomplete`，例如 semgrep 沒裝好、靶場起不來、registry 查詢失敗。
 
 這些情況都是「沒測到」，不算通過。結果會寫進 job summary，並上傳成 `vibesec-nightly-evals` artifact。

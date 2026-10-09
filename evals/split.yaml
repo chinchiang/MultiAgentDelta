@@ -26,19 +26,22 @@ held_out:
 - g5-jwt-pos-01
 - g5-session-neg-01
 - g5-ssrf-neg-01
+- g6-agency-neg-01
+- g6-dow-neg-01
+- g6-indirect-neg-01
 - g6-injection-pos-01
 - g6-noprovider-incomplete-01
 - g6-promptfoo-fail-not-incomplete-01
 - g6-sysprompt-pos-01
 held_in:
-- g1-kev-neg-01
-- g1-rulesfile-neg-01
 - g0-trifecta-neg-01
 - g0-trifecta-neg-02
 - g0-trifecta-pos-01
 - g1-cooldown-neg-01
+- g1-kev-neg-01
 - g1-kev-pos-01
 - g1-postinstall-pos-01
+- g1-rulesfile-neg-01
 - g1-rulesfile-pos-01
 - g1-slopsquat-neg-01
 - g1-slopsquat-neg-02
@@ -75,8 +78,8 @@ held_in:
 - g4-unicode-neg-01
 - g4-unicode-pos-01
 - g5-bola-neg-01
-- g5-cors-neg-01
 - g5-bola-pos-01
+- g5-cors-neg-01
 - g5-jwt-pos-02
 - g5-session-pos-01
 - g5-ssrf-incomplete-01
@@ -92,36 +95,34 @@ held_in:
 - g6-xss-neg-01
 - g6-xss-pos-01
 distribution:
-  total: 71
-  held_out_ratio: 0.37
+  total: 94
   by_gate:
     G0: 4
-    G1: 10
-    G2: 6
-    G3: 15
-    G4: 12
-    G5: 13
-    G6: 11
+    G1: 13
+    G2: 8
+    G3: 21
+    G4: 18
+    G5: 16
+    G6: 14
   by_domain:
-    ai_agent_security: 16
+    ai_agent_security: 19
     application_architecture: 3
-    authentication: 6
-    authorization: 7
-    build_supply_chain: 3
+    authentication: 8
+    authorization: 13
+    build_supply_chain: 4
     csp: 2
     data_integrity: 2
-    dependency: 7
+    dependency: 9
     error_handling: 2
-    general_vulnerabilities: 5
-    github_actions: 3
+    general_vulnerabilities: 8
+    github_actions: 7
     input_validation: 6
-    secret_exposure: 6
+    secret_exposure: 8
     xss: 3
   by_polarity:
-    neg: 29
-    pos: 42
+    pos: 50
+    neg: 44
   incomplete_cases:
   - g1-slopsquat-incomplete-01
-  - g5-ssrf-incomplete-01
   - g6-noprovider-incomplete-01
-  note: 14 審查領域皆有正例與反例；incomplete_cases 驗證 incomplete ≠ pass。
+  - g5-ssrf-incomplete-01

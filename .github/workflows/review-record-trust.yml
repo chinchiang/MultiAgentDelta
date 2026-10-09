@@ -54,7 +54,7 @@ jobs:
 
       # 缺 PyYAML／jsonschema 時 g4_review.py 以 exit 2 結束（工具缺席 ≠ 通過）
       - name: 安裝 PyYAML / jsonschema
-        run: pip install pyyaml jsonschema
+        run: pip install --require-hashes -r requirements-ci.txt
 
       # 取不到 review 清單 → 空檔 → 沒有核准者 → 本 PR 動到的外部紀錄一律不可信（fail closed）
       - name: 取得 PR 的 review 清單

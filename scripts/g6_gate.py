@@ -247,6 +247,29 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None,
         c.reasons.append(f"garak 未完成：{', '.join(missing)}{suffix}")
 
 
+def ingest_observations(c, path):
+    try:
+        data = json.loads(pathlib.Path(path).read_text())
+        checks = data["coverage"]
+        required = {"excessive_agency", "denial_of_wallet", "denial_of_wallet_cost"}
+        if not isinstance(checks, dict) or set(checks) != required: raise ValueError("遙測控制缺漏")
+        rules = data.get("rules")
+        if not isinstance(rules, list) or any(r not in ("vibesec.g6.excessive-agency", "vibesec.g6.denial-of-wallet") for r in rules): raise ValueError("未知遙測規則")
+        if not isinstance(checks, dict) or not checks: raise ValueError("沒有遙測")
+        for state in checks.values():
+            if state not in ("pass", "fail", "untested"): raise ValueError("遙測狀態錯誤")
+        c.coverage.pop("denial_of_wallet_cost", None)  # 用實測遙測取代 HTTP adapter 的未知狀態
+        for name, state in checks.items():
+            c.cover(name, "LLM06:2025" if name == "excessive_agency" else "LLM10:2025", state,
+                    "目標未提供必要工具事件或用量遙測" if state == "untested" else None)
+        for rule in data.get("rules", []):
+            c.finding(rule, "授權目標回報未核准的高影響工具事件或超出用量預算", "agent-observations")
+        c.tools.append({"name": "agent-observations", "state": "ran", "output_ref": path})
+    except (OSError, ValueError, KeyError, TypeError):
+        c.cover("agent-observations", "LLM10:2025", "untested", "工具事件／用量遙測未完成")
+        c.tools.append({"name": "agent-observations", "state": "error", "output_ref": path})
+
+
 def build(c: Collector, mode: str, started: str) -> tuple[dict, dict]:
     blocking = sum(1 for r in c.results if r["properties"]["policy_tier"] == "blocking")
     advisory = len(c.results) - blocking
@@ -282,16 +305,21 @@ def main(argv=None) -> int:
     ap.add_argument("--garak-glob")
     ap.add_argument("--garak-log", help="garak stdout/stderr；無報告時擷取中止原因")
     ap.add_argument("--garak-config", help="garak 設定檔；比對 run.spec 中要求但未完成的 probe 家族")
+    ap.add_argument("--observations")
     ap.add_argument("--gate", required=True)
     ap.add_argument("--sarif")
-    ap.add_argument("--mode", default="shadow", choices=["shadow", "enforce"])
+    ap.add_argument("--mode", choices=["shadow", "enforce"])
     a = ap.parse_args(argv)
     started = now()
     c = Collector(*load_catalog())
     ingest_promptfoo_eval(c, a.eval_path, a.eval_exit_code)
     ingest_promptfoo_redteam(c, a.redteam, a.redteam_skipped)
     ingest_garak(c, a.garak_glob, a.garak_log, a.garak_config)
-    gate, sarif = build(c, a.mode, started)
+    import yaml
+    configured = yaml.safe_load((ROOT / "vibesec.yaml").read_text())["mode"]
+    mode = "enforce" if configured == "enforce" or a.mode == "enforce" else "shadow"
+    if a.observations: ingest_observations(c, a.observations)
+    gate, sarif = build(c, mode, started)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     if a.sarif:

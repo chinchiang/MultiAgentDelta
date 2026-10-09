@@ -144,6 +144,12 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
     try:
         kev, released = load_kev(kev_path)
         grype = json.loads(grype_path.read_text(encoding="utf-8"))
+        if not isinstance(grype, dict) or not isinstance(grype.get("matches"), list):
+            raise ValueError("Grype 報告缺少 matches 清單")
+        for match in grype["matches"]:
+            if (not isinstance(match, dict) or not isinstance(match.get("vulnerability"), dict)
+                    or not match["vulnerability"].get("id") or not isinstance(match.get("artifact"), dict)):
+                raise ValueError("Grype matches 條目不完整")
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
         return {**base, "status": "incomplete", "status_reason": f"輸入無法解析：{type(e).__name__}: {e}"}, []
     hits, vulns = find_hits(grype, kev), find_vulns(grype, kev)

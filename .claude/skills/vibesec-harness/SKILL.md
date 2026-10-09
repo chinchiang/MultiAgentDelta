@@ -109,7 +109,7 @@ python3 scripts/g4_access.py --target "$TARGET" --out-dir reports/raw/G4 --gate 
 
 ```bash
 curl -sf -m 30 "$VIBESEC_TARGET_URL/healthz" || echo UNREACHABLE
-zap-baseline.py -t "$VIBESEC_TARGET_URL" -J reports/raw/G5/zap-baseline.json -c config/zap/baseline.conf
+zap-baseline.py -t "$VIBESEC_TARGET_URL" -J reports/raw/G5/zap-baseline.json -c config/zap/api-scan.conf
 zap-api-scan.py -t "$VIBESEC_TARGET_URL/openapi.json" -f openapi -J reports/raw/G5/zap-api.json
 ```
 
@@ -206,3 +206,9 @@ PY
 7. 不安裝任何工具或套件；G1 完成前不執行安裝指令。
 8. 報告中祕密只留遮罩與指紋。
 9. 不修改被測專案的程式碼（本 skill 只讀與寫 `reports/`）；`--target` 指向外部專案時，報告仍寫在本 repo 的 `reports/`。
+
+## 共用執行器補充
+
+G3／G4 若受測專案提供 `headers` 與 `tools` 的 YAML 設定，執行 `python3 scripts/control_checks.py <目標設定.yaml>`，將輸出 `rules` 依目錄納入 finding；缺設定不得推定 CSP 或人工核准已驗證。這是宣告檢查，G5／G6 仍需實測。
+
+G5 使用 `scripts/g5_api_probes.py` 及 `scripts/g5_gate.py`；G6 另執行 `scripts/g6_observe.py --out reports/g6-observations.json`，以 `g6_gate.py --observations` 合併真實工具事件／用量。缺遙測維持 `untested`。最終退出碼使用 `scripts/gate_verdict.py`，不可用 shadow 參數降低 enforce 設定。完整引數見 staging workflow。

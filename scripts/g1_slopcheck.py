@@ -15,7 +15,7 @@
   blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用（fail closed）。
 """
 from __future__ import annotations
-import sys, os, ssl, json, re, difflib, fnmatch, time, http.client, urllib.parse, urllib.request, urllib.error, subprocess
+import sys, os, ssl, json, shlex, re, difflib, fnmatch, time, http.client, urllib.parse, urllib.request, urllib.error, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -335,8 +335,8 @@ def _toml(path):
         return None
     try:
         return tomllib.loads(path.read_text(errors="ignore"))
-    except Exception:
-        return None
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{path.name}：TOML 無法解析") from e
 
 def _pyproject_deps(data):
     """PEP 621 [project]、[dependency-groups]（PEP 735）與 Poetry 的相依。不含 build-system。"""
@@ -441,8 +441,8 @@ def parse_added(paths):
                 for sec in ("dependencies", "devDependencies"):
                     for name, ver in (j.get(sec, {}) or {}).items():
                         out.append(("npm", name, re.sub(r'^[~^]', '', str(ver))))
-            except Exception:
-                pass
+            except (ValueError, TypeError, AttributeError) as e:
+                raise ValueError(f"{p.name}：相依清單無法解析") from e
         elif p.name == "pyproject.toml":
             data = _toml(p)
             if data is not None:
@@ -674,15 +674,34 @@ def rule_file_mentions(path):
     except OSError:
         return []
     out = []
-    for eco, rx in INSTALL_RE.items():
-        for m in rx.finditer(text):
-            flags = m.group(1).split()
-            if flags and flags[-1] in VALUE_FLAGS[eco]:
-                continue                    # 例如 pip install -r requirements.txt：名稱位置是旗標的值
-            name = m.group(2).rstrip(".,;:)`'\"")
-            if name and not name.startswith(("-", ".", "/")):
-                out.append((eco, name, None))
-    return list(dict.fromkeys(out))         # 同一個檔提到同一個套件多次只算一次
+    command = re.compile(r"\b(?P<cmd>npm|pnpm|yarn|pip3?|pipx|uv\s+pip)\s+(?:install|add|i)\s+(?P<args>[^`\n;&|]+)")
+    for match in command.finditer(text.replace("\\\n", " ")):
+        eco = "npm" if match["cmd"] in ("npm", "pnpm", "yarn") else "pypi"
+        try:
+            args = shlex.split(match["args"], comments=True)
+        except ValueError as e:
+            raise ValueError(f"{path}：安裝指令無法解析") from e
+        skip = False
+        for arg in args:
+            if skip:
+                skip = False
+                continue
+            if arg in VALUE_FLAGS[eco]:
+                skip = True
+                continue
+            if arg.startswith("-"):
+                continue
+            arg = arg.rstrip(".,;:)`")
+            if eco == "pypi":
+                item = _pep508(arg)
+                if item:
+                    out.append((eco, *item))
+            else:
+                m = re.fullmatch(r"(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+|[A-Za-z0-9][A-Za-z0-9._-]*)(?:@([^\s]+))?", arg)
+                if m:
+                    out.append((eco, m[1], m[2]))
+    return list(dict.fromkeys(out))
+
 
 def git_show(ref, path):
     """回傳 ref 版本的檔案內容；不存在（新檔）回傳 None。"""
@@ -912,7 +931,7 @@ def selftest():
                           "npm install -D left-pad\nRun `pip install requests`, then `pip install requests` again.\n",
                           encoding="utf-8")
             got = rule_file_mentions(rf)
-            want = [("npm", "left-pad", None), ("pypi", "fastapi-auth-helperz", None), ("pypi", "requests", None)]
+            want = [("npm", "bar", None), ("npm", "left-pad", None), ("pypi", "fastapi-auth-helperz", None), ("pypi", "foo", None), ("pypi", "requests", None)]
             if sorted(got) != want:
                 fails.append(f"規則檔：帶值旗標（-r、-e、--index-url、--registry）的值不是套件名，重複提及只算一次（得到 {got}）")
         with tempfile.TemporaryDirectory() as d:
@@ -1088,10 +1107,14 @@ def main(argv):
         notes.append("忽略的 allowlist 條目：" + "；".join(ignored_allowlist))
     exceptions, ignored_exceptions = load_exceptions() if not external_target() else ([], [])
 
-    targets = [(m, added_packages(m, base), False) for m in manifests]
-    targets += [(r, rule_file_mentions(r), True) for r in rule_files]
-
-    findings, incomplete = [], []
+    targets, incomplete = [], []
+    for path, from_rules in [(m, False) for m in manifests] + [(r, True) for r in rule_files]:
+        try:
+            packages = rule_file_mentions(path) if from_rules else added_packages(path, base)
+            targets.append((path, packages, from_rules))
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            incomplete.append(f"{rel_path(path)}：解析失敗（{e}）")
+    findings = []
     unparsed = [rel_path(m) for m in manifests if UNPARSED_RE.search(Path(m).name)]
     if unparsed:
         incomplete.append(f"鎖定檔尚無解析器，其中的套件未逐一檢查：{', '.join(unparsed)}")

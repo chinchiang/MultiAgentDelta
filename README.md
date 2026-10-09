@@ -32,10 +32,22 @@ AI 生成程式碼有四大典型病徵：**幻覺套件（Slopsquatting）**、
 ## 快速上手
 
 1. 複製 `docs/templates/threat-model.yaml` 填寫 G0，決定 `risk_tier`（L1 / L2 / L3）並寫入 `vibesec.yaml`。
-2. 把 `.github/workflows/` 三條工作流、`.pre-commit-config.yaml`、`config/` 複製到目標專案；在 repo 的 Actions variables 設定已授權測試目標 `VIBESEC_TARGET_URL`（未設定則只打內建靶場），在 secrets 設定 `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` 與模型金鑰（見 `config/providers.yaml`）。
+2. 把 `.github/workflows/`、`.github/scripts/`、`scripts/`、`schemas/`、`requirements-ci.txt`、`.pre-commit-config.yaml`、`config/` 複製到目標專案；在 repo 的 Actions variables 設定已授權測試目標 `VIBESEC_TARGET_URL`（未設定則只打內建靶場），在 secrets 設定 `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` 與模型金鑰（見 `config/providers.yaml`）。
 3. 在 Claude Code 中執行 `/vibesec-harness`：harness agent 會依 `vibesec.yaml` 執行閘門、呼叫四個 reviewer sub-agent，並把報告寫到 `reports/`。
-4. 試點期維持 `mode: shadow`（只報告）；驗收後改 `mode: enforce`，命中 `config/policy/blocking-policy.yaml` 的發現即擋 PR。
+4. 試點期維持 `mode: shadow`（只報告）；驗收後改 `mode: enforce`，必要檢查成功才可合併；命中 `config/policy/blocking-policy.yaml` 的發現或必要閘門未完成時阻擋。須先完成 [GitHub 管理設定](docs/14-operation-and-verification.md)，只有修改 YAML 並不足以保護分支。
 5. 要驗證黑箱閘門，先啟動靶場：`uv run --project examples/vulnapp uvicorn app.main:app --port 8000`。
+
+## 開發驗證
+
+```bash
+python3 -m pip install --require-hashes -r requirements-ci.txt
+python3 scripts/validate.py
+python3 -m unittest discover -s tests -v
+node --test .github/scripts/*.test.js
+python3 scripts/run_evals.py --baseline evals/baseline.yaml --json reports/evals.json --md reports/evals.md
+```
+
+完整評測另需固定版本的 Semgrep、Checkov、Gitleaks 與 uv，版本及雜湊見 `nightly-full.yml`。目前共 94 個案例：90 個偵測案例、4 個失敗狀態驗證；狀態案例不混入召回率。這是工具與靶場驗證，不能取代真實模型的三組比較。操作、證據限制與部署串接見 [操作與驗證](docs/14-operation-and-verification.md)。
 
 ## 目錄導覽
 

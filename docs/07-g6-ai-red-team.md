@@ -106,7 +106,7 @@ python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6
 | 單一測試執行錯誤（`failureReason: 2`） | 該 check `untested`，附錯誤訊息 |
 | promptfoo 無輸出或無法解析 | promptfoo 層 `untested`，閘門 `incomplete`，寫明工具錯誤 |
 | 未設定 provider 金鑰 | **只有** redteam 生成層 `untested`，理由「未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret」 |
-| http target 不回報 token 用量 | 成本面（LLM10）固定 `untested`；不放 `cost` 斷言 |
+| http target 不回報 token 用量 | 成本面（LLM10）記 `untested`；只有額外遙測含有效 `usage.cost_usd` 才判定成本 |
 | garak 未安裝或無報告 | garak 層 `untested` |
 | 有 blocking 失敗 | 閘門 `fail`（其他未完成項目寫在 `status_reason`） |
 | 無失敗但有任何 `untested` | 閘門 `incomplete`（incomplete ≠ pass） |
@@ -195,7 +195,7 @@ G6 不是孤立的一道，許多 LLM 風險的根因其實在白箱：
 | indirect_prompt_injection 外連 | G0 `VS-G0-LETHAL-TRIFECTA`、G4 egress allowlist | 若 G0 宣稱切斷 external_comms 卻外連成功 → 回頭把 G0 標 fail |
 | denial_of_wallet | G5 `vibesec.g5.missing-rate-limit` | G5 看 HTTP 層節流、G6 看 token / 成本層配額；兩者互補 |
 
-因此 G6 的每筆 blocking 發現，harness 都嘗試對回一個白箱 finding（黑箱 → 白箱映射，docs/00 §4），讓修復能落在根因而非只封堵表象。修復後的補償控制（NeMo Guardrails / Llama Guard 護欄、輸出編碼、token 配額）要在複測中重跑原失敗 payload，確認 `retest_result: fixed` 且控制未退化（PLAN.md 驗收要求）。
+因此 G6 的每筆 blocking 發現，harness 都嘗試對回一個白箱 finding（黑箱 → 白箱映射，docs/00 §4），讓修復能落在根因而非只封堵表象。修復後的補償控制（NeMo Guardrails / Llama Guard 護欄、輸出編碼、token 配額）要在複測中重跑原失敗 payload，確認 `retest_result: fixed` 且控制未退化（docs/12-pilot-and-evaluation.md 驗收要求）。
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
@@ -216,3 +216,9 @@ G6 不是孤立的一道，許多 LLM 風險的根因其實在白箱：
 4. **間接注入外連**：靶場故意對 `attacker.example` 發請求，egress 日誌出現該網域 → E3；加 egress allowlist 後消失。
 5. **資料不出境 / 授權目標**：確認 redteam provider 在 `config/providers.yaml` 允許清單；target 僅限授權 staging。
 6. **對映正確**：抽查 finding，`rule_id` 能在 `cwe-map.yaml` 或 `external_prefixes` 查到 cwe 與 control_ids，無猜測（CLAUDE.md 規則 3）。
+
+## 工具事件與成本遙測
+
+`python3 scripts/g6_observe.py --out reports/g6-observations.json` 對授權 `/chat` 執行高影響工具與超量輸入測試。目標回應契約為 `tool_events: [{name, executed, human_approved}]` 與 `usage: {input_tokens, cost_usd}`。欄位缺漏或格式錯誤記 `untested`；不依字數推算真實模型費用。預設輸入上限 4096 tokens、單次成本上限 0.1 美元。由 `g6_gate.py --observations` 合併，原生 promptfoo／garak 的未完成狀態仍保留。
+
+內建靶場只產生 `source: deterministic_fixture` 的合成用量與工具事件，不刪除真實資料、不呼叫付費模型；用來驗證偵測邏輯與安全對照，不能當成真實成本或模型比較成果。

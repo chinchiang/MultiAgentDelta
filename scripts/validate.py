@@ -31,7 +31,10 @@ def load_yaml(p: pathlib.Path):
 
 if yaml is not None:
     for f in sorted(glob.glob(str(ROOT / "**/*.yaml"), recursive=True)) + \
-             sorted(glob.glob(str(ROOT / "**/*.yml"), recursive=True)):
+             sorted(glob.glob(str(ROOT / "**/*.yml"), recursive=True)) + \
+             sorted(glob.glob(str(ROOT / ".github/**/*.yml"), recursive=True)) + \
+             sorted(glob.glob(str(ROOT / ".github/**/*.yaml"), recursive=True)) + \
+             [str(ROOT / ".pre-commit-config.yaml")]:
         rel = pathlib.Path(f).relative_to(ROOT)
         try:
             list(yaml.safe_load_all(open(f)))

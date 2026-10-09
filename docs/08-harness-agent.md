@@ -233,3 +233,9 @@ CLI 讀同一份 `vibesec.yaml`，實作同一個狀態機，透過 `config/prov
 - 只有 `allowed_data_classes` 包含該等級的 provider 才可收到該內容。雲端 provider（anthropic、openai、glm、deepseek）預設不收 `confidential` / `pii`；這類內容只送 `onprem_vllm` 之類的地端 provider。
 - 若沒有任何可用 provider 符合分級 → 該發現 `pending`、`notes` 記 `no provider allowed for data_class=pii`，閘門對該控制 `incomplete`。harness **不得**為了湊足兩個 family 而降級資料分類或改送不被允許的 provider。
 - 中國廠區（CSL / DSL / PIPL）專案：`providers.yaml` 只啟用地端 provider，並且報告只傳去識別化統計（見 `docs/13-roadmap-governance-compliance.md`）。
+
+## 目前可執行的最終判定
+
+`python3 scripts/gate_verdict.py --gate G5=reports/g5-gate.json --gate G6=reports/g6-gate.json` 驗證 schema 並依可信設定判定。enforce 模式下 blocking 回傳 1、政策要求的未完成閘門回傳 2；shadow 保留結果但不阻擋。`--mode enforce` 可升級，`--mode shadow` 不能降級設定。PR summary 的 `--policy-root _trusted` 使用基底提交的模式與政策；執行器與 workflow 本身仍需 CODEOWNERS 及分支保護，詳見 [操作與驗證](14-operation-and-verification.md)。
+
+宣告的 CSP／高影響工具設定可用 `python3 scripts/control_checks.py <目標設定.yaml>` 檢查；輸出 `rules` 是發現清單，由 harness 對照目錄納入 G3／G4，格式或檔案錯誤回傳 2。設定檢查不能取代 HTTP 實測或人工裁決。

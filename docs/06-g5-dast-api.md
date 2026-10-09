@@ -219,3 +219,11 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 4. **只打授權目標**：harness 拒絕 `VIBESEC_TARGET_URL` 指向非 staging / 非允許清單的主機（CLAUDE.md 規則 8）；單元測試覆蓋此拒絕。
 5. **證據留存**：每個 blocking 發現有 `reports/g5/*.http`（Token 已遮罩）與 `evidence_grade: E3`。
 6. **回填白箱**：Stack Trace 洩漏的路徑在 SARIF 有對應位置；BOLA 端點能對回 G4 的 `missing-owner-filter` finding。
+
+## 執行器與完整性
+
+`python3 scripts/g5_api_probes.py` 是工作流程與本機評測共用的 API 探針。HTTP 用戶端拒絕跨來源及 HTTPS 降級重新導向，認證資訊只送到授權來源；所有 JWT 候選端點都回 404／405 時記 `untested`，不能證明驗證成功。
+
+探針讀取 `config/zap/two-account-context.yaml`，亦可用 `VIBESEC_ACCESS_CONTEXT` 指定受測專案設定。支援建立／預植資源、B／ANON 的讀寫刪除請求、A 的讀取對照、清單隔離及功能層級權限；A、B 必須使用不同權杖。路徑、資源 ID 與標記須符合受測專案，模板不能直接當成完成證據。
+
+ZAP API 與 Baseline 使用 `config/zap/api-scan.conf`。Action 完成後立即另存各自的 `report_json.json`；`scripts/g5_gate.py` 合併 API 探針與兩份 ZAP 報告，並核對步驟 outcome。缺報告或失敗不會算完成，警示依政策計數。最終由 `scripts/gate_verdict.py` 執行 shadow／enforce 判定。

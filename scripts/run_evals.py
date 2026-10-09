@@ -88,6 +88,22 @@ class Runner:
         raise NotImplementedError
 
 
+class ConfigRunner(Runner):
+    name = "declared-controls"
+    def handles(self, case):
+        return None if case["input"].get("kind") == "config" and case["expected"]["rule_id"] in ("vibesec.g3.missing-csp", "vibesec.g4.missing-hitl") else "非設定控制案例"
+    def run(self, case):
+        import control_checks
+        inp = case["input"]
+        config = load_yaml_text(inp["snippet"]) if inp.get("snippet") else inp
+        return set(control_checks.check(config)), None
+
+
+def load_yaml_text(text):
+    import yaml
+    return yaml.safe_load(text)
+
+
 class SemgrepRunner(Runner):
     name = "semgrep"
 
@@ -305,10 +321,8 @@ class KevRunner(Runner):
         import urllib.request
         path = pathlib.Path(self._dir.name) / "kev.json"
         try:
-            req = urllib.request.Request(self.FEED, headers={"User-Agent": "vibesec-evals"})
-            # 固定的 https 常數 URL（非使用者輸入），不經 file:// 等 scheme
-            with urllib.request.build_opener(urllib.request.HTTPSHandler).open(req, timeout=60) as r:  # nosemgrep
-                path.write_bytes(r.read())
+            from fetch_kev import fetch
+            fetch(path)
             self._feed = path
         except Exception as e:
             self._err = f"KEV feed 下載失敗：{type(e).__name__}"
@@ -392,7 +406,7 @@ def _workflow_step(prefix: str, workflow: str = "staging-blackbox.yml") -> str |
     for job in (wf.get("jobs") or {}).values():
         for st in job.get("steps") or []:
             if str(st.get("name", "")).startswith(prefix):
-                return st.get("run")
+                return (st.get("run") or "").replace("python3 scripts/g5_api_probes.py", f"{sys.executable} {ROOT / 'scripts/g5_api_probes.py'}")
     return None
 
 
@@ -619,7 +633,7 @@ class VulnappRunner(Runner):
             return "案例未標記 target_app: vulnapp / vulnapp-patched（描述的不是靶場可重現的行為）"
         if self.targets is None:
             return "--no-target：不啟動靶場"
-        if case["gate"] == "G6" and exp.get("rule_id") not in G6_ORACLES:
+        if case["gate"] == "G6" and exp.get("rule_id") not in (set(G6_ORACLES) | {"vibesec.g6.excessive-agency", "vibesec.g6.denial-of-wallet", "vibesec.g6.indirect-prompt-injection"}):
             return f"{exp.get('rule_id')} 沒有決定性斷言"
         if case["gate"] not in ("G5", "G6"):
             return "target_app 只支援 G5 / G6"
@@ -661,17 +675,24 @@ class VulnappRunner(Runner):
         if case["gate"] == "G5":
             return self._run_g5(target)
         inp = case["input"]
-        body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", "")}).encode()
+        prompt = inp.get("prompt", "")
+        if inp.get("repeat_character"):
+            prompt = inp["repeat_character"] * min(int(inp["repeat_count"]), 200000)
+        body = json.dumps({"message": prompt, "context": inp.get("retrieved_doc", "")}).encode()
         try:
             status, raw = target.request("POST", "/chat", body=body)
             if status == 413:
                 return set(), None   # 修補模式的長度上限拒絕 → 沒有任何斷言命中
             if status != 200:
                 return None, f"/chat 回應 HTTP {status}"
-            reply = json.loads(raw.decode("utf-8", "replace")).get("reply", "")
+            response = json.loads(raw.decode("utf-8", "replace"))
+            reply = response.get("reply", "")
         except Exception as e:
             return None, f"/chat 呼叫失敗：{type(e).__name__}"
-        return {rule for rule, oracle in G6_ORACLES.items() if oracle(reply, case)}, None
+        from llm_observations import assess
+        findings, _ = assess(response)
+        if "EGRESS-INTENT:" in reply: findings.append("vibesec.g6.indirect-prompt-injection")
+        return {rule for rule, oracle in G6_ORACLES.items() if oracle(reply, case)} | set(findings), None
 
 
 # ---------------------------------------------------------------- scoring
@@ -683,8 +704,16 @@ def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
                "held_out": bool(case.get("held_out")), "rule_id": exp.get("rule_id"),
                "should_flag": bool(exp.get("should_flag")), "runner": None, "outcome": "untested",
                "reason": None, "hits": []}
-        if exp.get("gate_status") == "incomplete":
-            row["reason"] = "案例描述工具／環境失敗情境（gate_status: incomplete），需在整合層驗證"
+        if exp.get("gate_status"):
+            import eval_faults
+            row["runner"] = "fault-injection"
+            try:
+                observed = eval_faults.run(case)
+                row["observed_gate_status"] = observed
+                row["outcome"] = "VERIFIED" if observed == exp["gate_status"] else "STATUS_FAIL"
+                row["reason"] = f"預期 {exp['gate_status']}；實際 {observed}"
+            except Exception as e:
+                row["outcome"], row["reason"] = "incomplete", f"故障注入執行失敗：{type(e).__name__}: {e}"
             rows.append(row); continue
         reasons = []
         for r in runners:
@@ -703,7 +732,7 @@ def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
             break
         else:
             # 優先顯示「已接近可執行」的原因（同 gate 的專屬執行器），其次第一個
-            specific = [r for r in reasons if "非程式碼" not in r and "非 G1 manifest" not in r
+            specific = [r for r in reasons if "非設定控制案例" not in r and "非程式碼" not in r and "非 G1 manifest" not in r
                         and "target_app" not in r]
             row["reason"] = (specific or reasons or ["沒有執行器"])[0]
             if row["reason"].startswith("semgrep: kind=") and case["input"].get("kind") in ("http", "prompt", "config"):
@@ -724,7 +753,8 @@ def summarize(rows: list[dict]) -> dict:
         tp, fp, fn, tn = c["TP"], c["FP"], c["FN"], c["TN"]
         out[g] = {"TP": tp, "FP": fp, "FN": fn, "TN": tn,
                   "untested": c["untested"], "incomplete": c["incomplete"],
-                  "executed": tp + fp + fn + tn, "total": sum(c.values()),
+                  "status_verified": c["VERIFIED"], "status_failed": c["STATUS_FAIL"],
+                  "executed": tp + fp + fn + tn + c["VERIFIED"] + c["STATUS_FAIL"], "total": sum(c.values()),
                   "recall": round(tp / (tp + fn), 3) if tp + fn else None,
                   "precision": round(tp / (tp + fp), 3) if tp + fp else None}
     return out
@@ -739,7 +769,9 @@ def to_markdown(summary: dict, rows: list[dict], split: str) -> str:
     for g, s in summary.items():
         lines.append(f"| {g} | {s['executed']} / {s['total']} | {s['TP']} | {s['FP']} | {s['FN']} | {s['TN']} | "
                      f"{s['untested']} | {s['incomplete']} | {fmt(s['recall'])} | {fmt(s['precision'])} |")
-    bad = [r for r in rows if r["outcome"] in ("FP", "FN", "incomplete")]
+    verified = sum(r["outcome"] == "VERIFIED" for r in rows)
+    lines += ["", f"狀態驗證通過 {verified} 案，計入執行數但不混入漏洞召回率／精確率。"]
+    bad = [r for r in rows if r["outcome"] in ("FP", "FN", "STATUS_FAIL", "incomplete")]
     if bad:
         lines += ["", "## 需要注意的案例", "", "| 案例 | 結果 | 規則 | 執行器 | 命中／原因 |", "|---|---|---|---|---|"]
         for r in bad:
@@ -769,7 +801,7 @@ def main(argv=None) -> int:
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), RulesFileRunner(network=not a.no_network), KevRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
+    runners: list[Runner] = [ConfigRunner(), SemgrepRunner(), SlopcheckRunner(network=not a.no_network), RulesFileRunner(network=not a.no_network), KevRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
                              GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets)]
     try:
         rows = evaluate(cases, runners)
@@ -789,13 +821,13 @@ def main(argv=None) -> int:
         pathlib.Path(a.md).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(a.md).write_text(md, encoding="utf-8")
     if a.write_baseline:
-        ids = sorted(r["id"] for r in rows if r["outcome"] in ("TP", "TN"))
+        ids = sorted(r["id"] for r in rows if r["outcome"] in ("TP", "TN", "VERIFIED"))
         pathlib.Path(a.write_baseline).write_text(
             "# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN）。\n"
             "# 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。\n"
             + "executed:\n" + "".join(f"  - {i}\n" for i in ids), encoding="utf-8")
     print(md)
-    if regressions:
+    if regressions or any(r["outcome"] in ("FP", "FN", "STATUS_FAIL") for r in rows):
         return 1
     return 0 if summary.get("ALL", {}).get("executed") else 2
 
@@ -803,7 +835,7 @@ def main(argv=None) -> int:
 def regressions_vs_baseline(rows: list[dict], baseline: dict) -> list[str]:
     """任何 FP／FN 都是退步；baseline 列出的案例若未實測（untested／incomplete）或不見了也是退步。"""
     by_id = {r["id"]: r for r in rows}
-    out = [f"{r['id']}：{r['outcome']}（{r['rule_id']}）" for r in rows if r["outcome"] in ("FP", "FN")]
+    out = [f"{r['id']}：{r['outcome']}（{r['rule_id']}）" for r in rows if r["outcome"] in ("FP", "FN", "STATUS_FAIL")]
     for cid in baseline.get("executed") or []:
         r = by_id.get(cid)
         if r is None:

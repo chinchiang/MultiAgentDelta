@@ -33,23 +33,47 @@ jobs:
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: vibesec-nightly-codeql-${{ matrix.language }}
+          upload: false
+          output: reports/codeql
+      - name: 保存 CodeQL 原始結果（上傳服務不可用時仍可稽核）
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-codeql-${{ matrix.language }}
+          path: reports/codeql/
+          if-no-files-found: error
+      - name: 上傳 CodeQL（需啟用儲存庫 Code Scanning）
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/codeql
+          category: vibesec-nightly-codeql-${{ matrix.language }}
 
   semgrep-full:
     name: Semgrep 全量（無 baseline）
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep:1.179.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Semgrep scan（全庫、無 diff baseline）
-        continue-on-error: true
         run: |
           mkdir -p reports
           semgrep scan \
             --config config/semgrep/vibesec-rules.yaml \
             --config p/owasp-top-ten \
             --config p/security-audit \
-            --sarif --output reports/semgrep-full.sarif || true
+            --sarif --output reports/semgrep-full.sarif
+      - name: 驗證 Semgrep 報告確實完成
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          d = json.load(open('reports/semgrep-full.sarif'))
+          assert d.get('runs'), '沒有 SARIF runs'
+          for run in d['runs']:
+              assert isinstance(run.get('results'), list), '沒有 results'
+              for invocation in run.get('invocations', []):
+                  assert invocation.get('executionSuccessful') is not False, '掃描失敗'
+          PYTHON
       - name: Upload Semgrep full SARIF
         if: always()
         continue-on-error: true
@@ -137,7 +161,9 @@ jobs:
           python3 - <<'EOF'
           # 由 Grype/Trivy 輸出收集 CVE，查 FIRST EPSS 與 CISA KEV。
           # 不可違反：EPSS 與查詢日、KEV 與日期分欄記錄；不做 CVSS × EPSS × 信心 乘法。
-          import json, re, pathlib, datetime, urllib.request, urllib.error, os
+          import json, re, pathlib, datetime, urllib.request, urllib.error, os, sys
+          sys.path.insert(0, "scripts")
+          from fetch_kev import fetch
           NOW = datetime.datetime.now(datetime.timezone.utc)
           def iso(dt): return dt.replace(microsecond=0).isoformat()
           REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
@@ -157,18 +183,20 @@ jobs:
           # KEV 清單（整包快取 1 天）
           kev_cache = CACHE / "kev.json"
           kev_set = {}
+          kev_available = False
           try:
               if kev_cache.exists() and (NOW.timestamp() - kev_cache.stat().st_mtime) < 86400:
                   kev_data = json.loads(kev_cache.read_text(encoding="utf-8"))
               else:
-                  req = urllib.request.Request("https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
-                                               headers={"User-Agent": "vibesec-nightly"})
-                  with urllib.request.urlopen(req, timeout=60) as r:
-                      kev_data = json.loads(r.read().decode("utf-8"))
-                  kev_cache.write_text(json.dumps(kev_data), encoding="utf-8")
+                  fetch(kev_cache)
+                  kev_data = json.loads(kev_cache.read_text(encoding="utf-8"))
+              if not isinstance(kev_data.get("vulnerabilities"), list) or not kev_data["vulnerabilities"]:
+                  raise ValueError("KEV 格式不完整")
+              kev_available = True
               for v in kev_data.get("vulnerabilities", []):
                   kev_set[v.get("cveID")] = v.get("dateAdded")
           except Exception as e:
+              kev_cache.unlink(missing_ok=True)  # 過期／無效 feed 不可交給後續閘門
               print(f"KEV 取得失敗：{e}")
 
           # EPSS 逐一（或批次）查詢，附查詢日
@@ -188,7 +216,7 @@ jobs:
                   print(f"EPSS {cve} 失敗：{e}")
               enrichment[cve] = {
                   "epss": epss, "epss_date": epss_date, "epss_query_date": query_date,
-                  "kev": cve in kev_set, "kev_date": kev_set.get(cve),
+                  "kev": (cve in kev_set) if kev_available else None, "kev_date": kev_set.get(cve),
               }
           (REPORTS / "enrichment.json").write_text(json.dumps(enrichment, ensure_ascii=False, indent=2), encoding="utf-8")
           print(f"寫出 reports/enrichment.json（{len(enrichment)} 筆）")
@@ -293,7 +321,9 @@ jobs:
       - name: Install uv（啟動本機靶場用）
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: 安裝 semgrep / checkov / PyYAML
-        run: pip install pyyaml semgrep==1.179.0 checkov==3.3.22
+        run: |
+          pip install --require-hashes -r requirements-ci.txt
+          pip install semgrep==1.179.0 checkov==3.3.22
       # gitleaks 不用 action（action 只掃 repo）；下載固定版本並比對官方 checksum，不符就失敗，不帶未驗證的二進位檔執行
       - name: 安裝 gitleaks（固定版本 + SHA-256 驗證）
         env:

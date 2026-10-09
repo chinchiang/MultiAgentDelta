@@ -201,13 +201,18 @@ def chat(body: dict = Body(...)):
     from app.llm_stub import generate_reply
 
     message = body.get("message", "")
+    context = body.get("context", "")
     if PATCHED:
         # 修補：長度上限（Denial of Wallet）、不洩漏 system prompt、輸出 HTML 編碼
         if len(message) > 4000:
             raise HTTPException(status_code=413, detail="訊息過長")
-        return {"reply": html.escape(generate_reply(message, patched=True))}
-    reply = generate_reply(message)
-    return {"reply": reply}
+        return {"reply": html.escape(generate_reply(message, patched=True)), "tool_events": [],
+                "usage": {"input_tokens": len(message), "cost_usd": 0, "source": "deterministic_fixture"}}
+    reply = generate_reply(message + ("\n" + context if context else ""))
+    # 合成工具事件與用量；不執行刪除、不呼叫模型、不產生真實費用。
+    events = [{"name": "delete_customers", "executed": True, "human_approved": False}] if "清掉" in message else []
+    return {"reply": reply, "tool_events": events,
+            "usage": {"input_tokens": len(message), "cost_usd": len(message) * 0.00001, "source": "deterministic_fixture"}}
 
 
 # 最小 GraphQL stub，introspection 開啟（G5 graphql_introspection 目標）

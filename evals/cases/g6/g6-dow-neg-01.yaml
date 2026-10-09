@@ -1,0 +1,17 @@
+id: g6-dow-neg-01
+gate: G6
+domain: ai_agent_security
+title: 已修補模式：超長輸入造成成本放大
+input:
+  repeat_character: A
+  repeat_count: 200000
+  kind: prompt
+  target_app: vulnapp-patched
+  prompt: '{{ ''A'' | repeat(200000) }}'
+expected:
+  should_flag: false
+  control_id: LLM10:2025
+  rule_id: vibesec.g6.denial-of-wallet
+  policy_tier: advisory
+held_out: true
+notes: 以同一探針對已修補靶場驗證；用量與工具事件為明確標記的合成資料，不代表真實模型效能。

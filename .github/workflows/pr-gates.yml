@@ -56,7 +56,7 @@ jobs:
 
       - name: 安裝 PyYAML（供 blacklist/allowlist 解析，best-effort）
         continue-on-error: true
-        run: pip install pyyaml
+        run: pip install --require-hashes -r requirements-ci.txt
 
       - name: 偵測變更的 manifest 檔
         id: diff
@@ -170,13 +170,7 @@ jobs:
       - name: 下載 CISA KEV feed
         continue-on-error: true
         run: |
-          mkdir -p .cache
-          if curl -fsSL --retry 3 --max-time 60 -A vibesec-pr -o .cache/kev.new.json \
-               https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json; then
-            mv .cache/kev.new.json .cache/kev.json
-          else
-            echo "::warning::KEV feed 下載失敗；沿用快取（若有）"
-          fi
+          python3 scripts/fetch_kev.py .cache/kev.json
 
       # KEV 命中 → vibesec.g1.kev-hit（blocking），結果併入 g1-gate.json，由 summary 依 mode 決定是否阻擋。
       # 與 slopcheck 相同：shadow 模式下不讓 job 變紅；enforce 模式下命中（exit 1）或 incomplete（exit 2）都會擋。
@@ -315,7 +309,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep:1.179.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -630,7 +624,7 @@ jobs:
       # pass／pending／fail；無有效紀錄維持 incomplete（incomplete ≠ pass）。規則見 docs/05「阻擋政策」與 scripts/g4_review.py。
       - name: 安裝 PyYAML / jsonschema（審查紀錄驗證）
         if: always()
-        run: pip install pyyaml jsonschema
+        run: pip install --require-hashes -r requirements-ci.txt
 
       # 職責分離（CLAUDE.md 規則 6）：本 PR 新增／修改的 reviews/g4 紀錄不能自證。取得「在目前 head SHA 上
       # approve、且不是 PR 作者」的帳號（每人只看最後一次 review；之後的 CHANGES_REQUESTED／DISMISSED 會取消）。
@@ -747,7 +741,7 @@ jobs:
 
       # 缺 PyYAML／jsonschema 時 validate.py 只會警告並略過檢查，等於沒驗證（incomplete ≠ pass），所以必須安裝成功。
       - name: 安裝 PyYAML / jsonschema
-        run: pip install pyyaml jsonschema
+        run: pip install --require-hashes -r requirements-ci.txt
 
       - name: 執行 validate.py
         run: python3 scripts/validate.py
@@ -790,6 +784,9 @@ jobs:
           sys.exit(1 if bad and not single else 0)
           PY
 
+      - name: 安全邊界回歸測試
+        run: python3 -m unittest discover -s tests -v
+
       - name: 通知腳本單元測試（node --test）
         run: |
           node --version
@@ -810,7 +807,7 @@ jobs:
           path: _artifacts
 
       - name: 安裝 PyYAML / jsonschema
-        run: pip install pyyaml jsonschema
+        run: pip install --require-hashes -r requirements-ci.txt
 
       # 判定程式取自 base 分支（第四次 harness 審查 N3）：PR head 只當資料讀取，PR 不能改寫決定自己結果的腳本與政策。
       # workflow 檔本身仍取自 PR head，由 CODEOWNERS（/.github/workflows/）與 branch protection 把關。
@@ -843,52 +840,12 @@ jobs:
       - name: 彙整 gate-status 矩陣
         shell: bash
         run: |
-          MODE=$(awk -F: '/^[[:space:]]*mode[[:space:]]*:/ {gsub(/[[:space:]]|#.*/,"",$2); print $2; exit}' vibesec.yaml)
           mkdir -p reports
           find _artifacts \( -name 'g1-gate.json' -o -name 'g4-gate.json' \) -exec cp {} reports/ \; 2>/dev/null || true
-          python3 - "$MODE" <<'EOF'
-          import json, glob, os, sys, pathlib, yaml
-          MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
-          # incomplete 會擋的閘門以 blocking-policy 為準（原本寫死 G1、G2、G3，與政策 [G1, G2] 不一致）
-          _pol = yaml.safe_load(open("config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
-          BLOCKING_GATES = set(_pol.get("incomplete_gate_is_blocking_in_enforce") or [])
-          rows = []; fail = False; incomplete_block = False
-          seen = {}
-          for p in sorted(glob.glob("reports/*-gate.json")):
-              try: g = json.load(open(p, encoding="utf-8"))
-              except Exception: continue
-              seen[g.get("gate")] = g
-          out = ["# VibeSec 閘門狀態", "", f"模式：`{MODE}`", "",
-                 "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
-          for gid in ["G1", "G2", "G3", "G4"]:
-              g = seen.get(gid)
-              if not g:
-                  # 沒有 gate 結果 = 沒有證據顯示該閘門跑完；對 incomplete 會擋的閘門，enforce 下視同 incomplete
-                  out.append(f"| {gid} | `incomplete` | - | - | 未產生 gate 結果（job 失敗或 artifact 缺席） |")
-                  if MODE == "enforce" and gid in BLOCKING_GATES:
-                      incomplete_block = True
-                  continue
-              st = g.get("status", "untested")
-              fc = g.get("findings_count", {})
-              reason = g.get("status_reason") or ""
-              out.append(f"| {gid} | `{st}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {reason} |")
-              if MODE == "enforce":
-                  if st == "fail" or (fc.get("blocking", 0) or 0) > 0:
-                      fail = True
-                  if st == "incomplete" and gid in BLOCKING_GATES:
-                      incomplete_block = True
-          out += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。"]
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          text = "\n".join(out)
-          if summary_path:
-              open(summary_path, "a", encoding="utf-8").write(text + "\n")
-          print(text)
-          pathlib.Path("reports/gate-status.md").write_text(text + "\n", encoding="utf-8")
-          if MODE == "enforce" and incomplete_block:
-              print("::error::enforce 模式下 blocking 閘門 incomplete → exit 2"); sys.exit(2)
-          if MODE == "enforce" and fail:
-              print("::error::enforce 模式下存在 blocking 發現 → exit 1"); sys.exit(1)
-          EOF
+          # workflow 與此腳本由 CODEOWNERS 審查；有效政策只取 base，不採信 PR 的 mode。
+          python3 scripts/gate_verdict.py --policy-root _trusted \
+            --gate G1=reports/g1-gate.json --gate G2=reports/g2-gate.json \
+            --gate G3=reports/g3-gate.json --gate G4=reports/g4-gate.json
 
       - name: Upload 彙整 reports
         if: always()

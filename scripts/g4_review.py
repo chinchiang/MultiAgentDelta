@@ -128,6 +128,8 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
 
     # findings：意見只能來自實際執行的 provider；分歧／少數意見／family 不足必須 requires_human；結論只能來自人工裁決
     effective = []
+    from vibesec_policy import Policy
+    policy = Policy(ROOT)
     for f in record["findings"]:
         fid = f["id"]
         for o in f["opinions"]:
@@ -142,7 +144,8 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
         op_families = {o["family"] for o in f["opinions"]}
         divergent = len(verdicts) > 1 or "uncertain" in verdicts
         has_minority = any(o.get("minority") for o in f["opinions"])
-        high_risk = f["policy_tier"] == "blocking"
+        effective_tier = policy.tier(f["rule_id"])
+        high_risk = effective_tier == "blocking"
         needs_human = divergent or has_minority or (high_risk and len(op_families) < cfg["min_families"])
         ruling = None
         if f.get("ruling_ref"):
@@ -169,7 +172,7 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
             req_human = dec == "defer"
         else:
             status, req_human = f["validation_status"], f["requires_human"] or needs_human
-        effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": f["policy_tier"],
+        effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": effective_tier,
                           "validation_status": status, "requires_human": req_human, "ruling_ref": f.get("ruling_ref")})
     return {"errors": errors, "incomplete": incomplete, "findings": effective, "families": len(families)}
 
@@ -418,6 +421,7 @@ def selftest() -> list[str]:
 
     # 有效裁決 confirm → advisory 發現 confirmed，無 blocking → pass
     r2 = copy.deepcopy(rec); r2["findings"][0]["ruling_ref"] = f"rulings/{fid}.yaml"
+    r2["findings"][0]["rule_id"] = "vibesec.g4.missing-hitl"
     ev2 = evaluate(r2, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
     if ev2["errors"]:
         fails.append(f"附有效裁決應通過：{ev2['errors']}")
@@ -426,7 +430,8 @@ def selftest() -> list[str]:
     elif gate_of(r2, ev2)["status"] != "pass":
         fails.append("advisory 發現經裁決 confirm、無其他缺口 → 閘門應為 pass")
     # blocking + 裁決 confirm → fail
-    r3 = copy.deepcopy(r2); r3["findings"][0]["policy_tier"] = "blocking"
+    r3 = copy.deepcopy(r2); r3["findings"][0]["rule_id"] = "vibesec.g4.missing-owner-filter"
+    r3["findings"][0]["policy_tier"] = "advisory"  # 紀錄不能降低 L3 政策
     ev3 = evaluate(r3, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
     if ev3["errors"] or gate_of(r3, ev3)["status"] != "fail":
         fails.append("blocking 發現經裁決 confirm → 閘門應為 fail")

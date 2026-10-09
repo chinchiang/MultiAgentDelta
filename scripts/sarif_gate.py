@@ -70,12 +70,29 @@ def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
         return None, f"{path.name} 不存在（工具未執行、失敗或 artifact 缺席）"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
         return None, f"{path.name} 無法解析（{type(e).__name__}）"
-    runs = data.get("runs")
-    if not isinstance(runs, list):
-        return None, f"{path.name} 沒有 runs（不是有效的 SARIF）"
-    return [r for run in runs for r in run.get("results") or []], None
+    runs = data.get("runs") if isinstance(data, dict) else None
+    if not isinstance(runs, list) or not runs or data.get("version") != "2.1.0":
+        return None, f"{path.name} 缺少有效的 SARIF 2.1.0 runs"
+    results = []
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(run.get("results"), list):
+            return None, f"{path.name} 缺少掃描結果清單"
+        if not isinstance(run.get("tool"), dict) or not isinstance(run["tool"].get("driver"), dict):
+            return None, f"{path.name} 缺少工具資訊"
+        if "invocations" in run and not isinstance(run["invocations"], list):
+            return None, f"{path.name} invocations 格式不合法"
+        for invocation in run.get("invocations") or []:
+            if not isinstance(invocation, dict) or invocation.get("executionSuccessful") is False:
+                return None, f"{path.name} 工具回報執行失敗"
+            notifications = invocation.get("toolExecutionNotifications", [])
+            if not isinstance(notifications, list) or any(not isinstance(n, dict) or n.get("level") == "error" for n in notifications):
+                return None, f"{path.name} 工具回報執行錯誤"
+        if not all(isinstance(r, dict) and isinstance(r.get("ruleId"), str) for r in run["results"]):
+            return None, f"{path.name} 發現格式不合法"
+        results.extend(run["results"])
+    return results, None
 
 
 def _location(r: dict) -> str:
@@ -117,6 +134,9 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
     started = started or now()
     tool_rows, findings, problems = [], [], []
     ran: set[str] = set()
+    required = {owner for owners in GATE_CONTROLS[gate].values() for owner in owners}
+    for name in sorted(required - set(tools) - ({"envcheck"} if envcheck is not None else set())):
+        problems.append(f"{name}：未提供必要工具結果")
     for name, path in tools.items():
         results, err = read_sarif(path)
         state = "ran" if results is not None else ("missing" if "不存在" in (err or "") else "error")
@@ -130,6 +150,8 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
     if envcheck is not None:
         try:
             d = json.loads(envcheck.read_text(encoding="utf-8"))
+            if not isinstance(d, dict) or d.get("env_gitignore_fail") not in (0, 1, False, True):
+                raise ValueError("envcheck 缺少明確檢查結果")
             ran.add("envcheck")
             tool_rows.append({"name": "envcheck", "version": None, "state": "ran", "exit_code": None,
                               "output_ref": str(envcheck), "duration_seconds": None})
@@ -137,7 +159,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
                 rid = d.get("rule_id") or "vibesec.g2.env-not-ignored"
                 findings.append({"rule_id": rid, "tool": "envcheck", "location": ".gitignore",
                                  "policy_tier": "blocking" if rid in pol["blocking"] else "advisory"})
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             tool_rows.append({"name": "envcheck", "version": None, "state": "missing" if isinstance(e, OSError) else "error",
                               "exit_code": None, "output_ref": str(envcheck), "duration_seconds": None})
             problems.append(f"envcheck：{envcheck.name} 缺席或無法解析")
@@ -162,7 +184,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
         reasons.append("忽略的例外：" + "；".join(pol["ignored_exceptions"]))
     coverage = []
     for ctl, owners in GATE_CONTROLS.get(gate, {}).items():
-        if not all(o in ran for o in owners if o in tools or o == "envcheck" and envcheck is not None):
+        if not all(o in ran for o in owners):
             state, why = "untested", "負責工具未完成：" + "、".join(o for o in owners if o not in ran)
         elif any(ctl in pol["controls"].get(f["rule_id"], []) for f in blocking):
             state, why = "fail", None

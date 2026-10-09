@@ -27,7 +27,7 @@ _EXTRACT_PATTERNS = [
 ]
 # Indirect Prompt Injection：模擬「來自外部文件/網頁的夾帶指令」標記
 _INDIRECT_MARKERS = [
-    r"<!--\s*system\s*:",                       # 註解內夾帶指令
+    r"<!--\s*(?:system|AI)\s*:",                       # 註解內夾帶指令
     r"\[\[?\s*instruction",                     # [instruction ...]
     r"from (?:the )?(?:document|email|webpage|pdf|external)",
     r"according to the (?:attached|external|retrieved)",
