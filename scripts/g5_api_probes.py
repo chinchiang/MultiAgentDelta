@@ -283,11 +283,11 @@ def main():
         context = yaml.safe_load(pathlib.Path(context_path).read_text())
         found, state, why = run_access(client, context, {"A": TA, "B": TB}, os.environ)
         for rule, message in found: add(rule, "error", message)
-        coverage["configured_access_scenarios"] = state
-        if why: coverage_reasons["configured_access_scenarios"] = why
+        coverage["ASVS5-V8.1"] = state
+        if why: coverage_reasons["ASVS5-V8.1"] = why
     except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as e:
-        coverage["configured_access_scenarios"] = "untested"
-        coverage_reasons["configured_access_scenarios"] = f"存取控制情境無法執行：{type(e).__name__}"
+        coverage["ASVS5-V8.1"] = "untested"
+        coverage_reasons["ASVS5-V8.1"] = f"存取控制情境無法執行：{type(e).__name__}"
 
     # ---- ssrf_metadata ----
     # 判定原則（incomplete ≠ pass）：命中才 fail；端點以 400/403 明確拒絕內部 URL 才 pass；其餘 untested。
