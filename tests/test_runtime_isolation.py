@@ -87,6 +87,12 @@ class RuntimeIsolation(unittest.TestCase):
             (root/'config/providers.yaml').write_text('providers:\n  openai-cloud:\n    enabled: true\n    allowed_data_classes: [public]\n    model: test\n')
             with self.assertRaises(ValueError):isolated_redteam.provider_config({'OPENAI_API_KEY':'synthetic'},root)
 
+    def test_custom_endpoint_is_not_silently_replaced_with_cloud(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'config').mkdir()
+            (root/'config/providers.yaml').write_text('providers:\n  openai-cloud:\n    enabled: true\n    allowed_data_classes: [internal]\n    base_url: https://private.example/v1\n    api_key_env: OPENAI_API_KEY\n    model: test\n')
+            with self.assertRaises(ValueError):isolated_redteam.provider_config({'OPENAI_API_KEY':'synthetic'},root)
+
     @unittest.skipUnless(os.environ.get('VIBESEC_DOCKER_TEST_IMAGE'), 'Optional real Docker isolation test / 選用的實際 Docker 隔離測試')
     def test_real_networkless_container_can_only_reach_broker(self):
         with tempfile.TemporaryDirectory() as directory:

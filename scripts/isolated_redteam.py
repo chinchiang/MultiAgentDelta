@@ -22,6 +22,11 @@ def provider_config(env, root=ROOT):
             config = providers[name + '-cloud']
             if not config.get('enabled') or 'internal' not in config.get('allowed_data_classes', []):
                 raise ValueError('Provider not allowed for internal data / 模型不得接收內部資料')
+            expected = 'https://api.anthropic.com' if name == 'anthropic' else 'https://api.openai.com/v1'
+            if str(config.get('base_url', '')).rstrip('/') != expected or config.get('api_key_env') != variable:
+                raise ValueError('Broker does not support this endpoint or key binding / 轉接器不支援此端點或金鑰設定')
+            if not isinstance(config.get('model'), str) or not config['model'].strip():
+                raise ValueError('Missing model identifier / 缺少模型識別碼')
             return name, config['model'], env[variable]
     raise ValueError('No generation key configured / 未設定生成層金鑰')
 
