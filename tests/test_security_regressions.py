@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -15,6 +16,7 @@ import sarif_gate
 import g1_kev
 import g1_slopcheck
 import g4_review
+import review_provider
 from safe_http import TargetClient
 
 
@@ -59,6 +61,14 @@ class Reports(unittest.TestCase):
             found = set(g1_slopcheck.rule_file_mentions(p))
             self.assertTrue({('pypi', 'requests', None), ('pypi', 'evil-package', None), ('npm', 'evil-package', None), ('npm', '@scope/pkg', '1.2.3')} <= found)
             self.assertFalse(any(x[1] == 'requirements.txt' for x in found))
+
+    def test_provider_reflected_key_is_redacted_in_all_artifacts(self):
+        secret = "FAKE_PROVIDER_CREDENTIAL_123456"
+        response = {"opinion": {"rationale": secret}, "rejected_attempts": [{"response": secret}], "note": secret}
+        with patch.object(review_provider, 'load_provider', return_value={"api_key_env": "TEST_KEY"}), patch.object(review_provider, '_call', return_value=response):
+            output = review_provider.call('test', 'architecture', 'internal', {}, env={"TEST_KEY": secret})
+        self.assertNotIn(secret, json.dumps(output))
+        self.assertIn('sha256:', output['opinion']['rationale'])
 
     def test_record_cannot_demote_l3_policy(self):
         r = g4_review._example()

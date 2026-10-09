@@ -18,7 +18,7 @@
 離開碼：0 = ran；2 = missing／timeout／error；3 = refused；4 = 參數或設定錯誤。
 """
 from __future__ import annotations
-import argparse, json, os, pathlib, re, socket, sys, urllib.error, urllib.parse, urllib.request
+import argparse, hashlib, json, os, pathlib, re, socket, sys, urllib.error, urllib.parse, urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIDENCE_KEYS = re.compile(r"confidence|certainty|probability|信心", re.I)
@@ -148,7 +148,25 @@ def contract_errors(opinion, contract: str) -> list[str]:
     return errs
 
 
+def redact_key(value, key):
+    """供應商可能在正常或被拒絕的回應反射認證資訊；所有回傳路徑都遮罩。"""
+    if not key:
+        return value
+    if isinstance(value, str):
+        return value.replace(key, "[REDACTED sha256:" + hashlib.sha256(key.encode()).hexdigest() + "]")
+    if isinstance(value, list):
+        return [redact_key(item, key) for item in value]
+    if isinstance(value, dict):
+        return {redact_key(k, key): redact_key(v, key) for k, v in value.items()}
+    return value
+
+
 def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
+    key = env.get(load_provider(provider, root).get("api_key_env") or "", "")
+    return redact_key(_call(provider, role, data_class, packet, root, env), key)
+
+
+def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
     p = load_provider(provider, root)
     system, prompt_version = load_role(role, root)
     out = {"provider": provider, "family": p.get("family"), "model": p.get("model"), "role": role,
@@ -177,7 +195,7 @@ def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.
             return {**out, "state": "timeout", "note": f"超過 {p.get('timeout_seconds', 120)} 秒"}
         except urllib.error.URLError as e:
             st = "timeout" if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)) else "error"
-            return {**out, "state": st, "note": str(e.reason)[:300]}
+            return {**out, "state": st, "note": redact_key(str(e.reason), key)[:300]}
         except BadResponse as e:
             opinion, problems = None, [str(e)]
         except (RuntimeError, ValueError, KeyError, IndexError) as e:
