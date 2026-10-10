@@ -34,15 +34,31 @@ class PacketError(RuntimeError):
     pass
 
 
-def _git(target: pathlib.Path, *args: str) -> str:
-    r = subprocess.run(["git", "-C", str(target), *args], capture_output=True, text=True)
+def _git_bytes(target: pathlib.Path, *args: str) -> bytes:
+    r = subprocess.run(["git", "-C", str(target), *args], capture_output=True)
     if r.returncode != 0:
-        raise PacketError(f"git {' '.join(args[:2])} 失敗：{r.stderr.strip()[-200:]}")
+        raise PacketError(f"git {' '.join(args[:2])} 失敗：{r.stderr.decode(errors='replace').strip()[-200:]}")
     return r.stdout
 
 
-def _show(target: pathlib.Path, commit: str, path: str) -> str:
-    return _git(target, "show", f"{commit}:{path}").replace("\r\n", "\n")
+def _git(target: pathlib.Path, *args: str) -> str:
+    return _git_bytes(target, *args).decode("utf-8", "replace")
+
+
+def _names(target: pathlib.Path, *args: str) -> list[str]:
+    """-z 輸出的路徑清單：含空白、非 ASCII（core.quotePath 會加引號跳脫）的檔名也原樣取回。"""
+    return [n for n in _git_bytes(target, *args, "-z").decode("utf-8", "surrogateescape").split("\0") if n]
+
+
+def _show(target: pathlib.Path, commit: str, path: str) -> str | None:
+    """commit 中檔案的文字內容；不是 UTF-8 文字（二進位檔）→ None，由呼叫端列入略過清單，不讓整個審查包失敗。"""
+    data = _git_bytes(target, "show", f"{commit}:{path}")
+    if b"\0" in data[:8192]:
+        return None
+    try:
+        return data.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return None
 
 
 def numbered(text: str, ranges: list[tuple[int, int]] | None = None) -> str:
@@ -69,7 +85,7 @@ def referenced_files(threat_model: str, tracked: list[str]) -> list[str]:
 
 def changed_ranges(target: pathlib.Path, base: str, commit: str) -> dict[str, list[tuple[int, int]]]:
     """diff_base..commit 每個新增／修改檔案的變更行，前後各擴 CONTEXT 行並合併。"""
-    names = [n for n in _git(target, "diff", "--name-only", "--diff-filter=AMR", f"{base}..{commit}").splitlines() if n]
+    names = _names(target, "diff", "--name-only", "--diff-filter=AMR", f"{base}..{commit}")
     out: dict[str, list[tuple[int, int]]] = {}
     for name in names:
         diff = _git(target, "diff", "-U0", f"{base}..{commit}", "--", name)
@@ -139,10 +155,12 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
     if base.get("data_class") not in DATA_CLASSES:   # review_provider 依此取較嚴格的分級；沒宣告就無法保證不外傳
         raise PacketError(f"--base 必須宣告 data_class（{'／'.join(DATA_CLASSES)}），目前是 {base.get('data_class')!r}")
     sha = _git(target, "rev-parse", f"{commit}^{{commit}}").strip()
-    tracked = _git(target, "ls-tree", "-r", "--name-only", sha).split()
+    tracked = _names(target, "ls-tree", "-r", "--name-only", sha)
     if threat_model not in tracked:
         raise PacketError(f"{sha[:12]} 沒有威脅模型 {threat_model}")
     tm = _show(target, sha, threat_model)
+    if tm is None:
+        raise PacketError(f"威脅模型 {threat_model} 不是 UTF-8 文字")
     if diff_base:
         base_sha = _git(target, "rev-parse", f"{diff_base}^{{commit}}").strip()
         ranges = changed_ranges(target, base_sha, sha)
@@ -152,6 +170,8 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
         ranges = {}
         raw = {name: _show(target, sha, name) for name in referenced_files(tm, tracked)}
         scope, note = "full", "威脅模型以 path:line 引用的檔案全文"
+    skipped = sorted(name for name, text in raw.items() if text is None)   # 二進位檔：模型讀不了，照實列出
+    raw = {name: text for name, text in raw.items() if text is not None}
     # --base 也要掃：發現摘要與證據摘錄可能直接引用含祕密的程式行
     secrets = scan({threat_model: tm, BASE_SCAN_NAME: json.dumps(base, ensure_ascii=False, indent=1), **raw})
     files = {name: numbered(mask(text, secrets), ranges.get(name)) for name, text in raw.items()}
@@ -163,7 +183,8 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
     pkt["threat_model_full"] = numbered(mask(tm, secrets))
     pkt["source_files"] = files
     pkt["source_files_note"] = (f"{note}（docs/09 §6）。只附上列檔案，不送整個 repo。"
-                                f"gitleaks 命中 {len(secrets)} 個字串，已遮罩為前 4 後 4 加 sha256 指紋。")
+                                f"gitleaks 命中 {len(secrets)} 個字串，已遮罩為前 4 後 4 加 sha256 指紋。"
+                                + (f"略過 {len(skipped)} 個非文字檔（未附上，模型沒看到）：{'、'.join(skipped)}。" if skipped else ""))
     size = len(json.dumps(pkt, ensure_ascii=False).encode())
     if size > max_bytes:
         raise PacketError(f"審查包 {size} bytes 超過上限 {max_bytes}：不截斷、不產生（改用 --diff-base 或提高上限）")
@@ -183,10 +204,11 @@ def selftest() -> list[str]:
         repo = pathlib.Path(d)
         git(repo, "init", "-q")
         (repo / "docs").mkdir(); (repo / "app").mkdir()
-        (repo / "docs/threat-model.yaml").write_text("threats:\n  - ref: app/api.py:2\n  - ref: util.py:1\n")
+        (repo / "docs/threat-model.yaml").write_text("threats:\n  - ref: app/api.py:2\n  - ref: util.py:1\n  - ref: logo.png:1\n  - ref: app/my notes.py:1\n")
         (repo / "app/api.py").write_text("\n".join(f"line{i}" for i in range(1, 121)) + "\n")
         (repo / "app/util.py").write_text(f"KEY = '{planted}'\n")
         (repo / "app/unref.py").write_text("print('not referenced')\n")
+        (repo / "app/my notes.py").write_text("x = 1\n"); (repo / "app/logo.png").write_bytes(b"\x89PNG\0\0\xff")
         git(repo, "add", "-A"); git(repo, "commit", "-qm", "base")
         first = git(repo, "rev-parse", "HEAD").stdout.strip()
         lines = (repo / "app/api.py").read_text().split("\n"); lines[99] = "changed100"
@@ -195,6 +217,10 @@ def selftest() -> list[str]:
         fake = lambda texts: [planted] if any(planted in t for t in texts.values()) else []
         base = {"data_class": "internal", "target": {"repo": "x"}, "output": "…"}
         pkt = build(base, repo, scan=fake)
+        if "app/my notes.py" not in _names(repo, "ls-tree", "-r", "--name-only", "HEAD"):
+            fails.append("含空白的檔名要原樣列出（以前 .split() 會拆成兩個不存在的路徑）")
+        if "app/logo.png" in pkt["source_files"] or "app/logo.png" not in pkt["source_files_note"]:
+            fails.append("二進位檔不附上，但要在 source_files_note 列出（不讓整個審查包失敗）")
         if set(pkt["source_files"]) != {"app/api.py", "app/util.py"}:
             fails.append(f"full：只附威脅模型引用的檔案（含省略目錄的引用）：{sorted(pkt['source_files'])}")
         if planted in json.dumps(pkt) or "[masked sha256:" not in pkt["source_files"]["app/util.py"]:
