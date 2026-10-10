@@ -15,7 +15,7 @@ Claude Code 的 reviewer sub-agent 能自己讀 repo，scripts/review_provider.p
 
 不可違反（CLAUDE.md 規則 7）：
   - 送出前以 gitleaks（本 repo 的 config/gitleaks.toml）掃描要附上的內容，命中的字串一律換成前 4 後 4 加 sha256 指紋。
-    gitleaks 缺席或失敗 → 無法確認祕密已遮罩，不產生審查包（exit 2）。審查包的資料分級沿用 --base，不在這裡判定。
+    gitleaks 缺席或失敗 → 無法確認祕密已遮罩，不產生審查包（exit 2）。審查包的資料分級沿用 --base（必須宣告，否則不產生），不在這裡判定；--base 內容一併掃描遮罩。
   - 超過 --max-bytes → 不產生（exit 2），不默默截斷：截斷後的審查包會讓模型以為看到了全部。
 離開碼：0 產生；2 無法產生（缺 gitleaks、掃描失敗、超過上限、找不到 commit 或威脅模型）；4 參數錯誤。
 """
@@ -25,6 +25,8 @@ import argparse, hashlib, json, os, pathlib, re, shutil, subprocess, sys, tempfi
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONTEXT = 40
 REF = re.compile(r"([A-Za-z0-9_./-]+\.[A-Za-z0-9]+):\d+")
+DATA_CLASSES = ("public", "internal", "confidential", "pii")
+BASE_SCAN_NAME = ".vibesec-packet-base.json"   # 掃描用的暫存檔名（不會出現在 git 追蹤的路徑）
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
 
 
@@ -121,8 +123,21 @@ def mask(text: str, secrets: list[str]) -> str:
     return text
 
 
+def mask_obj(value, secrets: list[str]):
+    """--base 的巢狀內容（發現摘要、證據摘錄）逐一遮罩字串。"""
+    if isinstance(value, str):
+        return mask(value, secrets)
+    if isinstance(value, list):
+        return [mask_obj(v, secrets) for v in value]
+    if isinstance(value, dict):
+        return {mask_obj(k, secrets): mask_obj(v, secrets) for k, v in value.items()}
+    return value
+
+
 def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str | None = None,
           threat_model: str = "docs/threat-model.yaml", max_bytes: int = 900_000, scan=gitleaks_scan) -> dict:
+    if base.get("data_class") not in DATA_CLASSES:   # review_provider 依此取較嚴格的分級；沒宣告就無法保證不外傳
+        raise PacketError(f"--base 必須宣告 data_class（{'／'.join(DATA_CLASSES)}），目前是 {base.get('data_class')!r}")
     sha = _git(target, "rev-parse", f"{commit}^{{commit}}").strip()
     tracked = _git(target, "ls-tree", "-r", "--name-only", sha).split()
     if threat_model not in tracked:
@@ -137,9 +152,10 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
         ranges = {}
         raw = {name: _show(target, sha, name) for name in referenced_files(tm, tracked)}
         scope, note = "full", "威脅模型以 path:line 引用的檔案全文"
-    secrets = scan({threat_model: tm, **raw})
+    # --base 也要掃：發現摘要與證據摘錄可能直接引用含祕密的程式行
+    secrets = scan({threat_model: tm, BASE_SCAN_NAME: json.dumps(base, ensure_ascii=False, indent=1), **raw})
     files = {name: numbered(mask(text, secrets), ranges.get(name)) for name, text in raw.items()}
-    pkt = dict(base)
+    pkt = mask_obj(dict(base), secrets)
     pkt["target"] = {**(base.get("target") or {}), "commit": sha, "scope": scope,
                      "note": "唯讀審查被測專案；只能依本審查包判斷。source_files 是 commit 的原文，每行前綴為行號，引用時用 path:line。"}
     if diff_base:
@@ -196,6 +212,15 @@ def selftest() -> list[str]:
             build(base, repo, max_bytes=100, scan=fake); fails.append("超過上限必須拒絕，不截斷")
         except PacketError:
             pass
+        leaky = {**base, "finding": {"evidence": f"app/util.py:1 KEY = '{planted}'"}}   # 發現摘錄直接引用祕密
+        pkt = build(leaky, repo, scan=fake)
+        if planted in json.dumps(pkt) or "[masked sha256:" not in pkt["finding"]["evidence"]:
+            fails.append("--base 內容（發現與證據摘錄）也必須掃描遮罩")
+        for bad_class in (None, "secret"):
+            try:
+                build({**base, "data_class": bad_class}, repo, scan=fake); fails.append(f"--base data_class={bad_class!r} 必須拒絕")
+            except PacketError:
+                pass
         def broken(texts): raise PacketError("gitleaks 掃描失敗")
         try:
             build(base, repo, scan=broken); fails.append("掃描失敗必須拒絕產生")

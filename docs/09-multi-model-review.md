@@ -107,7 +107,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 
 1. **第一輪不交換**（`round1_independent: true`）：審查包不含任何模型意見、也不含工具以外的「初步結論」。確保共同盲點可被量測。
 2. **最多兩輪交叉**（`max_cross_rounds: 2`），`round` 欄位 1–3。
-3. **保留少數意見**（`keep_minority_opinions: true`）：最終輪與多數不同者 `minority: true`，不刪除、不覆寫；`summary.md` 的 requires_human 區塊列出。
+3. **保留少數意見**（`keep_minority_opinions: true`）：最終輪與多數不同者 `minority: true`，不刪除、不覆寫；`summary.md` 的 requires_human 區塊列出。`scripts/g4_review.py` 判斷分歧時取**每個（角色, provider）自己最後一輪**的意見，不是全域最後一輪：第 1 輪 refute、之後缺席（逾時、錯誤）者的 refute 仍算數，仍須 `requires_human: true`。輪次超過 `1 + review.max_cross_rounds` 的紀錄不採用。
 4. **不多數決**（`majority_vote: false`）：三個 confirm 一個 refute，finding 仍是 `pending` + `requires_human: true`。多數決會讓同質模型的共同錯誤變成「共識」。
 5. **一致也不等於確認**：全員 `confirm` 只能把 finding 從 E1 升到 E2（有直接支持）；要到 E3 需可重現測試或人工核對（docs/10 §1）。
 6. **uncertain 是合法答案**：角色提示明確鼓勵「不確定就說不確定」；`uncertain` 不計入任何一方。

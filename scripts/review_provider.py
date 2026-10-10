@@ -23,6 +23,7 @@ import argparse, hashlib, json, os, pathlib, re, socket, sys, urllib.error, urll
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIDENCE_KEYS = re.compile(r"confidence|certainty|probability|信心", re.I)
 VERDICTS = ("confirm", "refute", "uncertain")
+DATA_CLASSES = ("public", "internal", "confidential", "pii")   # 由寬到嚴；與 providers.yaml data_classes 一致
 
 
 class BadResponse(ValueError):
@@ -231,6 +232,11 @@ def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.
 def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
     p = load_provider(provider, root)
     system, prompt_version = load_role(role, root)
+    declared = packet.get("data_class") if isinstance(packet, dict) else None
+    if declared is not None and declared not in DATA_CLASSES:
+        raise ValueError(f"審查包的 data_class {declared!r} 不是 {'／'.join(DATA_CLASSES)} 之一")
+    if declared is not None and DATA_CLASSES.index(declared) > DATA_CLASSES.index(data_class):
+        data_class = declared   # 取較嚴格者：--data-class 不能把審查包自己宣告的分級往下降（規則 7）
     out = {"provider": provider, "family": p.get("family"), "model": p.get("model"), "role": role,
            "prompt_version": prompt_version, "data_class": data_class, "state": None, "opinion": None, "note": None}
     if not p.get("enabled", False):

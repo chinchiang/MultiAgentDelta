@@ -6,6 +6,7 @@ gate: G4
 commit: 0123456789abcdef0123456789abcdef01234567
 diff_base: 89abcdef0123456789abcdef0123456789abcdef
 scope: diff
+data_class: internal                 # 送審內容的資料分級；每個 ran 的 provider 都必須允許此分級（規則 7）
 reviewed_at: "2026-10-05T08:00:00Z"
 roles: [architecture, identity-authz]
 prompt_versions:
