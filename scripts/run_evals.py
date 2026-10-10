@@ -435,8 +435,8 @@ class G4StaticRunner(Runner):
             return "pr-gates.yml 找不到 G4 靜態檢查步驟"
         if exp.get("rule_id") not in self.rules:
             return f"{exp.get('rule_id')} 不由 G4 靜態檢查實作"
-        if inp.get("kind") not in ("code", "iac") or not inp.get("snippet"):
-            return "需要 code／iac snippet"
+        if inp.get("kind") not in ("code", "iac", "config") or not inp.get("snippet"):
+            return "需要 code／iac／config snippet"
         if not _fixture_path(inp):
             return "input.path 無法對應單一檔案路徑"
         return None

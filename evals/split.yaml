@@ -15,6 +15,8 @@ held_out:
 - g3-sqli-pos-01
 - g4-agent-tools-neg-01
 - g4-bola-neg-01
+- g4-hitl-neg-02
+- g4-hitl-neg-04
 - g4-hitl-pos-01
 - g4-owner-pos-02
 - g4-rls-pos-01
@@ -66,6 +68,9 @@ held_in:
 - g3-xss-neg-01
 - g3-xss-pos-01
 - g4-agent-tools-pos-01
+- g4-hitl-neg-01
+- g4-hitl-neg-03
+- g4-hitl-pos-02
 - g4-owner-neg-02
 - g4-owner-neg-03
 - g4-owner-pos-01
@@ -98,18 +103,18 @@ held_in:
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
   # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
-  total: 95
+  total: 100
   held_out_ratio: 0.34
   by_gate:
     G0: 4
     G1: 13
     G2: 9
     G3: 21
-    G4: 18
+    G4: 23
     G5: 16
     G6: 14
   by_domain:
-    ai_agent_security: 19
+    ai_agent_security: 24
     application_architecture: 3
     authentication: 8
     authorization: 13
@@ -124,8 +129,8 @@ distribution:
     secret_exposure: 9
     xss: 3
   by_polarity:
-    neg: 44
-    pos: 51
+    neg: 48
+    pos: 52
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-ssrf-incomplete-01

@@ -1,0 +1,19 @@
+id: g4-hitl-neg-03
+gate: G4
+domain: ai_agent_security
+title: 一般後台刪除 API（不是 Agent 工具）不適用 HITL 規則
+input:
+  kind: code
+  language: python
+  path: app/routers/admin.py
+  snippet: |
+    @router.delete("/users/{user_id}")
+    def delete_user(user_id: int, admin=Depends(require_admin)):
+        users.delete(user_id)
+        return {"ok": True}
+expected:
+  should_flag: false
+  control_id: ASVS5-V2.3
+  rule_id: vibesec.g4.missing-hitl
+  policy_tier: advisory
+held_out: false
