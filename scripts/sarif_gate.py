@@ -90,8 +90,13 @@ def map_rule(tool: str, rule_id: str, pol: dict) -> list[str]:
     m = VIBESEC_ID.search(rule_id or "")
     if m:
         return [VARIANT.sub("", m.group(1))]
-    mapped = sorted(pol["impl"].get(f"{tool}:{rule_id}", set()))
-    return mapped or [f"{tool}:{rule_id}"]
+    key = f"{tool}:{rule_id}"
+    mapped = set(pol["impl"].get(key, set()))
+    if not mapped:   # 萬用字元（例如 gitleaks:*：useDefault 載入的內建規則）；精確對應優先
+        for pat, rids in pol["impl"].items():
+            if "*" in pat and fnmatch.fnmatchcase(key, pat):
+                mapped |= rids
+    return sorted(mapped) or [key]
 
 
 def to_findings(tool: str, results: list[dict], pol: dict) -> list[dict]:
@@ -245,6 +250,9 @@ def selftest() -> list[str]:
         g = run("G2", {"gitleaks": sarif(res("vibesec-openai-api-key", "app/llm.py"))}, env={"env_gitignore_fail": 0})
         if g["status"] != "fail":
             fails.append("gitleaks 經 implemented_by 對到 hardcoded-secret（blocking）→ fail")
+        g = run("G2", {"gitleaks": sarif(res("aws-access-token", "app/cfg.py"), res("private-key", "deploy/id_rsa"))}, env={"env_gitignore_fail": 0})
+        if g["status"] != "fail" or g["findings_count"]["blocking"] != 2:
+            fails.append("gitleaks 內建規則（aws-access-token、private-key）經 gitleaks:* 對到 hardcoded-secret → blocking fail")
         g = run("G2", {"gitleaks": sarif(res("vibesec-openai-api-key", "examples/vulnapp/app/main.py"))}, env={"env_gitignore_fail": 0})
         if g["status"] != "pass" or g["findings_count"]["advisory"] < 1 or "例外" not in (g["status_reason"] or ""):
             fails.append("blocking-policy 例外 → 降為 advisory、發現保留、理由註明")

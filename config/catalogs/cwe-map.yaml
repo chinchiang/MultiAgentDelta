@@ -110,7 +110,11 @@ rules:
     implemented_by: [gitleaks:vibesec-openai-api-key, gitleaks:vibesec-anthropic-api-key, gitleaks:vibesec-deepseek-api-key,
                      gitleaks:vibesec-glm-zhipu-api-key, gitleaks:vibesec-google-ai-studio-key, gitleaks:vibesec-huggingface-token,
                      gitleaks:vibesec-supabase-service-role-jwt, gitleaks:vibesec-supabase-service-role-keyword,
-                     gitleaks:vibesec-jwt-secret-assignment, gitleaks:vibesec-generic-high-entropy]
+                     gitleaks:vibesec-jwt-secret-assignment, gitleaks:vibesec-generic-high-entropy,
+                     # gitleaks:*：config/gitleaks.toml 的 useDefault = true 載入的內建規則（aws-access-token、github-pat、
+                     # private-key、gcp-api-key、slack-*、stripe-* …）。以前沒列，命中會落到 default_tier（advisory），
+                     # 與 docs/03「gitleaks:* 任何命中 → blocking」和本政策的 why（AKIA、ghp_、PEM）不一致（第四次審視 D-2）
+                     "gitleaks:*"]
   vibesec.g2.hardcoded-llm-key:
     cwe: CWE-798
     title: "硬編碼 LLM 供應商金鑰（sk-…、sk-ant-api03-…、sk-proj-…、GLM id.secret）"

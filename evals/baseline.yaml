@@ -25,6 +25,7 @@ executed:
   - g2-secret-neg-02
   - g2-secret-pos-01
   - g2-secret-pos-02
+  - g2-secret-pos-03
   - g3-actions-prt-neg-01
   - g3-actions-prt-pos-01
   - g3-actions-prt-pos-02
