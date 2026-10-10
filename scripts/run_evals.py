@@ -246,6 +246,37 @@ class G0TrifectaRunner(Runner):
         return {f["rule_id"] for f in self.mod.trifecta_findings(case["input"]["threat_model"])}, None
 
 
+class G0CoverageRunner(Runner):
+    """G0 覆蓋對照案例：以 input.threat_model 呼叫 scripts/g0_threat_model.py 的 coverage_findings（G0 閘門用同一個函式）。
+    input.contains_llm 預設取本 repo vibesec.yaml 的 project.contains_llm；input.disabled_gates（例如 [g6_ai_red_team]）
+    與 input.g0_methodologies 覆寫本 repo vibesec.yaml 的對應設定。"""
+    name = "g0-coverage"
+
+    def __init__(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("g0_threat_model", ROOT / "scripts/g0_threat_model.py")
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+
+    def handles(self, case):
+        if case.get("gate") != "G0" or case["expected"].get("rule_id") not in self.mod.COVERAGE_RULES:
+            return "非 G0 覆蓋對照案例"
+        if not isinstance(case["input"].get("threat_model"), dict):
+            return "案例沒有 input.threat_model"
+        return None
+
+    def run(self, case):
+        inp = case["input"]
+        vb = load_yaml(ROOT / "vibesec.yaml") or {}
+        gates = {k: dict(v or {}) for k, v in (vb.get("gates") or {}).items()}
+        for k in inp.get("disabled_gates") or []:
+            gates.setdefault(k, {})["enabled"] = False
+        if "g0_methodologies" in inp:
+            gates.setdefault("g0_threat_model", {})["methodologies"] = list(inp["g0_methodologies"] or [])
+        llm = inp.get("contains_llm", bool((vb.get("project") or {}).get("contains_llm")))
+        return {f["rule_id"] for f in self.mod.coverage_findings(inp["threat_model"], dict(vb, gates=gates), bool(llm))}, None
+
+
 class RulesFileRunner(Runner):
     """G1 規則檔案例：把 snippet 寫成 agent 規則檔，以 g1_slopcheck.py --rules-file 實測（查 live registry）。"""
     name = "slopcheck-rules-file"
@@ -1119,7 +1150,7 @@ def main(argv=None) -> int:
         want = a.split == "held_out"
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
-    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), RulesFileRunner(network=not a.no_network), KevRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
+    runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), RulesFileRunner(network=not a.no_network), KevRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G0CoverageRunner(), G4StaticRunner(),
                              GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets), ZapRunner(), IntegrationRunner()]
     try:
         rows = evaluate(cases, runners)

@@ -1,0 +1,25 @@
+id: g0-gatedisabled-neg-01
+gate: G0
+domain: application_architecture
+title: 威脅指向啟用中的閘門，或標為 gate null（不由執行閘門驗證）
+input:
+  kind: config
+  disabled_gates: [g6_ai_red_team]
+  threat_model:
+    system:
+      exposure: public
+      methodologies: [STRIDE, MAESTRO]
+    threats:
+      - id: t-bola
+        category: Elevation of Privilege
+        gate: G5
+      - id: t-accepted
+        category: Repudiation
+        gate: null
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.1
+  rule_id: vibesec.g0.threat-gate-disabled
+  policy_tier: advisory
+held_out: false
+notes: G5 啟用中；gate null 表示接受或轉移的風險，不在本檢查範圍。G6 停用但沒有威脅指向它，不應標記。

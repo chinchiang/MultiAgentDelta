@@ -5,8 +5,12 @@ docs/01「自動化作法」的確定性部分（G0 本身是人工活動；簽�
   1. 威脅模型存在、通過 schemas/threat-model.schema.json，且不是範本（docs/templates/、system.name: example-project）
   2. 致命三要素：scripts/g0_trifecta.py（mitigation 須有可驗證證據；證據檔在被檢查專案內核對，tier 取自本 repo 政策）
   3. risk_tier：宣告值不得低於 docs/01 §4 決策樹的推導值；目標是本 repo 時另須與 vibesec.yaml 的 risk_tier 一致
-閘門狀態（docs/01「阻擋政策」）：模型缺失／不符 schema／是範本 → incomplete；三要素未切斷、risk_tier 不一致或低於推導值
-→ fail；否則 pass。
+  4. 覆蓋對照（coverage_findings）：threats[].gate 指向的閘門須在 vibesec.yaml enabled: true（vibesec.g0.threat-gate-disabled）；
+     含 LLM 但模型的 system.methodologies（目標是本 repo 時另看 vibesec.yaml gates.g0_threat_model.methodologies）
+     沒有 MAESTRO（vibesec.g0.maestro-missing）；exposure public 但 threats[] 為空（vibesec.g0.threats-empty-public）。
+     tier 一律由本 repo 的 blocking-policy 決定（政策未列的 vibesec.* 規則 → advisory，scripts/vibesec_policy.py）。
+閘門狀態（docs/01「阻擋政策」）：模型缺失／不符 schema／是範本 → incomplete；三要素未切斷、risk_tier 不一致或低於推導值、
+其他 blocking 發現 → fail；否則 pass（advisory 發現只計數、寫進 g0-findings.json，不擋）。
 
 --target <dir>：被檢查的 git repo 根目錄（預設本 repo）。威脅模型依序取：--threat-model 指定的檔案（操作者提供，
   可放在目標之外）→ 目標 vibesec.yaml 的 project.threat_model → 目標的 docs/threat-model.yaml。
@@ -50,6 +54,44 @@ def derive_tier(tm: dict, contains_llm: bool) -> tuple[str, str]:
 def _model_contains_llm(tm: dict) -> bool:
     """外部專案沒有本 repo 的 project.contains_llm：模型有 agent 或 llm／agent 元件即視為含 LLM（從嚴）。"""
     return bool(tm.get("agents")) or any((c or {}).get("kind") in ("llm", "agent") for c in tm.get("components") or [])
+
+
+COVERAGE_RULES = ("vibesec.g0.threat-gate-disabled", "vibesec.g0.maestro-missing", "vibesec.g0.threats-empty-public")
+
+
+def _tier(rule: str) -> str:
+    """tier 只取本 repo 的政策（不讀被檢查專案的政策檔）；政策無法讀取 → blocking（fail closed，同 g0_trifecta._tier）。"""
+    try:
+        from vibesec_policy import Policy
+        return Policy(ROOT).tier(rule)
+    except Exception:
+        return "blocking"
+
+
+def coverage_findings(tm: dict, vb: dict, contains_llm: bool, external: bool = False) -> list[dict]:
+    """docs/01「自動化作法」第 4 項與「阻擋政策」的覆蓋對照 → 發現（格式同 trifecta_findings）。
+    vb：本 repo 的 vibesec.yaml（G1–G6 以它執行，外部專案也以它判斷閘門是否啟用）；external 時不看它的 methodologies
+    （外部專案沒有可對照的 vibesec.yaml）。"""
+    out, gates = [], (vb.get("gates") or {})
+    mk = lambda rule, reason, **kw: {"rule_id": rule, "control_id": "ASVS5-V15.1", "policy_tier": _tier(rule), **kw, "reason": reason}
+    for t in tm.get("threats") or []:
+        g = (t or {}).get("gate")
+        if not g:
+            continue        # gate: null = 不由執行閘門驗證（接受／轉移的風險），非本檢查範圍
+        key = next((k for k in gates if k.split("_")[0] == str(g).lower()), None)
+        if key is None or (gates.get(key) or {}).get("enabled") is not True:
+            out.append(mk(COVERAGE_RULES[0], f"threat {t.get('id')!r} 由 {g} 驗證，但 vibesec.yaml 的 "
+                          + (f"gates.{key}.enabled 不是 true" if key else f"gates 沒有 {g}") + "：這條威脅實際上沒有閘門把關",
+                          threat=t.get("id")))
+    if contains_llm:
+        lacking = [] if "MAESTRO" in ((tm.get("system") or {}).get("methodologies") or []) else ["威脅模型 system.methodologies"]
+        if not external and "MAESTRO" not in ((gates.get("g0_threat_model") or {}).get("methodologies") or []):
+            lacking.append("vibesec.yaml gates.g0_threat_model.methodologies")
+        if lacking:
+            out.append(mk(COVERAGE_RULES[1], "系統含 LLM，但" + "、".join(lacking) + " 沒有 MAESTRO：Agent／模型層的威脅（MAESTRO-L1–L7）未被系統性列舉"))
+    if (tm.get("system") or {}).get("exposure") == "public" and not tm.get("threats"):
+        out.append(mk(COVERAGE_RULES[2], "system.exposure 為 public，但 threats[] 為空：至少列 STRIDE 六類各一"))
+    return out
 
 
 def _safe_rel(rel: str) -> pathlib.PurePosixPath | None:
@@ -151,14 +193,18 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
             return done("incomplete")
         # 三要素：證據檔在被檢查專案（副本）內核對；--threat-model 指向目標之外時，證據仍以目標為準
         findings = trifecta_findings(tm, copy)
+    open_agents = [f for f in findings if f["policy_tier"] == "blocking"]
+    cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "fail" if open_agents else "pass"
+    if open_agents:
+        reasons.append("致命三要素未切斷：" + "、".join(str(f["agent"]) for f in open_agents))
+    contains_llm = bool((vb.get("project") or {}).get("contains_llm")) if not external else _model_contains_llm(tm)
+    extra = coverage_findings(tm, vb, contains_llm, external)
+    findings += extra
+    reasons += [f"{f['rule_id']}（blocking）：{f['reason']}" for f in extra if f["policy_tier"] == "blocking"]
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     gate["findings_count"] = {"blocking": len(blocking), "advisory": len(findings) - len(blocking)}
-    cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "fail" if blocking else "pass"
-    if blocking:
-        reasons.append("致命三要素未切斷：" + "、".join(str(f["agent"]) for f in blocking))
 
     declared = tm["risk_tier"]
-    contains_llm = bool((vb.get("project") or {}).get("contains_llm")) if not external else _model_contains_llm(tm)
     derived, why = derive_tier(tm, contains_llm)
     tier_fail = []
     if ORDER[declared] < ORDER[derived]:
@@ -195,6 +241,29 @@ def selftest() -> list[str]:
                             (tm("partner", "sensitive_pii_or_secrets", [risky]), True, "L3")]:
         if derive_tier(case, llm)[0] != want:
             fails.append(f"決策樹 {case['system']}、agents={len(case['agents'])}、llm={llm} 應推導為 {want}")
+
+    # 覆蓋對照（docs/01 自動化作法第 4 項、阻擋政策 advisory 兩列）；舊版不產生這些發現
+    vb0 = sarif_gate._yaml(ROOT / "vibesec.yaml")
+    gset = lambda key, **kw: dict(vb0, gates=dict(vb0["gates"], **{key: dict(vb0["gates"][key], **kw)}))
+    off, nomaestro = gset("g6_ai_red_team", enabled=False), gset("g0_threat_model", methodologies=["STRIDE"])
+    th = lambda g: {"id": "t1", "gate": g}
+    base = {"system": {"exposure": "public", "methodologies": ["STRIDE", "MAESTRO"]}, "threats": [th("G6")]}
+    sysm = lambda **kw: dict(base, system=dict(base["system"], **kw))
+    for label, model, vbx, llm, ext, want in [
+            ("覆蓋完整", base, vb0, True, False, set()),
+            ("threat 指向停用的 G6", base, off, True, False, {"vibesec.g0.threat-gate-disabled"}),
+            ("外部專案也以本 repo 的閘門設定判斷", base, off, True, True, {"vibesec.g0.threat-gate-disabled"}),
+            ("gate: null 不檢查", dict(base, threats=[th(None)]), off, True, False, set()),
+            ("含 LLM、模型無 MAESTRO", sysm(methodologies=["STRIDE"]), vb0, True, False, {"vibesec.g0.maestro-missing"}),
+            ("含 LLM、模型未填 methodologies", dict(base, system={"exposure": "public"}), vb0, True, False, {"vibesec.g0.maestro-missing"}),
+            ("含 LLM、vibesec.yaml methodologies 無 MAESTRO", base, nomaestro, True, False, {"vibesec.g0.maestro-missing"}),
+            ("外部專案不看本 repo 的 methodologies", base, nomaestro, True, True, set()),
+            ("不含 LLM 不要求 MAESTRO", sysm(methodologies=["STRIDE"]), nomaestro, False, False, set()),
+            ("public 但 threats 為空", dict(base, threats=[]), vb0, True, False, {"vibesec.g0.threats-empty-public"}),
+            ("internal 且 threats 為空", dict(base, threats=[], system=dict(base["system"], exposure="internal")), vb0, True, False, set())]:
+        got = coverage_findings(model, vbx, llm, ext)
+        if {f["rule_id"] for f in got} != want or any(f["policy_tier"] != "advisory" for f in got):
+            fails.append(f"覆蓋對照「{label}」應得 {sorted(want) or '無發現'}（advisory），得到 {[(f['rule_id'], f['policy_tier']) for f in got]}")
 
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True, text=True)
@@ -233,6 +302,9 @@ def selftest() -> list[str]:
             fails.append(f"合規的模型（已切腳、L2 = 推導值）→ pass，commit 取目標 HEAD（得到 {g['status']}：{g['status_reason']}）")
         if "G1–G4 以本 repo" not in (g["status_reason"] or ""):
             fails.append("外部模型的 risk_tier 與本 repo 不同 → status_reason 註明 G1–G4 的 tier 來源")
+        got = json.loads((out / "g0-findings.json").read_text())["findings"]
+        if g["findings_count"] != {"blocking": 0, "advisory": 1} or [f["rule_id"] for f in got] != ["vibesec.g0.threats-empty-public"]:
+            fails.append(f"範本衍生模型 exposure public、threats 為空 → advisory 一筆，仍 pass（得到 {g['findings_count']}）")
         commit_model(dict(good, risk_tier="L1"))
         g = run(repo, out)
         rt = next(c for c in g["coverage"] if c["control_id"] == "VS-G0-RISK-TIER")
@@ -291,8 +363,11 @@ def selftest() -> list[str]:
             fails.append("檢查不得改動被測專案的工作目錄")
     with tempfile.TemporaryDirectory() as d:
         g = run(ROOT, pathlib.Path(d))
-        if g["status"] != "pass":
-            fails.append(f"本 repo 的威脅模型 → pass（得到 {g['status']}：{g['status_reason']}）")
+        if g["status"] != "pass" or g["findings_count"] != {"blocking": 0, "advisory": 0}:
+            fails.append(f"本 repo 的威脅模型 → pass、無發現（得到 {g['status']}，{g['findings_count']}：{g['status_reason']}）")
+        g = run(ROOT, pathlib.Path(d), vibesec=gset("g4_access_control_review", enabled=False))
+        if g["status"] != "pass" or g["findings_count"]["advisory"] < 1:
+            fails.append(f"本 repo：G4 停用但 threats 指向 G4 → advisory（不擋），得到 {g['status']}，{g['findings_count']}")
         vb = dict(sarif_gate._yaml(ROOT / "vibesec.yaml"), risk_tier="L2")
         g = run(ROOT, pathlib.Path(d), vibesec=vb)
         if g["status"] != "fail" or "不一致" not in (g["status_reason"] or ""):

@@ -1,0 +1,18 @@
+id: g0-threatsempty-neg-01
+gate: G0
+domain: application_architecture
+title: 純內部系統尚未列 threats 不觸發 public 規則
+input:
+  kind: config
+  threat_model:
+    system:
+      exposure: internal
+      methodologies: [STRIDE, MAESTRO]
+    threats: []
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.1
+  rule_id: vibesec.g0.threats-empty-public
+  policy_tier: advisory
+held_out: false
+notes: 規則只針對 exposure public；internal 系統的威脅清單完整性屬人工審查。

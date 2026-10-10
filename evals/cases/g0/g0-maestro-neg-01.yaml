@@ -1,0 +1,23 @@
+id: g0-maestro-neg-01
+gate: G0
+domain: ai_agent_security
+title: 不含 LLM 的系統只用 STRIDE 不需要 MAESTRO
+input:
+  kind: config
+  contains_llm: false
+  g0_methodologies: [STRIDE]
+  threat_model:
+    system:
+      exposure: internal
+      methodologies: [STRIDE]
+    threats:
+      - id: t-tamper
+        category: Tampering
+        gate: G3
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.1
+  rule_id: vibesec.g0.maestro-missing
+  policy_tier: advisory
+held_out: true
+notes: MAESTRO 只在 contains_llm 為 true 時要求；vibesec.yaml 的 methodologies 也只有 STRIDE 仍不應標記。
