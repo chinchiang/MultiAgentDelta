@@ -156,7 +156,7 @@ python3 scripts/g0_threat_model.py --target "$TARGET" [--threat-model <file>] --
 
 外部專案的模型依序取：`--threat-model`（可放在目標之外，例如本 repo 為它寫的模型）→ 目標 `vibesec.yaml` 的 `project.threat_model` → 目標的 `docs/threat-model.yaml`；模型與證據檔從目標追蹤中檔案的副本讀（不跟隨 symlink）。找不到 → `incomplete`（threat model missing），不得拿本 repo 的模型代替。
 
-驗證 `project.threat_model` 符合 `schemas/threat-model.schema.json`；每個 `agents[]` 三要素皆 true 且 `mitigations` 空、`trifecta_leg_cut` null → finding `vibesec.g0.lethal-trifecta-open`（`location.kind: architecture`）；`threats[].status: open` 進 risk register。
+驗證 `project.threat_model` 符合 `schemas/threat-model.schema.json`；每個 `agents[]` 三要素皆 true 且沒有「切腳」mitigation 附可驗證證據（`human_in_the_loop` 不算切腳；`trifecta_leg_cut` 須有切該腳的 mitigation 證據，見 docs/01 §5）→ finding `vibesec.g0.lethal-trifecta-open`（`location.kind: architecture`）；`threats[].status: open` 進 risk register。
 
 ## 步驟 2：多模型審查（呼叫 sub-agents）
 

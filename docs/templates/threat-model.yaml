@@ -37,7 +37,8 @@ trust_boundaries:
   - { id: tb-edge, name: 公開網路邊界,   zones: [z-public, z-app] }
   - { id: tb-data, name: 資料層邊界,     zones: [z-app, z-data] }
 
-# 致命三要素盤點：三者皆 true 且 mitigations 無法切斷任一隻腳 → G0 不得放行（見 trifecta_leg_cut）
+# 致命三要素盤點：三者皆 true 且沒有「切腳」mitigation 附可驗證證據 → G0 不得放行（docs/01 §5）
+# human_in_the_loop 不算切腳；trifecta_leg_cut 只是宣告，須有切該腳的 mitigation 並在 mitigation_evidence 附證據
 agents:
   - id: c-agent
     accesses_private_data: true          # 讀 c-db 的 pii
@@ -46,7 +47,12 @@ agents:
     tools: [search_notes, fetch_url, summarize]
     high_impact_tools: []                # 若含 delete_*/execute_sql 必須列入並要求 HITL
     mitigations: [egress_allowlist, read_only_data]
-    trifecta_leg_cut: untrusted_content  # 本例選擇以出向 allow-list + 擷取內容淨化切斷「不受信任內容」腳
+    trifecta_leg_cut: external_comms     # 本例以出向 allow-list 切斷「對外通訊」腳（read_only_data 為縱深防禦）
+    mitigation_evidence:                 # 目前只支援 claude_permission：rules 必須出現在 ref 的 permissions.ask／deny
+      egress_allowlist:
+        - kind: claude_permission
+          ref: .claude/settings.json
+          rules: [WebFetch]
 
 # threats 可由 G0 產出模板（docs/templates/g0-report.md）填寫，或先留空由威脅建模工作坊補齊
 threats: []
