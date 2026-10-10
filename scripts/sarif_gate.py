@@ -8,12 +8,15 @@
   python3 scripts/sarif_gate.py selftest
 
 規則對應：
-  - SARIF ruleId 結尾是 vibesec.gN.x（semgrep 自訂規則）→ 該規則（-js / -supabase-js 變體歸回本名）
+  - SARIF rule／result properties 帶 vibesec_rule_id（或 properties.metadata.vibesec_rule_id）且在 cwe-map → 該規則
+  - SARIF ruleId 結尾是 vibesec.gN.x（semgrep 自訂規則）→ 規則檔 metadata.vibesec_rule_id（semgrep SARIF 不帶 metadata，
+    由本 repo 規則檔反查）；否則該規則（-js / -supabase-js 變體歸回本名）
   - 否則以 config/catalogs/cwe-map.yaml 的 implemented_by（<tool>:<id>）對回 vibesec 規則
   - 都對不到 → 保留外部 ID（<tool>:<ruleId>），tier 取 blocking-policy 的 default_tier
 tier：blocking-policy.yaml 的 blocking 清單 + tier_overrides[risk_tier]；exceptions（未過期）把 blocking 降為 advisory，發現保留。
 狀態（incomplete ≠ pass，CLAUDE.md #2）：
-  有 blocking → fail；否則任一工具輸出缺席或無法解析 → incomplete；否則 → pass。
+  有 blocking → fail；否則任一工具輸出缺席、無法解析或自報執行失敗（invocations executionSuccessful=false、
+  toolExecutionNotifications 有 level error）→ incomplete；否則 → pass。
 退出碼：0（寫出 gate JSON；狀態由 summary 依 mode 決定是否阻擋）；2 = 缺 PyYAML（無法判定）。
 """
 from __future__ import annotations
@@ -61,21 +64,54 @@ def load_policy() -> dict:
     exceptions, ignored = load_exceptions()
     return {"mode": vb.get("mode", "shadow"), "risk_tier": tier, "blocking": blocking, "policy": policy,
             "default_tier": policy.default_tier, "impl": impl, "controls": controls,
-            "exceptions": exceptions, "ignored_exceptions": ignored}
+            "exceptions": exceptions, "ignored_exceptions": ignored, "semgrep_aliases": load_semgrep_aliases()}
 
 
 def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
-    """回傳 (results, 錯誤)。檔案缺席或無法解析 → (None, 原因)。"""
+    """回傳 (results, 錯誤)。檔案缺席或無法解析 → (None, 原因)。
+    工具自報執行失敗（invocations[].executionSuccessful == false 或 toolExecutionNotifications 有 level error）
+    → (results, 原因)：結果可能不完整，發現照算，但該工具不算跑完（incomplete ≠ pass）。
+    每筆 result 附 `_vibesec_rule_id`：取自 SARIF rule／result 的 properties.vibesec_rule_id（或 properties.metadata.vibesec_rule_id）。"""
     if not path.is_file():
         return None, f"{path.name} 不存在（工具未執行、失敗或 artifact 缺席）"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         return None, f"{path.name} 無法解析（{type(e).__name__}）"
-    runs = data.get("runs")
-    if not isinstance(runs, list):
-        return None, f"{path.name} 沒有 runs（不是有效的 SARIF）"
-    return [r for run in runs for r in run.get("results") or []], None
+    runs = data.get("runs") if isinstance(data, dict) else None
+    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
+        return None, f"{path.name} 沒有 runs 或 runs 內容不是物件（不是有效的 SARIF）"
+    out, failed = [], []
+    for run in runs:
+        for inv in run.get("invocations") or []:
+            if not isinstance(inv, dict):
+                continue
+            if inv.get("executionSuccessful") is False:
+                failed.append("executionSuccessful=false")
+            errs = [n for n in inv.get("toolExecutionNotifications") or [] if isinstance(n, dict) and n.get("level") == "error"]
+            if errs:
+                msg = ((errs[0].get("message") or {}).get("text") or "") if isinstance(errs[0].get("message"), dict) else ""
+                failed.append(f"{len(errs)} 個 error 等級的 toolExecutionNotifications" + (f"（{msg[:120]}）" if msg else ""))
+        rules = ((run.get("tool") or {}).get("driver") or {}).get("rules") if isinstance(run.get("tool"), dict) else None
+        rules = [x for x in rules or [] if isinstance(x, dict)] if isinstance(rules, list) else []
+        by_id = {x.get("id"): x for x in rules if x.get("id")}
+        results = run.get("results") or []
+        if not isinstance(results, list):
+            return None, f"{path.name} 的 results 不是陣列（不是有效的 SARIF）"
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            idx = r.get("ruleIndex")
+            rule = by_id.get(r.get("ruleId")) or (rules[idx] if isinstance(idx, int) and 0 <= idx < len(rules) else {})
+            vid = None
+            for props in (r.get("properties"), rule.get("properties")):
+                if isinstance(props, dict):
+                    md = props.get("metadata") if isinstance(props.get("metadata"), dict) else {}
+                    vid = vid or props.get("vibesec_rule_id") or md.get("vibesec_rule_id")
+            out.append(dict(r, _vibesec_rule_id=vid if isinstance(vid, str) else None))
+    if failed:
+        return out, f"{path.name} 回報工具執行未成功：" + "；".join(dict.fromkeys(failed))
+    return out, None
 
 
 def _location(r: dict) -> str:
@@ -86,9 +122,33 @@ def _location(r: dict) -> str:
     return ""
 
 
-def map_rule(tool: str, rule_id: str, pol: dict) -> list[str]:
+def load_semgrep_aliases() -> dict[str, str]:
+    """本 repo semgrep 規則檔（vibesec.yaml g3_sast_iac.semgrep_rules 中的本地路徑）的 id → metadata.vibesec_rule_id。
+    semgrep 的 SARIF 不帶自訂 metadata（rules[].properties 只有 precision、tags），只能從規則檔反查。"""
+    out: dict[str, str] = {}
+    cfg = ((_yaml(ROOT / "vibesec.yaml").get("gates") or {}).get("g3_sast_iac") or {})
+    for ref in cfg.get("semgrep_rules") or ["config/semgrep/vibesec-rules.yaml"]:
+        p = ROOT / str(ref)
+        if str(ref).startswith(("p/", "r/")) or not p.is_file():
+            continue
+        for r in _yaml(p).get("rules") or []:
+            vid = ((r or {}).get("metadata") or {}).get("vibesec_rule_id")
+            if isinstance(r, dict) and r.get("id") and isinstance(vid, str):
+                out[str(r["id"])] = vid
+    return out
+
+
+def map_rule(tool: str, rule_id: str, pol: dict, declared: str | None = None) -> list[str]:
+    # 1) SARIF 自帶 vibesec_rule_id；2) 本 repo 規則檔的 metadata.vibesec_rule_id（semgrep）；
+    # 只採用 cwe-map 有登錄的 ID（CLAUDE.md #3），否則回到原本的對應邏輯
+    known = pol.get("controls") or {}
+    if declared and declared in known:
+        return [declared]
     m = VIBESEC_ID.search(rule_id or "")
     if m:
+        alias = (pol.get("semgrep_aliases") or {}).get(m.group(1))
+        if alias and alias in known:
+            return [alias]
         return [VARIANT.sub("", m.group(1))]
     key = f"{tool}:{rule_id}"
     mapped = set(pol["impl"].get(key, set()))
@@ -103,7 +163,7 @@ def to_findings(tool: str, results: list[dict], pol: dict) -> list[dict]:
     out = []
     for r in results:
         loc = _location(r)
-        for rid in map_rule(tool, r.get("ruleId") or "", pol):
+        for rid in map_rule(tool, r.get("ruleId") or "", pol, r.get("_vibesec_rule_id")):
             f = {"rule_id": rid, "tool": tool, "location": loc, "policy_tier": pol["policy"].tier(rid)}   # tier 唯一來源
             for ex in pol["exceptions"]:
                 if ex["rule_id"] == rid and fnmatch.fnmatchcase(loc, ex["path_glob"]):
@@ -130,13 +190,15 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
         problems.append("envcheck：未提供 g2-envcheck.json")
     for name, path in tools.items():
         results, err = read_sarif(path)
-        state = "ran" if results is not None else ("missing" if "不存在" in (err or "") else "error")
+        state = "ran" if err is None else ("missing" if results is None and "不存在" in err else "error")
         tool_rows.append({"name": name, "version": None, "state": state, "exit_code": None,
                           "output_ref": str(path), "duration_seconds": None})
-        if results is None:
+        if err:
             problems.append(f"{name}：{err}")
+        if results is None:
             continue
-        ran.add(name)
+        if err is None:   # 工具自報失敗：發現照算，但不算跑完（負責的控制記 untested）
+            ran.add(name)
         findings += to_findings(name, results, pol)
     if envcheck is not None:
         try:
@@ -244,6 +306,43 @@ def selftest() -> list[str]:
         g = run("G3", {"semgrep": sarif(res("vibesec.g3.command-injection")), "checkov": None, "trivy": sarif()})
         if g["status"] != "fail" or "另有工具未完成" not in (g["status_reason"] or ""):
             fails.append("有 blocking 又有工具缺席 → fail，且理由寫出缺席工具")
+        bad_run = lambda inv: {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "semgrep"}}, "results": [],
+                                                             "invocations": [inv]}]}
+        g = run("G3", {"semgrep": bad_run({"executionSuccessful": False}), "checkov": sarif(), "trivy": sarif()})
+        if g["status"] != "incomplete" or "executionSuccessful" not in (g["status_reason"] or ""):
+            fails.append(f"invocations executionSuccessful=false → incomplete（得到 {g['status']}）")
+        if next(c for c in g["coverage"] if c["control_id"] == "ASVS5-V1.2")["state"] != "untested":
+            fails.append("工具自報失敗 → 負責的控制 untested")
+        g = run("G3", {"semgrep": bad_run({"executionSuccessful": True, "toolExecutionNotifications": [
+            {"level": "error", "message": {"text": "Timeout when running rule"}}]}), "checkov": sarif(), "trivy": sarif()})
+        if g["status"] != "incomplete":
+            fails.append(f"toolExecutionNotifications level error → incomplete（得到 {g['status']}）")
+        g = run("G3", {"semgrep": bad_run({"executionSuccessful": True, "toolExecutionNotifications": [
+            {"level": "warning", "message": {"text": "x"}}]}), "checkov": sarif(), "trivy": sarif()})
+        if g["status"] != "pass":
+            fails.append(f"只有 warning 等級的通知 → 仍可 pass（得到 {g['status']}）")
+        g = run("G3", {"semgrep": {"version": "2.1.0", "runs": ["oops"]}, "checkov": sarif(), "trivy": sarif()})
+        if g["status"] != "incomplete":
+            fails.append("runs 內含非物件 → 無效 SARIF → incomplete（不得丟出例外）")
+        if map_rule("semgrep", "config.semgrep.vibesec.g4.supabase-table-without-rls", pol) != ["vibesec.g4.supabase-rls-disabled"]:
+            fails.append("supabase-table-without-rls 應依規則檔 metadata.vibesec_rule_id 歸到 vibesec.g4.supabase-rls-disabled")
+        if map_rule("semgrep", "config.semgrep.vibesec.g3.xss-unescaped-render-py", pol) != ["vibesec.g3.xss-innerhtml"]:
+            fails.append("xss-unescaped-render-py 應歸到 vibesec.g3.xss-innerhtml")
+        if map_rule("semgrep", "x.vibesec.g3.sql-string-concat-js", pol) != ["vibesec.g3.sql-string-concat"]:
+            fails.append("-js 變體仍歸回本名")
+        tagged = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t", "rules": [
+            {"id": "custom-1", "properties": {"metadata": {"vibesec_rule_id": "vibesec.g3.command-injection"}}}]}},
+            "results": [res("custom-1")]}]}
+        g = run("G3", {"semgrep": tagged, "checkov": sarif(), "trivy": sarif()})
+        if g["status"] != "fail":
+            fails.append(f"SARIF rule properties.metadata.vibesec_rule_id 應被採用（command-injection blocking → fail；得到 {g['status']}）")
+        # L3：tier_overrides 把 vibesec.g4.supabase-rls-disabled 升為 blocking；建表未啟用 RLS 的 semgrep 規則要吃到這個升級
+        run("G3", {"semgrep": sarif(res("config.semgrep.vibesec.g4.supabase-table-without-rls", "supabase/migrations/1.sql")),
+                "checkov": sarif(), "trivy": sarif()})
+        g = derive("G3", {k: D / f"G3-{k}.sarif" for k in ("semgrep", "checkov", "trivy")}, None,
+                   dict(pol, policy=Policy(ROOT, risk_tier="L3")))
+        if g["status"] != "fail" or g["findings_count"]["blocking"] != 1:
+            fails.append(f"L3 下 supabase-table-without-rls → supabase-rls-disabled blocking → fail（得到 {g['status']}）")
         g = run("G2", {"gitleaks": sarif()}, env={"rule_id": "vibesec.g2.env-not-ignored", "env_gitignore_fail": 0})
         if g["status"] != "pass":
             fails.append("G2 無發現 → pass")

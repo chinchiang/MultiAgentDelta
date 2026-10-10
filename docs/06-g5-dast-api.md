@@ -164,6 +164,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 - conf 為 IGNORE／OUTOFSCOPE 的警示略過；conf 沒列且 riskcode 0（Informational）略過。
 - rule_id 以 `config/catalogs/cwe-map.yaml` 的 `implemented_by` 反查（`zap:10038` → `vibesec.g3.missing-csp`、`zap:40040` → `vibesec.g5.cors-reflect-origin`），查不到記 `zap:<pluginid>`（CLAUDE.md 規則 3）；tier 一律查 `blocking-policy`，外部規則預設 advisory。其他 ZAP 規則要不要對到 vibesec 規則屬政策決定，由人類在獨立 PR 決定。
 - 報告缺席或無法解析 → 該掃描 `untested` → G5 `incomplete`（incomplete ≠ pass）。
+- 報告沒有任何 site（`site: []` 或缺 `site`：spider 沒掃到目標、目標不可達或 API 定義匯入失敗）→ 該掃描 `untested`；有 site 但零警示 → `pass`。
 
 ### 7. 其他工具
 
