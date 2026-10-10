@@ -18,6 +18,8 @@ held_out:
 - g4-hitl-neg-02
 - g4-hitl-neg-04
 - g4-hitl-pos-01
+- g4-mcp-resource-neg-02
+- g4-mcp-resource-pos-02
 - g4-owner-pos-02
 - g4-rls-pos-01
 - g4-single-mw-fastapi-neg-02
@@ -71,6 +73,8 @@ held_in:
 - g4-hitl-neg-01
 - g4-hitl-neg-03
 - g4-hitl-pos-02
+- g4-mcp-resource-neg-01
+- g4-mcp-resource-pos-01
 - g4-owner-neg-02
 - g4-owner-neg-03
 - g4-owner-pos-01
@@ -103,20 +107,20 @@ held_in:
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
   # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
-  total: 100
-  held_out_ratio: 0.34
+  total: 104
+  held_out_ratio: 0.35
   by_gate:
     G0: 4
     G1: 13
     G2: 9
     G3: 21
-    G4: 23
+    G4: 27
     G5: 16
     G6: 14
   by_domain:
     ai_agent_security: 24
     application_architecture: 3
-    authentication: 8
+    authentication: 12
     authorization: 13
     build_supply_chain: 4
     csp: 2
@@ -129,8 +133,8 @@ distribution:
     secret_exposure: 9
     xss: 3
   by_polarity:
-    neg: 48
-    pos: 52
+    neg: 50
+    pos: 54
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-ssrf-incomplete-01

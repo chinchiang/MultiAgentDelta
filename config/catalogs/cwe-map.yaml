@@ -247,7 +247,7 @@ rules:
     control_ids: [ASVS5-V10.1, VS-G4-MCP-RESOURCE-INDICATOR, MAESTRO-L3]
     gate: G4
     policy_tier: advisory
-    implemented_by: [review:G4-llm-review]
+    implemented_by: [review:G4-llm-review]   # 單檔啟發式在 scripts/g4_access.py（本機版；pr-gates.yml inline 步驟尚未包含）；跨檔與 token passthrough 由 LLM 審查
 
   # ---------------- G5 DAST 與 API ----------------
   vibesec.g5.bola-cross-account:

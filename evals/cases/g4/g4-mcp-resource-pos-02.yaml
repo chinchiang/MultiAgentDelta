@@ -1,0 +1,24 @@
+id: g4-mcp-resource-pos-02
+gate: G4
+domain: authentication
+title: MCP server 帶了 audience 卻關掉 verify_aud
+input:
+  kind: code
+  language: python
+  path: mcp_server/auth.py
+  snippet: |
+    import jwt
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("notes")
+    SERVER_URI = "https://mcp.example.com"
+
+    def verify_token(token: str) -> dict:
+        return jwt.decode(token, PUBLIC_KEY, algorithms=["RS256"], audience=SERVER_URI,
+                          options={"verify_aud": False})
+expected:
+  should_flag: true
+  control_id: VS-G4-MCP-RESOURCE-INDICATOR
+  rule_id: vibesec.g4.mcp-missing-resource-indicator
+  policy_tier: advisory
+held_out: true
