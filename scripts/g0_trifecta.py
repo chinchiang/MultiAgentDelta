@@ -8,7 +8,7 @@
 只判斷威脅模型「宣告」的內容；宣告是否屬實（例如 mitigation 是否真的生效）屬 G0 人工／LLM 審查範圍。
 
 用法：python3 scripts/g0_trifecta.py [threat-model.yaml]   # 預設讀 vibesec.yaml 的 project.threat_model
-離開碼：0 = 無發現；1 = 有 blocking 發現；2 = 無法讀取（incomplete，非通過）
+離開碼：0 = 無發現；1 = 有 blocking 發現；2 = 無法讀取、為空或不符 schemas/threat-model.schema.json（incomplete，非通過）
 """
 from __future__ import annotations
 
@@ -59,15 +59,44 @@ def verify_mitigation(name: str, evidence: list[dict], root: Path, high_impact: 
     return True, f"{name}：已由 " + "、".join(str(e.get("ref")) for e in evidence) + " 落實"
 
 
-def _tier() -> str:
+def _tier(root: Path = ROOT) -> str:
     """tier 只來自本 repo（VibeSec）的 blocking-policy，不讀被檢查專案的政策檔——否則被測專案放一份自己的
-    blocking-policy.yaml 就能把本規則降為 advisory（--target）。政策檔無法讀取時退回 blocking（fail closed）。"""
+    blocking-policy.yaml 就能把本規則降為 advisory（--target）。政策檔無法讀取或解析（含 YAMLError、結構不符）
+    時退回 blocking（fail closed）。root 只供 selftest 指向壞政策檔。"""
     try:
         sys.path.insert(0, str(ROOT / "scripts"))
         from vibesec_policy import Policy
-        return Policy(ROOT).tier(RULE)
-    except (OSError, ValueError):
+        return Policy(root).tier(RULE)
+    except Exception:   # yaml.YAMLError 不是 ValueError 的子類別；任何讀取失敗都不得讓本規則消失或降級
         return "blocking"
+
+
+def load_threat_model(path: Path) -> tuple[dict | None, str | None]:
+    """讀取並以 schemas/threat-model.schema.json 驗證威脅模型 → (模型, None) 或 (None, 理由)。
+    空檔、{}、不符 schema、缺 jsonschema 都是「無法判定」，不是「沒有發現」（incomplete ≠ pass）。"""
+    try:
+        import yaml
+    except ImportError:
+        return None, "工具缺席：PyYAML，無法讀取威脅模型"
+    try:
+        tm = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        return None, f"無法讀取威脅模型：{type(e).__name__}: {e}"
+    if not isinstance(tm, dict) or not tm:
+        return None, f"威脅模型 {path} 為空或不是物件"
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError:
+        return None, "工具缺席：jsonschema，無法驗證威脅模型是否符合 schema"
+    try:
+        schema = json.loads((ROOT / "schemas/threat-model.schema.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"無法讀取 threat-model schema：{type(e).__name__}: {e}"
+    errs = sorted(Draft202012Validator(schema).iter_errors(tm), key=str)
+    if errs:
+        return None, (f"{path} 不符 threat-model schema：{errs[0].message} @ {'/'.join(map(str, errs[0].path)) or '(root)'}"
+                      + (f"（共 {len(errs)} 處）" if len(errs) > 1 else ""))
+    return tm, None
 
 
 def trifecta_findings(threat_model: dict, root: Path | None = None) -> list[dict]:
@@ -132,6 +161,25 @@ def selftest() -> list[str]:
         got = trifecta_findings(agent(mitigations=[]), root)
         if not got or got[0]["policy_tier"] != "blocking":
             fails.append("tier 取自本 repo 的政策，不讀被檢查專案的 blocking-policy.yaml")
+        # 政策檔是壞 YAML → 退回 blocking，不拋出例外
+        (root / "config/policy/blocking-policy.yaml").write_text("blocking: [\n  - {rule_id: x\n")
+        try:
+            if _tier(root) != "blocking":
+                fails.append("政策檔 YAML 壞掉時 tier 應退回 blocking")
+        except Exception as e:
+            fails.append(f"政策檔 YAML 壞掉時不應拋出例外：{type(e).__name__}")
+        # 獨立 CLI：空檔、{}、不符 schema → 離開碼 2（incomplete），不是 0（無發現）
+        import contextlib, io
+        for label, body in [("空檔", ""), ("{}", "{}\n"), ("不符 schema", "agents: []\n"), ("壞 YAML", "a: [\n")]:
+            (root / "tm.yaml").write_text(body)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = main(["g0_trifecta.py", str(root / "tm.yaml")])
+            if rc != 2:
+                fails.append(f"威脅模型為{label} → 離開碼 2（incomplete），得到 {rc}")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = main(["g0_trifecta.py", str(ROOT / "docs/templates/threat-model.yaml")])
+        if rc == 2:
+            fails.append("符合 schema 的威脅模型不應為 incomplete")
     return fails
 
 
@@ -141,18 +189,24 @@ def main(argv: list[str]) -> int:
         for f in fails: print(f"FAIL {f}")
         print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
         return 1 if fails else 0
-    import yaml
-    try:
-        if len(argv) > 1:
-            path = Path(argv[1])
-        else:
-            vb = yaml.safe_load((ROOT / "vibesec.yaml").read_text(encoding="utf-8")) or {}
-            path = ROOT / ((vb.get("project") or {}).get("threat_model") or "")
-        tm = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as e:
-        print(json.dumps({"gate": "G0", "status": "incomplete", "status_reason": f"無法讀取威脅模型：{e}"},
-                         ensure_ascii=False))
+    def incomplete(reason: str) -> int:
+        print(json.dumps({"gate": "G0", "status": "incomplete", "status_reason": reason}, ensure_ascii=False))
         return 2
+    if len(argv) > 1:
+        path = Path(argv[1])
+    else:
+        try:
+            import yaml
+            vb = yaml.safe_load((ROOT / "vibesec.yaml").read_text(encoding="utf-8")) or {}
+            rel = (vb.get("project") or {}).get("threat_model") or ""
+        except Exception as e:   # 缺 PyYAML、讀不到、YAMLError、結構不符
+            return incomplete(f"無法從 vibesec.yaml 取得 project.threat_model：{type(e).__name__}: {e}")
+        if not rel:
+            return incomplete("vibesec.yaml 未設定 project.threat_model")
+        path = ROOT / rel
+    tm, err = load_threat_model(path)
+    if err:
+        return incomplete(err)
     findings = trifecta_findings(tm)
     print(json.dumps({"gate": "G0", "findings": findings}, ensure_ascii=False, indent=2))
     return 1 if findings else 0

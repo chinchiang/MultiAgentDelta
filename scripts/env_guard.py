@@ -7,7 +7,7 @@
 退出碼：0 通過；1 阻擋。
 """
 from __future__ import annotations
-import sys, re, subprocess
+import sys, re, subprocess, fnmatch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +25,30 @@ def tracked(root=ROOT):
         return None
     return [f for f in r.stdout.split("\0") if f]
 
+def ignores_env(gi_text: str) -> bool:
+    """.gitignore 是否真的忽略根目錄的 .env（git 語意：最後一條相符的規則勝出，! 開頭為反向）。
+    舊版只看「有行以 .env 開頭」，.env.example、.envrc 也算；!.env 之類的反向規則也會被當成忽略。"""
+    ignored = False
+    for line in gi_text.splitlines():
+        pat = line.rstrip()
+        if not pat or pat.startswith("#"):
+            continue
+        neg = pat.startswith("!")
+        pat = pat[1:] if neg else pat
+        if pat.startswith("\\"):
+            pat = pat[1:]                       # \# 與 \! 跳脫
+        if pat.endswith("/"):
+            continue                            # 只比對目錄，不會忽略 .env 檔
+        for pre in ("**/", "/"):
+            if pat.startswith(pre):
+                pat = pat[len(pre):]
+                break
+        if "/" in pat:
+            continue                            # 含中間斜線：只比對特定子路徑，不涵蓋根目錄的 .env
+        if fnmatch.fnmatchcase(".env", pat):
+            ignored = not neg
+    return ignored
+
 def check(root=ROOT):
     """回傳錯誤訊息清單；空清單 = 通過。"""
     root = Path(root)
@@ -38,7 +62,7 @@ def check(root=ROOT):
         errs.append("已追蹤的機密檔（應移出版控並撤銷其中憑證）：\n  - " + "\n  - ".join(bad))
     gi = root / ".gitignore"
     gi_text = gi.read_text() if gi.exists() else ""
-    if not re.search(r'^\s*\.env', gi_text, re.M):
+    if not ignores_env(gi_text):
         errs.append(".gitignore 未包含 .env 規則（新建的 .env 可能被誤加入）。")
     return errs
 
@@ -60,6 +84,13 @@ def selftest():
         subprocess.run(["git", "rm", "-q", "--cached", "設定/.env"], cwd=D, check=True, env=env)
         if check(D):
             fails.append(f"移出版控後應通過（得到 {check(D)}）")
+    # .gitignore 必須真的忽略 .env：.env.example、.envrc、反向規則、只限目錄或子路徑者都不算
+    for text, want in [(".env\n", True), (".env*\n", True), ("/.env\n", True), ("**/.env\n", True), ("*.env\n", True),
+                       ("node_modules/\n  .env\n", False), (".env.example\n", False), (".envrc\n", False),
+                       (".env\n!.env\n", False), ("!.env\n", False), (".env*\n!.env.example\n", True),
+                       (".env/\n", False), ("config/.env\n", False), ("# .env\n", False), ("", False)]:
+        if ignores_env(text) != want:
+            fails.append(f".gitignore {text!r} 應{'視為' if want else '不視為'}忽略 .env")
     return fails
 
 def main(argv):
