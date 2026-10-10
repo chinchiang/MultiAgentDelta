@@ -17,6 +17,9 @@ on:
 permissions:
   contents: read
   security-events: write
+  # upload-sarif 要查詢 workflow run（get-a-workflow-run）；沒有 actions: read 會得到
+  # 「Resource not accessible by integration」，SARIF 上傳失敗（nightly-full.yml 已有）。
+  actions: read
 
 jobs:
   blackbox:
@@ -35,6 +38,7 @@ jobs:
     env:
       PROMPTFOO_VERSION: "0.123.1"   # npm，2026-09-18 發布；npm 依 registry 的 integrity（sha512）驗證套件
       GARAK_VERSION: "0.17.0"        # PyPI，2026-09-09 發布
+      TORCH_VERSION: "2.14.0"        # PyPI／PyTorch CPU index，2026-09-02 發布（滿 14 天）；garak 需要 torch>=2.13.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -728,8 +732,19 @@ jobs:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
           mkdir -p reports
-          pip install "garak==${GARAK_VERSION}" >reports/_garak-install.log 2>&1 || echo "::warning::garak 安裝失敗（記為 untested）"
-          if command -v garak >/dev/null 2>&1; then
+          # 先從 PyTorch CPU index 安裝 CPU 版 torch，再裝 garak：PyPI 的 torch 會連帶裝 CUDA 函式庫（整個環境約 9.6 GB，
+          # 安裝約 3 分鐘），runner 磁碟吃緊時會在安裝中途失敗；CPU 版約 2 GB、約 70 秒。這個 job 沒有 GPU，用不到 CUDA。
+          # 只有 torch 本體（及其少數相依）取自 PyTorch index；garak 與其餘相依仍由 PyPI 安裝。
+          install_ok=1
+          { pip install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" \
+              && pip install "garak==${GARAK_VERSION}"; } >reports/_garak-install.log 2>&1 || install_ok=0
+          if [ "$install_ok" != 1 ]; then
+            # 安裝記錄以前只留在 artifact；失敗原因（磁碟不足、下載中斷、相依衝突）要在 Actions log 就看得到
+            echo "::warning::garak 安裝失敗（記為 untested）"
+            echo "--- reports/_garak-install.log（最後 40 行）---"; tail -n 40 reports/_garak-install.log
+            echo "--- 磁碟 ---"; df -h "$RUNNER_TEMP" | tail -n 1
+          fi
+          if [ "$install_ok" = 1 ] && command -v garak >/dev/null 2>&1; then
             # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
             sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
             garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \

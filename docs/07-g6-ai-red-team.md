@@ -114,10 +114,12 @@ python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6
 | 成本探針結果缺席、無法解析或 `untested` | 成本面（LLM10）`untested` |
 | 成本探針 `fail`（接受超長輸入、看不到成本上限） | 成本面 `fail` → `vibesec.g6.denial-of-wallet`（tier 查 blocking-policy） |
 | 目標不在 `config/targets.yaml`（`--target-denied`） | 不讀任何結果，閘門 `incomplete` |
-| garak 未安裝或無報告 | garak 層 `untested` |
+| garak 未安裝或無報告 | garak 層 `untested`；安裝失敗時，staging 把安裝記錄最後 40 行與磁碟用量印在 Actions log |
 | 有 blocking 失敗 | 閘門 `fail`（其他未完成項目寫在 `status_reason`） |
 | 無失敗但有任何 `untested` | 閘門 `incomplete`（incomplete ≠ pass） |
 | 全部層都實際執行且無失敗 | 閘門 `pass` |
+
+garak 在 staging 以 pip 安裝：先從 PyTorch CPU index 裝釘版的 CPU 版 torch（`TORCH_VERSION`），再裝 `GARAK_VERSION`。PyPI 預設的 torch 會連帶裝 CUDA 函式庫（整個環境約 9.6 GB、約 3 分鐘），而這個 job 沒有 GPU；CPU 版約 2 GB、約 70 秒。兩個版本都要發布滿 `cooldown_days`（14 天），升版請手動確認發布日。
 
 ### Provider 金鑰設定（redteam 生成層）
 
