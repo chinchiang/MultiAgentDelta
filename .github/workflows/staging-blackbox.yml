@@ -231,6 +231,12 @@ jobs:
                               "locations": [{"physicalLocation": {"artifactLocation": {"uri": ".github/workflows/staging-blackbox.yml"}}}],
                               "properties": {"policy_tier": tier, "target_url": URL}})
 
+          # 不跟隨重新導向：urlopen 預設會跟到 Location 指的任何主機，還把 Authorization 帶過去；
+          # 導向目標沒經過 target_guard 授權檢查（規則 8）。3xx 原樣回傳，由各探針判讀
+          class _NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *a, **k): return None
+          OPENER = urllib.request.build_opener(_NoRedirect)
+
           def req(path, method="GET", token=None, data=None, headers=None, timeout=15):
               url = path if path.startswith("http") else URL + path
               h = {"User-Agent": "vibesec-g5-probes"}
@@ -241,7 +247,7 @@ jobs:
                   body = json.dumps(data).encode(); h["Content-Type"] = "application/json"
               r = urllib.request.Request(url, data=body, headers=h, method=method)
               try:
-                  with urllib.request.urlopen(r, timeout=timeout) as resp:
+                  with OPENER.open(r, timeout=timeout) as resp:
                       return resp.status, resp.read().decode("utf-8", "replace")
               except urllib.error.HTTPError as e:
                   return e.code, e.read().decode("utf-8", "replace")
@@ -265,14 +271,17 @@ jobs:
 
           # ---- swagger_exposed ----
           if reachable:
-              exposed = []
+              exposed, answered = [], 0
               for p in ["/openapi.json", "/docs", "/redoc", "/swagger", "/swagger.json"]:
                   s, _ = req(p)
+                  answered += s is not None
                   if s == 200: exposed.append(p)
               if exposed:
                   add("vibesec.g5.swagger-exposed", "warning",
                       f"API 文件/schema 對外暴露：{', '.join(exposed)}（開發便利設定外溢）")
                   coverage["swagger_exposed"] = "fail"
+              elif not answered:   # 每個請求都連不上：沒測到，不是「沒暴露」
+                  coverage["swagger_exposed"] = "untested"; coverage_reasons["swagger_exposed"] = "所有文件路徑的請求都失敗"
               else:
                   coverage["swagger_exposed"] = "pass"
 
@@ -284,6 +293,9 @@ jobs:
                   add("vibesec.g5.graphql-introspection", "warning",
                       "GraphQL introspection 開啟（洩漏 schema）")
                   coverage["graphql_introspection"] = "fail"
+              elif s in (404, 405):   # 沒有 GraphQL 端點：不適用，不是「已關閉 introspection」
+                  coverage["graphql_introspection"] = "not_applicable"
+                  coverage_reasons["graphql_introspection"] = f"POST /graphql 回 HTTP {s}：目標沒有 GraphQL 端點"
               else:
                   coverage["graphql_introspection"] = "pass" if s is not None else "untested"
 
@@ -294,7 +306,7 @@ jobs:
               h = {"User-Agent": "vibesec-g5-probes", "Origin": EVIL}
               if HAS_A: h["Authorization"] = f"Bearer {TA}"
               try:
-                  with urllib.request.urlopen(urllib.request.Request(URL + "/openapi.json", headers=h), timeout=15) as resp:
+                  with OPENER.open(urllib.request.Request(URL + "/openapi.json", headers=h), timeout=15) as resp:
                       acao, acac = resp.headers.get("Access-Control-Allow-Origin"), resp.headers.get("Access-Control-Allow-Credentials")
               except urllib.error.HTTPError as e:
                   acao, acac = e.headers.get("Access-Control-Allow-Origin"), e.headers.get("Access-Control-Allow-Credentials")
@@ -570,7 +582,11 @@ jobs:
               for _ in range(25):
                   s, _ = req("/login", "POST", data={"username": "alice", "password": "wrong"})
                   codes.append(s)
-              if 429 not in codes:
+              if all(c is None for c in codes):
+                  coverage["rate_limit"] = "untested"; coverage_reasons["rate_limit"] = "POST /login 的請求全部失敗"
+              elif all(c in (404, 405) for c in codes):   # 探針只認 /login：目標的登入端點在別處時沒測到
+                  coverage["rate_limit"] = "untested"; coverage_reasons["rate_limit"] = f"目標沒有 POST /login（HTTP {codes[0]}）"
+              elif 429 not in codes:
                   add("vibesec.g5.missing-rate-limit", "warning",
                       "登入端點 25 次連續請求未見 429（缺 Rate Limiting / Captcha）")
                   coverage["rate_limit"] = "fail"
@@ -670,7 +686,7 @@ jobs:
           mkdir -p reports
           # 退出碼 100 = 有測試失敗（正常結果，交給 g6_gate.py 判定 fail）；其他非零 = 工具錯誤
           set +e
-          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c config/promptfoo/tests.yaml --no-cache \
+          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c _trusted/config/promptfoo/tests.yaml --no-cache \
             --output reports/g6-promptfoo.json </dev/null >reports/_promptfoo.log 2>&1
           code=$?
           set -e
@@ -702,12 +718,12 @@ jobs:
           # 依可用金鑰，從 config/providers.yaml 取模型名稱，產生臨時設定（不修改 repo 內設定檔）
           python3 - <<'PY'
           import os, yaml, pathlib
-          prov = yaml.safe_load(open("config/providers.yaml"))["providers"]
+          prov = yaml.safe_load(open("_trusted/config/providers.yaml"))["providers"]
           if os.environ.get("ANTHROPIC_API_KEY"):
               pid = f"anthropic:messages:{prov['anthropic-cloud']['model']}"
           else:
               pid = f"openai:chat:{prov['openai-cloud']['model']}"
-          cfg = yaml.safe_load(open("config/promptfoo/promptfooconfig.yaml"))
+          cfg = yaml.safe_load(open("_trusted/config/promptfoo/promptfooconfig.yaml"))
           cfg.setdefault("redteam", {})["provider"] = pid
           cfg.setdefault("defaultTest", {}).setdefault("options", {})["provider"] = pid
           out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "promptfoo-redteam.yaml"
@@ -746,11 +762,12 @@ jobs:
           fi
           if [ "$install_ok" = 1 ] && command -v garak >/dev/null 2>&1; then
             # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
-            sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
+            sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" _trusted/config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
             garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
               echo "::warning::garak 回傳非零 → 依報告內容判定"
-            # garak 預設把報告寫在 ~/.local/share/garak/garak_runs/
-            find "$HOME/.local/share/garak" . -name 'g6-garak*.jsonl' -not -path './reports/*' -exec cp {} reports/ \; 2>/dev/null || true
+            # garak 預設把報告寫在 ~/.local/share/garak/garak_runs/。只從這裡收：以前也搜工作區（.），
+            # 分支裡預先提交的 g6-garak*.jsonl 會被當成本次掃描結果（第一輪審查 C3）
+            find "$HOME/.local/share/garak" -name 'g6-garak*.jsonl' -exec cp {} reports/ \; 2>/dev/null || true
           fi
 
       # 成本面（LLM10 denial_of_wallet_cost）：超長輸入是否被長度上限／配額／token 預算擋下；只記狀態碼與耗時
@@ -777,7 +794,7 @@ jobs:
               --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE"
             exit 0
           fi
-          args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config config/garak/vibesec.probes.yaml
+          args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config _trusted/config/garak/vibesec.probes.yaml
                 --cost reports/g6-cost.json --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE")
           [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
           if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
