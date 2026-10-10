@@ -7,6 +7,7 @@
 
 判定：
   - 報告缺席或無法解析 → 該掃描 untested（incomplete ≠ pass；vibesec.yaml g5 tools 含 zap-baseline、zap-api-scan）。
+  - 報告沒有任何 site（site: [] 或缺 site）→ untested（spider 沒掃到目標或 API 定義匯入失敗）；有 site 但沒有警示 → pass。
   - 規則在 conf 為 IGNORE／OUTOFSCOPE → 略過；conf 沒列且 riskcode 0（Informational）→ 略過；其餘列為發現。
   - 規則 ID：以 config/catalogs/cwe-map.yaml 的 implemented_by（zap:<id>）反查 vibesec 規則；查不到 → zap:<pluginid>
     （CLAUDE.md 規則 3：不自行對應）。tier 一律由 scripts/vibesec_policy.py 決定（外部規則預設 advisory）。
@@ -68,9 +69,17 @@ def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl:
             continue
         tool["version"] = version
         tools.append(tool)
+        # 沒有任何 site：spider 什麼都沒碰到、目標不可達或匯入 OpenAPI 失敗 → 沒有實測，不是 pass
+        sites = [x for x in sites if isinstance(x, dict)]
+        if not sites:
+            coverage[cov_key] = {"state": "untested",
+                                 "reason": f"ZAP {tool_name} 報告沒有任何 site（未掃到目標：spider 無結果、目標不可達或 API 定義匯入失敗）"}
+            continue
         hits = 0
         for site in sites:
-            for a in (site or {}).get("alerts") or []:
+            for a in site.get("alerts") or []:
+                if not isinstance(a, dict):
+                    continue
                 pid = str(a.get("pluginid") or "").strip()
                 if not pid:
                     continue
@@ -79,17 +88,21 @@ def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl:
                     continue
                 try:
                     risk = int(a.get("riskcode") or 0)
-                except ValueError:
+                except (TypeError, ValueError):
                     risk = 0
                 if action is None and risk == 0:
                     continue
                 hits += 1
-                inst = a.get("instances") or []
+                inst = a.get("instances") if isinstance(a.get("instances"), list) else []
                 uris = [i.get("uri") for i in inst if isinstance(i, dict) and i.get("uri")]
                 cur = by_plugin.setdefault(pid, {"alert": a.get("alert") or a.get("name") or pid,
                                                  "cweid": a.get("cweid"), "risk": risk, "count": 0,
                                                  "uris": [], "sources": [], "action": action or "WARN"})
-                cur["count"] += int(a.get("count") or len(inst) or 1)
+                try:
+                    n = int(a.get("count") or 0)
+                except (TypeError, ValueError):   # count 非數字：不得讓整份報告崩潰，改以 instances 數計
+                    n = 0
+                cur["count"] += n if n > 0 else (len(inst) or 1)
                 cur["uris"] += [u for u in uris if u not in cur["uris"]][:3]
                 if tool_name not in cur["sources"]:
                     cur["sources"].append(tool_name)
@@ -156,6 +169,26 @@ def selftest() -> list[str]:
         r = convert({"api": dp / "clean.json", "baseline": dp / "clean.json"}, conf, impl, pol)
         if any(v["state"] != "pass" for v in r["coverage"].values()) or r["results"]:
             fails.append(f"只有略過的警示 → pass 且無發現：{r['coverage']} {r['results']}")
+        for name, rep in (("empty", {"@version": "2.16.1", "site": []}), ("nosite", {"@version": "2.16.1"}),
+                          ("junk", {"site": ["x", None]})):
+            (dp / f"{name}.json").write_text(json.dumps(rep), encoding="utf-8")
+            r = convert({"api": dp / f"{name}.json", "baseline": dp / f"{name}.json"}, conf, impl, pol)
+            if any(v["state"] != "untested" for v in r["coverage"].values()):
+                fails.append(f"報告 {name}（沒有 site）應 untested：{r['coverage']}")
+        (dp / "nosalerts.json").write_text(json.dumps({"site": [{"@name": "http://127.0.0.1:8000", "alerts": []}]}), encoding="utf-8")
+        r = convert({"api": dp / "nosalerts.json", "baseline": dp / "nosalerts.json"}, conf, impl, pol)
+        if any(v["state"] != "pass" for v in r["coverage"].values()):
+            fails.append(f"有 site、零警示 → pass：{r['coverage']}")
+        (dp / "badcount.json").write_text(json.dumps({"site": [{"alerts": [
+            {"pluginid": "40018", "riskcode": "3", "count": "n/a", "instances": [{"uri": "u1"}, {"uri": "u2"}]},
+            {"pluginid": "10038", "riskcode": None, "count": None}]}]}), encoding="utf-8")
+        try:
+            r = convert({"api": dp / "badcount.json", "baseline": None}, conf, impl, pol)
+            got = {x["properties"]["zap_pluginid"]: x["message"]["text"] for x in r["results"]}
+            if "2 處" not in got.get("40018", "") or r["coverage"]["zap_api_scan"]["state"] != "fail":
+                fails.append(f"count 非數字 → 改以 instances 數計：{got}")
+        except Exception as e:
+            fails.append(f"count／riskcode 非數字不得崩潰：{type(e).__name__}: {e}")
     try:
         real = load_impl(ROOT)
         if real.get("zap:10038") != "vibesec.g3.missing-csp":
