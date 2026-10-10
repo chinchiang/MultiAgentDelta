@@ -240,6 +240,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: _trusted/config/gitleaks.toml   # 規則取自 default branch
+          GITLEAKS_VERSION: "8.28.0"   # 固定版本（不用 action 內建預設）；與 pre-commit、nightly 同版
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
           GITLEAKS_ENABLE_SUMMARY: "true"
           # 不在 PR 留言（避免此第三方 action 需要 pull-requests: write）；結果經 SARIF 與 job summary 呈現

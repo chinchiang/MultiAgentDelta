@@ -161,10 +161,11 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 
 | 條件 | 層級 |
 |---|---|
-| `vibesec.g3.sql-*`、`command-injection`、`xss-*`、`jwt-alg-*`、`imdsv1-allowed` | blocking |
-| `semgrep:` 規則 severity ERROR 且 metadata.confidence HIGH | blocking |
-| `checkov:CKV_AWS_79`、`CKV2_VIBESEC_1`、`CKV_AWS_41/45/46`（硬編碼祕密） | blocking |
-| `vibesec.g3.cors-wildcard`、`dockerfile-root-user`、其他 Checkov / Trivy misconfig | advisory |
+| `vibesec.g3.sql-*`、`command-injection`、`jwt-alg-none`、`imdsv1-allowed` | blocking |
+| `vibesec.g3.xss-*`、`jwt-alg-confusion` | advisory |
+| `checkov:CKV_AWS_79`、`CKV2_VIBESEC_1`（經 cwe-map `implemented_by` 對到 `vibesec.g3.imdsv1-allowed`） | blocking |
+| 其他 `semgrep:`、`checkov:`、`trivy:` 原生規則（沒有對到 vibesec 規則者） | advisory（`default_tier`；不看工具自己的 severity） |
+| `vibesec.g3.cors-wildcard`、`dockerfile-root-user` | advisory |
 | Semgrep 逾時（`timeout_seconds: 900`）或規則載入失敗 | `incomplete` |
 | 白箱靜態發現 → 由 G5 / G6 證實可利用 | `evidence_grade` E1/E2 → E3，priority 依政策升級 |
 
