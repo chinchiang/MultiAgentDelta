@@ -14,10 +14,17 @@ input:
         high_impact_tools: [http_fetch]
         mitigations: [egress_allowlist, human_in_the_loop]
         trifecta_leg_cut: external_comms
+        # 切腳也要可驗證（docs/01 §5）：rules 必須在本 repo .claude/settings.json 的 ask／deny（run_evals 以本 repo 為根目錄）
+        mitigation_evidence:
+          egress_allowlist:
+            - kind: claude_permission
+              ref: .claude/settings.json
+              rules: ["Bash(curl *api.github.com*)", "Bash(gh api *)"]
+              covers: {http_fetch: ["Bash(curl *api.github.com*)", "Bash(gh api *)"]}
 expected:
   should_flag: false
   control_id: VS-G0-LETHAL-TRIFECTA
   rule_id: vibesec.g0.lethal-trifecta-open
   policy_tier: blocking
 held_out: false
-notes: 外傳通道已被切斷（allow-list 僅內部 + 人工核准），預期 G0 不 blocking；若審查者意見分歧應保留少數意見。
+notes: 外傳通道已被切斷（allow-list 僅內部 + 人工核准），且切腳的 egress_allowlist 附可驗證證據，預期 G0 不 blocking；若審查者意見分歧應保留少數意見。
