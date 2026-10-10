@@ -14,7 +14,7 @@
 
 - 至少 **60 個**漏洞／控制測試案例，涵蓋 14 個審查領域與六道閘門；每個適用領域**至少一正例與一反例**（反例用於量測誤報）。
 - 至少 **1/3** 不參與提示（prompt）調整（`held_out: true`），領域與風險層級分布記錄於 `evals/split.yaml`。
-- 案例格式見 `evals/README.md`。種子案例已置於 `evals/cases/g0..g6/`；其餘於試點期補齊至 60+。
+- 案例格式見 `evals/README.md`。案例置於 `evals/cases/g0..g6/`，目前數量以 `evals/README.md` 為準（`validate.py` 核對）；試點期持續補齊尚無案例的規則。
 
 ## 三、三組比較
 

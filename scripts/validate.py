@@ -134,6 +134,46 @@ if yaml is not None:
         if rid and known_rules and rid not in known_rules:
             err(f"{rel}: rule_id {rid} 不在 cwe-map/semgrep（CLAUDE.md 規則 3：ID 只能查目錄）")
 
+    # 文件與設定內出現的 ID 也只能來自目錄（CLAUDE.md 規則 3）：以前只查 eval 案例，
+    # 文件寫錯的 rule_id／控制 ID（例如不存在的 vibesec.g5.bola-idor）一路沒被發現（第一輪審查 D）。
+    # 結尾接 -* 或 * 的是萬用寫法（vibesec.g3.sql-*），不是 ID；scripts/ 的 selftest 會故意用目錄外的 ID，不掃。
+    _docs = sorted({*glob.glob(str(ROOT / "**/*.md"), recursive=True), *glob.glob(str(ROOT / ".claude/**/*.md"), recursive=True),
+                    *glob.glob(str(ROOT / ".github/**/*.md"), recursive=True), *glob.glob(str(ROOT / "docs/templates/*"))})
+    _docs = [f for f in _docs if pathlib.Path(f).relative_to(ROOT).parts[0] not in ("_trusted", "node_modules")
+             and pathlib.Path(f).relative_to(ROOT).parts[:2] != (".claude", "worktrees")]
+    _cfg = sorted(glob.glob(str(ROOT / "config/**/*.yaml"), recursive=True) + glob.glob(str(ROOT / "evals/**/*.yaml"), recursive=True))
+    _id_pats = [("rule_id", re.compile(r"\bvibesec\.g[0-6]\.[a-z0-9]+(?:-[a-z0-9]+)*(?![a-z0-9*-])"), known_rules),
+                ("控制 ID", re.compile(r"\b(?:ASVS5-V\d+\.\d+(?:\.\d+)?|LLM\d{2}:2025|MAESTRO-L\d+|VS-G[0-6]-[A-Z0-9]+(?:-[A-Z0-9]+)*)(?![\w*-])"), known_controls)]
+    _cwe_pat = re.compile(r"\bCWE-\d+\b")
+    # 文件中以反引號引用、指向 repo 內的路徑（指令、檔案）必須存在；含萬用字元／佔位符／範圍（g0..g6）者略過
+    _path_pat = re.compile(r"`((?:scripts|schemas|config|evals|tests|examples|reviews|rulings|docs/templates)/[^`\s]+?)`")
+    _bad_ids = _bad_paths = 0
+    for f in _docs + _cfg:
+        rel = pathlib.Path(f).relative_to(ROOT)
+        try:
+            lines = pathlib.Path(f).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i, line in enumerate(lines, 1):
+            if known_cwes:
+                for m in _cwe_pat.finditer(line):
+                    if m.group(0) not in known_cwes:
+                        err(f"{rel}:{i}: {m.group(0)} 不在 cwe-map.yaml 的 cwes（CLAUDE.md 規則 3）"); _bad_ids += 1
+            if f in _cfg:
+                continue
+            for label, pat, known in _id_pats:
+                for m in pat.finditer(line):
+                    if known and m.group(0) not in known:
+                        err(f"{rel}:{i}: {label} {m.group(0)} 不在 catalogs（CLAUDE.md 規則 3）"); _bad_ids += 1
+            for m in _path_pat.finditer(line):
+                p = re.sub(r":\d+(?:-\d+)?(?:,\d+)*$", "", m.group(1)).rstrip("/")
+                if re.search(r"[*<>{}\[\]$…]|\.\.", p):
+                    continue
+                if not (ROOT / p).exists():
+                    err(f"{rel}:{i}: 引用的路徑 {m.group(1)} 不存在"); _bad_paths += 1
+    if not _bad_ids: ok(f"文件／設定中的 CWE、rule_id、控制 ID 皆在目錄（{len(_docs) + len(_cfg)} 檔）")
+    if not _bad_paths: ok("文件以反引號引用的 repo 路徑皆存在")
+
     # 範例 finding 的 control_id/cwe 一致性
     ex = ROOT / "docs/templates/finding.example.json"
     if ex.exists() and known_controls:

@@ -189,7 +189,7 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
    - `el.innerHTML = r.choices[0].message.content` → `xss-innerhtml`；`DOMPurify.sanitize()` 後 → 無。
    - `jwt.decode(t, k, algorithms=["HS256","RS256"])` → `jwt-alg-confusion`；`["RS256"]` → 無。
    - Terraform 無 `metadata_options` → `CKV_AWS_79` + `CKV2_VIBESEC_1`；`http_tokens = "required"` → 無。
-3. **Checkov 自訂政策載入**：`checkov -d evals/iac --config-file config/checkov/.checkov.yaml --list | grep CKV2_VIBESEC` 顯示兩條。
+3. **Checkov 自訂政策載入**：`checkov --list --external-checks-dir config/checkov/custom | grep CKV2_VIBESEC` 顯示兩條。
 4. **時效**：PR 階段 wall-clock < 5 分鐘；超過時先移除 `p/security-audit` 的低信心規則而非關閉閘門。
 5. **跨檔案例**：source 在 `routers/`、sink 在 `services/` 的 fixture，CE 漏報、CodeQL / Pro 命中 → 在 summary 標記「需夜間全量」，不得因 CE 漏報記 pass。
 6. **SARIF 完整性**：每筆結果有 `ruleId`、`locations[].physicalLocation`、`properties.cwe`；上傳 Code Scanning 後能在 PR 看到註解。

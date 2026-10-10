@@ -143,7 +143,7 @@ role: harness
   "tools": [ { "name": "zap-baseline", "version": null, "state": "missing", "exit_code": null, "output_ref": null, "duration_seconds": null },
              { "name": "api-probes", "version": "0.3.0", "state": "error", "exit_code": 3, "output_ref": "reports/raw/G5/api-probes.log", "duration_seconds": 1.2 } ],
   "findings_count": { "blocking": 0, "advisory": 0 },
-  "coverage": [ { "control_id": "VS-G5-BOLA-TWO-ACCOUNT", "state": "untested", "reason": "VIBESEC_TOKEN_B unset" } ],
+  "coverage": [ { "control_id": "ASVS5-V8.2", "state": "untested", "reason": "VIBESEC_TOKEN_B unset" } ],
   "exit_code": 0 }
 ```
 
