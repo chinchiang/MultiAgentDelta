@@ -50,7 +50,7 @@ flowchart TB
   subgraph LOCAL["開發者本機"]
     PC["pre-commit<br/>gitleaks protect · semgrep<br/>g1_slopcheck --staged · env_guard"]
     subgraph HARN["Claude Code：/vibesec-harness skill"]
-      HG["閘門腳本<br/>g1_slopcheck · g1_sbom · grype/trivy<br/>g2_secrets · g3_sast · g4_access<br/>ZAP · api-probes · promptfoo/garak → g6_gate<br/>g0_threat_model"]
+      HG["閘門腳本<br/>g1_slopcheck · g1_sbom · grype/trivy<br/>g2_secrets · g3_sast · g4_access<br/>g5_zap · api-probes · promptfoo/garak → g6_gate<br/>g6_cost_probe · g0_threat_model"]
       HR["多模型審查<br/>4 個 reviewer sub-agents（anthropic）<br/>review_packet → review_provider（第二 family）"]
       HS["評分與組裝<br/>E0–E3 · CVSS v4 / EPSS / KEV 分欄 · P0–P3"]
     end
@@ -60,10 +60,10 @@ flowchart TB
     PRG["pr-gates.yml（每個 PR，diff-aware）<br/>G1 → G2 → G3 SAST ∥ G3 IaC → G4<br/>＋ repo-validate（validate.py）"]
     RRT["review-record-trust.yml<br/>外部 G4 紀錄不得自證"]
     NF["nightly-full.yml（每日）<br/>CodeQL · Semgrep 全量<br/>G1 全量：SBOM/Grype/Trivy/KEV/維護度/provenance<br/>evals（run_evals.py vs baseline）"]
-    SB["staging-blackbox.yml（每週）<br/>G5：ZAP + api-probes（雙帳號 BOLA、JWT、SSRF…）<br/>G6：promptfoo eval/redteam + garak → g6_gate"]
+    SB["staging-blackbox.yml（每週）<br/>G5：ZAP + api-probes（雙帳號 BOLA、JWT、SSRF…）<br/>G6：promptfoo eval/redteam + garak + 成本探針 → g6_gate"]
   end
 
-  TARGET["已授權測試目標<br/>vars.VIBESEC_TARGET_URL<br/>未設定 → examples/vulnapp 靶場"]
+  TARGET["已授權測試目標<br/>vars.VIBESEC_TARGET_URL ∈ config/targets.yaml 允許清單（scripts/target_guard.py）<br/>未設定 → examples/vulnapp 靶場"]
 
   subgraph OUT["輸出"]
     REP["reports/（不入版控）<br/>vibesec.sarif · findings.json · risk_register.json<br/>gates/G*.json · g4-review.yaml · summary.md"]
@@ -177,6 +177,7 @@ MultiAgentDelta/
 │   ├── catalogs/                  # ID 唯一來源：ASVS 5.0、CWE 對應、LLM Top 10 2025、MAESTRO
 │   ├── policy/blocking-policy.yaml# blocking 清單、tier_overrides、exceptions（人類獨立 PR 才能改）
 │   ├── providers.yaml             # 模型 provider：family、allowed_data_classes、金鑰環境變數
+│   ├── targets.yaml               # G5/G6 授權目標允許清單（預設只允許本機靶場；CLAUDE.md 規則 8）
 │   ├── harness/                   # harness 系統提示與 4 個角色 prompt（sub-agent 與外部 provider 共用）
 │   ├── slopsquat/                 # G1：allowlist、blacklist、冷卻期、popular npm/PyPI 清單
 │   ├── gitleaks.toml              # G2
@@ -200,7 +201,10 @@ MultiAgentDelta/
 │   ├── sarif_gate.py              # SARIF → gate JSON（G2、G3 共用）
 │   ├── g4_access.py               # G4：靜態檢查 + LLM 審查紀錄
 │   ├── g4_review.py               # G4：紀錄驗證、閘門推導、外部紀錄信任檢查
-│   ├── g6_gate.py                 # G6：promptfoo / garak 結果彙整
+│   ├── g5_zap.py                  # G5：ZAP 警示 → 覆蓋與 SARIF（併入 api-probes）
+│   ├── g6_gate.py                 # G6：promptfoo / garak / 成本探針結果彙整
+│   ├── g6_cost_probe.py           # G6：成本面（Denial of Wallet）探針，只記狀態碼與耗時
+│   ├── target_guard.py            # G5/G6：攻擊性探針只對 config/targets.yaml 允許的目標執行
 │   ├── review_packet.py           # 審查包：附上受測程式碼（祕密遮罩、大小上限）
 │   ├── review_provider.py         # 呼叫第二個 family 的模型（資料分級把關）
 │   ├── ruling.py                  # 人工裁決：request / check / apply
