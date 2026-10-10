@@ -1392,7 +1392,7 @@ def selftest():
     def fake_http(url):
         if url in reg:
             return reg[url]
-        if "api.npmjs.org" in url and "dl-ok" in reg:
+        if url.startswith("https://api.npmjs.org/") and "dl-ok" in reg:
             return {"downloads": 5000}
         raise urllib.error.URLError("selftest 離線")
     http_json = fake_http
