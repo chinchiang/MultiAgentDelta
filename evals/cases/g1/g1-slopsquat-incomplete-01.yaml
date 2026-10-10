@@ -8,6 +8,7 @@ input:
   added:
   - some-new-pkg@0.0.1
   registry: timeout
+  integration: g1-registry-timeout   # run_evals.py：經「接受連線但永不回應」的本機 proxy 實際讓 registry 查詢逾時
 expected:
   should_flag: true
   control_id: ASVS5-V15.2

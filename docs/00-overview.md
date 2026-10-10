@@ -75,7 +75,7 @@
 | **黑箱 → 白箱：動態發現 → 回頭定位根因** | G5 / G6 的 HTTP 證據（`evidence_refs.kind: http_exchange`）附上端點與參數；harness 以路由反查原始碼（Semgrep `--include` 該檔、`git log -S` 參數名），把 finding.location 從 `kind: http` 補成 `kind: code` 的 SARIF 位置；若找不到根因，保持 `kind: http` 並在 notes 標 `root_cause: unknown`，不猜 | G6 `system_prompt_extraction` 回傳含 `sk-ant-...` → 回頭觸發 G2 針對 prompt 模板檔做 gitleaks → `vibesec.g2.hardcoded-llm-key`，撤銷輪替 |
 | | | G5 `debug_stacktrace` 回應洩漏 `app/routers/todos.py:42` → 直接把 SARIF 位置指到該行，並查該檔的 G3 結果 |
 
-這個閉環也是 PLAN.md 的「工具掃描 → 隔離驗證 → 評分 → 人工裁決 → 修復後重測」流程在閘門層的實作。
+這個閉環也是「工具掃描 → 隔離驗證 → 評分 → 人工裁決 → 修復後重測」流程（docs/10 證據與評分、docs/12 §四 修復驗證）在閘門層的實作。
 
 ## 5. 三大落地工程原則
 

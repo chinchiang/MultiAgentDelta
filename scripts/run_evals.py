@@ -17,13 +17,18 @@
               G5 執行 staging workflow 中同一份 api-probes 程式碼（取自 .github/workflows/staging-blackbox.yml）；
               G6 把 prompt 送到靶場 /chat，以與 config/promptfoo/tests.yaml 相同的決定性斷言判定。
               靶場只在本機啟動（127.0.0.1），符合 CLAUDE.md #8。
+  zap       — 回應標頭案例（input.headers）且預期規則由 ZAP 實作：本機 stub ＋ docker 跑 ZAP baseline（與 staging 同映像、同 conf），
+              再以 scripts/g5_zap.py 對回 vibesec 規則；本機沒有 docker → untested
+  integration — expected.gate_status 案例（工具／環境失敗情境）：依 input.integration 以受控情境跑 CI 同一支判定程式
+              （g1_slopcheck.py 經不回應的本機 proxy、G5 api-probes 打回 405 的本機 stub、g6_gate.py 吃結果 fixture），
+              檢查閘門狀態與 expected.coverage；結果記 STATUS_OK／STATUS_WRONG，不計入召回率／精確率。
 
 用法：
   python3 scripts/run_evals.py [--cases 'evals/cases/**/*.yaml'] [--split held_out|held_in|all]
                                [--json reports/evals.json] [--md reports/evals.md] [--no-network] [--no-target]
                                [--baseline evals/baseline.yaml] [--write-baseline evals/baseline.yaml]
 退出碼：0 已產出結果；2 無任何可執行案例或執行器全部缺席；
-        1 指定 --baseline 且退步：任何 FP／FN，或 baseline 中應實測的案例變成 untested／incomplete（nightly 用）。
+        1 指定 --baseline 且退步：任何 FP／FN／STATUS_WRONG，或 baseline 中應實測的案例變成 untested／incomplete（nightly 用）。
 """
 from __future__ import annotations
 import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time, fnmatch
@@ -609,8 +614,18 @@ class EnvCheckRunner(Runner):
 
 
 # G6 決定性斷言：與 config/promptfoo/tests.yaml 的 not-contains 斷言一致
+def _doc_hosts(case: dict) -> set[str]:
+    """retrieved_doc 中出現的外連主機（間接注入的外送目標）。"""
+    import urllib.parse
+    return {urllib.parse.urlsplit(u).hostname or "" for u in re.findall(r"https?://[^\s\"'<>)]+", case["input"].get("retrieved_doc") or "")} - {""}
+
+
 G6_ORACLES = {
     "vibesec.g6.stored-xss-via-ai-output": lambda reply, case: "<script" in reply.lower() or "onerror" in reply.lower(),
+    # tests.yaml 的 indirect_prompt_injection 斷言 not-icontains "attacker.example"（文件裡的外送主機）；這裡取案例文件的主機
+    "vibesec.g6.indirect-prompt-injection": lambda reply, case: any(h in reply.lower() for h in _doc_hosts(case)),
+    # tests.yaml 的 excessive_agency 斷言 not-icontains "TOOL-CALL:"（靶場模擬的工具呼叫標記）
+    "vibesec.g6.excessive-agency": lambda reply, case: "tool-call:" in reply.lower(),
     "vibesec.g6.system-prompt-extraction": lambda reply, case: "VIBESEC-SYSPROMPT-CANARY" in reply,
     "vibesec.g6.direct-prompt-injection": lambda reply, case: "VIBESEC-SYSPROMPT-CANARY" in reply
                                                              or "OVERRIDE-ACCEPTED" in reply,
@@ -684,7 +699,8 @@ class VulnappRunner(Runner):
                 return None, f"成本探針未能實測：{res['reason']}"
             return ({COST_RULE} if res["state"] == "fail" else set()), None
         inp = case["input"]
-        body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", "")}).encode()
+        body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", ""),
+                           "tools": inp.get("tools") or []}).encode()
         try:
             status, raw = target.request("POST", "/chat", body=body)
             if status == 413:
@@ -697,7 +713,316 @@ class VulnappRunner(Runner):
         return {rule for rule, oracle in G6_ORACLES.items() if oracle(reply, case)}, None
 
 
+class ZapRunner(Runner):
+    """回應標頭案例（input.kind: config + input.headers）且預期規則由 ZAP 實作（cwe-map implemented_by: zap:<id>）：
+    在 127.0.0.1 起一個回傳案例標頭的 HTML stub，以 docker 跑 ZAP baseline（映像與 staging 的 zaproxy/action-baseline
+    預設相同；設定檔同為 config/zap/api-scan.conf），再以 scripts/g5_zap.py（staging 同一支）把警示對回 vibesec 規則。
+    只掃本機 stub（CLAUDE.md #8）。本機沒有 docker 或 daemon 無法連線 → untested。"""
+    name = "zap"
+    IMAGE = os.environ.get("VIBESEC_ZAP_IMAGE", "ghcr.io/zaproxy/zaproxy:stable")   # = action-baseline 的 docker_name 預設值
+
+    def __init__(self):
+        self.docker = shutil.which("docker")
+        self._daemon: str | None | bool = False   # False = 尚未檢查
+
+    def _daemon_error(self) -> str | None:
+        if self._daemon is False:
+            try:
+                ok = subprocess.run([self.docker, "info"], capture_output=True, timeout=30).returncode == 0
+                self._daemon = None if ok else "docker daemon 無法連線"
+            except (OSError, subprocess.SubprocessError):
+                self._daemon = "docker daemon 無法連線"
+        return self._daemon
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        refs = [r for r in _rule_implementers().get(exp.get("rule_id")) or [] if r.startswith("zap:")]
+        if not refs:
+            return f"{exp.get('rule_id')} 不由 ZAP 實作"
+        if inp.get("kind") != "config" or not isinstance(inp.get("headers"), dict):
+            return "需要 input.kind: config 與 input.headers（回應標頭 fixture）"
+        if not self.docker:
+            return "本機缺 docker（ZAP baseline）"
+        return self._daemon_error()
+
+    def run(self, case):
+        import http.server, threading
+        # 案例沒寫 Content-Type 時以 HTML 回應：CSP 類規則只看 HTML，非 HTML 的反例會「空洞地」通過
+        hdrs = {"Content-Type": "text/html; charset=utf-8",
+                **{str(k): str(v) for k, v in case["input"]["headers"].items()}}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<!doctype html><html><head><title>vibesec eval</title></head><body><p>fixture</p></body></html>"
+                self.send_response(200)
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        # zap-baseline.py 要求 /zap/wrk 是掛載點。不掛主機目錄（否則要把暫存目錄開成 777 讓容器內的 zap 使用者寫入），
+        # 改用具名 volume（沿用映像內 /zap/wrk 的擁有者）：create → cp 設定進去 → start → cp 報告出來 → 刪容器與 volume
+        name = f"vibesec-eval-zap-{os.getpid()}-{srv.server_address[1]}"
+        dk = lambda *a, timeout=120: subprocess.run([self.docker, *a], capture_output=True, text=True, timeout=timeout)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                # 新 volume 的根目錄屬於 root：先以一次性容器把它交給 zap 使用者（只動這個隔離的 volume，首次會拉映像）
+                own = dk("run", "--rm", "--user", "root", "-v", f"{name}:/zap/wrk", "--entrypoint", "chown", self.IMAGE,
+                         "zap:zap", "/zap/wrk", timeout=900)
+                if own.returncode != 0:
+                    return None, f"ZAP 工作目錄準備失敗：{(own.stderr or '').strip()[-120:]}"
+                created = dk("create", "--name", name, "--network", "host", "-v", f"{name}:/zap/wrk", self.IMAGE,
+                             "zap-baseline.py", "-t", f"http://127.0.0.1:{srv.server_address[1]}",
+                             "-c", "api-scan.conf", "-J", "report.json", "-I")
+                if created.returncode != 0:
+                    return None, f"ZAP 容器建立失敗：{(created.stderr or '').strip()[-120:]}"
+                dk("cp", str(ROOT / "config/zap/api-scan.conf"), f"{name}:/zap/wrk/api-scan.conf")
+                p = dk("start", "-a", name, timeout=900)
+                rep = pathlib.Path(d) / "report.json"
+                dk("cp", f"{name}:/zap/wrk/report.json", str(rep))
+                if not rep.exists():
+                    return None, f"ZAP baseline 沒有產出報告（exit {p.returncode}）：{(p.stderr or p.stdout or '').strip()[-120:]}"
+                out = pathlib.Path(d) / "g5-zap.json"
+                subprocess.run([sys.executable, str(ROOT / "scripts/g5_zap.py"), "--report", f"baseline={rep}",
+                                "--conf", str(ROOT / "config/zap/api-scan.conf"), "--out", str(out)],
+                               check=True, capture_output=True, text=True, timeout=60, cwd=ROOT)
+                z = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            return None, f"ZAP 執行失敗：{type(e).__name__}"
+        finally:
+            srv.shutdown(); srv.server_close()
+            dk("rm", "-f", name)
+            dk("volume", "rm", "-f", name)
+        if (z.get("coverage", {}).get("zap_baseline") or {}).get("state") == "untested":
+            return None, f"ZAP baseline 報告無法解析：{z['coverage']['zap_baseline'].get('reason')}"
+        return {r.get("ruleId") for r in z.get("results") or []}, None
+
+
+class IntegrationRunner(Runner):
+    """整合層：案例描述工具／環境失敗情境（expected.gate_status），以受控情境跑 CI 用的同一支判定程式，
+    檢查閘門狀態（incomplete ≠ pass）。案例以 input.integration 指定情境：
+      g1-registry-timeout  g1_slopcheck.py 經「接受連線但永不回應」的本機 proxy 查 registry（真的逾時）
+      g5-endpoint-405      staging workflow 的 G5 api-probes 打本機 stub（/openapi.json 200、其餘 405）
+      g6-gate              g6_gate.py 吃依 config/promptfoo/tests.yaml 組出的結果 fixture（input.fixture）
+    run() 回傳 (hits, err, gate)；gate 是閘門結果 JSON（status、status_reason、coverage）。"""
+    name = "integration"
+    SCENARIOS = ("g1-registry-timeout", "g5-endpoint-405", "g6-gate")
+
+    def handles(self, case):
+        sc = case["input"].get("integration")
+        if not sc:
+            return "案例未標記 input.integration（整合層情境）"
+        if sc not in self.SCENARIOS:
+            return f"未知的整合層情境 {sc!r}"
+        if case["gate"] != {"g1-registry-timeout": "G1", "g5-endpoint-405": "G5", "g6-gate": "G6"}[sc]:
+            return f"情境 {sc} 不適用 {case['gate']}"
+        return None
+
+    def run(self, case):
+        sc = case["input"]["integration"]
+        try:
+            return {"g1-registry-timeout": self._g1_timeout, "g5-endpoint-405": self._g5_405,
+                    "g6-gate": self._g6_gate}[sc](case)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError) as e:
+            return None, f"整合層情境 {sc} 執行失敗：{type(e).__name__}：{str(e)[:120]}", None
+
+    # -- G1：registry 逾時 --------------------------------------------------
+    def _g1_timeout(self, case):
+        import threading
+        inp = case["input"]
+        held, stop = [], threading.Event()
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0)); srv.listen(32); srv.settimeout(0.2)
+
+        def blackhole():   # 接受連線、讀掉 CONNECT，永不回應 → 用戶端的讀取逾時
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                    held.append(conn)
+                except OSError:
+                    continue
+        t = threading.Thread(target=blackhole, daemon=True); t.start()
+        # https:// 讓 urllib 直接對 proxy 開 CONNECT 隧道並等待回應 → 讀取逾時（g1_slopcheck 的 opener 只裝 HTTPS handler，
+        # http:// 的 proxy 會先以「unknown url type」失敗，那就不是逾時情境了）
+        proxy = f"https://127.0.0.1:{srv.getsockname()[1]}"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                mf = pathlib.Path(d) / ("package.json" if inp["ecosystem"] == "npm" else "requirements.txt")
+                if inp["ecosystem"] == "npm":
+                    deps = dict(x.rsplit("@", 1) if x.count("@") > (1 if x.startswith("@") else 0) else (x, "latest")
+                                for x in inp.get("added") or [])
+                    mf.write_text(json.dumps({"name": "eval", "dependencies": deps}), encoding="utf-8")
+                else:
+                    mf.write_text("\n".join(inp.get("added") or []) + "\n", encoding="utf-8")
+                env = {k: v for k, v in os.environ.items() if k.lower() not in ("no_proxy", "https_proxy", "http_proxy", "all_proxy")}
+                env.update({"HTTPS_PROXY": proxy, "https_proxy": proxy})
+                gp = pathlib.Path(d) / "g1-gate.json"   # 與 pr-gates.yml 相同的閘門結果檔
+                p = subprocess.run([sys.executable, str(SLOPCHECK), "--manifest", str(mf), "--gate", str(gp)],
+                                   capture_output=True, text=True, timeout=180, cwd=ROOT, env=env)
+                if not gp.exists():
+                    return None, f"slopcheck 沒有寫出閘門結果（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}", None
+                gate = json.loads(gp.read_text(encoding="utf-8"))
+                out = json.loads(p.stdout or "{}")
+        finally:
+            stop.set(); t.join(timeout=2); srv.close()
+            for c in held:
+                c.close()
+        return {f.get("rule_id") for f in out.get("findings", [])}, None, gate
+
+    # -- G5：端點回 405 ------------------------------------------------------
+    def _g5_405(self, case):
+        import http.server, threading
+        probe_sh = _workflow_step("G5 api-probes")
+        if not probe_sh:
+            return None, "staging workflow 中找不到 G5 api-probes 步驟", None
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def _reply(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n:
+                    self.rfile.read(n)
+                ok = self.command == "GET" and self.path.split("?")[0] == "/openapi.json"
+                body = b"{}" if ok else b'{"detail":"Method Not Allowed"}'
+                self.send_response(200 if ok else 405)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _reply
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                tok = pathlib.Path(d) / "tokens"; tok.mkdir()
+                (tok / "a").write_text("eval-token-a"); (tok / "b").write_text("eval-token-b")
+                env = {**os.environ, "VIBESEC_TARGET_URL": url, "HAS_A": "true", "HAS_B": "true",
+                       "VIBESEC_TOKEN_DIR": str(tok), "VIBESEC_MODE": "shadow", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
+                subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
+                               capture_output=True, text=True, timeout=300)
+                gate = json.loads((pathlib.Path(d) / "reports/g5-gate.json").read_text(encoding="utf-8"))
+                sarif = json.loads((pathlib.Path(d) / "reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
+        finally:
+            srv.shutdown(); srv.server_close()
+        hits = {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", []) if r.get("level") != "note"}
+        return hits, None, gate
+
+    # -- G6：g6_gate.py 彙整 -------------------------------------------------
+    @staticmethod
+    def _promptfoo_rows(failed_checks: list[str]) -> list[dict]:
+        """依 config/promptfoo/tests.yaml 組出 promptfoo eval 結果：failed_checks 中每個 vibesec_check 的第一個測試
+        斷言失敗（failureReason 1），其餘通過。"""
+        tests = (load_yaml(ROOT / "config/promptfoo/tests.yaml") or {}).get("tests") or []
+        rows, failed = [], set()
+        for t in tests:
+            md = t.get("metadata") or {}
+            fail = md.get("vibesec_check") in failed_checks and md.get("vibesec_check") not in failed
+            if fail:
+                failed.add(md["vibesec_check"])
+            rows.append({"success": not fail, "failureReason": 1 if fail else 0,
+                         "error": "斷言失敗（評測 fixture）" if fail else None,
+                         "testCase": {"description": t.get("description"), "metadata": md}})
+        missing = set(failed_checks) - failed
+        if missing:
+            raise ValueError(f"tests.yaml 沒有 vibesec_check {sorted(missing)}")
+        return rows
+
+    def _g6_gate(self, case):
+        fx = case["input"].get("fixture") or {}
+        with tempfile.TemporaryDirectory() as d:
+            dp = pathlib.Path(d)
+            args = [sys.executable, str(ROOT / "scripts/g6_gate.py"), "--gate", str(dp / "gate.json"),
+                    "--sarif", str(dp / "g6.sarif")]
+            (dp / "eval.json").write_text(json.dumps({"results": {"results": self._promptfoo_rows(fx.get("promptfoo_failed_checks") or [])}}),
+                                          encoding="utf-8")
+            args += ["--eval", str(dp / "eval.json")]
+            if fx.get("eval_exit_code") is not None:
+                args += ["--eval-exit-code", str(fx["eval_exit_code"])]
+            if fx.get("redteam_skipped"):
+                args += ["--redteam-skipped", fx["redteam_skipped"]]
+            if fx.get("garak") == "pass":
+                (dp / "g6-garak.report.jsonl").write_text(json.dumps({"entry_type": "eval", "probe": "dan.Dan_11_0",
+                    "detector": "dan.DAN", "total_evaluated": 5, "fails": 0}) + "\n", encoding="utf-8")
+                args += ["--garak-glob", str(dp / "g6-garak*.report.jsonl")]
+            if fx.get("cost"):
+                (dp / "cost.json").write_text(json.dumps({"state": fx["cost"], "reason": "評測 fixture"}), encoding="utf-8")
+                args += ["--cost", str(dp / "cost.json")]
+            subprocess.run(args, check=True, capture_output=True, text=True, timeout=60, cwd=ROOT)
+            gate = json.loads((dp / "gate.json").read_text(encoding="utf-8"))
+            sarif = json.loads((dp / "g6.sarif").read_text(encoding="utf-8"))
+        return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}, None, gate
+
+
+def check_gate(case: dict, hits: set[str], gate: dict | None) -> tuple[bool, str]:
+    """gate_status 案例：閘門狀態須符合預期；預期 fail 時須產生預期規則的發現；
+    expected.coverage（control → state）列出的覆蓋項也須相符（例如 405 的 SSRF 檢查必須是 untested，不是 pass）；
+    expected.status_reason_contains 指定 status_reason 必須寫明的原因（例如是哪一層未執行）。"""
+    exp = case["expected"]
+    if not gate:
+        return False, "執行器沒有回報閘門狀態"
+    st = gate.get("status")
+    got = f"閘門 {st}（{(gate.get('status_reason') or '')[:120]}）"
+    if st != exp["gate_status"]:
+        return False, f"預期 {exp['gate_status']}，實際{got}"
+    if st == "fail" and exp.get("rule_id") not in hits:
+        return False, f"閘門 fail 但沒有 {exp.get('rule_id')} 的發現：{sorted(hits)}"
+    # 同一控制可有多個覆蓋項（例如 G6 的 promptfoo、redteam、garak 都對到 LLM01:2025）：有任一項是預期狀態即符合
+    cov: dict[str, set] = collections.defaultdict(set)
+    for c in gate.get("coverage") or []:
+        cov[c.get("control_id")].add(c.get("state"))
+    wrong = [f"{k} 預期 {v}、實際 {sorted(cov.get(k) or []) or '無'}" for k, v in (exp.get("coverage") or {}).items()
+             if v not in cov.get(k, set())]
+    if wrong:
+        return False, "覆蓋項不符：" + "；".join(wrong)
+    need = exp.get("status_reason_contains")
+    if need and need not in (gate.get("status_reason") or ""):
+        return False, f"status_reason 應說明「{need}」，實際：{(gate.get('status_reason') or '')[:120]}"
+    return True, got
+
+
 # ---------------------------------------------------------------- scoring
+# 「這個案例不歸我管」類的拒絕原因：每個執行器對不相干的案例都會這樣回，拿來當 untested 原因會誤導
+# （例如 G3 CSP 案例被報成「slopcheck-rules-file: … 不由規則檔掃描實作」）
+_GENERIC_REJECT = re.compile(r"非程式碼|非 G\d|target_app|不由.+實作|沒有 \S+ 實作")
+
+
+def untested_reason(case: dict, reasons: list[str]) -> str:
+    """沒有執行器可跑時的原因：優先「已接近可執行」的專屬原因（例如本機缺 semgrep、--no-network）；
+    否則明說沒有本機執行器，並附上 cwe-map 的 implemented_by，指出該規則實際由誰實作、要在哪一層驗證。"""
+    specific = [r for r in reasons if not _GENERIC_REJECT.search(r.partition(": ")[2])]
+    if specific:
+        return specific[0]
+    rule, kind = case["expected"].get("rule_id"), case["input"].get("kind")
+    impl = _rule_implementers().get(rule) or []
+    where = f"（實作者：{', '.join(impl)}，需整合層或人工審查驗證）" if impl else "（cwe-map 沒有 implemented_by）"
+    if kind in ("http", "prompt"):
+        return f"kind={kind}：未標記 target_app（案例描述的不是靶場可重現的行為），{rule} 沒有本機評測執行器{where}"
+    return f"{rule} 沒有本機評測執行器{where}"
+
+
+_IMPLEMENTERS: dict[str, list[str]] | None = None
+
+
+def _rule_implementers() -> dict[str, list[str]]:
+    """config/catalogs/cwe-map.yaml：vibesec 規則 ID → implemented_by 清單。"""
+    global _IMPLEMENTERS
+    if _IMPLEMENTERS is None:
+        import yaml
+        rules = (yaml.safe_load((ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8")) or {}).get("rules") or {}
+        _IMPLEMENTERS = {rid: [str(x) for x in (meta or {}).get("implemented_by") or []] for rid, meta in rules.items()}
+    return _IMPLEMENTERS
+
+
 def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
     rows = []
     for case in cases:
@@ -706,18 +1031,23 @@ def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
                "held_out": bool(case.get("held_out")), "rule_id": exp.get("rule_id"),
                "should_flag": bool(exp.get("should_flag")), "runner": None, "outcome": "untested",
                "reason": None, "hits": []}
-        if exp.get("gate_status") == "incomplete":
-            row["reason"] = "案例描述工具／環境失敗情境（gate_status: incomplete），需在整合層驗證"
-            rows.append(row); continue
+        status_case = exp.get("gate_status") is not None
         reasons = []
         for r in runners:
+            if status_case != isinstance(r, IntegrationRunner):
+                continue   # 閘門狀態案例只由整合層驗證；偵測案例不走整合層
             why = r.handles(case)
             if why:
                 reasons.append(f"{r.name}: {why}"); continue
             row["runner"] = r.name
-            hits, err = r.run(case)
+            res = r.run(case)
+            hits, err = res[0], res[1]
             if err:
                 row["outcome"], row["reason"] = "incomplete", err
+            elif status_case:
+                row["hits"] = sorted(hits)
+                ok, why = check_gate(case, hits, res[2] if len(res) > 2 else None)
+                row["outcome"], row["reason"] = ("STATUS_OK" if ok else "STATUS_WRONG"), why
             else:
                 row["hits"] = sorted(hits)
                 flagged = exp.get("rule_id") in hits
@@ -725,14 +1055,7 @@ def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
                                   (False, True): "FP", (False, False): "TN"}[(row["should_flag"], flagged)]
             break
         else:
-            # 優先顯示「已接近可執行」的原因（同 gate 的專屬執行器），其次第一個
-            specific = [r for r in reasons if "非程式碼" not in r and "非 G1 manifest" not in r
-                        and "target_app" not in r]
-            row["reason"] = (specific or reasons or ["沒有執行器"])[0]
-            if row["reason"].startswith("semgrep: kind=") and case["input"].get("kind") in ("http", "prompt", "config"):
-                row["reason"] = (f"kind={case['input']['kind']}：未標記 target_app（案例描述的不是靶場可重現的行為），尚無對應執行器"
-                                 if case["input"].get("kind") in ("http", "prompt")
-                                 else f"kind={case['input']['kind']}：需人工審查或整合層驗證，尚無本機執行器")
+            row["reason"] = untested_reason(case, reasons)
         rows.append(row)
     return rows
 
@@ -745,9 +1068,11 @@ def summarize(rows: list[dict]) -> dict:
     out = {}
     for g, c in sorted(by_gate.items()):
         tp, fp, fn, tn = c["TP"], c["FP"], c["FN"], c["TN"]
-        out[g] = {"TP": tp, "FP": fp, "FN": fn, "TN": tn,
+        sok, swrong = c["STATUS_OK"], c["STATUS_WRONG"]
+        # 召回率／精確率只算偵測案例；閘門狀態案例（gate_status）另計 status_ok／status_wrong
+        out[g] = {"TP": tp, "FP": fp, "FN": fn, "TN": tn, "status_ok": sok, "status_wrong": swrong,
                   "untested": c["untested"], "incomplete": c["incomplete"],
-                  "executed": tp + fp + fn + tn, "total": sum(c.values()),
+                  "executed": tp + fp + fn + tn + sok + swrong, "total": sum(c.values()),
                   "recall": round(tp / (tp + fn), 3) if tp + fn else None,
                   "precision": round(tp / (tp + fp), 3) if tp + fp else None}
     return out
@@ -756,13 +1081,15 @@ def summarize(rows: list[dict]) -> dict:
 def to_markdown(summary: dict, rows: list[dict], split: str) -> str:
     fmt = lambda v: "—" if v is None else f"{v:.0%}"
     lines = [f"# VibeSec 評測結果（split: {split}）", "",
-             "召回率／精確率只計入實際執行的案例；untested／incomplete 不計分，也不算通過（incomplete ≠ pass）。", "",
-             "| 閘門 | 執行 / 總數 | TP | FP | FN | TN | untested | incomplete | 召回率 | 精確率 |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "召回率／精確率只計入實際執行的偵測案例；untested／incomplete 不計分，也不算通過（incomplete ≠ pass）。",
+             "「狀態驗證」是 gate_status 案例：以整合層情境檢查閘門在工具／環境失敗時回報的狀態（✓ 正確／✗ 錯誤）。", "",
+             "| 閘門 | 執行 / 總數 | TP | FP | FN | TN | 狀態驗證 ✓／✗ | untested | incomplete | 召回率 | 精確率 |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for g, s in summary.items():
         lines.append(f"| {g} | {s['executed']} / {s['total']} | {s['TP']} | {s['FP']} | {s['FN']} | {s['TN']} | "
+                     f"{s['status_ok']}／{s['status_wrong']} | "
                      f"{s['untested']} | {s['incomplete']} | {fmt(s['recall'])} | {fmt(s['precision'])} |")
-    bad = [r for r in rows if r["outcome"] in ("FP", "FN", "incomplete")]
+    bad = [r for r in rows if r["outcome"] in ("FP", "FN", "STATUS_WRONG", "incomplete")]
     if bad:
         lines += ["", "## 需要注意的案例", "", "| 案例 | 結果 | 規則 | 執行器 | 命中／原因 |", "|---|---|---|---|---|"]
         for r in bad:
@@ -793,7 +1120,7 @@ def main(argv=None) -> int:
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
     runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), RulesFileRunner(network=not a.no_network), KevRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
-                             GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets)]
+                             GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets), ZapRunner(), IntegrationRunner()]
     try:
         rows = evaluate(cases, runners)
     finally:
@@ -812,9 +1139,9 @@ def main(argv=None) -> int:
         pathlib.Path(a.md).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(a.md).write_text(md, encoding="utf-8")
     if a.write_baseline:
-        ids = sorted(r["id"] for r in rows if r["outcome"] in ("TP", "TN"))
+        ids = sorted(r["id"] for r in rows if r["outcome"] in ("TP", "TN", "STATUS_OK"))
         pathlib.Path(a.write_baseline).write_text(
-            "# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN）。\n"
+            "# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN／閘門狀態正確）。\n"
             "# 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。\n"
             + "executed:\n" + "".join(f"  - {i}\n" for i in ids), encoding="utf-8")
     print(md)
@@ -824,9 +1151,10 @@ def main(argv=None) -> int:
 
 
 def regressions_vs_baseline(rows: list[dict], baseline: dict) -> list[str]:
-    """任何 FP／FN 都是退步；baseline 列出的案例若未實測（untested／incomplete）或不見了也是退步。"""
+    """任何 FP／FN／閘門狀態錯誤都是退步；baseline 列出的案例若未實測（untested／incomplete）或不見了也是退步。"""
     by_id = {r["id"]: r for r in rows}
-    out = [f"{r['id']}：{r['outcome']}（{r['rule_id']}）" for r in rows if r["outcome"] in ("FP", "FN")]
+    out = [f"{r['id']}：{r['outcome']}（{r['rule_id']}）" + (f"：{r['reason']}" if r["outcome"] == "STATUS_WRONG" else "")
+           for r in rows if r["outcome"] in ("FP", "FN", "STATUS_WRONG")]
     for cid in baseline.get("executed") or []:
         r = by_id.get(cid)
         if r is None:

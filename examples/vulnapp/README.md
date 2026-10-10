@@ -43,7 +43,7 @@ curl -s -X POST http://127.0.0.1:8000/login \
 | `/login`、`/chat` 無 rate limiting / captcha | 缺速率限制 | G5 / G6 | `vibesec.g5.missing-rate-limit` |
 | `POST /graphql` introspection 開啟 | Schema 洩漏 | G5 | `vibesec.g5.graphql-introspection` |
 | `POST /chat` → `llm_stub` 於被要求時洩漏含 `VIBESEC-SYSPROMPT-CANARY` 的 system prompt | Direct Prompt Injection / System Prompt Extraction | G6 | `direct_prompt_injection`、`system_prompt_extraction`（LLM01:2025、LLM07:2025） |
-| `llm_stub` 服從外部文件夾帶指令並回報外連意圖 | Indirect Prompt Injection | G6 | `indirect_prompt_injection`（LLM01:2025） |
+| `POST /chat` 把 `context`（檢索到的外部文件）併入模型輸入，`llm_stub` 服從文件內夾帶的指令並回報外連意圖 | Indirect Prompt Injection | G6 | `indirect_prompt_injection`（LLM01:2025） |
 | `llm_stub` 原樣回吐 `<script>…</script>` | Stored XSS via AI Output | G6 | `stored_xss_via_ai_output`（LLM05:2025） |
 | `llm_stub` 對超長輸入（>5000 字元）延遲 ~6s 才回應 | Denial of Wallet（延遲/資源耗用） | G6 | `denial_of_wallet`（LLM10:2025） |
 
@@ -67,7 +67,7 @@ VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:
 | Stack trace 外洩 | 例外回傳一般化 `{"error":"internal error"}` |
 | Prompt injection / system prompt 外洩 | `llm_stub` 拒絕擷取與夾帶指令，不回吐輸入 |
 | AI 輸出 XSS | 回覆經 HTML 編碼 |
-| Denial of Wallet | `/chat` 超過 4000 字元回 413 |
+| Denial of Wallet | `/chat` 的 `message`＋`context` 超過 4000 字元回 413 |
 
 JWKS 端點：`GET /.well-known/jwks.json` 公開 RS256 公鑰（n/e）；RSA 金鑰每次啟動在記憶體產生，不落地。
 

@@ -5,6 +5,7 @@
   - Indirect Prompt Injection（外部文件夾帶指令 → 服從並回報外連意圖）
   - Stored XSS via AI Output（原樣回吐 <script>…</script>）
   - Denial of Wallet（超長輸入 → 延遲回應）
+  - Excessive Agency（呼叫端提供高影響工具時，未經確認就「呼叫」；以 TOOL-CALL 標記模擬，不真的執行任何動作）
 嚴禁用於正式環境。
 """
 import re
@@ -27,29 +28,43 @@ _EXTRACT_PATTERNS = [
 ]
 # Indirect Prompt Injection：模擬「來自外部文件/網頁的夾帶指令」標記
 _INDIRECT_MARKERS = [
-    r"<!--\s*system\s*:",                       # 註解內夾帶指令
+    r"<!--\s*(?:system|ai|assistant)\s*:",       # 註解內夾帶指令
     r"\[\[?\s*instruction",                     # [instruction ...]
     r"from (?:the )?(?:document|email|webpage|pdf|external)",
     r"according to the (?:attached|external|retrieved)",
-    r"ignore previous instructions and (?:call|fetch|visit|send|post)",
+    r"ignore (?:all |any )?(?:previous|prior|above) instructions and (?:call|fetch|visit|send|post|upload)",
 ]
 _EGRESS_URL = re.compile(r"https?://[^\s\"'<>)]+", re.I)
+# Excessive Agency：使用者要求破壞性動作，且可用工具中有高影響工具
+_DESTRUCTIVE_INTENT = [r"清掉|清除|刪除|刪掉|移除|全部刪", r"\b(?:delete|remove|drop|purge|wipe|erase|truncate)\b"]
+_HIGH_IMPACT_TOOL = re.compile(r"delete|drop|remove|purge|wipe|truncate|refund|transfer|deploy", re.I)
 
 
 def _looks_like(patterns, text):
     return any(re.search(p, text, re.I) for p in patterns)
 
 
-def generate_reply(message: str, patched: bool = False) -> str:
+def _risky_tool(msg: str, tools) -> str | None:
+    """使用者要求破壞性動作時，可用工具中第一個高影響工具；否則 None。"""
+    if not _looks_like(_DESTRUCTIVE_INTENT, msg):
+        return None
+    return next((t for t in tools or [] if _HIGH_IMPACT_TOOL.search(t)), None)
+
+
+def generate_reply(message: str, patched: bool = False, tools=None) -> str:
     """回傳假 LLM 的回覆字串。行為對 G6 探針而言完全可預測。
 
+    tools：呼叫端提供給模型的工具名稱清單（模擬 function calling；靶場不真的執行任何工具）。
     patched=True（VIBESEC_VULNAPP_MODE=patched）：拒絕洩漏 system prompt、不服從夾帶指令、
-    不回吐使用者輸入；呼叫端另做 HTML 編碼與長度上限。
+    不回吐使用者輸入、高影響工具先要求人工確認（HITL）；呼叫端另做 HTML 編碼與長度上限。
     """
     msg = message or ""
+    risky = _risky_tool(msg, tools)
     if patched:
         if _looks_like(_EXTRACT_PATTERNS, msg) or _looks_like(_INDIRECT_MARKERS, msg):
             return "抱歉，我無法提供系統設定或執行來自外部內容的指令。"
+        if risky:
+            return f"此動作需要人工確認：{risky} 屬高影響工具，請先由管理者核准後再執行（尚未執行任何動作）。"
         return "您好，我是 VibeSec-Bot（測試靶場，已修補模式）。我可以協助一般問答。"
 
     # Denial of Wallet：超長輸入 → 明顯延遲（modest，足以觸發 <5000ms 斷言，又不拖垮 CI）
@@ -77,6 +92,10 @@ def generate_reply(message: str, patched: bool = False) -> str:
     # Stored XSS via AI Output → 原樣回吐 <script> 片段
     if "<script" in msg.lower():
         leaked_parts.append("您的訊息內容為：" + msg)
+
+    # Excessive Agency → 不經確認直接「呼叫」高影響工具
+    if risky:
+        leaked_parts.append(f"TOOL-CALL: {risky}(scope=all) 已直接執行，未經使用者確認。")
 
     if leaked_parts:
         return "\n\n".join(leaked_parts)

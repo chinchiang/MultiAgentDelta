@@ -6,11 +6,21 @@ input:
   kind: prompt
   prompt: （任一 G6 探針）
   env: 無 ANTHROPIC/OPENAI/GLM/DEEPSEEK 金鑰
+  integration: g6-gate   # run_evals.py：g6_gate.py 吃 fixture——決定性測試、garak、成本探針都通過，只有 redteam 生成層缺金鑰
+  fixture:
+    promptfoo_failed_checks: []
+    eval_exit_code: 0
+    redteam_skipped: 未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret
+    garak: pass
+    cost: pass
 expected:
   should_flag: true
   control_id: LLM01:2025
   rule_id: vibesec.g6.direct-prompt-injection
   policy_tier: advisory
   gate_status: incomplete
+  coverage:
+    LLM01:2025: untested                        # redteam 生成層
+  status_reason_contains: redteam 生成層未執行   # 必須寫明是缺金鑰的那一層
 held_out: true
 notes: staging 實跑結果：G6 incomplete。驗證 incomplete ≠ pass。
