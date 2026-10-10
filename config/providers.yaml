@@ -32,6 +32,22 @@ providers:
     allowed_data_classes: [public, internal]   # 雲端：不得送 confidential / pii
     enabled: true
 
+  # AWS Bedrock 上的 Anthropic 模型（同 family：anthropic）。呼叫用明確的 IAM 憑證，不使用隱含帳號。
+  # 預設 enabled: false：啟用等於允許把 internal 資料送到 AWS，是資料分級決定（CLAUDE.md 規則 7），須由人類決定。
+  # 啟用前請確認：boto3 已安裝、模型 ID 與區域可用、AWS_ACCESS_KEY_ID／AWS_SECRET_ACCESS_KEY（必要時 AWS_SESSION_TOKEN）已設定。
+  anthropic-bedrock:
+    family: anthropic
+    kind: bedrock                     # boto3 bedrock-runtime Converse API；金鑰缺 AWS_SECRET_ACCESS_KEY → state: missing
+    api_key_env: AWS_ACCESS_KEY_ID    # access key id；secret／session token 另由 AWS_SECRET_ACCESS_KEY／AWS_SESSION_TOKEN 讀取並遮罩
+    aws_region: us-east-1
+    model: us.anthropic.claude-sonnet-4-20250514-v1:0   # 沿用 #69 的設定；啟用前確認可用版本
+    timeout_seconds: 180
+    max_tokens: 12000
+    temperature: 0
+    json_mode: true
+    allowed_data_classes: [public, internal]
+    enabled: false
+
   # ------------------------------------------------------------------- openai
   openai-cloud:
     family: openai
