@@ -77,6 +77,8 @@ executed:
   - g5-ssrf-pos-01
   - g5-stacktrace-neg-01
   - g5-stacktrace-pos-01
+  - g6-dow-neg-01
+  - g6-dow-pos-01
   - g6-injection-neg-01
   - g6-injection-pos-01
   - g6-sysprompt-neg-01

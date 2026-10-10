@@ -86,6 +86,7 @@ held_in:
 - g5-stacktrace-neg-01
 - g5-stacktrace-pos-01
 - g6-agency-pos-01
+- g6-dow-neg-01
 - g6-dow-pos-01
 - g6-indirect-pos-01
 - g6-injection-neg-01

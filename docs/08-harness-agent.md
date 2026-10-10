@@ -28,6 +28,7 @@ harness agent **不做**的事：不寫修補程式碼、不改任何設定讓�
 | Git diff base | 參數 `--diff <base>`；CI 中為 `github.event.pull_request.base.sha` | `diff_aware: true` 的閘門退為 `scope: full`，並在 gate result 記 `diff_base: null` |
 | 被測專案路徑 | 參數 `--target <path>`（本機 git repo 根目錄）；未給為本 repo。目前 G1 套件預檢（`scripts/g1_slopcheck.py --target`）、G2 機密掃描（`scripts/g2_secrets.py --target`）、G3 SAST／IaC（`scripts/g3_sast.py --target`）、G4 存取控制（`scripts/g4_access.py --target`；外部專案的 LLM 審查紀錄只採信本 repo 的 `reviews/g4/external/<目標 HEAD>.yaml`）、G0 威脅模型（`scripts/g0_threat_model.py --target`；讀目標自己的模型或 `--threat-model`）支援 | 目標沒有威脅模型 → G0 `incomplete`（threat model missing），不得改用本 repo 的模型。設定、政策、清單取自本 repo；本 repo 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用 |
 | 靶場 URL | 環境變數 `VIBESEC_TARGET_URL`（`gates.g5_dast_api.target_url_env`）；CI 中來自 repo Actions 變數 `vars.VIBESEC_TARGET_URL`，不接受手動觸發輸入 | G5、G6 `incomplete`，`status_reason: "VIBESEC_TARGET_URL not set"` |
+| 目標允許清單 | `config/targets.yaml`，由 `scripts/target_guard.py check <url>` 比對（只收 http/https；拒絕帶帳密的 URL 與雲端 metadata；deny 優先；預設只允許本機靶場） | 目標不在清單或清單無法讀取 → 不送任何 G5／G6 請求，兩個閘門 `incomplete`，`status_reason` 寫明檢查結果 |
 | 雙帳號 Token | `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` | G5 的 `bola_idor` 控制 `untested`，G5 整體 `incomplete`（`two_account_test: required`） |
 | 模型金鑰 | `config/providers.yaml` 各 provider 的 `api_key_env` | 該 provider 不可用；若導致高風險控制不足兩個 family → 相關發現 `pending`、閘門 `incomplete` |
 
