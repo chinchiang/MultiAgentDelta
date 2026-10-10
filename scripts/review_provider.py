@@ -119,8 +119,9 @@ def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | N
         raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
 
 
-def _bedrock(p, key, system, user, env):
-    """以明確憑證呼叫 Bedrock；不使用隱含帳號。 / Call Bedrock with explicit credentials, not an implicit identity."""
+def _bedrock(p, key, system, user, env, profile=""):
+    """以明確憑證或明確指名的 profile（例如 AWS SSO）呼叫 Bedrock；不使用隱含的預設憑證鏈。
+    / Call Bedrock with explicit credentials or an explicitly named profile (e.g. AWS SSO), never the implicit default chain."""
     try:
         import boto3
         from botocore.config import Config
@@ -129,13 +130,19 @@ def _bedrock(p, key, system, user, env):
         raise RuntimeError("Bedrock 需要 boto3 / Bedrock requires boto3") from None
     region = p.get("aws_region", "us-east-1")
     try:
-        session = boto3.Session(aws_access_key_id=key, aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
-                                aws_session_token=env.get("AWS_SESSION_TOKEN"), region_name=region)
+        if profile:   # SSO token 過期 → botocore 丟 BotoCoreError 子類 → error（不改用其他身分）
+            session = boto3.Session(profile_name=profile, region_name=region)
+        else:
+            session = boto3.Session(aws_access_key_id=key, aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
+                                    aws_session_token=env.get("AWS_SESSION_TOKEN"), region_name=region)
         client = session.client("bedrock-runtime", config=Config(connect_timeout=15,
                                 read_timeout=p.get("timeout_seconds", 120), retries={"max_attempts": 0}))
+        inference = {"maxTokens": p.get("max_tokens", 4096), "temperature": p.get("temperature", 0)}
+        if inference["temperature"] is None:   # providers.yaml 明寫 temperature: null → 不送（部分新模型已不接受此參數）
+            del inference["temperature"]
         response = client.converse(modelId=p["model"], system=[{"text": system}],
                                   messages=[{"role": "user", "content": [{"text": user + "\nReturn only JSON."}]}],
-                                  inferenceConfig={"maxTokens": p.get("max_tokens", 4096), "temperature": p.get("temperature", 0)})
+                                  inferenceConfig=inference)
     except (ConnectTimeoutError, ReadTimeoutError):
         raise TimeoutError("Bedrock timeout") from None
     except ClientError as e:
@@ -232,15 +239,22 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
         return {**out, "state": "refused",
                 "note": f"no provider allowed for data_class={data_class}：{provider} 只收 {p.get('allowed_data_classes')}（未送出任何內容）"}
     key = env.get(p.get("api_key_env") or "", "")
-    if not key:
+    profile = ""
+    if p.get("kind") == "bedrock":
+        # 明確金鑰（access key＋secret）優先；否則改用 aws_profile_env 指名的 profile；兩者皆無 → missing
+        if not (key and env.get("AWS_SECRET_ACCESS_KEY")):
+            profile = env.get(p.get("aws_profile_env") or "", "")
+            if not profile:
+                need = f"{p.get('api_key_env')}＋AWS_SECRET_ACCESS_KEY" + (f" 或 {p['aws_profile_env']}" if p.get("aws_profile_env") else "")
+                return {**out, "state": "missing", "note": f"{need} 未設定 / not configured"}
+            key = ""
+    elif not key:
         return {**out, "state": "missing", "note": f"{p.get('api_key_env')} 未設定"}
-    if p.get("kind") == "bedrock" and not env.get("AWS_SECRET_ACCESS_KEY"):
-        return {**out, "state": "missing", "note": "AWS_SECRET_ACCESS_KEY 未設定 / not configured"}
     user = ("以下是審查包（JSON）。依你的角色說明審查，只回傳角色說明定義的 JSON。\n\n"
             + json.dumps(packet, ensure_ascii=False, indent=2))
     fn = {"openai_compatible": _openai, "anthropic": _anthropic}.get(p.get("kind"))
     if p.get("kind") == "bedrock":
-        fn = lambda provider, key, system, prompt: _bedrock(provider, key, system, prompt, env)
+        fn = lambda provider, key, system, prompt: _bedrock(provider, key, system, prompt, env, profile)
     if fn is None:
         return {**out, "state": "error", "note": f"不支援的 kind {p.get('kind')!r}"}
     contract = output_contract(packet)
@@ -258,7 +272,7 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
         except BadResponse as e:
             opinion, problems = None, [str(e)]   # 無法解析的文字不保存（資料分級；與 #66 一致）
         except (RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
-            return {**out, "state": "error", "note": str(e).replace(key, "***")[:500]}
+            return {**out, "state": "error", "note": redact_key(str(e), key)[:500]}   # key 可為空（profile 模式）
         else:
             problems = contract_errors(opinion, contract)
         if not problems:

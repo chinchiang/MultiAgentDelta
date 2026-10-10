@@ -35,7 +35,7 @@
         "required": ["provider", "family", "state"],
         "properties": {
           "provider": { "type": "string", "minLength": 1, "description": "config/providers.yaml 的 provider 名稱，或 claude-code-subagent（SKILL.md 步驟 2）" },
-          "family": { "type": "string", "enum": ["anthropic", "openai", "google", "glm", "deepseek", "fake"] },
+          "family": { "type": "string", "enum": ["anthropic", "openai", "google", "glm", "deepseek", "nvidia", "fake"] },
           "model": { "type": ["string", "null"] },
           "state": { "type": "string", "enum": ["ran", "missing", "timeout", "error", "refused"], "description": "refused：資料分級不在該 provider 的 allowed_data_classes，未送出任何內容（review_provider.py exit 3）" },
           "note": { "type": ["string", "null"] }
@@ -85,7 +85,7 @@
               "properties": {
                 "role": { "type": "string", "enum": ["architecture", "appsec", "identity-authz", "supplychain-cicd"] },
                 "provider": { "type": "string" },
-                "family": { "type": "string", "enum": ["anthropic", "openai", "google", "glm", "deepseek", "fake"] },
+                "family": { "type": "string", "enum": ["anthropic", "openai", "google", "glm", "deepseek", "nvidia", "fake"] },
                 "model": { "type": ["string", "null"] },
                 "prompt_version": { "type": ["string", "null"] },
                 "round": { "type": "integer", "minimum": 1, "maximum": 3 },
