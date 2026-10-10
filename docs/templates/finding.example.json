@@ -44,7 +44,7 @@
   },
   "retest_result": "not_retested",
   "sources": {
-    "tool": "vibesec.g5.api-probes",
+    "tool": "vibesec-g5-api-probes",
     "tool_version": "0.1.0",
     "rule_version": "1",
     "advisory_url": null,

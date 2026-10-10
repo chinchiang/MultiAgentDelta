@@ -133,7 +133,7 @@ flowchart LR
 | `docs/09-multi-model-review.md` | provider 抽象、四個審查角色、輪次規則、少數意見、人工裁決 |
 | `docs/10-evidence-scoring-and-findings.md` | E0–E3、validation_status、CVSS v4 / EPSS / KEV、P0–P3 SLA、finding JSON |
 | `docs/11-tool-selection-matrix.md` | SAST / SCA / DAST / AI 紅隊工具比較與 L1/L2/L3 組合 |
-| `docs/12-pilot-and-evaluation.md` | 四週試點、60+ 案例、三組比較、驗收門檻 |
+| `docs/12-pilot-and-evaluation.md` | 四週試點、固定評測案例（數量見 `evals/README.md`）、三組比較、驗收門檻 |
 | `docs/13-roadmap-governance-compliance.md` | 12 個月路線圖、ASVS 5.0 / NIST AI RMF / EU CRA / CSL-PIPL 對齊、MAESTRO 對接 |
 | `docs/templates/` | G0 威脅模型模板、G0 報告模板、finding 與 risk register 範例 |
 | `schemas/` | `finding`、`gate-result`、`threat-model` JSON Schema |
