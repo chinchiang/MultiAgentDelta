@@ -1,0 +1,17 @@
+id: g5-ratelimit-pos-01
+gate: G5
+domain: authentication
+title: 登入端點連續錯誤密碼不觸發 429
+input:
+  kind: http
+  target_app: vulnapp
+  target: /login
+  steps:
+  - POST /login 錯誤密碼 25 次 -> 皆為 401，未見 429
+expected:
+  should_flag: true
+  control_id: ASVS5-V2.4
+  rule_id: vibesec.g5.missing-rate-limit
+  policy_tier: advisory
+held_out: false
+notes: 靶場 /login 無 rate limiting。vulnapp-patched 也沒有加上 rate limiting，現有執行器無法表達反例。

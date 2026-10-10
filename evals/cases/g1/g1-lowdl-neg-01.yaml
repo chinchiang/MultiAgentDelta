@@ -1,0 +1,15 @@
+id: g1-lowdl-neg-01
+gate: G1
+domain: dependency
+title: 新增週下載量很高的常見套件
+input:
+  kind: manifest
+  ecosystem: npm
+  added: ["express@4.19.2"]
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.2
+  rule_id: vibesec.g1.low-download-package
+  policy_tier: advisory
+held_out: false
+notes: 週下載量遠大於 1000；查 live registry，--no-network 時記 untested。

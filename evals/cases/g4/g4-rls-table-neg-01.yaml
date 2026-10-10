@@ -1,0 +1,22 @@
+id: g4-rls-table-neg-01
+gate: G4
+domain: authorization
+title: Supabase migration 建表後同檔啟用 RLS 並建立 policy
+input:
+  kind: iac
+  path: supabase/migrations/002_notes.sql
+  snippet: |
+    create table notes (
+      id bigint generated always as identity primary key,
+      owner_id uuid not null references auth.users (id),
+      body text not null
+    );
+    alter table notes enable row level security;
+    create policy own_notes on notes using (owner_id = auth.uid());
+expected:
+  should_flag: false
+  control_id: ASVS5-V8.2
+  rule_id: vibesec.g4.supabase-table-without-rls
+  policy_tier: advisory
+held_out: false
+notes: 與 g4-rls-table-pos-01 成對。

@@ -10,8 +10,12 @@ held_out:
 - g3-actions-unpinned-neg-01
 - g3-actions-unpinned-neg-02
 - g3-cmdi-neg-01
+- g3-cors-pos-01
 - g3-csp-pos-01
+- g3-docker-root-neg-01
 - g3-imds-neg-01
+- g3-jwt-confusion-pos-01
+- g3-sql-fstring-neg-01
 - g3-sqli-pos-01
 - g4-agent-tools-neg-01
 - g4-bola-neg-01
@@ -20,6 +24,7 @@ held_out:
 - g4-hitl-pos-01
 - g4-owner-pos-02
 - g4-rls-pos-01
+- g4-rls-table-pos-01
 - g4-single-mw-fastapi-neg-02
 - g4-single-mw-fastapi-pos-02
 - g5-cors-pos-01
@@ -28,6 +33,7 @@ held_out:
 - g5-jwt-pos-01
 - g5-session-neg-01
 - g5-ssrf-neg-01
+- g5-swagger-pos-01
 - g6-indirect-neg-01
 - g6-injection-pos-01
 - g6-noprovider-incomplete-01
@@ -40,6 +46,8 @@ held_in:
 - g1-cooldown-neg-01
 - g1-kev-neg-01
 - g1-kev-pos-01
+- g1-lowdl-neg-01
+- g1-lowdl-pos-01
 - g1-postinstall-pos-01
 - g1-rulesfile-neg-01
 - g1-rulesfile-pos-01
@@ -58,15 +66,21 @@ held_in:
 - g3-actions-unpinned-pos-01
 - g3-actions-unpinned-pos-02
 - g3-cmdi-pos-01
+- g3-cors-neg-01
 - g3-csp-neg-01
+- g3-docker-root-pos-01
 - g3-imds-pos-01
+- g3-jwt-confusion-neg-01
 - g3-jwt-none-neg-01
 - g3-jwt-none-pos-01
+- g3-sql-fstring-pos-01
 - g3-sqli-neg-01
 - g3-sqli-neg-02
 - g3-sqli-pos-02
 - g3-xss-neg-01
 - g3-xss-pos-01
+- g3-xss-py-neg-01
+- g3-xss-py-pos-01
 - g4-agent-tools-pos-01
 - g4-hitl-neg-01
 - g4-hitl-neg-03
@@ -76,6 +90,7 @@ held_in:
 - g4-owner-pos-01
 - g4-owner-pos-03
 - g4-rls-neg-01
+- g4-rls-table-neg-01
 - g4-single-mw-fastapi-neg-01
 - g4-single-mw-fastapi-pos-01
 - g4-single-mw-pos-01
@@ -84,7 +99,9 @@ held_in:
 - g5-bola-neg-01
 - g5-bola-pos-01
 - g5-cors-neg-01
+- g5-graphql-pos-01
 - g5-jwt-pos-02
+- g5-ratelimit-pos-01
 - g5-session-pos-01
 - g5-ssrf-incomplete-01
 - g5-ssrf-neg-02
@@ -103,34 +120,34 @@ held_in:
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
   # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
-  total: 100
+  total: 117
   held_out_ratio: 0.34
   by_gate:
     G0: 4
-    G1: 13
+    G1: 15
     G2: 9
-    G3: 21
-    G4: 23
-    G5: 16
+    G3: 31
+    G4: 25
+    G5: 19
     G6: 14
   by_domain:
     ai_agent_security: 24
-    application_architecture: 3
-    authentication: 8
-    authorization: 13
+    application_architecture: 6
+    authentication: 11
+    authorization: 15
     build_supply_chain: 4
     csp: 2
     data_integrity: 2
-    dependency: 9
+    dependency: 11
     error_handling: 2
-    general_vulnerabilities: 8
+    general_vulnerabilities: 13
     github_actions: 7
     input_validation: 6
     secret_exposure: 9
-    xss: 3
+    xss: 5
   by_polarity:
-    neg: 48
-    pos: 52
+    neg: 55
+    pos: 62
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-ssrf-incomplete-01

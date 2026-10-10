@@ -183,12 +183,15 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 ## 驗證方式
 
 1. **規則語法**：`semgrep --validate --config config/semgrep/vibesec-rules.yaml`（本 repo 已驗證：18 條規則、0 錯誤）。
-2. **正例 / 反例 fixture**（`evals/`）：
-   - `cur.execute(f"… {q}")` → `sql-fstring-execute` + `sql-string-concat`；`cur.execute("… %s", (q,))` → 無。
-   - LLM 輸出 `+` 拼接 → `cur.execute(sql)` → `sql-string-concat`（證明 LLM 來源有效）。
-   - `el.innerHTML = r.choices[0].message.content` → `xss-innerhtml`；`DOMPurify.sanitize()` 後 → 無。
-   - `jwt.decode(t, k, algorithms=["HS256","RS256"])` → `jwt-alg-confusion`；`["RS256"]` → 無。
-   - Terraform 無 `metadata_options` → `CKV_AWS_79` + `CKV2_VIBESEC_1`；`http_tokens = "required"` → 無。
+2. **正例 / 反例 fixture**（`evals/cases/g3/`，由 `scripts/run_evals.py` 以 CI 同一份 semgrep 規則與 `.checkov.yaml` 實測）：
+   - `cur.execute(f"… '{owner}'")` → `sql-fstring-execute`（`g3-sql-fstring-pos-01`，不需污點來源）；`cur.execute("… = ?", (owner,))` → 無（`g3-sql-fstring-neg-01`）。
+   - LLM 輸出（`choices[0].message.content`）以 f-string 進 `db.execute` → `sql-string-concat`（`g3-sqli-pos-01`，證明 LLM 來源有效）；`%s` 參數化 → 無（`g3-sqli-neg-01`）。
+   - `el.innerHTML = params.get('q')` → `xss-innerhtml`（`g3-xss-pos-01`）；`textContent` → 無（`g3-xss-neg-01`）。
+   - FastAPI 路由參數 `+` 拼接進 `HTMLResponse` → `xss-unescaped-render-py`（`g3-xss-py-pos-01`）；先 `html.escape()` → 無（`g3-xss-py-neg-01`）。
+   - `jwt.decode(t, k, algorithms=["RS256","HS256"])` → `jwt-alg-confusion`（`g3-jwt-confusion-pos-01`）；`["RS256"]` → 無（`g3-jwt-confusion-neg-01`）。
+   - Terraform `http_tokens = "optional"` → `CKV_AWS_79` + `CKV2_VIBESEC_1`（`g3-imds-pos-01`）；`http_tokens = "required"` → 無（`g3-imds-neg-01`）。
+   - `aws_apigatewayv2_api` 的 `allow_origins = ["*"]` → `CKV2_VIBESEC_2` → `cors-wildcard`（`g3-cors-pos-01`）；明列網域 → 無（`g3-cors-neg-01`）。
+   - Dockerfile 沒有 `USER` → `CKV_DOCKER_3` → `dockerfile-root-user`（`g3-docker-root-pos-01`）；最後切到非 root `USER` → 無（`g3-docker-root-neg-01`）。
 3. **Checkov 自訂政策載入**：`checkov -d evals/iac --config-file config/checkov/.checkov.yaml --list | grep CKV2_VIBESEC` 顯示兩條。
 4. **時效**：PR 階段 wall-clock < 5 分鐘；超過時先移除 `p/security-audit` 的低信心規則而非關閉閘門。
 5. **跨檔案例**：source 在 `routers/`、sink 在 `services/` 的 fixture，CE 漏報、CodeQL / Pro 命中 → 在 summary 標記「需夜間全量」，不得因 CE 漏報記 pass。
