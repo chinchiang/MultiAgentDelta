@@ -356,7 +356,7 @@ rules:
     control_ids: [LLM06:2025, VS-G4-AGENT-TOOL-ALLOWLIST, MAESTRO-L3]
     gate: G6
     policy_tier: advisory
-    implemented_by: [promptfoo:excessive-agency]   # 生成層需模型金鑰；無金鑰時該層記 untested
+    implemented_by: [promptfoo:excessive-agency]   # 生成層需模型金鑰；無金鑰時該層記 untested。另有不需金鑰的決定性測試（tests.yaml excessive_agency）
 
   # ---------------- 補充：policy 引用但先前未列的規則 ----------------
   vibesec.g1.kev-hit:

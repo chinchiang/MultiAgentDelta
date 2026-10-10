@@ -36,6 +36,8 @@ executed:
   - g3-actions-unpinned-pos-02
   - g3-cmdi-neg-01
   - g3-cmdi-pos-01
+  - g3-csp-neg-01
+  - g3-csp-pos-01
   - g3-imds-neg-01
   - g3-imds-pos-01
   - g3-jwt-none-neg-01
@@ -79,6 +81,8 @@ executed:
   - g5-ssrf-pos-01
   - g5-stacktrace-neg-01
   - g5-stacktrace-pos-01
+  - g6-agency-neg-01
+  - g6-agency-pos-01
   - g6-dow-neg-01
   - g6-dow-pos-01
   - g6-indirect-neg-01

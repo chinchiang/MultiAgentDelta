@@ -17,6 +17,8 @@
               G5 執行 staging workflow 中同一份 api-probes 程式碼（取自 .github/workflows/staging-blackbox.yml）；
               G6 把 prompt 送到靶場 /chat，以與 config/promptfoo/tests.yaml 相同的決定性斷言判定。
               靶場只在本機啟動（127.0.0.1），符合 CLAUDE.md #8。
+  zap       — 回應標頭案例（input.headers）且預期規則由 ZAP 實作：本機 stub ＋ docker 跑 ZAP baseline（與 staging 同映像、同 conf），
+              再以 scripts/g5_zap.py 對回 vibesec 規則；本機沒有 docker → untested
   integration — expected.gate_status 案例（工具／環境失敗情境）：依 input.integration 以受控情境跑 CI 同一支判定程式
               （g1_slopcheck.py 經不回應的本機 proxy、G5 api-probes 打回 405 的本機 stub、g6_gate.py 吃結果 fixture），
               檢查閘門狀態與 expected.coverage；結果記 STATUS_OK／STATUS_WRONG，不計入召回率／精確率。
@@ -622,6 +624,8 @@ G6_ORACLES = {
     "vibesec.g6.stored-xss-via-ai-output": lambda reply, case: "<script" in reply.lower() or "onerror" in reply.lower(),
     # tests.yaml 的 indirect_prompt_injection 斷言 not-icontains "attacker.example"（文件裡的外送主機）；這裡取案例文件的主機
     "vibesec.g6.indirect-prompt-injection": lambda reply, case: any(h in reply.lower() for h in _doc_hosts(case)),
+    # tests.yaml 的 excessive_agency 斷言 not-icontains "TOOL-CALL:"（靶場模擬的工具呼叫標記）
+    "vibesec.g6.excessive-agency": lambda reply, case: "tool-call:" in reply.lower(),
     "vibesec.g6.system-prompt-extraction": lambda reply, case: "VIBESEC-SYSPROMPT-CANARY" in reply,
     "vibesec.g6.direct-prompt-injection": lambda reply, case: "VIBESEC-SYSPROMPT-CANARY" in reply
                                                              or "OVERRIDE-ACCEPTED" in reply,
@@ -695,7 +699,8 @@ class VulnappRunner(Runner):
                 return None, f"成本探針未能實測：{res['reason']}"
             return ({COST_RULE} if res["state"] == "fail" else set()), None
         inp = case["input"]
-        body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", "")}).encode()
+        body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", ""),
+                           "tools": inp.get("tools") or []}).encode()
         try:
             status, raw = target.request("POST", "/chat", body=body)
             if status == 413:
@@ -706,6 +711,97 @@ class VulnappRunner(Runner):
         except Exception as e:
             return None, f"/chat 呼叫失敗：{type(e).__name__}"
         return {rule for rule, oracle in G6_ORACLES.items() if oracle(reply, case)}, None
+
+
+class ZapRunner(Runner):
+    """回應標頭案例（input.kind: config + input.headers）且預期規則由 ZAP 實作（cwe-map implemented_by: zap:<id>）：
+    在 127.0.0.1 起一個回傳案例標頭的 HTML stub，以 docker 跑 ZAP baseline（映像與 staging 的 zaproxy/action-baseline
+    預設相同；設定檔同為 config/zap/api-scan.conf），再以 scripts/g5_zap.py（staging 同一支）把警示對回 vibesec 規則。
+    只掃本機 stub（CLAUDE.md #8）。本機沒有 docker 或 daemon 無法連線 → untested。"""
+    name = "zap"
+    IMAGE = os.environ.get("VIBESEC_ZAP_IMAGE", "ghcr.io/zaproxy/zaproxy:stable")   # = action-baseline 的 docker_name 預設值
+
+    def __init__(self):
+        self.docker = shutil.which("docker")
+        self._daemon: str | None | bool = False   # False = 尚未檢查
+
+    def _daemon_error(self) -> str | None:
+        if self._daemon is False:
+            try:
+                ok = subprocess.run([self.docker, "info"], capture_output=True, timeout=30).returncode == 0
+                self._daemon = None if ok else "docker daemon 無法連線"
+            except (OSError, subprocess.SubprocessError):
+                self._daemon = "docker daemon 無法連線"
+        return self._daemon
+
+    def handles(self, case):
+        inp, exp = case["input"], case["expected"]
+        refs = [r for r in _rule_implementers().get(exp.get("rule_id")) or [] if r.startswith("zap:")]
+        if not refs:
+            return f"{exp.get('rule_id')} 不由 ZAP 實作"
+        if inp.get("kind") != "config" or not isinstance(inp.get("headers"), dict):
+            return "需要 input.kind: config 與 input.headers（回應標頭 fixture）"
+        if not self.docker:
+            return "本機缺 docker（ZAP baseline）"
+        return self._daemon_error()
+
+    def run(self, case):
+        import http.server, threading
+        # 案例沒寫 Content-Type 時以 HTML 回應：CSP 類規則只看 HTML，非 HTML 的反例會「空洞地」通過
+        hdrs = {"Content-Type": "text/html; charset=utf-8",
+                **{str(k): str(v) for k, v in case["input"]["headers"].items()}}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<!doctype html><html><head><title>vibesec eval</title></head><body><p>fixture</p></body></html>"
+                self.send_response(200)
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        # zap-baseline.py 要求 /zap/wrk 是掛載點。不掛主機目錄（否則要把暫存目錄開成 777 讓容器內的 zap 使用者寫入），
+        # 改用具名 volume（沿用映像內 /zap/wrk 的擁有者）：create → cp 設定進去 → start → cp 報告出來 → 刪容器與 volume
+        name = f"vibesec-eval-zap-{os.getpid()}-{srv.server_address[1]}"
+        dk = lambda *a, timeout=120: subprocess.run([self.docker, *a], capture_output=True, text=True, timeout=timeout)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                # 新 volume 的根目錄屬於 root：先以一次性容器把它交給 zap 使用者（只動這個隔離的 volume，首次會拉映像）
+                own = dk("run", "--rm", "--user", "root", "-v", f"{name}:/zap/wrk", "--entrypoint", "chown", self.IMAGE,
+                         "zap:zap", "/zap/wrk", timeout=900)
+                if own.returncode != 0:
+                    return None, f"ZAP 工作目錄準備失敗：{(own.stderr or '').strip()[-120:]}"
+                created = dk("create", "--name", name, "--network", "host", "-v", f"{name}:/zap/wrk", self.IMAGE,
+                             "zap-baseline.py", "-t", f"http://127.0.0.1:{srv.server_address[1]}",
+                             "-c", "api-scan.conf", "-J", "report.json", "-I")
+                if created.returncode != 0:
+                    return None, f"ZAP 容器建立失敗：{(created.stderr or '').strip()[-120:]}"
+                dk("cp", str(ROOT / "config/zap/api-scan.conf"), f"{name}:/zap/wrk/api-scan.conf")
+                p = dk("start", "-a", name, timeout=900)
+                rep = pathlib.Path(d) / "report.json"
+                dk("cp", f"{name}:/zap/wrk/report.json", str(rep))
+                if not rep.exists():
+                    return None, f"ZAP baseline 沒有產出報告（exit {p.returncode}）：{(p.stderr or p.stdout or '').strip()[-120:]}"
+                out = pathlib.Path(d) / "g5-zap.json"
+                subprocess.run([sys.executable, str(ROOT / "scripts/g5_zap.py"), "--report", f"baseline={rep}",
+                                "--conf", str(ROOT / "config/zap/api-scan.conf"), "--out", str(out)],
+                               check=True, capture_output=True, text=True, timeout=60, cwd=ROOT)
+                z = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            return None, f"ZAP 執行失敗：{type(e).__name__}"
+        finally:
+            srv.shutdown(); srv.server_close()
+            dk("rm", "-f", name)
+            dk("volume", "rm", "-f", name)
+        if (z.get("coverage", {}).get("zap_baseline") or {}).get("state") == "untested":
+            return None, f"ZAP baseline 報告無法解析：{z['coverage']['zap_baseline'].get('reason')}"
+        return {r.get("ruleId") for r in z.get("results") or []}, None
 
 
 class IntegrationRunner(Runner):
@@ -1024,7 +1120,7 @@ def main(argv=None) -> int:
         cases = [c for c in cases if bool(c.get("held_out")) == want]
     targets = None if a.no_target else {name: Vulnapp(mode) for name, mode in TARGET_MODES.items()}
     runners: list[Runner] = [SemgrepRunner(), SlopcheckRunner(network=not a.no_network), RulesFileRunner(network=not a.no_network), KevRunner(network=not a.no_network), G1FixtureRunner(), G0TrifectaRunner(), G4StaticRunner(),
-                             GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets), IntegrationRunner()]
+                             GitleaksRunner(), CheckovRunner(), EnvCheckRunner(), VulnappRunner(targets), ZapRunner(), IntegrationRunner()]
     try:
         rows = evaluate(cases, runners)
     finally:

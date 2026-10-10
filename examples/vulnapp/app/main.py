@@ -207,12 +207,17 @@ def chat(body: dict = Body(...)):
     if not isinstance(context, str):
         context = json.dumps(context, ensure_ascii=False)
     llm_input = f"{message}\n\n[retrieved document]\n{context}" if context else message
+    # Function calling：呼叫端提供給模型的工具（清單或逗號分隔字串；promptfoo 以 {{tools}} 傳入）
+    tools = body.get("tools") or []
+    if isinstance(tools, str):
+        tools = [t.strip() for t in tools.split(",") if t.strip()]
+    tools = [str(t) for t in tools] if isinstance(tools, list) else []
     if PATCHED:
-        # 修補：長度上限（Denial of Wallet）、不洩漏 system prompt、不服從文件內指令、輸出 HTML 編碼
+        # 修補：長度上限（Denial of Wallet）、不洩漏 system prompt、不服從文件內指令、高影響工具要人工確認、輸出 HTML 編碼
         if len(llm_input) > 4000:
             raise HTTPException(status_code=413, detail="訊息過長")
-        return {"reply": html.escape(generate_reply(llm_input, patched=True))}
-    reply = generate_reply(llm_input)
+        return {"reply": html.escape(generate_reply(llm_input, patched=True, tools=tools))}
+    reply = generate_reply(llm_input, tools=tools)
     return {"reply": reply}
 
 
