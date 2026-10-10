@@ -43,7 +43,9 @@ manifests:
   npm: [package.json, package-lock.json, pnpm-lock.yaml, yarn.lock]
   pypi: [requirements.txt, requirements/*.txt, pyproject.toml, uv.lock, poetry.lock, Pipfile, Pipfile.lock, setup.py, setup.cfg]
 agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "CLAUDE.md", ".cursor/rules/**/*.mdc", "**/*.md"]
-install_command_regex: '(?i)\b(?:pip3?|uv pip|uv add|poetry add|pipx)\s+install\s+([^\n#]+)|\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\s+([^\n#]+)'
+# 具名群組 pypi／npm 對應生態系（g1_slopcheck.py 依群組名稱判讀）。原本把 uv add／poetry add 也接上 \s+install，
+# 實際上要寫成「uv add install」才會命中（第一輪審查）
+install_command_regex: '(?i)\b(?:(?:pip3?|pipx|uv\s+pip|python3?\s+-m\s+pip)\s+install|(?:uv|poetry|pdm|rye)\s+add)\s+(?P<pypi>[^\n#]+)|\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\s+(?P<npm>[^\n#]+)'
 
 # 安裝鉤子靜態啟發式（postinstall / preinstall / setup.py / pyproject build hooks）
 install_hooks:

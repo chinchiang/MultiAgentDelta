@@ -49,7 +49,7 @@ repos:
         entry: python3 scripts/g1_slopcheck.py --staged
         language: system
         pass_filenames: false
-        files: '(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|\.cursorrules|AGENTS\.md|SKILL\.md)$'
+        files: '(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|\.cursorrules|\.mdc|\.md)$'   # 規則檔與 vibesec.yaml scan_agent_rule_files 一致（含 **/*.md、.cursor/rules/*.mdc）
       - id: vibesec-env-guard
         name: "G2 .env 防護（不得追蹤 .env，且須在 .gitignore）"
         entry: python3 scripts/env_guard.py
