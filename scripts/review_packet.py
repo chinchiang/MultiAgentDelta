@@ -117,20 +117,20 @@ def gitleaks_scan(texts: dict[str, str]) -> list[str]:
         return sorted({h["Secret"] for h in json.loads(report.read_text() or "[]") if h.get("Secret")})
 
 
-def mask(text: str, secrets: list[str]) -> str:
-    for s in sorted(secrets, key=len, reverse=True):
+def mask(text: str, hits: list[str]) -> str:
+    for s in sorted(hits, key=len, reverse=True):
         text = text.replace(s, f"{s[:4]}…{s[-4:]}[masked sha256:{hashlib.sha256(s.encode()).hexdigest()[:12]}]")
     return text
 
 
-def mask_obj(value, secrets: list[str]):
+def mask_obj(value, hits: list[str]):
     """--base 的巢狀內容（發現摘要、證據摘錄）逐一遮罩字串。"""
     if isinstance(value, str):
-        return mask(value, secrets)
+        return mask(value, hits)
     if isinstance(value, list):
-        return [mask_obj(v, secrets) for v in value]
+        return [mask_obj(v, hits) for v in value]
     if isinstance(value, dict):
-        return {mask_obj(k, secrets): mask_obj(v, secrets) for k, v in value.items()}
+        return {mask_obj(k, hits): mask_obj(v, hits) for k, v in value.items()}
     return value
 
 
@@ -153,21 +153,21 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
         raw = {name: _show(target, sha, name) for name in referenced_files(tm, tracked)}
         scope, note = "full", "威脅模型以 path:line 引用的檔案全文"
     # --base 也要掃：發現摘要與證據摘錄可能直接引用含祕密的程式行
-    secrets = scan({threat_model: tm, BASE_SCAN_NAME: json.dumps(base, ensure_ascii=False, indent=1), **raw})
-    files = {name: numbered(mask(text, secrets), ranges.get(name)) for name, text in raw.items()}
-    pkt = mask_obj(dict(base), secrets)
+    hits = scan({threat_model: tm, BASE_SCAN_NAME: json.dumps(base, ensure_ascii=False, indent=1), **raw})
+    files = {name: numbered(mask(text, hits), ranges.get(name)) for name, text in raw.items()}
+    pkt = mask_obj(dict(base), hits)
     pkt["target"] = {**(base.get("target") or {}), "commit": sha, "scope": scope,
                      "note": "唯讀審查被測專案；只能依本審查包判斷。source_files 是 commit 的原文，每行前綴為行號，引用時用 path:line。"}
     if diff_base:
         pkt["target"]["diff_base"] = base_sha
-    pkt["threat_model_full"] = numbered(mask(tm, secrets))
+    pkt["threat_model_full"] = numbered(mask(tm, hits))
     pkt["source_files"] = files
     pkt["source_files_note"] = (f"{note}（docs/09 §6）。只附上列檔案，不送整個 repo。"
-                                f"gitleaks 命中 {len(secrets)} 個字串，已遮罩為前 4 後 4 加 sha256 指紋。")
+                                f"gitleaks 命中 {len(hits)} 個字串，已遮罩為前 4 後 4 加 sha256 指紋。")
     size = len(json.dumps(pkt, ensure_ascii=False).encode())
     if size > max_bytes:
         raise PacketError(f"審查包 {size} bytes 超過上限 {max_bytes}：不截斷、不產生（改用 --diff-base 或提高上限）")
-    for s in secrets:   # 遮罩後不得殘留原文
+    for s in hits:   # 遮罩後不得殘留原文
         if s in json.dumps(pkt, ensure_ascii=False):
             raise PacketError("遮罩後仍殘留命中字串：不產生審查包")
     return pkt
