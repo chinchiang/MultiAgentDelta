@@ -1,0 +1,23 @@
+id: g4-mcp-resource-pos-01
+gate: G4
+domain: authentication
+title: MCP server 驗 Token 只看簽章，不驗 aud 是否為自己
+input:
+  kind: code
+  language: python
+  path: mcp_server/auth.py
+  snippet: |
+    import jwt
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("notes")
+
+    def verify_token(token: str) -> dict:
+        # 任何授權伺服器簽給其他資源的 Token 都會被接受（token passthrough／confused deputy）
+        return jwt.decode(token, PUBLIC_KEY, algorithms=["RS256"])
+expected:
+  should_flag: true
+  control_id: VS-G4-MCP-RESOURCE-INDICATOR
+  rule_id: vibesec.g4.mcp-missing-resource-indicator
+  policy_tier: advisory
+held_out: false

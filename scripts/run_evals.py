@@ -9,7 +9,8 @@
 執行器：
   semgrep   — input.kind ∈ {code, iac} 且預期規則存在於 config/semgrep/vibesec-rules.yaml
   slopcheck — G1 manifest 案例，且只用到 ecosystem / added（其餘欄位為合成 fixture，live registry 無法重現）
-  g4-static — G4 code／iac 案例且預期規則由 pr-gates.yml 的 G4 靜態檢查實作：把 fixture 寫回原路徑後執行同一份程式碼
+  g4-static — G4 code／iac 案例且預期規則由 pr-gates.yml 的 G4 靜態檢查（或 g4_access.py 本機版額外檢查）實作：
+              把 fixture 寫回原路徑後執行同一份程式碼
   gitleaks／checkov — 預期規則在 config/catalogs/cwe-map.yaml 有 implemented_by 指向該工具的規則：
               以 CI 同一份設定檔（config/gitleaks.toml、config/checkov/.checkov.yaml）掃 fixture，再對回 vibesec 規則
   env-check — vibesec.g2.env-not-ignored：在暫存 git repo 執行 pr-gates.yml 中同一份 .env 檢查步驟
@@ -418,14 +419,20 @@ def _fixture_path(inp: dict) -> str | None:
 
 
 class G4StaticRunner(Runner):
-    """執行 pr-gates.yml 中同一份 G4 靜態檢查程式碼：把 fixture 寫到暫存 repo 的原路徑，再跑該步驟。
-    所有 SARIF 等級都算偵測（G4 的 single-middleware 本來就以 note 等級回報 advisory）。"""
+    """執行 pr-gates.yml 中同一份 G4 靜態檢查程式碼：把 fixture 寫到暫存 repo 的原路徑，再跑該步驟；
+    再加上 scripts/g4_access.py 本機版額外的檢查（目前是 mcp_resource_indicator，CI inline 步驟尚未包含），
+    與 g4_access.py scan 併入結果的方式相同。所有 SARIF 等級都算偵測（G4 的 single-middleware 本來就以 note 等級回報 advisory）。"""
     name = "g4-static"
     STEP = "G4 靜態檢查"
 
     def __init__(self):
         self.code = _workflow_step(self.STEP, "pr-gates.yml")
         self.rules = set(re.findall(r'add\("(vibesec\.g4\.[a-z0-9-]+)"', self.code or ""))
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import g4_access
+        self.local = g4_access.mcp_resource_check
+        self.local_rule = g4_access.MCP_RULE
+        self.rules.add(self.local_rule)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -457,7 +464,9 @@ class G4StaticRunner(Runner):
                 sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
                 return None, f"G4 靜態檢查執行失敗：{type(e).__name__}"
-        return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}, None
+            local, _ = self.local(pathlib.Path(d))
+        return ({r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}
+                | ({self.local_rule} if local else set())), None
 
 
 def _implemented_by(tool: str) -> dict[str, set[str]]:

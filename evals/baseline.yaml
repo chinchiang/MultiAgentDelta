@@ -57,6 +57,10 @@ executed:
   - g4-hitl-neg-04
   - g4-hitl-pos-01
   - g4-hitl-pos-02
+  - g4-mcp-resource-neg-01
+  - g4-mcp-resource-neg-02
+  - g4-mcp-resource-pos-01
+  - g4-mcp-resource-pos-02
   - g4-owner-neg-02
   - g4-owner-neg-03
   - g4-owner-pos-01

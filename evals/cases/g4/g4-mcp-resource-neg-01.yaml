@@ -1,0 +1,24 @@
+id: g4-mcp-resource-neg-01
+gate: G4
+domain: authentication
+title: MCP server 驗證 Token 的 aud 等於自己的 canonical URI
+input:
+  kind: code
+  language: python
+  path: mcp_server/auth.py
+  snippet: |
+    import jwt
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("notes")
+    SERVER_URI = "https://mcp.example.com"
+
+    def verify_token(token: str) -> dict:
+        # RFC 8707：只接受為本 server 簽發的 Token
+        return jwt.decode(token, PUBLIC_KEY, algorithms=["RS256"], audience=SERVER_URI)
+expected:
+  should_flag: false
+  control_id: VS-G4-MCP-RESOURCE-INDICATOR
+  rule_id: vibesec.g4.mcp-missing-resource-indicator
+  policy_tier: advisory
+held_out: false
