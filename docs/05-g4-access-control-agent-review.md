@@ -163,7 +163,7 @@ for p in pathlib.Path('.').rglob('*'):
 EOF
 ```
 
-規則 `vibesec.g4.rules-file-invisible-unicode`（blocking，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。G1 掃規則檔時順帶執行。
+規則 `vibesec.g4.rules-file-invisible-unicode`（advisory，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。G1 掃規則檔時順帶執行。
 
 ### 7. MCP 伺服器 OAuth：RFC 8707 Resource Indicators（`mcp_resource_indicator`）
 

@@ -98,7 +98,7 @@ for u in \
   curl -s -X POST "$VIBESEC_TARGET_URL/api/import" -H "$A" -H 'Content-Type: application/json' \
        -d "{\"url\":\"$u\"}" | tee -a reports/g5/ssrf.log
 done
-# 回應含角色名 / AccessKeyId / token = vibesec.g5.ssrf-metadata（blocking，CWE-918，E3）
+# 回應含角色名 / AccessKeyId / token = vibesec.g5.ssrf-metadata（advisory，CWE-918，E3；同一端點若能抓到 loopback canary，另記 blocking 的 vibesec.g5.ssrf-internal-fetch）
 ```
 
 此處與 G3 `vibesec.g3.imdsv1-allowed` 直接呼應：IaC 未強制 IMDSv2 的白箱發現，由此黑箱證實是否真能取到憑證。

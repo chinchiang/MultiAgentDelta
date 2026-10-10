@@ -283,6 +283,24 @@ if yaml is not None:
         if len(cases) < 60:
             warn(f"evals 共 {len(cases)} 案例，未達目標 60")
         ok(f"evals {len(cases)} 案例、held_out {len(ho)}、{len(polarity)} 領域")
+        # split.yaml 的 distribution 必須與案例一致（以前寫死 71 筆、沒人核對，第四次審視 E-4）
+        import collections as _co
+        _want = {
+            "total": len(cases),
+            "held_out_ratio": round(len(ho) / len(cases), 2),
+            "by_gate": dict(sorted(_co.Counter(c.get("gate") for c in cases.values()).items())),
+            "by_domain": dict(sorted(_co.Counter(c.get("domain") for c in cases.values()).items())),
+            "by_polarity": {"neg": sum(1 for c in cases.values() if not (c.get("expected") or {}).get("should_flag")),
+                            "pos": sum(1 for c in cases.values() if (c.get("expected") or {}).get("should_flag"))},
+            "incomplete_cases": sorted(cid for cid in cases if re.fullmatch(r"g\d-[a-z0-9]+-incomplete-\d+", cid)),
+        }
+        _have = split.get("distribution") or {}
+        _diff = [k for k, v in _want.items() if _have.get(k) != v]
+        if _diff:
+            err("evals/split.yaml distribution 與案例不一致（" + "、".join(_diff) + "）；正確值：" +
+                json.dumps({k: _want[k] for k in _diff}, ensure_ascii=False))
+        else:
+            ok("evals/split.yaml distribution 與案例一致")
 
 # --- 人工裁決：schema、範例、規則自我測試、rulings/*.yaml ---
 try:
@@ -405,6 +423,39 @@ if yaml is not None:
                 _m2 = re.search(r"\b(blocking|advisory)\b", _ln[_m.end():])
                 if _m2 and _m2.group(1) != _P.base_tier(_m.group(1)):
                     err(f"{pathlib.Path(_f).name}:{_i}: {_m.group(1)} 政策表寫 {_m2.group(1)}，政策基礎 tier 為 {_P.base_tier(_m.group(1))}")
+        # 擴充（第四次審視 D-文件）：同列多條規則、萬用字元（xss-*）、同前綴簡寫（`command-injection`），
+        # 以及內文「`vibesec.gN.x`（blocking…」。宣稱的 tier 須等於基礎 tier 或 risk_tier 覆寫後的有效 tier。
+        _all_rules = sorted(_rules)
+        def _expand(tok, prefix):
+            full = tok if tok.startswith("vibesec.") else f"{prefix}.{tok}"
+            if "*" in full:
+                import fnmatch as _fn
+                return [r for r in _all_rules if _fn.fnmatchcase(r, full)]
+            return [full] if full in _rules else []
+        for _f in sorted(glob.glob(str(ROOT / "docs/*.md"))) + [str(ROOT / "README.md")]:
+            for _i, _ln in enumerate(pathlib.Path(_f).read_text(encoding="utf-8").splitlines(), 1):
+                _claims = []
+                if _ln.startswith("|"):
+                    _cells = [c.strip() for c in _ln.strip().strip("|").split("|")]
+                    if len(_cells) >= 2 and "vibesec.g" in _cells[0]:
+                        _m2 = re.match(r"(blocking|advisory)\b", _cells[1])
+                        _toks = re.findall(r"`([a-z0-9.*-]+)`", _cells[0])
+                        _first = next((t for t in _toks if t.startswith("vibesec.g")), None)
+                        if _m2 and _first:
+                            _prefix = _first.rsplit(".", 1)[0]
+                            for _t in _toks:
+                                if _t.startswith("vibesec.") or re.fullmatch(r"[a-z0-9]+(-[a-z0-9*]+)+\*?|[a-z0-9]+-\*", _t):
+                                    for _r in _expand(_t, _prefix):
+                                        _claims.append((_r, _m2.group(1)))
+                # 規則 ID 後緊接的全形括號內，第一個 tier 字（「advisory（L3 升 blocking）」取 advisory；略過 blocking-policy）
+                for _m3 in re.finditer(r"`?(vibesec\.g\d\.[a-z0-9-]+)`?（([^）]*)）", _ln):
+                    _m4 = re.search(r"(?<![\w-])(blocking|advisory)(?![\w-])", _m3.group(2))
+                    if _m4:
+                        _claims.append((_m3.group(1), _m4.group(1)))
+                for _r, _c in _claims:
+                    if _c not in (_P.base_tier(_r), _P.tier(_r)):
+                        err(f"{pathlib.Path(_f).name}:{_i}: {_r} 文件寫 {_c}，政策為 {_P.base_tier(_r)}"
+                            + (f"（{_P.risk_tier} 有效 {_P.tier(_r)}）" if _P.tier(_r) != _P.base_tier(_r) else ""))
         ok("docs 政策表的 tier 與政策一致")
 
 # 通過細項靜音；僅印摘要與警告/錯誤

@@ -94,34 +94,36 @@ held_in:
 - g6-xss-neg-01
 - g6-xss-pos-01
 distribution:
-  total: 71
-  held_out_ratio: 0.37
+  # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
+  # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
+  total: 93
+  held_out_ratio: 0.33
   by_gate:
     G0: 4
-    G1: 10
-    G2: 6
-    G3: 15
-    G4: 12
-    G5: 13
-    G6: 11
+    G1: 13
+    G2: 9
+    G3: 21
+    G4: 18
+    G5: 16
+    G6: 12
   by_domain:
-    ai_agent_security: 16
+    ai_agent_security: 17
     application_architecture: 3
-    authentication: 6
-    authorization: 7
-    build_supply_chain: 3
+    authentication: 8
+    authorization: 13
+    build_supply_chain: 4
     csp: 2
     data_integrity: 2
-    dependency: 7
+    dependency: 9
     error_handling: 2
-    general_vulnerabilities: 5
-    github_actions: 3
+    general_vulnerabilities: 8
+    github_actions: 7
     input_validation: 6
-    secret_exposure: 6
+    secret_exposure: 9
     xss: 3
   by_polarity:
-    neg: 29
-    pos: 42
+    neg: 42
+    pos: 51
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-ssrf-incomplete-01

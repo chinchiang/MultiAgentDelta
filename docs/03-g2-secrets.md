@@ -33,7 +33,7 @@
 2. **本機 pre-commit**：`gitleaks protect --staged`，在祕密離開開發機前攔截。
 3. **CI push protection**：PR 檢查失敗，並在 enforce 模式下拒絕合併。
 4. **`.env` 檢查**（`require_env_in_gitignore: true`）：
-   - 工作樹存在 `.env*`（不含 `.env.example`）但 `.gitignore` 無對應規則 → `vibesec.g2.env-not-ignored`（CWE-538，blocking）。
+   - 工作樹存在 `.env*`（不含 `.env.example`）但 `.gitignore` 無對應規則 → `vibesec.g2.env-not-ignored`（CWE-538，advisory；enforce 下是否擋依 blocking-policy）。
    - `git ls-files | grep -E '^\.env($|\.)'` 有結果（`.env` 已被追蹤）→ 同一規則 + 事故 SOP。
 5. **LLM 供應商金鑰專用規則**（gitleaks 預設沒有或較舊）：見下表。
 6. **報告只保留遮罩與指紋**（CLAUDE.md 規則 7）：`--redact`；finding 記 `sha256(secret)[:12]` 作為指紋以便去重與輪替追蹤，不記原值。
@@ -59,9 +59,11 @@
 ## 自動化作法
 
 ```bash
-# 1) 安裝（固定版本）
-GITLEAKS_VERSION=8.24.3
-curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+# 1) 安裝（固定版本；與 pre-commit、pr-gates、nightly 同版，nightly 另比對官方 SHA-256）
+GITLEAKS_VERSION=8.28.0
+GITLEAKS_SHA256=a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb   # linux_x64
+curl -sSfL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c - && tar -xzf gitleaks.tgz gitleaks
 
 # 2) pre-commit（.pre-commit-config.yaml 已掛；手動裝 hook）
 pre-commit install --hook-type pre-commit
