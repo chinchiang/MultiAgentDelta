@@ -18,7 +18,7 @@
 離開碼：0 = ran；2 = missing／timeout／error；3 = refused；4 = 參數或設定錯誤。
 """
 from __future__ import annotations
-import argparse, json, os, pathlib, re, socket, sys, urllib.error, urllib.parse, urllib.request
+import argparse, hashlib, json, os, pathlib, re, socket, sys, urllib.error, urllib.parse, urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIDENCE_KEYS = re.compile(r"confidence|certainty|probability|信心", re.I)
@@ -91,8 +91,13 @@ def _openai(p: dict, key: str, system: str, user: str) -> tuple[dict, str | None
             raise RuntimeError(f"HTTP {e.code}: {msg}") from None
     else:
         raise RuntimeError("參數調整後仍失敗")
+    choice = d['choices'][0]
+    finish = choice.get('finish_reason')
+    if finish is not None and finish != 'stop':
+        # 過濾或截斷不是格式錯誤，不自動重試。 / Filtering or truncation is not a formatting retry.
+        raise RuntimeError(f'Model response incomplete / 模型回應未完成: finish_reason={str(finish)[:100]}')
     try:
-        return json.loads(d["choices"][0]["message"]["content"]), d.get("model"), notes
+        return json.loads(choice["message"]["content"]), d.get("model"), notes
     except json.JSONDecodeError as e:
         raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
 
@@ -102,6 +107,8 @@ def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | N
             "temperature": p.get("temperature", 0), "messages": [{"role": "user", "content": user + "\n\n只回傳 JSON。"}]}
     d = _post(p["base_url"].rstrip("/") + "/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"},
               body, p.get("timeout_seconds", 120))
+    if d.get('stop_reason') not in (None, 'end_turn', 'stop_sequence'):
+        raise RuntimeError('Anthropic response incomplete / 回應未完成: ' + str(d['stop_reason'])[:100])
     text = "".join(b.get("text", "") for b in d.get("content") or [] if b.get("type") == "text")
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
@@ -110,6 +117,42 @@ def _anthropic(p: dict, key: str, system: str, user: str) -> tuple[dict, str | N
         return json.loads(m.group(0)), d.get("model"), []
     except json.JSONDecodeError as e:
         raise BadResponse(f"回應不是合法 JSON（{e.msg}）") from None
+
+
+def _bedrock(p, key, system, user, env):
+    """以明確憑證呼叫 Bedrock；不使用隱含帳號。 / Call Bedrock with explicit credentials, not an implicit identity."""
+    try:
+        import boto3
+        from botocore.config import Config
+        from botocore.exceptions import BotoCoreError, ClientError, ConnectTimeoutError, ReadTimeoutError
+    except ImportError:
+        raise RuntimeError("Bedrock 需要 boto3 / Bedrock requires boto3") from None
+    region = p.get("aws_region", "us-east-1")
+    try:
+        session = boto3.Session(aws_access_key_id=key, aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
+                                aws_session_token=env.get("AWS_SESSION_TOKEN"), region_name=region)
+        client = session.client("bedrock-runtime", config=Config(connect_timeout=15,
+                                read_timeout=p.get("timeout_seconds", 120), retries={"max_attempts": 0}))
+        response = client.converse(modelId=p["model"], system=[{"text": system}],
+                                  messages=[{"role": "user", "content": [{"text": user + "\nReturn only JSON."}]}],
+                                  inferenceConfig={"maxTokens": p.get("max_tokens", 4096), "temperature": p.get("temperature", 0)})
+    except (ConnectTimeoutError, ReadTimeoutError):
+        raise TimeoutError("Bedrock timeout") from None
+    except ClientError as e:
+        raise RuntimeError("Bedrock: " + str(e.response.get("Error", {}).get("Code", "ClientError"))) from None
+    except BotoCoreError as e:
+        raise RuntimeError("Bedrock: " + type(e).__name__) from None
+    if response.get('stopReason') not in (None, 'end_turn', 'stop_sequence'):
+        raise RuntimeError('Bedrock response incomplete / 回應未完成: ' + str(response['stopReason'])[:100])
+    text = "".join(part.get("text", "") for part in response.get("output", {}).get("message", {}).get("content", []))
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        raise BadResponse("Bedrock 回應缺少 JSON / Bedrock response lacks JSON")
+    try:
+        opinion = json.loads(match[0])
+    except json.JSONDecodeError:
+        raise BadResponse("Bedrock JSON 格式錯誤 / Invalid Bedrock JSON") from None
+    return opinion, p["model"], ["AWS Bedrock " + region, "usage=" + json.dumps(response.get("usage", {}))]
 
 
 def output_contract(packet: dict) -> str:
@@ -154,7 +197,31 @@ def contract_errors(opinion, contract: str) -> list[str]:
     return errs
 
 
+def redact_key(value, key):
+    """供應商可能在正常或被拒絕的回應反射認證資訊；所有回傳路徑都遮罩。"""
+    if not key:
+        return value
+    if isinstance(value, str):
+        return value.replace(key, "[REDACTED sha256:" + hashlib.sha256(key.encode()).hexdigest() + "]")
+    if isinstance(value, list):
+        return [redact_key(item, key) for item in value]
+    if isinstance(value, dict):
+        return {redact_key(k, key): redact_key(v, key) for k, v in value.items()}
+    return value
+
+
 def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
+    p = load_provider(provider, root)
+    names = [p.get("api_key_env") or ""]
+    if p.get("kind") == "bedrock":
+        names += ["AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
+    result = _call(provider, role, data_class, packet, root, env)
+    for name in names:
+        result = redact_key(result, env.get(name, ""))
+    return result
+
+
+def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
     p = load_provider(provider, root)
     system, prompt_version = load_role(role, root)
     out = {"provider": provider, "family": p.get("family"), "model": p.get("model"), "role": role,
@@ -167,9 +234,13 @@ def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.
     key = env.get(p.get("api_key_env") or "", "")
     if not key:
         return {**out, "state": "missing", "note": f"{p.get('api_key_env')} 未設定"}
+    if p.get("kind") == "bedrock" and not env.get("AWS_SECRET_ACCESS_KEY"):
+        return {**out, "state": "missing", "note": "AWS_SECRET_ACCESS_KEY 未設定 / not configured"}
     user = ("以下是審查包（JSON）。依你的角色說明審查，只回傳角色說明定義的 JSON。\n\n"
             + json.dumps(packet, ensure_ascii=False, indent=2))
     fn = {"openai_compatible": _openai, "anthropic": _anthropic}.get(p.get("kind"))
+    if p.get("kind") == "bedrock":
+        fn = lambda provider, key, system, prompt: _bedrock(provider, key, system, prompt, env)
     if fn is None:
         return {**out, "state": "error", "note": f"不支援的 kind {p.get('kind')!r}"}
     contract = output_contract(packet)
@@ -183,10 +254,10 @@ def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.
             return {**out, "state": "timeout", "note": f"超過 {p.get('timeout_seconds', 120)} 秒"}
         except urllib.error.URLError as e:
             st = "timeout" if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)) else "error"
-            return {**out, "state": st, "note": str(e.reason)[:300]}
+            return {**out, "state": st, "note": redact_key(str(e.reason), key)[:300]}
         except BadResponse as e:
-            opinion, problems = None, [str(e)]
-        except (RuntimeError, ValueError, KeyError, IndexError) as e:
+            opinion, problems = None, [str(e)]   # 無法解析的文字不保存（資料分級；與 #66 一致）
+        except (RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
             return {**out, "state": "error", "note": str(e).replace(key, "***")[:500]}
         else:
             problems = contract_errors(opinion, contract)

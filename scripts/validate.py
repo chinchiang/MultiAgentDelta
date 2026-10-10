@@ -355,6 +355,12 @@ try:
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
+        # tests/ 的 unittest：沒有 selftest 子命令的模組測試（例如 Bedrock 呼叫邊界），與 selftest 同一層級把關
+        if (ROOT / "tests").is_dir():
+            _r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=ROOT,
+                                capture_output=True, text=True)
+            if _r.returncode == 0: ok("tests/ unittest")
+            else: err("tests/ unittest 失敗：" + (_r.stdout + _r.stderr).strip()[-400:])
 except ImportError:
     print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
