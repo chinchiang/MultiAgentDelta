@@ -72,6 +72,38 @@ class Bedrock(unittest.TestCase):
                 self.assertEqual(self.call()['state'],'error')
                 self.assertEqual(invoke.call_count,1)
 
+    def test_named_profile_is_used_only_when_explicit_keys_are_absent(self):
+        exceptions=types.ModuleType('botocore.exceptions')
+        for name in ('BotoCoreError','ClientError','ConnectTimeoutError','ReadTimeoutError'):setattr(exceptions,name,type(name,(Exception,),{}))
+        config=types.ModuleType('botocore.config');config.Config=lambda **kw:kw
+        seen=[];requests=[]
+        class Client:
+            def converse(self,**kw):
+                requests.append(kw)
+                return {'output':{'message':{'content':[{'text':json.dumps({'verdict':'uncertain','rationale':'r','cited_evidence':[]})}]}}}
+        class Session:
+            def __init__(self,**kw):seen.append(kw)
+            def client(self,name,**kw):return Client()
+        boto=types.ModuleType('boto3');boto.Session=Session
+        profile_env={'AWS_PROFILE':'sso-profile'}
+        with patch.dict(sys.modules,{'boto3':boto,'botocore.config':config,'botocore.exceptions':exceptions}):
+            self.assertEqual(self.call(env=profile_env)['state'],'missing')   # 未設定 aws_profile_env → 不讀 AWS_PROFILE
+            self.p['aws_profile_env']='AWS_PROFILE'
+            (self.root/'config/providers.yaml').write_text(yaml.safe_dump({'providers':{'bedrock':self.p}}))
+            self.assertEqual(self.call(env=profile_env)['state'],'ran')
+            self.assertEqual(seen[-1],{'profile_name':'sso-profile','region_name':'us-east-1'})
+            self.assertEqual(self.call(env={**self.env,**profile_env})['state'],'ran')   # 明確金鑰優先
+            self.assertEqual(seen[-1]['aws_access_key_id'],self.env['AWS_ACCESS_KEY_ID'])
+            self.assertNotIn('profile_name',seen[-1])
+            self.assertEqual(requests[-1]['inferenceConfig']['temperature'],0)
+            self.p['temperature']=None   # temperature: null → 不送
+            (self.root/'config/providers.yaml').write_text(yaml.safe_dump({'providers':{'bedrock':self.p}}))
+            self.assertEqual(self.call(env=profile_env)['state'],'ran')
+            self.assertNotIn('temperature',requests[-1]['inferenceConfig'])
+            with patch.object(Client,'converse',side_effect=RuntimeError('Bedrock: ValidationException')):
+                self.assertEqual(self.call(env=profile_env)['note'],'Bedrock: ValidationException')   # 空 key 不得插入遮罩字元
+        self.assertEqual(len(seen),4)
+
     def test_malformed_transport_response_is_recorded_as_error(self):
         self.p['kind']='openai_compatible'
         self.p['base_url']='https://model.example.invalid/v1'
