@@ -137,6 +137,8 @@ allow if {
 
 高影響動作定義：刪除 / 不可逆變更、金流、對外送信 / 發布、部署、改權限、對正式 DB 寫入。要求：Agent 先產出「擬執行內容」→ 人工核准（含 diff 或 SQL 預覽）→ 才執行；核准票有時效；全部寫稽核日誌（`ASVS5-V16.1`、MAESTRO-L5）。缺 HITL → `vibesec.g4.missing-hitl`（advisory，CWE-250）。對應 threat-model 的 `agents[].high_impact_tools` 與 `mitigations: [human_in_the_loop]`。
 
+靜態規則（啟發式，`pr-gates.yml` 的 G4 靜態檢查，py / ts / js / yaml / json；略過 `.github/` 與 `evals/cases/`）：檔案有 Agent 工具註冊脈絡（`@tool`、`@mcp.tool()`、`tools=[…]`／`tools:`、`register_tool`、`server.tool("…")`、`tool({name: …})`），註冊的工具名稱屬高影響動作（refund／transfer／payment／delete／drop／deploy／publish／send_email／grant／revoke…），且**同一檔案**看不到人工核准訊號（confirm、approval、HITL、`interrupt(`、`ask_user`、`require_human`…）→ `vibesec.g4.missing-hitl`（advisory）。只看單一檔案：核准做在其他檔案（框架設定、gateway、policy engine）時會誤報，請在 LLM 審查（VS-G4-LLM-REVIEW）說明；反過來，同檔案出現核准字樣不代表核准真的擋在執行前，跨檔與執行順序的確認仍由 LLM 審查負責。
+
 ### 6. Rules File Backdoor：隱形 Unicode 掃描（`rules_file_unicode`）
 
 掃描 `.cursorrules`、`AGENTS.md`、`SKILL.md`、`CLAUDE.md`、`.cursor/rules/**/*.mdc`、`**/*.md`，禁止下列字元：

@@ -51,6 +51,12 @@ executed:
   - g4-agent-tools-neg-01
   - g4-agent-tools-pos-01
   - g4-bola-neg-01
+  - g4-hitl-neg-01
+  - g4-hitl-neg-02
+  - g4-hitl-neg-03
+  - g4-hitl-neg-04
+  - g4-hitl-pos-01
+  - g4-hitl-pos-02
   - g4-owner-neg-02
   - g4-owner-neg-03
   - g4-owner-pos-01

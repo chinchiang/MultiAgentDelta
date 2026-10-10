@@ -31,7 +31,7 @@ notes: 靶場 examples/vulnapp 可重現。
 
 - 每個適用領域**至少一正例與一反例**。
 - 至少 **1/3** 案例 `held_out: true`；清單集中於 `evals/split.yaml`。
-- 總數目標 **≥ 60**（目前 95）。
+- 總數目標 **≥ 60**（目前 100）。
 - `domain` 使用 14 審查領域的固定代碼：`application_architecture`、`general_vulnerabilities`、`xss`、`csp`、`authentication`、`authorization`、`dependency`、`build_supply_chain`、`github_actions`、`secret_exposure`、`input_validation`、`error_handling`、`data_integrity`、`ai_agent_security`。
 - `gate_status` 案例驗證閘門在工具／環境失敗時回報的狀態：例如「incomplete ≠ pass」（工具或環境無法完成時，閘門必須回報 incomplete，而非 pass），或「已實測的失敗不得因其他層缺金鑰而被改寫成 incomplete」（`gate_status: fail`）。以 `input.integration` 指定整合層情境；`expected.coverage`（控制 → 狀態）與 `expected.status_reason_contains` 可進一步要求某個覆蓋項的狀態與 status_reason 的內容。
 - 含隱形字元或假金鑰的 fixture 以 YAML 跳脫或佔位值表示，避免觸發本 repo 自身的 G2／G4 掃描。

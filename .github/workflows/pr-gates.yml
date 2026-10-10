@@ -452,7 +452,7 @@ jobs:
         id: trusted
         uses: ./.github/actions/vibesec-trusted
 
-      - name: G4 靜態檢查（Unicode / RLS / Agent tool allow-list / 單層 middleware）
+      - name: G4 靜態檢查（Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware）
         id: g4static
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         env:
@@ -545,6 +545,54 @@ jobs:
                           add("vibesec.g4.agent-tool-overexposure", "warning",
                               f"{p} 第 {i} 行疑似向 Agent 註冊高危工具（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i)
                           break
+
+          # 3b) 高影響工具缺 Human-in-the-Loop（vibesec.g4.missing-hitl，advisory）— 啟發式，只看單一檔案：
+          #     檔案有 Agent 工具註冊脈絡、註冊的工具名稱有高影響動作（金流、刪除、部署、對外送信、改權限），
+          #     且同檔案看不到任何人工核准訊號（confirm／approval／HITL／interrupt…）→ 回報。
+          #     核准若做在其他檔案（框架設定、gateway）會誤報，所以是 advisory；跨檔確認交 LLM 審查（VS-G4-LLM-REVIEW）。
+          HI_TOOL = re.compile(r'(refund|transfer|payout|payment|charge|withdraw|wire|delete|drop|truncate|wipe|purge|destroy|'
+                               r'deploy|release|publish|send_(?:email|mail|sms|message)|grant|revoke|set_role)', re.I)
+          HITL_SIGNAL = re.compile(r'confirm|approv|human[_ -]?in[_ -]?the[_ -]?loop|\bhitl\b|interrupt\(|ask_user|'
+                                   r'require_?(?:human|review)|needs_?review|permission_mode|人工(?:確認|核准)', re.I)
+          TOOL_CTX = re.compile(r'@(?:\w+\.)?tool\b|register_tool|\btools\s*[=:]|\.tool\(|\btool\(\s*\{', re.I)
+          def _tool_names(body):
+              """(名稱, 行號)：@tool／@mcp.tool 下一個 def、tools=[…]／tools: […] 清單、YAML tools: 區塊條目、
+              register_tool("x")／server.tool("x")、tool({name: "x"})。"""
+              out = []
+              lines = body.splitlines()
+              for i, ln in enumerate(lines, 1):
+                  if re.search(r'@(?:\w+\.)?tool\b', ln):
+                      for j in range(i, min(i + 4, len(lines))):
+                          m = re.match(r'\s*(?:async\s+)?def\s+(\w+)', lines[j])
+                          if m: out.append((m.group(1), j + 1)); break
+                  for m in re.finditer(r'\btools\s*[=:]\s*\[([^\]]*)\]', ln):
+                      out += [(n, i) for n in re.findall(r'[A-Za-z_][\w-]*', m.group(1))]
+                  for m in re.finditer(r'(?:register_tool|\.tool)\(\s*["\']([\w-]+)', ln):
+                      out.append((m.group(1), i))
+                  for m in re.finditer(r'\bname\s*:\s*["\']([\w-]+)["\']', ln):
+                      out.append((m.group(1), i))
+                  if re.match(r'\s*tools\s*:\s*$', ln):          # YAML 區塊清單：tools:\n  - refund_payment
+                      for j in range(i, len(lines)):
+                          m = re.match(r'\s*-\s*(?:name\s*:\s*)?["\']?([A-Za-z_][\w-]*)', lines[j])
+                          if not m: break
+                          out.append((m.group(1), j + 1))
+              return out
+          HITL_FILES = (glob.glob("**/*.py", recursive=True) + glob.glob("**/*.ts", recursive=True) + glob.glob("**/*.js", recursive=True)
+                        + [f for ext in ("yml", "yaml", "json") for f in glob.glob(f"**/*.{ext}", recursive=True)
+                           if not f.startswith(".github/")])   # workflow 的 deploy／release job 不是 Agent 工具
+          HITL_FILES = [f for f in HITL_FILES if not f.startswith("evals/cases/")]   # 評測 fixture（同 .semgrepignore 的 evals/）
+          for p in HITL_FILES:
+              if _skip(p): continue
+              try: body = pathlib.Path(p).read_text(encoding="utf-8", errors="replace")
+              except Exception: continue
+              if not TOOL_CTX.search(body) or HITL_SIGNAL.search(body):
+                  continue
+              risky = [(n, i) for n, i in _tool_names(body) if HI_TOOL.search(n)]
+              if risky:
+                  n, i = risky[0]
+                  add("vibesec.g4.missing-hitl", "warning",
+                      f"{p} 第 {i} 行：Agent 工具 {n} 屬高影響動作，同檔案未見人工核准（confirm／approval／HITL）；"
+                      f"請確認執行前有人工確認與稽核（若核准做在其他檔案，於 LLM 審查說明）", p, i)
 
           # 4) 單層 middleware 授權（CVE-2025-29927 類）— advisory
           for p in glob.glob("**/middleware.ts", recursive=True) + glob.glob("middleware.ts"):
@@ -706,7 +754,7 @@ jobs:
             // 留言內容由 scripts/g4_review.py gate 產生（含審查紀錄與發現表）；檔案缺席時退回固定提醒
             let body;
             try { body = fs.readFileSync('reports/g4-comment.md', 'utf8'); } catch (e) {
-              body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / 單層 middleware）。\n\n**G4 狀態：\`incomplete\`**——LLM 審查（VS-G4-LLM-REVIEW）尚未執行，需由 \`/vibesec-harness\` 完成並提交 \`reviews/g4/<commit>.yaml\`（跨檔授權推理、BOLA/IDOR 綁定、HITL 判斷無法由靜態規則涵蓋）。目前政策下 G4 incomplete 不擋 merge。`;
+              body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware）。\n\n**G4 狀態：\`incomplete\`**——LLM 審查（VS-G4-LLM-REVIEW）尚未執行，需由 \`/vibesec-harness\` 完成並提交 \`reviews/g4/<commit>.yaml\`（跨檔授權推理、BOLA/IDOR 綁定、跨檔的 HITL 確認無法由靜態規則涵蓋）。目前政策下 G4 incomplete 不擋 merge。`;
             }
             if (!body.includes(marker)) body = `${marker}\n${body}`;
             const {owner, repo} = context.repo;

@@ -233,7 +233,7 @@ rules:
     control_ids: [ASVS5-V2.3, LLM06:2025, MAESTRO-L3]
     gate: G4
     policy_tier: advisory
-    implemented_by: [review:G4-llm-review]   # 多模型審查（docs/09）；非自動偵測
+    implemented_by: [review:G4-llm-review]   # 跨檔確認由多模型審查（docs/09）；pr-gates.yml G4 靜態檢查另有單檔啟發式（docs/05 §5）
   vibesec.g4.rules-file-invisible-unicode:
     cwe: CWE-94
     title: "Agent 規則檔含零寬 / bidi / BOM 等隱形 Unicode（Rules File Backdoor）"
