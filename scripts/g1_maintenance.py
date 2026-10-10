@@ -122,9 +122,11 @@ def _https_only_opener() -> urllib.request.OpenerDirector:
 def fetch_deps_dev(system: str, name: str, retries: int = 3) -> dict | None:
     """回傳套件資料；404 → None（查無此套件）；其他錯誤重試後拋出 FetchError。"""
     url = API_BASE + API_PATH.format(system=urllib.parse.quote(system, safe=""), name=urllib.parse.quote(name, safe=""))
-    req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1-maintenance", "Accept": "application/json"})
     opener = _https_only_opener()
     for i in range(retries):
+        # 每次重試都建新的 Request：ProxyHandler 會改寫傳入的 Request，重用時經 http:// proxy 的重試會以
+        # 「unknown url type: http」失敗（同 g1_slopcheck.http_json）
+        req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1-maintenance", "Accept": "application/json"})
         try:
             with opener.open(req, timeout=30) as r:
                 return json.loads(r.read().decode("utf-8"))
@@ -208,16 +210,24 @@ def run(sbom_path: pathlib.Path, fetch=fetch_deps_dev, days: int | None = None,
     return summary, hits
 
 
+def _policy_tier() -> str:
+    """tier 唯一來源是 blocking-policy（第四次審視 S-11）。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
+    return Policy(ROOT).tier(RULE)
+
+
 def to_sarif(hits: list[dict]) -> dict:
+    _TIER = _policy_tier(); _LEVEL = "error" if _TIER == "blocking" else "warning"
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "相依套件已停止維護或被標記 deprecated"},
-            "defaultConfiguration": {"level": "warning"}, "properties": {"policy_tier": "advisory"}}
+            "defaultConfiguration": {"level": _LEVEL}, "properties": {"policy_tier": _TIER}}
     def msg(h):
         parts = [("已被標記 deprecated" + (f"（{s['detail']}）" if s["detail"] else "")) if s["signal"] == "deprecated"
                  else s["detail"] for s in h["signals"]]
         return f"{h['name']}@{h['version']}：" + "；".join(parts)
-    results = [{"ruleId": RULE, "level": "warning", "message": {"text": msg(h)},
+    results = [{"ruleId": RULE, "level": _LEVEL, "message": {"text": msg(h)},
                 "locations": [{"physicalLocation": {"artifactLocation": {"uri": h["uri"]}}}],
-                "properties": {"policy_tier": "advisory", "purl": h["purl"], "signals": [s["signal"] for s in h["signals"]],
+                "properties": {"policy_tier": _TIER, "purl": h["purl"], "signals": [s["signal"] for s in h["signals"]],
                                "latest_version": h["latest_version"], "latest_published_at": h["latest_published_at"]}}
                for h in hits]
     return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
@@ -287,6 +297,20 @@ def selftest() -> list[str]:
                 fails.append(f"opener 不應開啟 {bad}")
             except urllib.error.URLError:
                 pass
+        # 經 http:// proxy（已關閉的埠）重試：每次都應是連線錯誤，不能變成 Request 被改寫後的「unknown url type」
+        import socket
+        with socket.socket() as s_:
+            s_.bind(("127.0.0.1", 0)); dead = s_.getsockname()[1]
+        saved = {k: os.environ.pop(k) for k in list(os.environ) if k.lower() in ("https_proxy", "http_proxy", "all_proxy", "no_proxy")}
+        os.environ["https_proxy"] = f"http://127.0.0.1:{dead}"
+        try:
+            fetch_deps_dev("pypi", "requests", retries=3)   # 症狀在第三次嘗試才出現
+            fails.append("fetch_deps_dev 經已關閉的 proxy 不應成功")
+        except FetchError as e:
+            if "unknown url type" in str(e):
+                fails.append(f"fetch_deps_dev 經 http:// proxy 重試時 Request 被改寫：{e}")
+        finally:
+            os.environ.pop("https_proxy", None); os.environ.update(saved)
         if run(pathlib.Path(d, "none.json"), fetch=fake, now=now)[0]["status"] != "incomplete":
             fails.append("缺 SBOM 應為 incomplete")
         sp.write_text("{bad")

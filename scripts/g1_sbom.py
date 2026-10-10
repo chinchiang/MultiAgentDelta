@@ -153,11 +153,15 @@ def check(sbom: dict, tree: pathlib.Path) -> dict:
     sc = _slopcheck()
     found, unparsed = lockfiles(tree)
     per = {}
+    reasons = []
     for rel in found:
-        pinned = sorted({(e, n, v) for e, n, v in sc.parse_added([tree / rel]) if v})
+        entries, bad = sc.parse_manifest([tree / rel])
+        pinned = sorted({(e, n, v) for e, n, v in entries if v})
         missing = [f"{n}@{v}" for e, n, v in pinned if (e, norm(e, n), v) not in have]
         per[rel] = {"pinned": len(pinned), "missing": missing}
-    reasons = []
+        if bad:
+            # 解析失敗或非 registry 來源：pinned 會是 0，以前因此「核對通過」（第四次審視 S-9）
+            reasons.append(f"{rel}：{len(bad)} 筆無法解析或不是 registry 來源，SBOM 核對不完整")
     if unparsed:
         reasons.append(f"鎖定檔尚無解析器，無法核對 SBOM 是否完整：{', '.join(unparsed)}")
     gaps = {k: v for k, v in per.items() if v["missing"]}

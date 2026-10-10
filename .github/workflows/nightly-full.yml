@@ -1,5 +1,6 @@
 # VibeSec 夜間全量掃描 — 補齊 diff-aware 未覆蓋的全庫檢查
-# 02:00 Asia/Taipei（= 18:00 UTC）。CodeQL 深度 SAST + 全量 Semgrep + 全量 G1（Syft/Grype/Trivy）+ EPSS/KEV 富化。
+# 02:00 Asia/Taipei（= 18:00 UTC）。CodeQL 深度 SAST + 全量 Semgrep + 全量 G1（Syft/Grype/Trivy）+ EPSS/KEV 富化
+# + G2 全 Git 歷史祕密掃描（gitleaks git）。
 name: VibeSec Nightly Full Scan
 
 on:
@@ -29,29 +30,69 @@ jobs:
           queries: security-extended
       - name: Autobuild
         uses: github/codeql-action/autobuild@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+      # 分析結果另存到 reports/codeql/ 並保存成 artifact：repo 尚未開啟 Code scanning 時（#68）上傳會失敗、
+      # job 維持紅燈（不設 continue-on-error），但已分析出的 SARIF 仍留有證據可查。
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: vibesec-nightly-codeql-${{ matrix.language }}
+          output: reports/codeql
+      - name: Upload CodeQL SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-nightly-codeql-${{ matrix.language }}
+          path: reports/codeql/
+          if-no-files-found: warn
 
   semgrep-full:
     name: Semgrep 全量（無 baseline）
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      # 釘選版本（與 evals 的 semgrep==1.179.0 一致）。tag 仍可被發布者移動；查不到 digest 時先釘 tag，之後再補 @sha256
+      image: semgrep/semgrep:1.179.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # 不設 continue-on-error、不吞退出碼：未加 --error 時 semgrep 有命中也回 0，非 0 = 工具錯誤（規則載入失敗、
+      # registry 下載失敗、當掉）。此時刪掉不完整的 SARIF，job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
       - name: Semgrep scan（全庫、無 diff baseline）
-        continue-on-error: true
         run: |
           mkdir -p reports
+          set +e
           semgrep scan \
             --config config/semgrep/vibesec-rules.yaml \
             --config p/owasp-top-ten \
             --config p/security-audit \
-            --sarif --output reports/semgrep-full.sarif || true
+            --sarif --output reports/semgrep-full.sarif
+          code=$?
+          set -e
+          echo "semgrep exit=$code"
+          if [ "$code" != "0" ]; then
+            rm -f reports/semgrep-full.sarif
+            echo "::error::semgrep 執行失敗（exit $code）→ 全量 SAST incomplete"
+            exit 1
+          fi
+          # 退出碼 0 也要確認 SARIF 真的產出且可解析、有 runs，否則同樣是 incomplete；
+          # 壞掉的檔案改名保留成 artifact 供查，不上傳 Code scanning
+          python3 -c '
+          import json, os, sys
+          p = "reports/semgrep-full.sarif"
+          def bad(msg):
+              if os.path.exists(p):
+                  os.replace(p, "reports/semgrep-full.invalid.sarif")
+              sys.exit(f"::error::{msg} → 全量 SAST incomplete")
+          try:
+              runs = json.load(open(p, encoding="utf-8")).get("runs")
+          except Exception as e:
+              bad(f"semgrep SARIF 無法解析（{e}）")
+          if not isinstance(runs, list) or not runs:
+              bad("semgrep SARIF 沒有 runs")
+          n = sum(len(r.get("results") or []) for r in runs)
+          print(f"semgrep SARIF：{n} 筆結果")
+          '
+      # 上傳失敗（例如 repo 尚未開啟 Code scanning，見 #68）不影響判定；SARIF 由下一步保存成 artifact。
       - name: Upload Semgrep full SARIF
-        if: always()
+        if: always() && hashFiles('reports/semgrep-full.sarif') != ''
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
@@ -68,13 +109,12 @@ jobs:
   g1-full:
     name: G1 全量供應鏈（Syft/Grype/Trivy + EPSS/KEV 富化）
     runs-on: ubuntu-latest
-    # job 層級權限會整組取代 workflow 層級：保留原有三項，另加簽發 SBOM 來源證明所需的兩項（只給這個 job）
+    # job 層級權限會整組取代 workflow 層級。簽發 SBOM 來源證明的 id-token／attestations 不放在這裡：
+    # 這個 job 跑第三方 action（syft／grype／trivy），不能讓它們拿到簽章身分；簽發與驗證在 g1-attest job。
     permissions:
       contents: read
       security-events: write
       actions: read
-      id-token: write        # Sigstore 以 OIDC 身分簽章
-      attestations: write    # 寫入 GitHub attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -227,6 +267,61 @@ jobs:
           sarif_file: reports/g1-maintenance.sarif
           category: vibesec-nightly-maintenance
 
+      - name: Upload Grype full SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/grype-full.sarif
+          category: vibesec-nightly-grype
+
+      - name: Upload Trivy full SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/trivy-full.sarif
+          category: vibesec-nightly-trivy
+
+      - name: Upload nightly G1 artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-nightly-g1
+          path: reports/
+          if-no-files-found: ignore
+
+  # SBOM 來源證明獨立成 job（第四次審視 CI-8）：簽章權限（id-token／attestations）不和第三方 action 同一個 job，
+  # 否則被入侵的 syft／grype／trivy action 可用 OIDC 身分替任意 SBOM 簽出「本 workflow 簽發」的證明，
+  # scripts/g1_provenance.py 的 --signer-workflow 檢查就擋不住。這裡只跑官方 attest action 與本 repo 的驗證腳本，
+  # 輸入是 g1-full 上傳的 artifact；SBOM 缺席 → 驗證腳本退出碼 2（incomplete ≠ pass）。
+  g1-attest:
+    name: G1 SBOM 來源證明（簽發 + 驗證）
+    needs: g1-full
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write        # Sigstore 以 OIDC 身分簽章
+      attestations: write    # 寫入 GitHub attestations
+      security-events: write # upload-sarif
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            schemas
+            config
+
+      - name: 下載 g1-full 的 reports（含 sbom.cdx.json；缺席時由驗證腳本記為 incomplete）
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vibesec-nightly-g1
+          path: reports
+
       # SBOM 來源證明：以 Sigstore 為 reports/sbom.cdx.json 簽發 SLSA provenance，再以 gh 驗證
       # 「存在、簽章有效、簽發者是本 workflow」。簽發失敗不在這裡擋：下一步驗證會把它記為缺少證明（advisory）。
       - name: 簽發 SBOM 來源證明（SLSA provenance）
@@ -256,27 +351,90 @@ jobs:
           sarif_file: reports/g1-provenance.sarif
           category: vibesec-nightly-provenance
 
-      - name: Upload Grype full SARIF
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          sarif_file: reports/grype-full.sarif
-          category: vibesec-nightly-grype
-
-      - name: Upload Trivy full SARIF
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          sarif_file: reports/trivy-full.sarif
-          category: vibesec-nightly-trivy
-
-      - name: Upload nightly G1 artifacts
+      - name: Upload 來源證明 artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vibesec-nightly-g1
+          name: vibesec-nightly-g1-provenance
+          path: |
+            reports/g1-provenance.sarif
+            reports/g1-provenance.json
+          if-no-files-found: ignore
+
+  # G2 全 Git 歷史祕密掃描：PR Gates 的 gitleaks 只掃 PR 範圍的 commit，「曾經被提交、後來刪掉」的金鑰只有這裡看得到。
+  # 判定與 PR Gates 相同：scripts/sarif_gate.py（gitleaks:* 依 cwe-map 對到 vibesec.g2.hardcoded-secret，blocking）。
+  # 不是 pass（fail 或 incomplete）→ job 標紅並開追蹤 issue。命中的金鑰即使已撤銷也必須清歷史（docs/03）。
+  g2-history:
+    name: G2 全歷史祕密掃描（gitleaks git）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: 安裝 PyYAML
+        run: pip install pyyaml
+      # 與 evals job 相同：固定版本並比對官方 checksum，不符就失敗
+      - name: 安裝 gitleaks（固定版本 + SHA-256 驗證）
+        env:
+          GITLEAKS_VERSION: "8.28.0"
+          GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+      - name: gitleaks 掃描全部歷史
+        shell: bash
+        run: |
+          mkdir -p reports
+          # --exit-code 0：有命中也回 0，由 sarif_gate.py 判定；非 0 = 工具錯誤 → 刪掉不完整的 SARIF，G2 記 incomplete
+          set +e
+          "$RUNNER_TEMP/gitleaks" git --config config/gitleaks.toml --gitleaks-ignore-path .gitleaksignore \
+            --redact --no-banner --exit-code 0 --report-format sarif --report-path reports/g2-history.sarif . 2>&1 | tail -5
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "gitleaks exit=$code"
+          if [ "$code" != "0" ]; then rm -f reports/g2-history.sarif; echo "::error::gitleaks 執行失敗（exit $code）→ G2 incomplete"; fi
+      - name: .env 檢查（與 PR Gates 相同格式）
+        shell: bash
+        run: |
+          fail=0
+          python3 scripts/env_guard.py || fail=1
+          echo "{\"gate\":\"G2\",\"rule_id\":\"vibesec.g2.env-not-ignored\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
+      - name: G2 判定（scripts/sarif_gate.py）
+        id: g2
+        shell: bash
+        run: |
+          python3 scripts/sarif_gate.py --gate G2 --tool gitleaks=reports/g2-history.sarif \
+            --envcheck reports/g2-envcheck.json --out reports/g2-history-gate.json
+          python3 - <<'EOF'
+          import json, os, sys
+          g = json.load(open("reports/g2-history-gate.json", encoding="utf-8"))
+          fc = g.get("findings_count") or {}
+          line = f"G2 全歷史：`{g['status']}`（blocking {fc.get('blocking')}，advisory {fc.get('advisory')}）{g.get('status_reason') or ''}"
+          sp = os.environ.get("GITHUB_STEP_SUMMARY")
+          if sp: open(sp, "a", encoding="utf-8").write("## " + line + "\n")
+          print(line)
+          sys.exit(0 if g["status"] == "pass" else 1)
+          EOF
+      - name: Upload 全歷史 SARIF
+        if: always() && hashFiles('reports/g2-history.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/g2-history.sarif
+          category: vibesec-nightly-g2-history
+      - name: Upload G2 全歷史 artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-nightly-g2-history
           path: reports/
           if-no-files-found: ignore
 
@@ -326,7 +484,7 @@ jobs:
   # 只在 main 執行，避免分支上手動觸發的試跑開 issue。邏輯與單元測試在 .github/scripts/nightly-issue{,.test}.js。
   notify:
     name: 失敗通知（追蹤 issue）
-    needs: [codeql, semgrep-full, g1-full, evals]
+    needs: [codeql, semgrep-full, g1-full, g1-attest, g2-history, evals]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5

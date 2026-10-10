@@ -32,7 +32,7 @@ def _permission_rules(path: Path) -> set[str] | None:
 
 def verify_mitigation(name: str, evidence: list[dict], root: Path, high_impact: list[str] | tuple = ()) -> tuple[bool, str]:
     """mitigation 是否有可驗證的落實：至少一筆證據，且每筆證據列出的規則都在對應設定檔的 ask／deny 中。
-    human_in_the_loop 另須涵蓋 agent 的每個 high_impact_tools：證據的 covers 把工具對到規則（第四次 harness 審查 N1）。
+    有 high_impact_tools 時，任何以 claude_permission 為證據的 mitigation 都須涵蓋每個工具：證據的 covers 把工具對到規則（第四次 harness 審查 N1）。
     只驗證「每個工具至少有一條規則」，不驗證規則能擋住該工具的所有等價呼叫（前綴比對的限制見 t-hitl-bypass）。"""
     if not evidence:
         return False, f"{name}：沒有 mitigation_evidence"
@@ -51,7 +51,7 @@ def verify_mitigation(name: str, evidence: list[dict], root: Path, high_impact: 
         stray = [r for rs in (ev.get("covers") or {}).values() for r in rs or [] if r not in (ev.get("rules") or [])]
         if stray:
             return False, f"{name}：covers 引用了 rules 以外的規則 " + "、".join(stray)
-    if name == "human_in_the_loop" and high_impact:
+    if high_impact:   # 不論 mitigation 叫什麼名字：改名不能讓涵蓋檢查消失（第四次審視 S-6）
         covered = {t for ev in evidence for t, rs in (ev.get("covers") or {}).items() if rs}
         uncovered = [t for t in high_impact if t not in covered]
         if uncovered:
@@ -119,6 +119,8 @@ def selftest() -> list[str]:
                 mitigation_evidence=ev(["mcp__x__merge"])), True),
             ("covers 引用 rules 以外的規則", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge"],
                 mitigation_evidence=cov(["mcp__x__merge"], {"merge": ["mcp__x__other"]})), True),
+            ("改名 mitigation 也要涵蓋高影響工具", agent(mitigations=["egress_allowlist"], high_impact_tools=["merge"],
+                mitigation_evidence={"egress_allowlist": [{"kind": "claude_permission", "ref": ".claude/settings.json", "rules": ["Bash(rm *)"]}]}), True),
         ]
         for label, tm, expect in cases:
             if bool(trifecta_findings(tm, root)) != expect:

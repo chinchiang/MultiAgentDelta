@@ -1,0 +1,17 @@
+# VibeSec G5／G6 攻擊性探針的目標範圍（CLAUDE.md 規則 8：靶場只能打靶場）
+#
+# scripts/target_guard.py 在送出任何 G5／G6 探針前比對 VIBESEC_TARGET_URL：
+#   1. 只收 http / https；URL 帶帳密（user@host）一律拒絕（避免 127.0.0.1@evil.example 這類混淆）。
+#   2. 主機符合 denied_host_suffixes → 拒絕（deny 優先；放正式網域）。
+#   3. 主機在 allowed_hosts，或符合 allowed_host_suffixes → 允許。
+#   4. 其餘一律拒絕（預設拒絕）；雲端 metadata 位址（169.254.0.0/16、metadata.google.internal）永遠拒絕。
+# 拒絕 → G5／G6 記 incomplete（status_reason 寫明原因），不送出任何請求。
+#
+# 預設只允許本機靶場（examples/vulnapp 在 CI runner 內以 127.0.0.1 啟動）。
+# 要對外部 staging 跑探針：在獨立 PR 把 staging 網域加進 allowed_host_suffixes，經 code owner 審查（/config/ 受 CODEOWNERS 保護）。
+# 後綴以「.」開頭代表子網域（.staging.example.com 允許 api.staging.example.com，不允許 evilstaging.example.com）；
+# 不以「.」開頭代表完全相同的主機。比對不分大小寫，忽略主機名尾端的「.」。
+allowed_hosts: [localhost, 127.0.0.1, "::1"]
+allowed_host_suffixes: []
+# 正式環境網域：即使不小心被加進允許清單也會被擋。例：[".example.com", "example.com"]
+denied_host_suffixes: []

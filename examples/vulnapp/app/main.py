@@ -201,12 +201,23 @@ def chat(body: dict = Body(...)):
     from app.llm_stub import generate_reply
 
     message = body.get("message", "")
+    # RAG：檢索到的外部文件（網頁、PDF、email）與使用者訊息一起進入模型輸入——間接注入（LLM01）的入口。
+    # promptfoo 的 indirect_prompt_injection 測試把惡意文件放在 context；以前這裡只讀 message，那個測試永遠打不到。
+    context = body.get("context") or ""
+    if not isinstance(context, str):
+        context = json.dumps(context, ensure_ascii=False)
+    llm_input = f"{message}\n\n[retrieved document]\n{context}" if context else message
+    # Function calling：呼叫端提供給模型的工具（清單或逗號分隔字串；promptfoo 以 {{tools}} 傳入）
+    tools = body.get("tools") or []
+    if isinstance(tools, str):
+        tools = [t.strip() for t in tools.split(",") if t.strip()]
+    tools = [str(t) for t in tools] if isinstance(tools, list) else []
     if PATCHED:
-        # 修補：長度上限（Denial of Wallet）、不洩漏 system prompt、輸出 HTML 編碼
-        if len(message) > 4000:
+        # 修補：長度上限（Denial of Wallet）、不洩漏 system prompt、不服從文件內指令、高影響工具要人工確認、輸出 HTML 編碼
+        if len(llm_input) > 4000:
             raise HTTPException(status_code=413, detail="訊息過長")
-        return {"reply": html.escape(generate_reply(message, patched=True))}
-    reply = generate_reply(message)
+        return {"reply": html.escape(generate_reply(llm_input, patched=True, tools=tools))}
+    reply = generate_reply(llm_input, tools=tools)
     return {"reply": reply}
 
 

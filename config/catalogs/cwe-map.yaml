@@ -110,7 +110,11 @@ rules:
     implemented_by: [gitleaks:vibesec-openai-api-key, gitleaks:vibesec-anthropic-api-key, gitleaks:vibesec-deepseek-api-key,
                      gitleaks:vibesec-glm-zhipu-api-key, gitleaks:vibesec-google-ai-studio-key, gitleaks:vibesec-huggingface-token,
                      gitleaks:vibesec-supabase-service-role-jwt, gitleaks:vibesec-supabase-service-role-keyword,
-                     gitleaks:vibesec-jwt-secret-assignment, gitleaks:vibesec-generic-high-entropy]
+                     gitleaks:vibesec-jwt-secret-assignment, gitleaks:vibesec-generic-high-entropy,
+                     # gitleaks:*：config/gitleaks.toml 的 useDefault = true 載入的內建規則（aws-access-token、github-pat、
+                     # private-key、gcp-api-key、slack-*、stripe-* …）。以前沒列，命中會落到 default_tier（advisory），
+                     # 與 docs/03「gitleaks:* 任何命中 → blocking」和本政策的 why（AKIA、ghp_、PEM）不一致（第四次審視 D-2）
+                     "gitleaks:*"]
   vibesec.g2.hardcoded-llm-key:
     cwe: CWE-798
     title: "硬編碼 LLM 供應商金鑰（sk-…、sk-ant-api03-…、sk-proj-…、GLM id.secret）"
@@ -229,7 +233,7 @@ rules:
     control_ids: [ASVS5-V2.3, LLM06:2025, MAESTRO-L3]
     gate: G4
     policy_tier: advisory
-    implemented_by: [review:G4-llm-review]   # 多模型審查（docs/09）；非自動偵測
+    implemented_by: [review:G4-llm-review]   # 跨檔確認由多模型審查（docs/09）；pr-gates.yml G4 靜態檢查另有單檔啟發式（docs/05 §5）
   vibesec.g4.rules-file-invisible-unicode:
     cwe: CWE-94
     title: "Agent 規則檔含零寬 / bidi / BOM 等隱形 Unicode（Rules File Backdoor）"
@@ -352,7 +356,7 @@ rules:
     control_ids: [LLM06:2025, VS-G4-AGENT-TOOL-ALLOWLIST, MAESTRO-L3]
     gate: G6
     policy_tier: advisory
-    implemented_by: [promptfoo:excessive-agency]   # 生成層需模型金鑰；無金鑰時該層記 untested
+    implemented_by: [promptfoo:excessive-agency]   # 生成層需模型金鑰；無金鑰時該層記 untested。另有不需金鑰的決定性測試（tests.yaml excessive_agency）
 
   # ---------------- 補充：policy 引用但先前未列的規則 ----------------
   vibesec.g1.kev-hit:

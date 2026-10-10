@@ -137,6 +137,8 @@ allow if {
 
 高影響動作定義：刪除 / 不可逆變更、金流、對外送信 / 發布、部署、改權限、對正式 DB 寫入。要求：Agent 先產出「擬執行內容」→ 人工核准（含 diff 或 SQL 預覽）→ 才執行；核准票有時效；全部寫稽核日誌（`ASVS5-V16.1`、MAESTRO-L5）。缺 HITL → `vibesec.g4.missing-hitl`（advisory，CWE-250）。對應 threat-model 的 `agents[].high_impact_tools` 與 `mitigations: [human_in_the_loop]`。
 
+靜態規則（啟發式，`pr-gates.yml` 的 G4 靜態檢查，py / ts / js / yaml / json；略過 `.github/` 與 `evals/cases/`）：檔案有 Agent 工具註冊脈絡（`@tool`、`@mcp.tool()`、`tools=[…]`／`tools:`、`register_tool`、`server.tool("…")`、`tool({name: …})`），註冊的工具名稱屬高影響動作（refund／transfer／payment／delete／drop／deploy／publish／send_email／grant／revoke…），且**同一檔案**看不到人工核准訊號（confirm、approval、HITL、`interrupt(`、`ask_user`、`require_human`…）→ `vibesec.g4.missing-hitl`（advisory）。只看單一檔案：核准做在其他檔案（框架設定、gateway、policy engine）時會誤報，請在 LLM 審查（VS-G4-LLM-REVIEW）說明；反過來，同檔案出現核准字樣不代表核准真的擋在執行前，跨檔與執行順序的確認仍由 LLM 審查負責。
+
 ### 6. Rules File Backdoor：隱形 Unicode 掃描（`rules_file_unicode`）
 
 掃描 `.cursorrules`、`AGENTS.md`、`SKILL.md`、`CLAUDE.md`、`.cursor/rules/**/*.mdc`、`**/*.md`，禁止下列字元：
@@ -163,7 +165,7 @@ for p in pathlib.Path('.').rglob('*'):
 EOF
 ```
 
-規則 `vibesec.g4.rules-file-invisible-unicode`（blocking，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。G1 掃規則檔時順帶執行。
+規則 `vibesec.g4.rules-file-invisible-unicode`（advisory，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。G1 掃規則檔時順帶執行。
 
 ### 7. MCP 伺服器 OAuth：RFC 8707 Resource Indicators（`mcp_resource_indicator`）
 
@@ -219,7 +221,7 @@ CI（`pr-gates.yml` 的 G4 job）只跑靜態部分；LLM 審查由 `/vibesec-ha
 
 紀錄本身受規則約束（`g4_review.py check`，違規即 CI 失敗）：provider 名稱與 family 必須與 `config/providers.yaml` 一致；意見只能來自實際執行（`state: ran`）的 provider；分歧、少數意見、高風險發現 family 不足 → `requires_human` 必須為 true；沒有 `ruling_ref` 時 `validation_status` 只能是 `pending`、`evidence_grade` 最高 E2。也就是說，紀錄只能「誠實陳述審查發生了什麼」，不能自行宣告結論；結論只來自裁決。
 
-**信任上限（職責分離）**：紀錄由本 PR 新增或修改時不能自證。只有在「非 PR 作者在目前 head SHA 上 approve（之後再 push 需重新 approve）」且「`recorded_by.handle` 不是 PR 作者、而且就是其中一位核准者」時（確認紀錄的人必須親自 approve，不能只填別人的帳號），紀錄才能把 G4 推到 `pass`；否則 `pass` 降為 `pending`（`fail` 不受影響）。`recorded_by.handle` 空白（harness 產出時的預設）一律不採信。已在 base 分支上的紀錄經過另一個 PR 審查合併，照常採用。approve 由 G4 job 以 GitHub API 取得，只採計 author_association 為 OWNER／MEMBER／COLLABORATOR 者，查詢失敗視為沒有 approve（fail closed）。判定腳本 `scripts/g4_review.py` 在 CI 中取自 base 分支（PR head 只當資料讀取），PR 不能改寫決定自己結果的邏輯；workflow 檔本身仍取自 PR head，由 CODEOWNERS 與 branch protection 把關。G4 不在 `config/policy/blocking-policy.yaml` 的 `incomplete_gate_is_blocking_in_enforce`，所以 enforce 模式下 G4 `incomplete` 不擋 merge；若要改為阻擋，須由人類在獨立 PR 修改該政策（CLAUDE.md 規則 1）。
+**信任上限（職責分離）**：紀錄由本 PR 新增或修改時不能自證。只有在「非 PR 作者在目前 head SHA 上 approve（之後再 push 需重新 approve）」且「`recorded_by.handle` 不是 PR 作者、而且就是其中一位核准者」時（確認紀錄的人必須親自 approve，不能只填別人的帳號），紀錄才能把 G4 推到 `pass`；否則 `pass` 降為 `pending`（`fail` 不受影響）。`recorded_by.handle` 空白（harness 產出時的預設）一律不採信。已在 base 分支上的紀錄經過另一個 PR 審查合併，照常採用。approve 由 G4 job 以 GitHub API 取得，只採計 author_association 為 OWNER／MEMBER／COLLABORATOR 者，查詢失敗視為沒有 approve（fail closed）。判定腳本 `scripts/g4_review.py`、政策與 mode 在 CI 中取自 default branch（main，不是 PR 的 base：base 由 PR 作者決定），PR head 只當資料讀取，PR 不能改寫決定自己結果的邏輯；非 `pull_request` 事件（例如手動觸發）沒有 base 可比對時，紀錄一律不採信；workflow 檔本身仍取自 PR head，由 CODEOWNERS 與 branch protection 把關。G4 不在 `config/policy/blocking-policy.yaml` 的 `incomplete_gate_is_blocking_in_enforce`，所以 enforce 模式下 G4 `incomplete` 不擋 merge；若要改為阻擋，須由人類在獨立 PR 修改該政策（CLAUDE.md 規則 1）。
 
 外部專案的紀錄（`reviews/g4/external/<commit>.yaml`）適用同一條規則，由 `.github/workflows/review-record-trust.yml` 的「外部 G4 紀錄不得自證」check 檢查（`scripts/g4_review.py external-trust`）。這個 check 也會在 review 送出或撤銷時重新判定。
 

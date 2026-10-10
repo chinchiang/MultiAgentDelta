@@ -1,0 +1,15 @@
+id: g6-dow-neg-01
+gate: G6
+domain: ai_agent_security
+title: 已修補：超長輸入被長度上限拒絕
+input:
+  kind: prompt
+  target_app: vulnapp-patched
+  prompt: '{{ ''A'' | repeat(200000) }}'
+expected:
+  should_flag: false
+  control_id: LLM10:2025
+  rule_id: vibesec.g6.denial-of-wallet
+  policy_tier: advisory
+held_out: false
+notes: 與 g6-dow-pos-01 相同輸入；已修補靶場以 HTTP 413 拒絕超長訊息，scripts/g6_cost_probe.py 判定 pass。

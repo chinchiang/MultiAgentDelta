@@ -185,7 +185,7 @@ def freshness(commit: str, head: str) -> tuple[bool, str, int]:
         return False, f"commit {commit[:12]} 不在本地歷史（fetch-depth 不足或紀錄指向不存在的 commit）", 10**9
     if _git("merge-base", "--is-ancestor", commit, head).returncode != 0:
         return False, f"commit {commit[:12]} 不是 {head[:12]} 的祖先", 10**9
-    diff = _git("diff", "--name-only", commit, head)
+    diff = _git("diff", "--name-only", "--no-renames", commit, head)   # 改名搬進 rulings/ 也算變更（第四次審視 S-4）
     changed = [l for l in diff.stdout.splitlines() if l.strip() and not l.startswith(FRESH_PREFIXES)]
     dist = _git("rev-list", "--count", f"{commit}..{head}")
     n = int(dist.stdout.strip() or 0) if dist.returncode == 0 else 10**9
@@ -218,7 +218,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
                           "exit_code": 3 if p["state"] == "refused" else None,
                           "output_ref": record_ref, "duration_seconds": None})
         coverage += [dict(c) for c in record["coverage"]]
-        confirmed_blocking = []
+        confirmed_blocking, unresolved_blocking = [], []
         for f in ev["findings"]:
             if f["validation_status"] == "refuted":
                 continue
@@ -226,6 +226,8 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
                 llm_blocking += 1
                 if f["validation_status"] == "confirmed":
                     confirmed_blocking.append(f["id"])
+                elif not f["requires_human"]:
+                    unresolved_blocking.append(f["id"])   # 模型一致 confirm 但無裁決：不能 pass（第四次審視 S-5）
             else:
                 llm_advisory += 1
             if f["requires_human"]:
@@ -234,9 +236,12 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
             status = "fail"
             if confirmed_blocking:
                 reasons.append("LLM 審查發現經人工裁決 confirm 的 blocking：" + "、".join(confirmed_blocking))
-        elif human_pending:
+        elif human_pending or unresolved_blocking:
             status = "pending"
-            reasons.append("待人工裁決（rulings/）：" + "、".join(human_pending))
+            if human_pending:
+                reasons.append("待人工裁決（rulings/）：" + "、".join(human_pending))
+            if unresolved_blocking:
+                reasons.append("blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：" + "、".join(unresolved_blocking))
         elif ev["incomplete"]:
             status = "incomplete"
             reasons.extend(ev["incomplete"])
@@ -327,10 +332,16 @@ def changed_since(base: str, head: str, path: str) -> bool:
     return r.returncode != 0 or bool(r.stdout.strip())
 
 
+def record_changed(base: str | None, head: str, path: str) -> bool:
+    """紀錄是否該視為「由本次變更引入」。沒有 base 可比對（workflow_dispatch、本機）→ True：
+    分不出紀錄是不是作者自己剛加的，就不採信（fail closed；第四次審視 CI-3）。"""
+    return (not base) or changed_since(base, head, path)
+
+
 def comment_markdown(gate: dict, record_ref: str | None) -> str:
     st = gate["status"]
     lines = ["<!-- vibesec-g4-llm-review -->", "### VibeSec G4 — 存取控制", "",
-             "G4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / 單層 middleware）。", "",
+             "G4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware）。", "",
              f"**G4 狀態：`{st}`**——{gate.get('status_reason') or ''}"]
     if record_ref:
         rows = gate.get("_llm_findings") or []
@@ -435,6 +446,16 @@ def selftest() -> list[str]:
     ev4 = evaluate(r4, cfg, controls, None)
     if ev4["errors"] or ev4["incomplete"] or gate_of(r4, ev4)["status"] != "pass":
         fails.append(f"無發現且 coverage pass → 閘門應為 pass（{ev4}）")
+    # blocking 發現、模型一致 confirm、requires_human false、無裁決 → pending（不是 pass）
+    r6 = copy.deepcopy(rec); f6 = r6["findings"][0]
+    f6.update(policy_tier="blocking", requires_human=False, validation_status="pending", ruling_ref=None)
+    for o in f6["opinions"]:
+        o.update(verdict="confirm", minority=False)
+    ev6 = evaluate(r6, cfg, controls, None)
+    if ev6["errors"]:
+        fails.append(f"一致 confirm 的 blocking 發現應能通過驗證：{ev6['errors']}")
+    elif gate_of(r6, ev6)["status"] != "pending":
+        fails.append("未裁決的 blocking 發現 → 閘門應為 pending，不是 pass")
     # 靜態 blocking 永遠 fail
     s = _static(); s["findings_count"]["blocking"] = 1
     if derive_gate(s, r4, ev4, None, "x")["status"] != "fail":
@@ -487,6 +508,8 @@ def selftest() -> list[str]:
         fails.append("recorded_by 不是核准者（只填別人的帳號）→ 應不可信")
     if trust_cap(False, "", "author", ["reviewer"]) is None:
         fails.append("recorded_by.handle 空白 → 應不可信")
+    if record_changed(None, "HEAD", "reviews/g4/x.yaml") is not True or record_changed("", "HEAD", "reviews/g4/x.yaml") is not True:
+        fails.append("沒有 base 可比對 → 紀錄應視為本次變更引入（fail closed）")
     g4p = gate_of(r4, ev4)
     if apply_cap(g4p, "x")["status"] != "pending" or next(c for c in g4p["coverage"] if c["control_id"] == LLM_CONTROL)["state"] != "pending":
         fails.append("不可信的 pass → pending，且 VS-G4-LLM-REVIEW coverage 降為 pending")
@@ -599,9 +622,11 @@ def main(argv=None) -> int:
     record, ev, ref, reason = find_record(head, cfg, controls)
     gate = derive_gate(static, record, ev, reason, ref)
     if record is not None:
-        changed = bool(a.base) and changed_since(a.base, head, ref)
+        changed = record_changed(a.base, head, ref)
         cap = trust_cap(changed, record["recorded_by"].get("handle", ""), a.pr_author,
                         [x for x in a.approvers.split(",") if x])
+        if cap and not a.base:
+            cap = "無 base 可比對（非 pull_request 事件），無法確認紀錄不是本次變更引入；" + cap
         if cap:
             apply_cap(gate, cap)
     md = comment_markdown(gate, ref)

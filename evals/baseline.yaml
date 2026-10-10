@@ -1,4 +1,4 @@
-# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN）。
+# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN／閘門狀態正確）。
 # 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。
 executed:
   - g0-trifecta-neg-01
@@ -13,6 +13,7 @@ executed:
   - g1-postinstall-pos-01
   - g1-rulesfile-neg-01
   - g1-rulesfile-pos-01
+  - g1-slopsquat-incomplete-01
   - g1-slopsquat-neg-01
   - g1-slopsquat-neg-02
   - g1-slopsquat-pos-01
@@ -25,6 +26,7 @@ executed:
   - g2-secret-neg-02
   - g2-secret-pos-01
   - g2-secret-pos-02
+  - g2-secret-pos-03
   - g3-actions-prt-neg-01
   - g3-actions-prt-pos-01
   - g3-actions-prt-pos-02
@@ -34,6 +36,8 @@ executed:
   - g3-actions-unpinned-pos-02
   - g3-cmdi-neg-01
   - g3-cmdi-pos-01
+  - g3-csp-neg-01
+  - g3-csp-pos-01
   - g3-imds-neg-01
   - g3-imds-pos-01
   - g3-jwt-none-neg-01
@@ -47,6 +51,12 @@ executed:
   - g4-agent-tools-neg-01
   - g4-agent-tools-pos-01
   - g4-bola-neg-01
+  - g4-hitl-neg-01
+  - g4-hitl-neg-02
+  - g4-hitl-neg-03
+  - g4-hitl-neg-04
+  - g4-hitl-pos-01
+  - g4-hitl-pos-02
   - g4-owner-neg-02
   - g4-owner-neg-03
   - g4-owner-pos-01
@@ -71,13 +81,22 @@ executed:
   - g5-jwt-pos-02
   - g5-session-neg-01
   - g5-session-pos-01
+  - g5-ssrf-incomplete-01
   - g5-ssrf-neg-01
   - g5-ssrf-neg-02
   - g5-ssrf-pos-01
   - g5-stacktrace-neg-01
   - g5-stacktrace-pos-01
+  - g6-agency-neg-01
+  - g6-agency-pos-01
+  - g6-dow-neg-01
+  - g6-dow-pos-01
+  - g6-indirect-neg-01
+  - g6-indirect-pos-01
   - g6-injection-neg-01
   - g6-injection-pos-01
+  - g6-noprovider-incomplete-01
+  - g6-promptfoo-fail-not-incomplete-01
   - g6-sysprompt-neg-01
   - g6-sysprompt-pos-01
   - g6-xss-neg-01

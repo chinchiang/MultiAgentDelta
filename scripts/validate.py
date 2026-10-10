@@ -20,8 +20,9 @@ def warn(m): warns.append(m)
 try:
     import yaml
 except ImportError:
-    yaml = None
-    warn("PyYAML 未安裝，略過 YAML 語法檢查")
+    # 工具缺席不能等於通過（CLAUDE.md 規則 2）：以前只 warn 並 exit 0，所有檢查與 selftest 都被略過（第四次審視 S-14）
+    print("ERROR: PyYAML 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr)
+    sys.exit(2)
 
 def load_yaml(p: pathlib.Path):
     if yaml is None:
@@ -85,7 +86,7 @@ try:
             for e in errs: err(f"threat-model.yaml 不符 schema: {e.message} @ {list(e.path)}")
         else: ok("threat-model.yaml 通過 schema")
 except ImportError:
-    warn("jsonschema 未安裝，略過 schema 驗證")
+    print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
 # --- catalogs 與規則 ID 一致性 ---
 def flatten_strings(obj):
@@ -129,9 +130,9 @@ if yaml is not None:
         exp = (c.get("expected") or {})
         cid, rid = exp.get("control_id"), exp.get("rule_id")
         if cid and known_controls and cid not in known_controls:
-            warn(f"{rel}: control_id {cid} 不在 catalogs（待 catalogs 補齊）")
+            err(f"{rel}: control_id {cid} 不在 catalogs（CLAUDE.md 規則 3：ID 只能查目錄）")
         if rid and known_rules and rid not in known_rules:
-            warn(f"{rel}: rule_id {rid} 不在 cwe-map/semgrep（待補齊）")
+            err(f"{rel}: rule_id {rid} 不在 cwe-map/semgrep（CLAUDE.md 規則 3：ID 只能查目錄）")
 
     # 範例 finding 的 control_id/cwe 一致性
     ex = ROOT / "docs/templates/finding.example.json"
@@ -180,7 +181,12 @@ if yaml is not None:
         for ref in (meta or {}).get("implemented_by") or []:
             tool, _, ext = str(ref).partition(":")
             if tool == "gitleaks":
-                good = ext in _gl; why = "config/gitleaks.toml 沒有此規則"
+                if ext == "*":   # 內建規則：要 config/gitleaks.toml 真的載入預設規則集
+                    good = bool(re.search(r"^\s*useDefault\s*=\s*true", (ROOT / "config/gitleaks.toml").read_text(encoding="utf-8"), re.M)) \
+                        if (ROOT / "config/gitleaks.toml").exists() else False
+                    why = "gitleaks:* 需要 config/gitleaks.toml 的 [extend] useDefault = true"
+                else:
+                    good = ext in _gl; why = "config/gitleaks.toml 沒有此規則"
             elif tool == "checkov":
                 good = ext in _ck_allow and (not ext.startswith("CKV2_VIBESEC_") or ext in _ck_custom)
                 why = "不在 .checkov.yaml 的 check allow-list，或自訂政策不存在"
@@ -277,6 +283,39 @@ if yaml is not None:
         if len(cases) < 60:
             warn(f"evals 共 {len(cases)} 案例，未達目標 60")
         ok(f"evals {len(cases)} 案例、held_out {len(ho)}、{len(polarity)} 領域")
+        # split.yaml 的 distribution 必須與案例一致（以前寫死 71 筆、沒人核對，第四次審視 E-4）
+        import collections as _co
+        _want = {
+            "total": len(cases),
+            "held_out_ratio": round(len(ho) / len(cases), 2),
+            "by_gate": dict(sorted(_co.Counter(c.get("gate") for c in cases.values()).items())),
+            "by_domain": dict(sorted(_co.Counter(c.get("domain") for c in cases.values()).items())),
+            "by_polarity": {"neg": sum(1 for c in cases.values() if not (c.get("expected") or {}).get("should_flag")),
+                            "pos": sum(1 for c in cases.values() if (c.get("expected") or {}).get("should_flag"))},
+            "incomplete_cases": sorted(cid for cid in cases if re.fullmatch(r"g\d-[a-z0-9]+-incomplete-\d+", cid)),
+        }
+        _have = split.get("distribution") or {}
+        _diff = [k for k, v in _want.items() if _have.get(k) != v]
+        if _diff:
+            err("evals/split.yaml distribution 與案例不一致（" + "、".join(_diff) + "）；正確值：" +
+                json.dumps({k: _want[k] for k in _diff}, ensure_ascii=False))
+        else:
+            ok("evals/split.yaml distribution 與案例一致")
+        # evals/README.md 的「目前 N」必須是實際案例數（以前寫死 91、案例增加後沒人改）
+        _rm = re.search(r"（目前 (\d+)）", (ROOT / "evals/README.md").read_text(encoding="utf-8"))
+        if not _rm:
+            err("evals/README.md: 找不到「（目前 N）」案例數")
+        elif int(_rm.group(1)) != len(cases):
+            err(f"evals/README.md 寫「目前 {_rm.group(1)}」，實際 {len(cases)} 案例")
+        else:
+            ok(f"evals/README.md 案例數與實際一致（{len(cases)}）")
+        # baseline 列出的案例必須存在：不存在的 ID 會讓 nightly 退步比對失真
+        _bl = (load_yaml(ROOT / "evals/baseline.yaml") or {}).get("executed") or []
+        _gone = sorted(set(_bl) - set(cases))
+        if _gone:
+            err(f"evals/baseline.yaml 列出不存在的案例：{_gone}")
+        else:
+            ok(f"evals/baseline.yaml {len(_bl)} 案例皆存在")
 
 # --- 人工裁決：schema、範例、規則自我測試、rulings/*.yaml ---
 try:
@@ -312,12 +351,12 @@ try:
             for e in _ev["errors"]: err(f"{_f.relative_to(ROOT)}: {e}")
             if not _ev["errors"]: ok(f"G4 審查紀錄 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py", "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py", "g4_access.py", "g0_threat_model.py"):
+        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py", "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py", "g4_access.py", "g0_threat_model.py", "env_guard.py", "target_guard.py", "g5_zap.py", "g6_cost_probe.py", "g6_gate.py"):
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
 except ImportError:
-    warn("jsonschema 未安裝，略過人工裁決驗證")
+    print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
 # --- G0 威脅模型：vibesec.yaml 引用的必須是本 repo 的真實模型（不是範本），通過 schema，risk_tier 一致性 ---
 # 範本（docs/templates/、system.name: example-project）也能通過 schema，所以要另外擋，否則 G0 的輸入是虛構系統。
@@ -355,7 +394,7 @@ try:
                     else:
                         warn(_msg)
 except ImportError:
-    warn("jsonschema 未安裝，略過威脅模型驗證")
+    print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
 # --- tier 一致性：blocking-policy 是唯一來源（scripts/vibesec_policy.py）；cwe-map／semgrep metadata／evals／docs 政策表
 #     的 tier 必須等於政策的「基礎 tier」（不含 tier_overrides），否則文件說會擋、CI 實際不擋（或相反）。
@@ -399,6 +438,39 @@ if yaml is not None:
                 _m2 = re.search(r"\b(blocking|advisory)\b", _ln[_m.end():])
                 if _m2 and _m2.group(1) != _P.base_tier(_m.group(1)):
                     err(f"{pathlib.Path(_f).name}:{_i}: {_m.group(1)} 政策表寫 {_m2.group(1)}，政策基礎 tier 為 {_P.base_tier(_m.group(1))}")
+        # 擴充（第四次審視 D-文件）：同列多條規則、萬用字元（xss-*）、同前綴簡寫（`command-injection`），
+        # 以及內文「`vibesec.gN.x`（blocking…」。宣稱的 tier 須等於基礎 tier 或 risk_tier 覆寫後的有效 tier。
+        _all_rules = sorted(_rules)
+        def _expand(tok, prefix):
+            full = tok if tok.startswith("vibesec.") else f"{prefix}.{tok}"
+            if "*" in full:
+                import fnmatch as _fn
+                return [r for r in _all_rules if _fn.fnmatchcase(r, full)]
+            return [full] if full in _rules else []
+        for _f in sorted(glob.glob(str(ROOT / "docs/*.md"))) + [str(ROOT / "README.md")]:
+            for _i, _ln in enumerate(pathlib.Path(_f).read_text(encoding="utf-8").splitlines(), 1):
+                _claims = []
+                if _ln.startswith("|"):
+                    _cells = [c.strip() for c in _ln.strip().strip("|").split("|")]
+                    if len(_cells) >= 2 and "vibesec.g" in _cells[0]:
+                        _m2 = re.match(r"(blocking|advisory)\b", _cells[1])
+                        _toks = re.findall(r"`([a-z0-9.*-]+)`", _cells[0])
+                        _first = next((t for t in _toks if t.startswith("vibesec.g")), None)
+                        if _m2 and _first:
+                            _prefix = _first.rsplit(".", 1)[0]
+                            for _t in _toks:
+                                if _t.startswith("vibesec.") or re.fullmatch(r"[a-z0-9]+(-[a-z0-9*]+)+\*?|[a-z0-9]+-\*", _t):
+                                    for _r in _expand(_t, _prefix):
+                                        _claims.append((_r, _m2.group(1)))
+                # 規則 ID 後緊接的全形括號內，第一個 tier 字（「advisory（L3 升 blocking）」取 advisory；略過 blocking-policy）
+                for _m3 in re.finditer(r"`?(vibesec\.g\d\.[a-z0-9-]+)`?（([^）]*)）", _ln):
+                    _m4 = re.search(r"(?<![\w-])(blocking|advisory)(?![\w-])", _m3.group(2))
+                    if _m4:
+                        _claims.append((_m3.group(1), _m4.group(1)))
+                for _r, _c in _claims:
+                    if _c not in (_P.base_tier(_r), _P.tier(_r)):
+                        err(f"{pathlib.Path(_f).name}:{_i}: {_r} 文件寫 {_c}，政策為 {_P.base_tier(_r)}"
+                            + (f"（{_P.risk_tier} 有效 {_P.tier(_r)}）" if _P.tier(_r) != _P.base_tier(_r) else ""))
         ok("docs 政策表的 tier 與政策一致")
 
 # 通過細項靜音；僅印摘要與警告/錯誤

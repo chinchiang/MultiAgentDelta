@@ -24,7 +24,7 @@ function mockGithub(openIssues = []) {
 }
 const context = { repo: { owner: 'o', repo: 'r' }, serverUrl: 'https://github.com', runId: 7, sha: 'abcdef1234567' };
 const core = { info: () => {} };
-const ok = { codeql: { result: 'success' }, 'semgrep-full': { result: 'success' }, 'g1-full': { result: 'success' }, evals: { result: 'success' } };
+const ok = { codeql: { result: 'success' }, 'semgrep-full': { result: 'success' }, 'g1-full': { result: 'success' }, 'g1-attest': { result: 'success' }, 'g2-history': { result: 'success' }, evals: { result: 'success' } };
 const evalsFailed = { ...ok, evals: { result: 'failure' } };
 const evals = { summary: { ALL: { executed: 43, total: 73, TP: 22, FP: 0, FN: 1, TN: 20 } }, regressions: ['g2-secret-pos-01：FN（vibesec.g2.hardcoded-secret）'] };
 const tracking = { number: 9, body: `${MARKER}\nold`, pull_request: undefined };

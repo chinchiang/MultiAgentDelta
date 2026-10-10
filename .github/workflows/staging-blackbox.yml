@@ -2,6 +2,9 @@
 # 部署至 Staging 後、上線前執行；每週定期複測。
 # 不可違反（CLAUDE.md #8）：攻擊性探針只能對 VIBESEC_TARGET_URL 指向的、已授權的測試環境執行。
 # incomplete ≠ pass：目標無法連線／缺帳號 token → 閘門 incomplete，絕不通過。
+# 目標必須在 config/targets.yaml 的允許清單（scripts/target_guard.py）；不在清單 → 不送任何探針，G5／G6 incomplete。
+# mode、政策與判定程式取自 default branch（.github/actions/vibesec-trusted）；enforce 模式下對外部目標的
+# blocking 發現（與政策列為 enforce 下 incomplete 也擋的閘門）會讓 job 失敗。靶場本來就應該 fail，只報告。
 name: VibeSec Staging Blackbox
 
 on:
@@ -14,6 +17,9 @@ on:
 permissions:
   contents: read
   security-events: write
+  # upload-sarif 要查詢 workflow run（get-a-workflow-run）；沒有 actions: read 會得到
+  # 「Resource not accessible by integration」，SARIF 上傳失敗（nightly-full.yml 已有）。
+  actions: read
 
 jobs:
   blackbox:
@@ -32,6 +38,7 @@ jobs:
     env:
       PROMPTFOO_VERSION: "0.123.1"   # npm，2026-09-18 發布；npm 依 registry 的 integrity（sha512）驗證套件
       GARAK_VERSION: "0.17.0"        # PyPI，2026-09-09 發布
+      TORCH_VERSION: "2.14.0"        # PyPI／PyTorch CPU index，2026-09-02 發布（滿 14 天）；garak 需要 torch>=2.13.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -40,28 +47,49 @@ jobs:
         with:
           python-version: "3.11"
 
+      # 判定程式、政策與 mode 一律取自 default branch（_trusted/）；細節見 .github/actions/vibesec-trusted/action.yml
+      - name: 取出受信任的判定程式與設定（default branch → _trusted/）
+        id: trusted
+        uses: ./.github/actions/vibesec-trusted
+
+      # G5 探針與 scripts/g6_gate.py 都經 vibesec_policy 讀政策（PyYAML）；缺 PyYAML 會讓閘門檔缺席
+      - name: 安裝 PyYAML
+        run: pip install pyyaml
+
       - name: Install uv
         continue-on-error: true
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      - name: 啟動靶場 examples/vulnapp（當未設定 vars.VIBESEC_TARGET_URL）
+      - name: 決定目標、授權檢查並啟動靶場（未設定 vars.VIBESEC_TARGET_URL 時）
         id: target
         shell: bash
         env:
           INPUT_TARGET_URL: ${{ vars.VIBESEC_TARGET_URL }}
         run: |
           mkdir -p reports
+          # 清掉工作區可能存在的舊 ZAP 報告（ZAP action 固定寫 report_json.json；不得把舊檔當成這次的掃描結果）
+          rm -f report_json.json report_md.md report_html.html
           INPUT_URL="${INPUT_TARGET_URL}"
-          if [ -n "$INPUT_URL" ]; then
-            echo "使用外部已授權目標：$INPUT_URL"
-            echo "url=$INPUT_URL" >> "$GITHUB_OUTPUT"
-            echo "is_vulnapp=false" >> "$GITHUB_OUTPUT"
-          else
+          if [ -n "$INPUT_URL" ]; then URL="$INPUT_URL"; LAB=false; else URL="http://127.0.0.1:8000"; LAB=true; fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "is_vulnapp=$LAB" >> "$GITHUB_OUTPUT"
+          # CLAUDE.md 規則 8：送出任何探針前比對 config/targets.yaml（取自 default branch）。
+          # 被拒或清單無法讀取 → allowed=false：之後打目標的步驟全部略過，G5／G6 記 incomplete。
+          set +e
+          GUARD=$(python3 _trusted/scripts/target_guard.py check "$URL" 2>&1); code=$?
+          set -e
+          echo "$GUARD"
+          if [ "$code" != "0" ]; then
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "guard_reason=$(printf '%s' "$GUARD" | head -1 | tr -d '\r')" >> "$GITHUB_OUTPUT"
+            echo "::error::目標未通過授權檢查（exit $code）：$GUARD；不送出任何 G5／G6 探針"
+            exit 0
+          fi
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+          if [ "$LAB" = "true" ]; then
             echo "未設定 vars.VIBESEC_TARGET_URL → 啟動 examples/vulnapp 靶場（僅打靶場）"
             export PATH="$HOME/.local/bin:$PATH"
             nohup uv run --project examples/vulnapp uvicorn app.main:app --host 0.0.0.0 --port 8000 > reports/_vulnapp.log 2>&1 &
-            echo "url=http://127.0.0.1:8000" >> "$GITHUB_OUTPUT"
-            echo "is_vulnapp=true" >> "$GITHUB_OUTPUT"
             # wait-for-ready
             for i in $(seq 1 30); do
               if curl -sf http://127.0.0.1:8000/openapi.json >/dev/null 2>&1 || curl -sf http://127.0.0.1:8000/ >/dev/null 2>&1; then
@@ -69,10 +97,13 @@ jobs:
               fi
               sleep 2
             done
+          else
+            echo "使用外部已授權目標：$URL"
           fi
 
       - name: 取得雙帳號 token（靶場登入 seeded users，否則取自 secrets）
         id: tokens
+        if: steps.target.outputs.allowed == 'true'
         shell: bash
         env:
           SECRET_TOKEN_A: ${{ secrets.VIBESEC_TOKEN_A }}
@@ -103,36 +134,66 @@ jobs:
           echo "token_dir=$TOKDIR" >> "$GITHUB_OUTPUT"
 
       # ---------- G5：ZAP ----------
+      # 兩個 ZAP 掃描共用 config/zap/api-scan.conf（取自 default branch）。工具失敗不讓 job 停下：
+      # 報告缺席時 scripts/g5_zap.py 記 untested，G5 就是 incomplete（incomplete ≠ pass）。
       - name: ZAP API Scan（OpenAPI）
+        if: steps.target.outputs.allowed == 'true'
         continue-on-error: true
         uses: zaproxy/action-api-scan@5158fe4d9d8fcc75ea204db81317cce7f9e5453d # v0.10.0
         with:
           target: ${{ steps.target.outputs.url }}/openapi.json
           format: openapi
-          rules_file_name: config/zap/api-scan.conf
+          rules_file_name: _trusted/config/zap/api-scan.conf
           cmd_options: "-I"
           allow_issue_writing: false
           artifact_name: vibesec-zap-api
 
+      # ZAP action 把 JSON 報告固定寫在工作區的 report_json.json；兩個掃描會互相覆蓋，所以每次掃完就搬走
+      - name: 收集 ZAP API Scan 報告
+        if: always() && steps.target.outputs.allowed == 'true'
+        shell: bash
+        run: |
+          mkdir -p reports
+          if [ -f report_json.json ]; then mv -f report_json.json reports/zap-api.json; else echo "::warning::ZAP API Scan 沒有產出報告（記為 untested）"; fi
+
       - name: ZAP Baseline Scan
+        if: always() && steps.target.outputs.allowed == 'true'
         continue-on-error: true
         uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
         with:
           target: ${{ steps.target.outputs.url }}
-          rules_file_name: config/zap/baseline.conf
+          rules_file_name: _trusted/config/zap/api-scan.conf
           cmd_options: "-I"
           allow_issue_writing: false
           artifact_name: vibesec-zap-baseline
 
+      - name: 收集 ZAP Baseline 報告
+        if: always() && steps.target.outputs.allowed == 'true'
+        shell: bash
+        run: |
+          mkdir -p reports
+          if [ -f report_json.json ]; then mv -f report_json.json reports/zap-baseline.json; else echo "::warning::ZAP Baseline 沒有產出報告（記為 untested）"; fi
+
+      # ZAP 警示 → G5 覆蓋與 SARIF 結果（規則對應查 cwe-map、tier 查 blocking-policy）；下一步的 api-probes 會合併
+      - name: G5 ZAP 彙整（reports/zap-*.json → reports/g5-zap.json）
+        if: always() && steps.target.outputs.allowed == 'true'
+        shell: bash
+        run: |
+          python3 _trusted/scripts/g5_zap.py --report api=reports/zap-api.json --report baseline=reports/zap-baseline.json \
+            --conf _trusted/config/zap/api-scan.conf --out reports/g5-zap.json
+
       # ---------- G5：api-probes（stdlib urllib）----------
+      # 目標被拒時仍執行：腳本內再檢查一次授權（縱深），不送任何請求，寫出 incomplete 的 g5-gate.json
       - name: G5 api-probes（雙帳號 BOLA / JWT / SSRF / 設定外溢 / rate-limit）
+        if: always()
         continue-on-error: true
         env:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
           HAS_A: ${{ steps.tokens.outputs.has_a }}
           HAS_B: ${{ steps.tokens.outputs.has_b }}
           VIBESEC_TOKEN_DIR: ${{ steps.tokens.outputs.token_dir }}
-          VIBESEC_MODE: shadow
+          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
+          VIBESEC_CONFIG: _trusted/vibesec.yaml
         run: |
           python3 - <<'EOF'
           # G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（CLAUDE.md #8）。
@@ -146,6 +207,7 @@ jobs:
           ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
           sys.path.insert(0, str(ROOT / "scripts"))
           from vibesec_policy import Policy
+          from target_guard import GuardConfigError, check as guard_check
           POLICY = Policy(ROOT)
           def _read(name):
               d = os.environ.get("VIBESEC_TOKEN_DIR", "")
@@ -186,12 +248,20 @@ jobs:
               except Exception as e:
                   return None, str(e)
 
-          # 連線性檢查
-          status, _ = req("/openapi.json")
-          reachable = status is not None
+          # 授權檢查（CLAUDE.md 規則 8；workflow 的 target 步驟已查過，這裡再查一次）→ 連線性檢查
           incomplete_reason = None
-          if not reachable:
-              incomplete_reason = f"目標 {URL} 無法連線"
+          try:
+              _ok, _why = guard_check(URL, ROOT)
+          except GuardConfigError as e:
+              _ok, _why = False, f"目標允許清單無法讀取：{e}"
+          if not _ok:
+              reachable = False
+              incomplete_reason = f"目標未通過授權檢查（config/targets.yaml）：{_why}；未送出任何探針"
+          else:
+              status, _ = req("/openapi.json")
+              reachable = status is not None
+              if not reachable:
+                  incomplete_reason = f"目標 {URL} 無法連線"
 
           # ---- swagger_exposed ----
           if reachable:
@@ -507,6 +577,23 @@ jobs:
               else:
                   coverage["rate_limit"] = "pass"
 
+          # ---- ZAP（scripts/g5_zap.py 的輸出；vibesec.yaml g5 tools 含 zap-baseline、zap-api-scan）----
+          # 缺席或無法解析 → 兩個 ZAP 掃描記 untested（incomplete ≠ pass）
+          ZAP_TOOLS = []
+          try:
+              _z = json.loads((REPORTS / "g5-zap.json").read_text(encoding="utf-8"))
+              for _k, _v in _z["coverage"].items():
+                  coverage[_k] = _v["state"]
+                  if _v.get("reason"): coverage_reasons[_k] = _v["reason"]
+              for _rid, _rule in _z["rules"].items():
+                  rules.setdefault(_rid, _rule)
+              results.extend(_z["results"])
+              ZAP_TOOLS = list(_z.get("tools") or [])
+          except Exception as e:
+              for _k in ("zap_api_scan", "zap_baseline"):
+                  coverage[_k] = "untested"
+                  coverage_reasons[_k] = f"沒有 ZAP 彙整結果（reports/g5-zap.json：{type(e).__name__}）"
+
           # ---- 輸出 SARIF ----
           sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
                    "version": "2.1.0",
@@ -526,7 +613,7 @@ jobs:
               gstatus = "incomplete"
               status_reason = f"雙帳號測試需兩個 token（has_a={HAS_A}, has_b={HAS_B}）；缺 token 的 BOLA/JWT 檢查記為 untested"
           elif blocking > 0:
-              gstatus = "fail"  # 但 mode=shadow 僅報告（見 summary）
+              gstatus = "fail"  # 是否擋由「黑箱彙整與判定」依 mode 與政策決定
           elif any(v == "untested" for v in coverage.values()):
               # incomplete ≠ pass（CLAUDE.md #2）：任何檢查未能實測，整體就不能報 pass
               gstatus = "incomplete"
@@ -547,7 +634,7 @@ jobs:
                   "commit": None, "started_at": iso(NOW),
                   "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
                   "tools": [{"name": "vibesec-g5-api-probes", "version": "1.0.0", "state": "ran",
-                             "exit_code": 0, "output_ref": "reports/g5-api-probes.sarif", "duration_seconds": None}],
+                             "exit_code": 0, "output_ref": "reports/g5-api-probes.sarif", "duration_seconds": None}] + ZAP_TOOLS,
                   "findings_count": {"blocking": blocking, "advisory": advisory},
                   "coverage": cov}
           (REPORTS / "g5-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -573,6 +660,7 @@ jobs:
       # ---------- G6：LLM / Agent 紅隊 ----------
       - name: G6 promptfoo eval（決定性測試，不需模型金鑰）
         id: pfeval
+        if: steps.target.outputs.allowed == 'true'
         continue-on-error: true
         shell: bash
         env:
@@ -594,6 +682,7 @@ jobs:
       # GLM / DeepSeek 只允許 public，不在此使用。金鑰只經 env 傳入，不寫入 log。
       - name: G6 promptfoo redteam（選用；需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret）
         id: pfred
+        if: steps.target.outputs.allowed == 'true'
         continue-on-error: true
         shell: bash
         env:
@@ -636,14 +725,26 @@ jobs:
           fi
 
       - name: G6 garak（LLM 漏洞掃描）
+        if: steps.target.outputs.allowed == 'true'
         continue-on-error: true
         shell: bash
         env:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
           mkdir -p reports
-          pip install "garak==${GARAK_VERSION}" >reports/_garak-install.log 2>&1 || echo "::warning::garak 安裝失敗（記為 untested）"
-          if command -v garak >/dev/null 2>&1; then
+          # 先從 PyTorch CPU index 安裝 CPU 版 torch，再裝 garak：PyPI 的 torch 會連帶裝 CUDA 函式庫（整個環境約 9.6 GB，
+          # 安裝約 3 分鐘），runner 磁碟吃緊時會在安裝中途失敗；CPU 版約 2 GB、約 70 秒。這個 job 沒有 GPU，用不到 CUDA。
+          # 只有 torch 本體（及其少數相依）取自 PyTorch index；garak 與其餘相依仍由 PyPI 安裝。
+          install_ok=1
+          { pip install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" \
+              && pip install "garak==${GARAK_VERSION}"; } >reports/_garak-install.log 2>&1 || install_ok=0
+          if [ "$install_ok" != 1 ]; then
+            # 安裝記錄以前只留在 artifact；失敗原因（磁碟不足、下載中斷、相依衝突）要在 Actions log 就看得到
+            echo "::warning::garak 安裝失敗（記為 untested）"
+            echo "--- reports/_garak-install.log（最後 40 行）---"; tail -n 40 reports/_garak-install.log
+            echo "--- 磁碟 ---"; df -h "$RUNNER_TEMP" | tail -n 1
+          fi
+          if [ "$install_ok" = 1 ] && command -v garak >/dev/null 2>&1; then
             # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
             sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
             garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
@@ -652,19 +753,36 @@ jobs:
             find "$HOME/.local/share/garak" . -name 'g6-garak*.jsonl' -not -path './reports/*' -exec cp {} reports/ \; 2>/dev/null || true
           fi
 
-      - name: G6 彙整（promptfoo eval + redteam + garak → reports/g6-gate.json）
+      # 成本面（LLM10 denial_of_wallet_cost）：超長輸入是否被長度上限／配額／token 預算擋下；只記狀態碼與耗時
+      - name: G6 成本探針（scripts/g6_cost_probe.py）
+        if: steps.target.outputs.allowed == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
+        run: python3 _trusted/scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-cost.json
+
+      - name: G6 彙整（promptfoo eval + redteam + garak + 成本探針 → reports/g6-gate.json）
         if: always()
         shell: bash
         env:
           PF_EXIT: ${{ steps.pfeval.outputs.exit_code }}
           PF_RED_SKIPPED: ${{ steps.pfred.outputs.skipped }}
+          TARGET_ALLOWED: ${{ steps.target.outputs.allowed }}
+          GUARD_REASON: ${{ steps.target.outputs.guard_reason }}
+          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
+          if [ "${TARGET_ALLOWED}" != "true" ]; then
+            python3 _trusted/scripts/g6_gate.py --target-denied "${GUARD_REASON:-目標未通過授權檢查或未執行}" \
+              --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE"
+            exit 0
+          fi
           args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config config/garak/vibesec.probes.yaml
-                --gate reports/g6-gate.json --sarif reports/g6.sarif --mode shadow)
+                --cost reports/g6-cost.json --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE")
           [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
           if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
           else args+=(--redteam reports/g6-promptfoo-redteam.json); fi
-          python3 scripts/g6_gate.py "${args[@]}"
+          python3 _trusted/scripts/g6_gate.py "${args[@]}"
 
       - name: Upload G6 SARIF
         if: always()
@@ -682,36 +800,69 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
-      - name: 黑箱彙整（G5/G6 狀態；shadow 僅報告）
+      # 唯一會讓 job 因閘門結果變紅的步驟（不加 continue-on-error）：
+      #   shadow，或目標是靶場（本來就應該 fail，退步由 notify 判斷）→ 只報告；
+      #   enforce 且外部目標 → 任一閘門 fail 且 blocking > 0，或閘門 incomplete／缺席且列在
+      #   blocking-policy 的 incomplete_gate_is_blocking_in_enforce → exit 1；政策檔讀不到 → exit 2（不知道也要擋）。
+      - name: 黑箱彙整與判定（shadow 僅報告；enforce 對外部目標阻擋）
         id: verdict
         if: always()
         shell: bash
+        env:
+          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
+          IS_VULNAPP: ${{ steps.target.outputs.is_vulnapp }}
         run: |
           python3 - <<'EOF'
-          import json, glob, os, pathlib
-          rows = ["# VibeSec 黑箱閘門狀態（G5 / G6）", "",
+          import json, os, sys
+          mode = os.environ.get("VIBESEC_MODE") or "missing"
+          lab = os.environ.get("IS_VULNAPP") == "true"
+          rows = [f"# VibeSec 黑箱閘門狀態（G5 / G6；mode：`{mode}`；目標：{'靶場' if lab else '外部'}）", "",
                   "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
-          for p in sorted(glob.glob("reports/g5-gate.json") + glob.glob("reports/g6-gate.json")):
-              try: g = json.load(open(p, encoding="utf-8"))
-              except Exception: continue
-              fc = g.get("findings_count", {})
-              rows.append(f"| {g.get('gate')} | `{g.get('status')}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {g.get('status_reason') or ''} |")
-          rows += ["", "> 攻擊性探針僅對已授權 VIBESEC_TARGET_URL 執行；缺 token／目標限制的檢查記為 untested，incomplete ≠ pass。"]
-          text = "\n".join(rows)
+          states = {}
+          for gid in ("g5", "g6"):
+              try:
+                  g = json.load(open(f"reports/{gid}-gate.json", encoding="utf-8"))
+                  fc = g.get("findings_count") or {}
+                  st, bl = g.get("status") or "missing", fc.get("blocking", "")
+                  rows.append(f"| {g.get('gate')} | `{st}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {g.get('status_reason') or ''} |")
+              except Exception:
+                  st, bl = "missing", ""
+                  rows.append(f"| {gid.upper()} | `missing` | - | - | 沒有產出閘門結果（incomplete ≠ pass） |")
+              states[gid.upper()] = (st, bl)
+          rows += ["", "> 攻擊性探針僅對 config/targets.yaml 允許的目標執行；缺 token／目標限制的檢查記為 untested，incomplete ≠ pass。"]
           # 供 notify job 使用；缺 gate 檔記為 missing（incomplete ≠ pass）
           go = os.environ.get("GITHUB_OUTPUT")
           if go:
               with open(go, "a", encoding="utf-8") as fh:
-                  for gid in ("g5", "g6"):
-                      try:
-                          g = json.load(open(f"reports/{gid}-gate.json", encoding="utf-8"))
-                          st, bl = g.get("status") or "missing", (g.get("findings_count") or {}).get("blocking", "")
-                      except Exception:
-                          st, bl = "missing", ""
-                      fh.write(f"{gid}_status={st}\n{gid}_blocking={bl}\n")
+                  for gid, (st, bl) in states.items():
+                      fh.write(f"{gid.lower()}_status={st}\n{gid.lower()}_blocking={bl}\n")
+          block, code, notes = [], 0, []
+          if mode not in ("shadow", "enforce"):
+              block.append(f"mode 無法取得（{mode}）"); code = 2
+          elif mode == "enforce" and not lab:
+              try:
+                  import yaml
+                  pol = yaml.safe_load(open("_trusted/config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
+                  inc_block = set(pol.get("incomplete_gate_is_blocking_in_enforce") or [])
+              except Exception as e:
+                  block.append(f"blocking-policy 無法讀取（{type(e).__name__}）"); code = 2
+                  inc_block = set()
+              for gid, (st, bl) in states.items():
+                  if st == "fail" and isinstance(bl, int) and bl > 0:
+                      block.append(f"{gid} fail（blocking {bl}）"); code = code or 1
+                  elif st in ("incomplete", "missing") and gid in inc_block:
+                      block.append(f"{gid} {st}（政策：enforce 下 incomplete 也擋）"); code = code or 1
+                  elif st in ("incomplete", "missing"):
+                      notes.append(f"{gid} {st} 依政策只報告（不在 incomplete_gate_is_blocking_in_enforce），追蹤 issue 會列出")
+          rows.append("")
+          rows.append("**判定：阻擋** — " + "；".join(block) if block else
+                      f"**判定：不阻擋**（{'shadow 只報告' if mode == 'shadow' else '靶場只報告' if lab else '沒有 blocking 發現'}）"
+                      + ("；" + "；".join(notes) if notes else ""))
+          text = "\n".join(rows)
           sp = os.environ.get("GITHUB_STEP_SUMMARY")
           if sp: open(sp, "a", encoding="utf-8").write(text + "\n")
           print(text)
+          sys.exit(code)
           EOF
 
       - name: 清除 token 暫存檔

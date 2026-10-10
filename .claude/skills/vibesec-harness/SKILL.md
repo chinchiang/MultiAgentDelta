@@ -107,10 +107,18 @@ python3 scripts/g4_access.py --target "$TARGET" --out-dir reports/raw/G4 --gate 
 
 ### G5 DAST / API（只打授權靶場）
 
+**送出任何 G5／G6 請求之前**先做目標授權檢查（CLAUDE.md 規則 8）。退出碼非 0 → G5、G6 都記 `incomplete`，`status_reason` 寫檢查輸出，**不得**送出任何請求（含健康檢查）：
+
+```bash
+python3 scripts/target_guard.py check "$VIBESEC_TARGET_URL" || echo TARGET_DENIED   # 0 允許；1 不在 config/targets.yaml；2 清單無法讀取
+```
+
 ```bash
 curl -sf -m 30 "$VIBESEC_TARGET_URL/healthz" || echo UNREACHABLE
-zap-baseline.py -t "$VIBESEC_TARGET_URL" -J reports/raw/G5/zap-baseline.json -c config/zap/baseline.conf
-zap-api-scan.py -t "$VIBESEC_TARGET_URL/openapi.json" -f openapi -J reports/raw/G5/zap-api.json
+zap-baseline.py -t "$VIBESEC_TARGET_URL" -J reports/raw/G5/zap-baseline.json -c config/zap/api-scan.conf
+zap-api-scan.py -t "$VIBESEC_TARGET_URL/openapi.json" -f openapi -J reports/raw/G5/zap-api.json -c config/zap/api-scan.conf
+python3 scripts/g5_zap.py --report api=reports/raw/G5/zap-api.json --report baseline=reports/raw/G5/zap-baseline.json \
+  --conf config/zap/api-scan.conf --out reports/raw/G5/g5-zap.json   # 報告缺席 → 該掃描 untested
 ```
 
 api-probes（用 `curl`，每個請求與回應存 `reports/raw/G5/api-probes/*.json`）：
@@ -120,7 +128,7 @@ api-probes（用 `curl`，每個請求與回應存 `reports/raw/G5/api-probes/*.
 - `ssrf_metadata`：對 URL 匯入端點送 `http://169.254.169.254/latest/meta-data/`；回應含 metadata → `vibesec.g5.ssrf-metadata`。
 - `swagger_exposed` / `graphql_introspection` / `debug_stacktrace` / `rate_limit`：對應端點探測。
 
-URL 未設或 `UNREACHABLE` → G5 整體 `incomplete`，**不得**把無回應當無漏洞。
+URL 未設、`TARGET_DENIED` 或 `UNREACHABLE` → G5 整體 `incomplete`，**不得**把無回應當無漏洞。
 
 ### G6 LLM / Agent 紅隊
 
@@ -129,8 +137,11 @@ promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json -
 # 選用生成層（需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY；只允許 internal 資料可送的 provider）：
 # promptfoo redteam run -c config/promptfoo/promptfooconfig.yaml -o reports/raw/G6/promptfoo-redteam.json
 garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
+python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/raw/G6/g6-cost.json   # 成本面（LLM10）
 python3 scripts/g6_gate.py --eval reports/raw/G6/promptfoo.json --redteam-skipped "<原因>" \
-  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --gate reports/raw/G6/g6-gate.json
+  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --cost reports/raw/G6/g6-cost.json --gate reports/raw/G6/g6-gate.json
+# 目標被拒（TARGET_DENIED）時不跑上面任何工具，改用：
+# python3 scripts/g6_gate.py --target-denied "<target_guard 輸出>" --gate reports/raw/G6/g6-gate.json
 ```
 
 `project.contains_llm: false` → `not_applicable`，`status_reason: "project.contains_llm is false"`。對應 `checks` → `vibesec.g6.<check-kebab>`。
