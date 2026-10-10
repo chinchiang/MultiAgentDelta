@@ -35,6 +35,8 @@ REVIEWS_DIR = PROJECT / "reviews/g4"
 FRESH_PREFIXES = ("reviews/g4/", "rulings/")
 # Claude Code 內的 reviewer sub-agent（SKILL.md 步驟 2）不在 providers.yaml，但 family 固定
 PROVIDER_ALIASES = {"claude-code-subagent": "anthropic"}
+# sub-agent 的內容送到 Anthropic 雲端：資料分級比照 providers.yaml 的 anthropic-cloud（SKILL.md 步驟 4）
+ALIAS_DATA_CLASSES = {"claude-code-subagent": ["public", "internal"]}
 LLM_CONTROL = "VS-G4-LLM-REVIEW"
 GRADE = {"E0": 0, "E1": 1, "E2": 2, "E3": 3}
 
@@ -59,9 +61,13 @@ def load_cfg() -> dict:
     pv = (_yaml(ROOT / "config/providers.yaml").get("providers") or {})
     families = {name: (meta or {}).get("family") for name, meta in pv.items()}
     families.update(PROVIDER_ALIASES)
+    classes = {name: list((meta or {}).get("allowed_data_classes") or []) for name, meta in pv.items()}
+    classes.update(ALIAS_DATA_CLASSES)
+    review = vb.get("review") or {}
     return {"roles": list(g4.get("roles") or ["architecture", "identity-authz"]),
-            "min_families": int((vb.get("review") or {}).get("min_families_for_high_risk", 2)),
-            "provider_family": families}
+            "min_families": int(review.get("min_families_for_high_risk", 2)),
+            "max_round": 1 + int(review.get("max_cross_rounds", 2)),
+            "provider_family": families, "provider_classes": classes}
 
 
 def known_controls() -> set[str]:
@@ -105,6 +111,9 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
             errors.append(f"provider {p['provider']} 的 family 應為 {fam}，紀錄寫 {p['family']}")
         if p["state"] == "ran":
             ran.add(p["provider"])
+            allowed = cfg["provider_classes"].get(p["provider"])
+            if allowed is not None and record["data_class"] not in allowed:   # 規則 7：審查內容不得送到不收該分級的 provider
+                errors.append(f"provider {p['provider']} 只收 {allowed}，卻收到 data_class={record['data_class']} 的審查內容（不得外傳）")
     families = {p["family"] for p in record["providers"] if p["state"] == "ran"}
     if len(families) < cfg["min_families"]:
         incomplete.append(f"只有 {len(families)} 個 family 實際執行（需 ≥ {cfg['min_families']}）："
@@ -136,9 +145,16 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
             fam = pf.get(o["provider"])
             if fam is not None and fam != o["family"]:
                 errors.append(f"{fid}: 意見的 provider {o['provider']} family 應為 {fam}")
-        last = max(o["round"] for o in f["opinions"])
-        final = [o for o in f["opinions"] if o["round"] == last]
-        verdicts = {o["verdict"] for o in final}
+        # 每個（角色, provider）取它自己最後一輪的意見：第 1 輪 refute、第 2 輪缺席（逾時）者，refute 仍算數；
+        # 只看全域最後一輪會讓缺席者的少數意見消失（規則 6「保留少數意見、不多數決」）
+        latest: dict[tuple[str, str], dict] = {}
+        for o in f["opinions"]:
+            k = (o["role"], o["provider"])
+            if k not in latest or o["round"] >= latest[k]["round"]:
+                latest[k] = o
+            if o["round"] > cfg["max_round"]:
+                errors.append(f"{fid}: 第 {o['round']} 輪超過上限（第 1 輪獨立 + 最多 {cfg['max_round'] - 1} 輪交叉，vibesec.yaml review.max_cross_rounds）")
+        verdicts = {o["verdict"] for o in latest.values()}
         op_families = {o["family"] for o in f["opinions"]}
         divergent = len(verdicts) > 1 or "uncertain" in verdicts
         has_minority = any(o.get("minority") for o in f["opinions"])
@@ -480,6 +496,19 @@ def selftest() -> list[str]:
     bad("裁決指向別的發現", lambda r: r["findings"][0].update(ruling_ref="rulings/VS-20261003-1a2b3c4d.yaml"), "不存在")
     bad("只有一個 family", lambda r: r["providers"][1].update(state="timeout"), "個 family 實際執行", key="incomplete")
     bad("必要角色缺席", lambda r: r.update(roles=["architecture"]), "必要角色缺席", key="incomplete")
+
+    def minority_vanishes(r):   # 第 1 輪 refute 的 provider 在之後的輪次缺席（逾時），另一方第 3 輪 confirm
+        f = r["findings"][0]
+        f["opinions"] = [o for o in f["opinions"] if not (o["provider"] == "openai-cloud" and o["round"] == 3)]
+        for o in f["opinions"]:
+            o["minority"] = False
+        f["requires_human"] = False
+    bad("第 1 輪 refute 後缺席，少數意見不得消失", minority_vanishes, "requires_human 必須為 true")
+    bad("資料分級超出 provider 允許範圍", lambda r: r.update(data_class="confidential"), "不得外傳")
+    bad("缺 data_class", lambda r: r.pop("data_class"), "data_class")
+    r_rounds = copy.deepcopy(rec)
+    if not any("輪超過上限" in e for e in evaluate(r_rounds, {**cfg, "max_round": 2}, controls, None)["errors"]):
+        fails.append("超過 max_cross_rounds 的輪次必須拒絕")
     # 一個 family 且無發現 → incomplete（不是 pass）
     r5 = copy.deepcopy(r4); r5["providers"][1]["state"] = "missing"
     ev5 = evaluate(r5, cfg, controls, None)
