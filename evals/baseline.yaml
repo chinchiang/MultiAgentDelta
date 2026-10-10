@@ -9,6 +9,8 @@ executed:
   - g1-cooldown-pos-01
   - g1-kev-neg-01
   - g1-kev-pos-01
+  - g1-lowdl-neg-01
+  - g1-lowdl-pos-01
   - g1-postinstall-neg-01
   - g1-postinstall-pos-01
   - g1-rulesfile-neg-01
@@ -36,18 +38,28 @@ executed:
   - g3-actions-unpinned-pos-02
   - g3-cmdi-neg-01
   - g3-cmdi-pos-01
+  - g3-cors-neg-01
+  - g3-cors-pos-01
   - g3-csp-neg-01
   - g3-csp-pos-01
+  - g3-docker-root-neg-01
+  - g3-docker-root-pos-01
   - g3-imds-neg-01
   - g3-imds-pos-01
+  - g3-jwt-confusion-neg-01
+  - g3-jwt-confusion-pos-01
   - g3-jwt-none-neg-01
   - g3-jwt-none-pos-01
+  - g3-sql-fstring-neg-01
+  - g3-sql-fstring-pos-01
   - g3-sqli-neg-01
   - g3-sqli-neg-02
   - g3-sqli-pos-01
   - g3-sqli-pos-02
   - g3-xss-neg-01
   - g3-xss-pos-01
+  - g3-xss-py-neg-01
+  - g3-xss-py-pos-01
   - g4-agent-tools-neg-01
   - g4-agent-tools-pos-01
   - g4-bola-neg-01
@@ -64,6 +76,8 @@ executed:
   - g4-owner-pos-03
   - g4-rls-neg-01
   - g4-rls-pos-01
+  - g4-rls-table-neg-01
+  - g4-rls-table-pos-01
   - g4-single-mw-fastapi-neg-01
   - g4-single-mw-fastapi-neg-02
   - g4-single-mw-fastapi-pos-01
@@ -75,10 +89,12 @@ executed:
   - g5-bola-pos-01
   - g5-cors-neg-01
   - g5-cors-pos-01
+  - g5-graphql-pos-01
   - g5-jwt-neg-01
   - g5-jwt-neg-02
   - g5-jwt-pos-01
   - g5-jwt-pos-02
+  - g5-ratelimit-pos-01
   - g5-session-neg-01
   - g5-session-pos-01
   - g5-ssrf-incomplete-01
@@ -87,6 +103,7 @@ executed:
   - g5-ssrf-pos-01
   - g5-stacktrace-neg-01
   - g5-stacktrace-pos-01
+  - g5-swagger-pos-01
   - g6-agency-neg-01
   - g6-agency-pos-01
   - g6-dow-neg-01

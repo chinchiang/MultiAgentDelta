@@ -31,7 +31,7 @@ notes: 靶場 examples/vulnapp 可重現。
 
 - 每個適用領域**至少一正例與一反例**。
 - 至少 **1/3** 案例 `held_out: true`；清單集中於 `evals/split.yaml`。
-- 總數目標 **≥ 60**（目前 100）。
+- 總數目標 **≥ 60**（目前 117）。
 - `domain` 使用 14 審查領域的固定代碼：`application_architecture`、`general_vulnerabilities`、`xss`、`csp`、`authentication`、`authorization`、`dependency`、`build_supply_chain`、`github_actions`、`secret_exposure`、`input_validation`、`error_handling`、`data_integrity`、`ai_agent_security`。
 - `gate_status` 案例驗證閘門在工具／環境失敗時回報的狀態：例如「incomplete ≠ pass」（工具或環境無法完成時，閘門必須回報 incomplete，而非 pass），或「已實測的失敗不得因其他層缺金鑰而被改寫成 incomplete」（`gate_status: fail`）。以 `input.integration` 指定整合層情境；`expected.coverage`（控制 → 狀態）與 `expected.status_reason_contains` 可進一步要求某個覆蓋項的狀態與 status_reason 的內容。
 - 含隱形字元或假金鑰的 fixture 以 YAML 跳脫或佔位值表示，避免觸發本 repo 自身的 G2／G4 掃描。
@@ -51,7 +51,7 @@ python3 scripts/run_evals.py --no-network                                       
 ```
 
 - 只有「預期規則確實由本機執行器實作」的案例才執行並計分：
-  - `semgrep`：`kind: code|iac` 且 `rule_id` 存在於 `config/semgrep/vibesec-rules.yaml`（`-js` 等語言變體歸回同一規則）。
+  - `semgrep`：`kind: code|iac` 且 `rule_id` 存在於 `config/semgrep/vibesec-rules.yaml`（`-js` 等語言變體歸回同一規則）。fixture 寫回 `input.path` 的原路徑並以暫存目錄為掃描根（同 CI 掃 repo 根），規則的 `paths.include`／`exclude` 才會生效；fixture 沒被掃到記 incomplete。
   - `slopcheck-rules-file`：G1 `vibesec.g1.rules-file-unknown-package` 案例，snippet 寫成 `input.path` 的規則檔（例如 `.cursorrules`），以 `g1_slopcheck.py --rules-file` 實測並查 live registry；`--no-network` 時記 untested。
   - `g1-kev`：G1 `vibesec.g1.kev-hit` 案例，`input.grype_matches` 是 grype 比對結果 fixture，評測時即時下載 CISA KEV feed，以 `scripts/g1_kev.py` 判定。驗證比對與判定邏輯，不含 grype 本身（nightly 以真實 grype 執行）；`--no-network` 或下載失敗時記 untested／incomplete。
   - `slopcheck`：G1 manifest 案例，且只用 `ecosystem` / `added`（含 `published_hours_ago` 等合成 fixture 的案例記 untested）。

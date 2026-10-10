@@ -115,7 +115,11 @@ class SemgrepRunner(Runner):
     def run(self, case):
         inp = case["input"]
         with tempfile.TemporaryDirectory() as d:
-            target = pathlib.Path(d) / file_name_for(inp)
+            # 保留 input.path 的目錄，並以暫存目錄為掃描根（同 CI 掃 repo 根）：規則的 paths.include／exclude
+            # （例如 supabase-table-without-rls 只看 **/supabase/migrations/**）是相對掃描根比對的；
+            # 只留檔名或直接掃單一檔案，這類規則對任何 fixture 都不執行（空洞的 FN／TN）
+            target = pathlib.Path(d) / (_fixture_path(inp) or file_name_for(inp))
+            target.parent.mkdir(parents=True, exist_ok=True)
             # YAML 跳脫已解碼為實際字元；寫入暫存檔供掃描
             snippet = str(inp["snippet"])
             for k, v in PLACEHOLDERS.items():
@@ -123,13 +127,16 @@ class SemgrepRunner(Runner):
             target.write_text(snippet, encoding="utf-8")
             try:
                 p = subprocess.run([self.bin, "--config", str(SEMGREP_RULES), "--json", "--quiet",
-                                    "--metrics=off", "--disable-version-check", str(target)],
-                                   capture_output=True, text=True, timeout=180)
+                                    "--metrics=off", "--disable-version-check", "."],
+                                   capture_output=True, text=True, timeout=180, cwd=d)
                 if p.returncode not in (0, 1) or not p.stdout.strip():   # 1 = 有發現；其他 = 崩潰，不是「沒發現」（第四次審視 S-12）
                     return None, f"semgrep 執行失敗（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}"
                 data = json.loads(p.stdout)
             except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 return None, f"semgrep 執行失敗：{type(e).__name__}"
+            scanned = {str(pathlib.Path(d, x).resolve()) for x in (data.get("paths") or {}).get("scanned") or []}
+            if str(target.resolve()) not in scanned:   # 被 .semgrepignore 預設清單等排除 → 沒掃到，不是「沒發現」
+                return None, f"semgrep 沒有掃到 fixture {target.relative_to(d)}"
             if data.get("errors") and not data.get("results"):
                 return None, f"semgrep 錯誤：{str(data['errors'][0].get('message', ''))[:120]}"
             hits = set()
@@ -408,8 +415,10 @@ def _workflow_step(prefix: str, workflow: str = "staging-blackbox.yml") -> str |
 
 
 def _fixture_path(inp: dict) -> str | None:
-    """案例 input.path 的第一個實際路徑（保留目錄，掃描器靠目錄 glob 找檔）；「a + b」取 a。"""
-    m = re.search(r"[\w.\-/]+\.(py|js|ts|tsx|jsx|sql|tf|ya?ml|json|md|mdc|toml)\b|\.(cursorrules|windsurfrules|clinerules)\b",
+    """案例 input.path 的第一個實際路徑（保留目錄，掃描器靠目錄 glob 找檔）；「a + b」取 a。
+    Dockerfile 沒有副檔名，另以檔名比對（checkov 依檔名 Dockerfile／*.Dockerfile 辨識 dockerfile framework）。"""
+    m = re.search(r"[\w.\-/]+\.(py|js|ts|tsx|jsx|sql|tf|ya?ml|json|md|mdc|toml)\b|\.(cursorrules|windsurfrules|clinerules)\b"
+                  r"|(?:[\w.\-]+/)*(?:[\w\-]+\.)?Dockerfile\b",
                   inp.get("path") or "")
     if not m:
         return None
