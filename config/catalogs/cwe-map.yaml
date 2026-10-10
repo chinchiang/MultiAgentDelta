@@ -98,6 +98,29 @@ rules:
     gate: G0
     policy_tier: blocking
     implemented_by: [review:G0-threat-model]   # 威脅模型審查（docs/01）；非自動偵測
+  # 以下三條為 docs/01「自動化作法」第 4 項與「阻擋政策」的覆蓋對照（scripts/g0_threat_model.py coverage_findings）；
+  # 政策檔未列 → vibesec_policy 的 vibesec.* 預設 advisory，與 docs/01 阻擋政策表一致。
+  vibesec.g0.threat-gate-disabled:
+    cwe: null
+    notes: "威脅模型的覆蓋缺口（威脅指定的驗證閘門未啟用），不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（CLAUDE.md 規則 3）"
+    title: "threats[].gate 指向的閘門在 vibesec.yaml 不是 enabled: true（該威脅實際沒有閘門把關）"
+    control_ids: [ASVS5-V15.1]
+    gate: G0
+    policy_tier: advisory
+  vibesec.g0.maestro-missing:
+    cwe: null
+    notes: "威脅建模方法論缺口，不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（CLAUDE.md 規則 3）"
+    title: "project.contains_llm 為 true，但威脅模型（或 vibesec.yaml gates.g0_threat_model）的 methodologies 沒有 MAESTRO"
+    control_ids: [ASVS5-V15.1, MAESTRO-L7]
+    gate: G0
+    policy_tier: advisory
+  vibesec.g0.threats-empty-public:
+    cwe: null
+    notes: "威脅模型內容缺口，不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（CLAUDE.md 規則 3）"
+    title: "system.exposure 為 public，但 threats[] 為空（應至少列 STRIDE 六類各一）"
+    control_ids: [ASVS5-V15.1]
+    gate: G0
+    policy_tier: advisory
 
   # ---------------- G2 機密與金鑰 ----------------
   vibesec.g2.hardcoded-secret:
