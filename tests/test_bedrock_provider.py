@@ -32,6 +32,16 @@ class Bedrock(unittest.TestCase):
             self.assertEqual(self.call(env={'AWS_ACCESS_KEY_ID':'synthetic-access'})['state'],'missing')
             backend.assert_not_called()
 
+    def test_packet_data_class_cannot_be_downgraded_by_cli_argument(self):
+        with patch.object(provider, '_bedrock') as backend:
+            self.packet['data_class'] = 'confidential'
+            result = self.call('public')   # --data-class public，但審查包宣告 confidential
+            self.assertEqual((result['state'], result['data_class']), ('refused', 'confidential'))
+            self.packet['data_class'] = 'secret-ish'
+            with self.assertRaises(ValueError):
+                self.call('internal')
+            backend.assert_not_called()
+
     def test_all_aws_credentials_are_redacted_in_results_and_rejections(self):
         reflected=' '.join(self.env.values())
         with patch.object(provider,'_bedrock',side_effect=[({'bad':reflected},'test',[]),

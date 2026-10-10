@@ -5,13 +5,14 @@
   "description": "一次 G4 LLM 審查（docs/05 自動化作法第 2 點、docs/09）的紀錄，由 harness 寫到 reports/g4-review.yaml，人工複製為 reviews/g4/<commit>.yaml 提交。CI 據此把 VS-G4-LLM-REVIEW 從 pending 推進到有結論。紀錄只陳述審查發生了什麼：意見全部保留、不多數決、requires_human 的發現仍須 rulings/ 裁決；它本身不能把閘門變成 pass。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["review_version", "gate", "commit", "scope", "reviewed_at", "roles", "providers", "coverage", "findings", "recorded_by"],
+  "required": ["review_version", "gate", "commit", "scope", "data_class", "reviewed_at", "roles", "providers", "coverage", "findings", "recorded_by"],
   "properties": {
     "review_version": { "const": 1 },
     "gate": { "const": "G4" },
     "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "審查時被測專案的 HEAD（完整 40 碼）。CI 只接受「此 commit 之後只動過 reviews/g4/ 與 rulings/」的 PR head" },
     "diff_base": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$" },
     "scope": { "type": "string", "enum": ["diff", "full"] },
+    "data_class": { "type": "string", "enum": ["public", "internal", "confidential", "pii"], "description": "送審內容的資料分級（審查包的 data_class）。每個 state: ran 的 provider 的 allowed_data_classes 都必須包含它（CLAUDE.md 規則 7）" },
     "reviewed_at": { "type": "string", "format": "date-time" },
     "roles": {
       "type": "array",
