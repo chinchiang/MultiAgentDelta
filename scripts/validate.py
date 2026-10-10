@@ -5,9 +5,11 @@
 以便在部分檔案尚未產出時仍能先行驗證已存在者。
 """
 from __future__ import annotations
-import json, sys, glob, re, pathlib
+import json, os, sys, glob, re, pathlib
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+# 受驗的樹：預設是本腳本所在的 repo。CI 另以 default branch 的 validate.py 驗 PR head（VIBESEC_PROJECT_ROOT），
+# 讓 PR 不能先削弱 validate.py 再轉綠（第一輪審查 C1）
+ROOT = pathlib.Path(os.environ.get("VIBESEC_PROJECT_ROOT") or pathlib.Path(__file__).resolve().parent.parent).resolve()
 errors: list[str] = []
 warns: list[str] = []
 oks: list[str] = []
@@ -34,6 +36,8 @@ if yaml is not None:
     for f in sorted(glob.glob(str(ROOT / "**/*.yaml"), recursive=True)) + \
              sorted(glob.glob(str(ROOT / "**/*.yml"), recursive=True)):
         rel = pathlib.Path(f).relative_to(ROOT)
+        if rel.parts[:1] == ("_trusted",) or rel.parts[:2] == (".claude", "worktrees"):
+            continue   # CI 的受信任副本、本機 agent worktree：不是受驗的樹
         try:
             list(yaml.safe_load_all(open(f)))
             ok(f"YAML ok: {rel}")
