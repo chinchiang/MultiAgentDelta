@@ -301,6 +301,21 @@ if yaml is not None:
                 json.dumps({k: _want[k] for k in _diff}, ensure_ascii=False))
         else:
             ok("evals/split.yaml distribution 與案例一致")
+        # evals/README.md 的「目前 N」必須是實際案例數（以前寫死 91、案例增加後沒人改）
+        _rm = re.search(r"（目前 (\d+)）", (ROOT / "evals/README.md").read_text(encoding="utf-8"))
+        if not _rm:
+            err("evals/README.md: 找不到「（目前 N）」案例數")
+        elif int(_rm.group(1)) != len(cases):
+            err(f"evals/README.md 寫「目前 {_rm.group(1)}」，實際 {len(cases)} 案例")
+        else:
+            ok(f"evals/README.md 案例數與實際一致（{len(cases)}）")
+        # baseline 列出的案例必須存在：不存在的 ID 會讓 nightly 退步比對失真
+        _bl = (load_yaml(ROOT / "evals/baseline.yaml") or {}).get("executed") or []
+        _gone = sorted(set(_bl) - set(cases))
+        if _gone:
+            err(f"evals/baseline.yaml 列出不存在的案例：{_gone}")
+        else:
+            ok(f"evals/baseline.yaml {len(_bl)} 案例皆存在")
 
 # --- 人工裁決：schema、範例、規則自我測試、rulings/*.yaml ---
 try:

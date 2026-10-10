@@ -30,10 +30,20 @@ jobs:
           queries: security-extended
       - name: Autobuild
         uses: github/codeql-action/autobuild@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+      # 分析結果另存到 reports/codeql/ 並保存成 artifact：repo 尚未開啟 Code scanning 時（#68）上傳會失敗、
+      # job 維持紅燈（不設 continue-on-error），但已分析出的 SARIF 仍留有證據可查。
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: vibesec-nightly-codeql-${{ matrix.language }}
+          output: reports/codeql
+      - name: Upload CodeQL SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vibesec-nightly-codeql-${{ matrix.language }}
+          path: reports/codeql/
+          if-no-files-found: warn
 
   semgrep-full:
     name: Semgrep 全量（無 baseline）
@@ -43,17 +53,46 @@ jobs:
       image: semgrep/semgrep:1.179.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # 不設 continue-on-error、不吞退出碼：未加 --error 時 semgrep 有命中也回 0，非 0 = 工具錯誤（規則載入失敗、
+      # registry 下載失敗、當掉）。此時刪掉不完整的 SARIF，job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
       - name: Semgrep scan（全庫、無 diff baseline）
-        continue-on-error: true
         run: |
           mkdir -p reports
+          set +e
           semgrep scan \
             --config config/semgrep/vibesec-rules.yaml \
             --config p/owasp-top-ten \
             --config p/security-audit \
-            --sarif --output reports/semgrep-full.sarif || true
+            --sarif --output reports/semgrep-full.sarif
+          code=$?
+          set -e
+          echo "semgrep exit=$code"
+          if [ "$code" != "0" ]; then
+            rm -f reports/semgrep-full.sarif
+            echo "::error::semgrep 執行失敗（exit $code）→ 全量 SAST incomplete"
+            exit 1
+          fi
+          # 退出碼 0 也要確認 SARIF 真的產出且可解析、有 runs，否則同樣是 incomplete；
+          # 壞掉的檔案改名保留成 artifact 供查，不上傳 Code scanning
+          python3 -c '
+          import json, os, sys
+          p = "reports/semgrep-full.sarif"
+          def bad(msg):
+              if os.path.exists(p):
+                  os.replace(p, "reports/semgrep-full.invalid.sarif")
+              sys.exit(f"::error::{msg} → 全量 SAST incomplete")
+          try:
+              runs = json.load(open(p, encoding="utf-8")).get("runs")
+          except Exception as e:
+              bad(f"semgrep SARIF 無法解析（{e}）")
+          if not isinstance(runs, list) or not runs:
+              bad("semgrep SARIF 沒有 runs")
+          n = sum(len(r.get("results") or []) for r in runs)
+          print(f"semgrep SARIF：{n} 筆結果")
+          '
+      # 上傳失敗（例如 repo 尚未開啟 Code scanning，見 #68）不影響判定；SARIF 由下一步保存成 artifact。
       - name: Upload Semgrep full SARIF
-        if: always()
+        if: always() && hashFiles('reports/semgrep-full.sarif') != ''
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:

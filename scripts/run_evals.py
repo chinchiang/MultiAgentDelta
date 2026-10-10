@@ -698,6 +698,38 @@ class VulnappRunner(Runner):
 
 
 # ---------------------------------------------------------------- scoring
+# 「這個案例不歸我管」類的拒絕原因：每個執行器對不相干的案例都會這樣回，拿來當 untested 原因會誤導
+# （例如 G3 CSP 案例被報成「slopcheck-rules-file: … 不由規則檔掃描實作」）
+_GENERIC_REJECT = re.compile(r"非程式碼|非 G\d|target_app|不由.+實作|沒有 \S+ 實作")
+
+
+def untested_reason(case: dict, reasons: list[str]) -> str:
+    """沒有執行器可跑時的原因：優先「已接近可執行」的專屬原因（例如本機缺 semgrep、--no-network）；
+    否則明說沒有本機執行器，並附上 cwe-map 的 implemented_by，指出該規則實際由誰實作、要在哪一層驗證。"""
+    specific = [r for r in reasons if not _GENERIC_REJECT.search(r.partition(": ")[2])]
+    if specific:
+        return specific[0]
+    rule, kind = case["expected"].get("rule_id"), case["input"].get("kind")
+    impl = _rule_implementers().get(rule) or []
+    where = f"（實作者：{', '.join(impl)}，需整合層或人工審查驗證）" if impl else "（cwe-map 沒有 implemented_by）"
+    if kind in ("http", "prompt"):
+        return f"kind={kind}：未標記 target_app（案例描述的不是靶場可重現的行為），{rule} 沒有本機評測執行器{where}"
+    return f"{rule} 沒有本機評測執行器{where}"
+
+
+_IMPLEMENTERS: dict[str, list[str]] | None = None
+
+
+def _rule_implementers() -> dict[str, list[str]]:
+    """config/catalogs/cwe-map.yaml：vibesec 規則 ID → implemented_by 清單。"""
+    global _IMPLEMENTERS
+    if _IMPLEMENTERS is None:
+        import yaml
+        rules = (yaml.safe_load((ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8")) or {}).get("rules") or {}
+        _IMPLEMENTERS = {rid: [str(x) for x in (meta or {}).get("implemented_by") or []] for rid, meta in rules.items()}
+    return _IMPLEMENTERS
+
+
 def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
     rows = []
     for case in cases:
@@ -725,14 +757,7 @@ def evaluate(cases: list[dict], runners: list[Runner]) -> list[dict]:
                                   (False, True): "FP", (False, False): "TN"}[(row["should_flag"], flagged)]
             break
         else:
-            # 優先顯示「已接近可執行」的原因（同 gate 的專屬執行器），其次第一個
-            specific = [r for r in reasons if "非程式碼" not in r and "非 G1 manifest" not in r
-                        and "target_app" not in r]
-            row["reason"] = (specific or reasons or ["沒有執行器"])[0]
-            if row["reason"].startswith("semgrep: kind=") and case["input"].get("kind") in ("http", "prompt", "config"):
-                row["reason"] = (f"kind={case['input']['kind']}：未標記 target_app（案例描述的不是靶場可重現的行為），尚無對應執行器"
-                                 if case["input"].get("kind") in ("http", "prompt")
-                                 else f"kind={case['input']['kind']}：需人工審查或整合層驗證，尚無本機執行器")
+            row["reason"] = untested_reason(case, reasons)
         rows.append(row)
     return rows
 

@@ -200,7 +200,7 @@ G6 不是孤立的一道，許多 LLM 風險的根因其實在白箱：
 | indirect_prompt_injection 外連 | G0 `VS-G0-LETHAL-TRIFECTA`、G4 egress allowlist | 若 G0 宣稱切斷 external_comms 卻外連成功 → 回頭把 G0 標 fail |
 | denial_of_wallet | G5 `vibesec.g5.missing-rate-limit` | G5 看 HTTP 層節流、G6 看 token / 成本層配額；兩者互補 |
 
-因此 G6 的每筆 blocking 發現，harness 都嘗試對回一個白箱 finding（黑箱 → 白箱映射，docs/00 §4），讓修復能落在根因而非只封堵表象。修復後的補償控制（NeMo Guardrails / Llama Guard 護欄、輸出編碼、token 配額）要在複測中重跑原失敗 payload，確認 `retest_result: fixed` 且控制未退化（PLAN.md 驗收要求）。
+因此 G6 的每筆 blocking 發現，harness 都嘗試對回一個白箱 finding（黑箱 → 白箱映射，docs/00 §4），讓修復能落在根因而非只封堵表象。修復後的補償控制（NeMo Guardrails / Llama Guard 護欄、輸出編碼、token 配額）要在複測中重跑原失敗 payload，確認 `retest_result: fixed` 且控制未退化（docs/12 §四 驗收門檻）。
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
