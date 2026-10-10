@@ -1,0 +1,29 @@
+id: g0-trifecta-pos-04
+gate: G0
+domain: ai_agent_security
+title: 只靠 human_in_the_loop（證據完整）而未切斷任何一腳
+input:
+  kind: config
+  threat_model:
+    agents:
+      - id: c-coding-agent
+        tools: [read_repo, github_api]
+        accesses_private_data: true
+        exposed_to_untrusted_content: true
+        can_communicate_externally: true
+        high_impact_tools: [merge_pull_request]
+        mitigations: [human_in_the_loop]
+        trifecta_leg_cut: null
+        mitigation_evidence:
+          human_in_the_loop:
+            - kind: claude_permission
+              ref: .claude/settings.json
+              rules: [mcp__github__merge_pull_request]
+              covers: {merge_pull_request: [mcp__github__merge_pull_request]}
+expected:
+  should_flag: true
+  control_id: VS-G0-LETHAL-TRIFECTA
+  rule_id: vibesec.g0.lethal-trifecta-open
+  policy_tier: blocking
+held_out: false
+notes: docs/01 §5：human_in_the_loop 是補償、不算切腳，只能與切腳的 mitigation 並用；證據完整也不能單獨放行。

@@ -1,0 +1,23 @@
+id: g0-trifecta-pos-03
+gate: G0
+domain: application_architecture
+title: 宣告已切斷外傳通道，但切腳的 mitigation 沒有任何可驗證證據
+input:
+  kind: config
+  threat_model:
+    agents:
+      - id: c-inbox-agent
+        tools: [read_inbox, read_private_repo, http_fetch]
+        accesses_private_data: true
+        exposed_to_untrusted_content: true
+        can_communicate_externally: true
+        high_impact_tools: [http_fetch]
+        mitigations: [egress_allowlist, human_in_the_loop]
+        trifecta_leg_cut: external_comms   # 只有宣告，沒有 mitigation_evidence
+expected:
+  should_flag: true
+  control_id: VS-G0-LETHAL-TRIFECTA
+  rule_id: vibesec.g0.lethal-trifecta-open
+  policy_tier: blocking
+held_out: true
+notes: trifecta_leg_cut 只是宣告；docs/01 §5「只宣告 mitigation 名稱不算數」——切腳的 mitigation 沒有證據，等同未切腳。

@@ -226,6 +226,8 @@ def selftest() -> list[str]:
         if g["status"] != "incomplete" or "範本" not in (g["status_reason"] or ""):
             fails.append("模型仍是範本 → incomplete")
         good = dict(template, system=dict(template["system"], name="proj"))
+        (repo / ".claude").mkdir()                # 範本的 egress_allowlist 證據（docs/01 §5：切腳也要可驗證）
+        (repo / ".claude/settings.json").write_text(json.dumps({"permissions": {"deny": ["WebFetch"]}}))
         commit_model(good)
         g = run(repo, out)
         head = git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -254,14 +256,14 @@ def selftest() -> list[str]:
             fails.append("不符 schema → incomplete")
         # 三要素未切斷：證據檔是指向目標之外的 symlink（例如操作者本機的 Claude Code 設定）→ 不採信；目標的政策檔不得降級
         (outside / "settings.json").write_text(json.dumps({"permissions": {"ask": ["mcp__x__merge"]}}))
-        (repo / ".claude").mkdir()
+        (repo / ".claude/settings.json").unlink()
         (repo / ".claude/settings.json").symlink_to(outside / "settings.json")
         (repo / "config/policy").mkdir(parents=True)
         (repo / "config/policy/blocking-policy.yaml").write_text(
             "version: 1\ndefault_tier: advisory\nblocking: []\nadvisory: [{rule_id: vibesec.g0.lethal-trifecta-open}]\n")
-        agent = dict(good["agents"][0], trifecta_leg_cut=None, mitigations=["human_in_the_loop"],
-                     mitigation_evidence={"human_in_the_loop": [{"kind": "claude_permission", "ref": ".claude/settings.json",
-                                                                  "rules": ["mcp__x__merge"]}]})
+        agent = dict(good["agents"][0], trifecta_leg_cut=None, mitigations=["tool_allowlist"],
+                     mitigation_evidence={"tool_allowlist": [{"kind": "claude_permission", "ref": ".claude/settings.json",
+                                                               "rules": ["mcp__x__merge"]}]})
         commit_model(dict(good, agents=[agent]))
         g = run(repo, out)
         if g["status"] != "fail" or g["findings_count"]["blocking"] != 1:
