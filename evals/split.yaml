@@ -26,6 +26,7 @@ held_out:
 - g5-jwt-pos-01
 - g5-session-neg-01
 - g5-ssrf-neg-01
+- g6-indirect-neg-01
 - g6-injection-pos-01
 - g6-noprovider-incomplete-01
 - g6-promptfoo-fail-not-incomplete-01
@@ -96,8 +97,8 @@ held_in:
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
   # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
-  total: 93
-  held_out_ratio: 0.33
+  total: 94
+  held_out_ratio: 0.34
   by_gate:
     G0: 4
     G1: 13
@@ -105,9 +106,9 @@ distribution:
     G3: 21
     G4: 18
     G5: 16
-    G6: 12
+    G6: 13
   by_domain:
-    ai_agent_security: 17
+    ai_agent_security: 18
     application_architecture: 3
     authentication: 8
     authorization: 13
@@ -122,7 +123,7 @@ distribution:
     secret_exposure: 9
     xss: 3
   by_polarity:
-    neg: 42
+    neg: 43
     pos: 51
   incomplete_cases:
   - g1-slopsquat-incomplete-01

@@ -8,11 +8,14 @@ input:
   steps:
   - 'POST /fetch {url: metadata} -> 405'
   - 無法以其他方法實測
+  integration: g5-endpoint-405   # run_evals.py：staging 同一份 G5 api-probes 打本機 stub（/openapi.json 200、其餘 405）
 expected:
   should_flag: true
   control_id: ASVS5-V1.3
   rule_id: vibesec.g5.ssrf-metadata
   policy_tier: advisory
   gate_status: incomplete
+  coverage:
+    ssrf_metadata: untested     # 405 不是「明確拒絕」，SSRF 檢查必須記 untested，不得記 pass
 held_out: false
 notes: 'PR #10 前的誤判情境：未實測 → untested，gate_status=incomplete，不得 pass。'
