@@ -618,6 +618,8 @@ G6_ORACLES = {
 
 
 TARGET_MODES = {"vulnapp": "", "vulnapp-patched": "patched"}
+# G6 成本面（LLM10）：不是回覆內容的斷言，改跑 scripts/g6_cost_probe.py（與 staging 同一支）
+COST_RULE = "vibesec.g6.denial-of-wallet"
 
 
 class VulnappRunner(Runner):
@@ -633,7 +635,7 @@ class VulnappRunner(Runner):
             return "案例未標記 target_app: vulnapp / vulnapp-patched（描述的不是靶場可重現的行為）"
         if self.targets is None:
             return "--no-target：不啟動靶場"
-        if case["gate"] == "G6" and exp.get("rule_id") not in G6_ORACLES:
+        if case["gate"] == "G6" and exp.get("rule_id") not in G6_ORACLES and exp.get("rule_id") != COST_RULE:
             return f"{exp.get('rule_id')} 沒有決定性斷言"
         if case["gate"] not in ("G5", "G6"):
             return "target_app 只支援 G5 / G6"
@@ -674,6 +676,13 @@ class VulnappRunner(Runner):
             return None, err
         if case["gate"] == "G5":
             return self._run_g5(target)
+        if case["expected"].get("rule_id") == COST_RULE:
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import g6_cost_probe
+            res = g6_cost_probe.probe(target.url, timeout=60, root=ROOT)
+            if res["state"] == "untested":
+                return None, f"成本探針未能實測：{res['reason']}"
+            return ({COST_RULE} if res["state"] == "fail" else set()), None
         inp = case["input"]
         body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", "")}).encode()
         try:

@@ -3,9 +3,10 @@
 # 用法（只能對已授權的 VIBESEC_TARGET_URL 執行；CLAUDE.md 規則 8）：
 #   export VIBESEC_TARGET_URL=http://localhost:8000
 #   promptfoo eval -c config/promptfoo/tests.yaml --output reports/g6-promptfoo.json
-#   python3 scripts/g6_promptfoo_gate.py --eval reports/g6-promptfoo.json --gate reports/g6-promptfoo-gate.json
+#   python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-cost.json
+#   python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --cost reports/g6-cost.json --gate reports/g6-gate.json
 # 每個 test 的 metadata.vibesec_rule_id 必須存在於 config/catalogs/cwe-map.yaml。
-# 不放 cost 斷言：http target 無法回報 token 用量，成本面由 gate 腳本在 coverage 記為 untested。
+# 不放 cost 斷言：http target 無法回報 token 用量；成本面由 scripts/g6_cost_probe.py 另外實測（g6_gate.py --cost）。
 
 description: "VibeSec G6 AI red team — chat endpoint of the system under test"
 
@@ -133,4 +134,4 @@ tests:
     metadata:
       vibesec_check: denial_of_wallet
       vibesec_rule_id: vibesec.g6.denial-of-wallet
-      note: "cost 斷言需 provider 回報 token 用量，http target 無法回報 → 不放 cost 斷言；成本面由 scripts/g6_promptfoo_gate.py 在 coverage 記為 untested（不得記 pass）。併發測試由 harness 另以 20 並行請求執行並檢查 429。"
+      note: "cost 斷言需 provider 回報 token 用量，http target 無法回報 → 不放 cost 斷言；成本面（長度上限／配額／token 預算）由 scripts/g6_cost_probe.py 實測，經 g6_gate.py --cost 併入。HTTP 層節流由 G5 missing-rate-limit 負責。"

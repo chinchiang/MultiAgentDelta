@@ -22,9 +22,8 @@
 | 時機 | 指令 | 範圍 | 失敗行為 |
 |---|---|---|---|
 | 本機 pre-commit | `gitleaks protect --staged --config config/gitleaks.toml --redact` | 暫存區 | 阻止 commit（開發者可修正後重試；**不可** `--no-verify` 繞過，CI 會再擋一次） |
-| CI 每次 push / PR | `gitleaks detect --source . --config config/gitleaks.toml --log-opts="$BASE_SHA..$HEAD_SHA" --redact --report-format sarif --report-path reports/gitleaks.sarif` | 新增 commit 的歷史 | blocking（push protection） |
-| CI 全歷史（`diff_aware: false`） | `gitleaks detect --source . --config config/gitleaks.toml --redact --report-format sarif --report-path reports/gitleaks-full.sarif` | 全部 Git 歷史 + 工作樹 | blocking；首次導入時既有命中進事故 SOP |
-| 夜間 | 同全歷史 + 規則更新 | — | — |
+| CI 每次 push / PR（`pr-gates.yml` 的「Gitleaks（PR 範圍的 commit）」） | gitleaks-action（`GITLEAKS_CONFIG` 取自 default branch） | 本 PR 新增的 commit | blocking（push protection） |
+| 夜間全歷史（`nightly-full.yml` 的 `g2-history` job；`diff_aware: false`） | `gitleaks git --config config/gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --exit-code 0 --report-format sarif --report-path reports/g2-history.sarif .` → `scripts/sarif_gate.py --gate G2` | 全部 Git 歷史（含已刪除的檔案） | 不是 pass → job 紅、開追蹤 issue；命中進事故 SOP |
 
 性質：確定性、低誤報（熵值 + 關鍵字 + allowlist），因此屬 **blocking**。工具缺席或逾時 → `incomplete`。
 
@@ -74,9 +73,12 @@ gitleaks detect --source . --config config/gitleaks.toml \
   --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact \
   --report-format sarif --report-path reports/gitleaks.sarif
 
-# 4) CI：全歷史（diff_aware: false）
-gitleaks detect --source . --config config/gitleaks.toml --redact \
-  --report-format sarif --report-path reports/gitleaks-full.sarif
+# 4) 夜間全歷史（diff_aware: false；nightly-full.yml 的 g2-history job）
+#    --exit-code 0：命中由 sarif_gate.py 判定；gitleaks 非 0 退出 = 工具錯誤 → 刪掉 SARIF，G2 incomplete
+gitleaks git --config config/gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --exit-code 0 \
+  --report-format sarif --report-path reports/g2-history.sarif .
+python3 scripts/sarif_gate.py --gate G2 --tool gitleaks=reports/g2-history.sarif \
+  --envcheck reports/g2-envcheck.json --out reports/g2-history-gate.json
 
 # 5) .env 檢查
 test -z "$(git ls-files | grep -E '^(.*/)?\.env($|\.(local|dev|prod|staging)$)')" || echo "FAIL: .env tracked"
@@ -160,7 +162,7 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 1. **正例**：fixture 含 `sk-ant-api03-` + 95 字元隨機 → gitleaks 與 Semgrep 皆命中；含 `[0-9a-f]{32}.[A-Za-z0-9]{16}` → GLM 規則命中。
 2. **反例**：`sk-ant-api03-EXAMPLE…`、`${OPENAI_API_KEY}`、`{{ env.OPENAI_API_KEY }}`、`sha256:<64hex>` → 不命中。
 3. **`.env` 檢查**：fixture repo 追蹤 `.env` → `vibesec.g2.env-not-ignored`；`.env` 在 `.gitignore` 且未追蹤 → pass。
-4. **歷史穿透**：在 fixture 中提交金鑰後再提交刪除，工作樹乾淨 → 全歷史掃描仍命中（證明 `diff_aware: false` 有效）。
+4. **歷史穿透**：在 fixture 中提交金鑰後再提交刪除，工作樹乾淨 → 全歷史掃描仍命中（證明 `diff_aware: false` 有效）。PR Gates 只掃 PR 範圍的 commit，這類舊金鑰由夜間 `g2-history` 抓到。
 5. **遮罩**：SARIF 與 findings.json 中不得出現完整金鑰（grep 檢查 `sk-[A-Za-z0-9]{32,}` 無結果）。
 6. **hook 存在**：`git config core.hooksPath` 或 `.git/hooks/pre-commit` 含 gitleaks；CI 另驗，開發者繞過本機 hook 仍會被 CI 擋。
 7. **SOP 演練**：每季一次假金鑰演練，量測從命中到撤銷的時間（目標 < 1 小時）。

@@ -211,7 +211,8 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
-  # G2 機密與金鑰（全 Git 歷史）
+  # G2 機密與金鑰（PR 範圍的 commit；gitleaks-action 只掃本 PR 新增的 commit）
+  # 全 Git 歷史（含已刪除的舊金鑰）由 nightly-full.yml 的 g2-history job 每晚掃描。
   g2-secrets:
     name: G2 機密與金鑰
     permissions:
@@ -232,7 +233,7 @@ jobs:
         id: trusted
         uses: ./.github/actions/vibesec-trusted
 
-      - name: Gitleaks（全歷史）
+      - name: Gitleaks（PR 範圍的 commit）
         id: gitleaks
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0

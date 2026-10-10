@@ -7,7 +7,7 @@
 | 設定 | `vibesec.yaml` → `gates.g5_dast_api`（`stage: staging`、`target_url_env: VIBESEC_TARGET_URL`、`tools: [zap-baseline, zap-api-scan, api-probes]`、`two_account_test: required`、`account_a_token_env: VIBESEC_TOKEN_A`、`account_b_token_env: VIBESEC_TOKEN_B`、`checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit]`、`timeout_seconds: 1800`） |
 | 設定檔 | `config/zap/api-scan.conf`、`config/zap/two-account-context.yaml` |
 | 負責 | Red Team |
-| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流不接受手動輸入的目標 |
+| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流不接受手動輸入的目標；目標主機還必須在 `config/targets.yaml` 的允許清單（`scripts/target_guard.py`，預設只允許本機靶場），否則不送任何探針、G5／G6 `incomplete` |
 
 ## 對抗成因
 
@@ -158,7 +158,12 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
   -c config/zap/api-scan.conf -r reports/zap-baseline.html -J reports/zap-baseline.json
 ```
 
-`config/zap/api-scan.conf` 把 SQL / command / SSTI / XSS / CORS / Cloud Metadata 設 FAIL，資訊外溢與標頭設 WARN，timestamp / user-agent fuzzer 設 IGNORE。**ZAP 不涵蓋 Prompt Injection**（交 G6）。rule_id 記 `zap:<id>`，CWE 取 ZAP alert 的 `cweid`。
+`config/zap/api-scan.conf` 把 SQL / command / SSTI / XSS / CORS / Cloud Metadata 設 FAIL，資訊外溢與標頭設 WARN，timestamp / user-agent fuzzer 設 IGNORE；api-scan 與 baseline 共用這一份。**ZAP 不涵蓋 Prompt Injection**（交 G6）。
+
+ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`、`zap_baseline`）與 SARIF 結果，再併入 `reports/g5-gate.json`：
+- conf 為 IGNORE／OUTOFSCOPE 的警示略過；conf 沒列且 riskcode 0（Informational）略過。
+- rule_id 以 `config/catalogs/cwe-map.yaml` 的 `implemented_by` 反查（`zap:10038` → `vibesec.g3.missing-csp`、`zap:40040` → `vibesec.g5.cors-reflect-origin`），查不到記 `zap:<pluginid>`（CLAUDE.md 規則 3）；tier 一律查 `blocking-policy`，外部規則預設 advisory。其他 ZAP 規則要不要對到 vibesec 規則屬政策決定，由人類在獨立 PR 決定。
+- 報告缺席或無法解析 → 該掃描 `untested` → G5 `incomplete`（incomplete ≠ pass）。
 
 ### 7. 其他工具
 
@@ -170,17 +175,21 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 
 `.github/workflows/staging-blackbox.yml` 的 G5 job：
 
-1. 等待 / 觸發 staging 部署健康檢查通過。
-2. 檢查三個環境變數齊全（缺 → `incomplete`，summary 紅字）。
-3. 依序：ZAP baseline → ZAP api-scan → `api-probes`（雙帳號 BOLA、JWT、SSRF、設定外溢、rate limit，讀 `two-account-context.yaml`）→ Nuclei / Schemathesis（L2+）。
-4. 合併 SARIF 與 HTTP 證據 → `reports/g5.gate-result.json`（`coverage`: `ASVS5-V8.2`、`V7.1`、`V9.1`、`V13.4`、`V3.3`、`V2.4`、`V6.2`）。
-5. harness 把每筆黑箱發現嘗試回填白箱位置（docs/00 §4）。
+1. 以 `.github/actions/vibesec-trusted` 取出 default branch 的判定程式、政策與 `mode`（`_trusted/`）。
+2. 決定目標（`vars.VIBESEC_TARGET_URL`，未設定則啟動本機靶場），以 `scripts/target_guard.py` 比對 `config/targets.yaml`；被拒 → 之後打目標的步驟全部略過，G5／G6 `incomplete`。
+3. 取得雙帳號 token（缺 → `incomplete`）。
+4. 依序：ZAP api-scan → ZAP baseline（各自把 `report_json.json` 搬到 `reports/zap-*.json`）→ `scripts/g5_zap.py` → `api-probes`（雙帳號 BOLA、JWT、SSRF、設定外溢、rate limit；腳本內再查一次授權，並合併 `reports/g5-zap.json`）。
+5. 產出 `reports/g5-gate.json` 與 `reports/g5-api-probes.sarif`。
+6. 「黑箱彙整與判定」：shadow 或目標是靶場 → 只報告；enforce 且外部目標 → G5／G6 有 blocking 發現（或政策列為 enforce 下 incomplete 也擋的閘門 incomplete）就讓 job 失敗。
+7. harness 把每筆黑箱發現嘗試回填白箱位置（docs/00 §4）。
 
 ## 工具與設定檔
 
 | 工具 | 用途 | 設定 |
 |---|---|---|
-| OWASP ZAP（免費，Docker） | baseline + api-scan；注入、設定外溢、標頭 | `config/zap/api-scan.conf` |
+| OWASP ZAP（免費，Docker） | baseline + api-scan；注入、設定外溢、標頭 | `config/zap/api-scan.conf`（兩者共用） |
+| `scripts/g5_zap.py` | ZAP JSON → G5 覆蓋與 SARIF | `config/catalogs/cwe-map.yaml`、`config/policy/blocking-policy.yaml` |
+| `scripts/target_guard.py` | 探針送出前的目標授權檢查 | `config/targets.yaml` |
 | api-probes（harness） | 雙帳號 BOLA、JWT、SSRF、rate limit | `config/zap/two-account-context.yaml` |
 | Burp Suite Pro（商用） | Autorize / AuthMatrix | — |
 | Nuclei | 範本掃 CVE / exposure | — |
@@ -196,7 +205,7 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 | `vibesec.g5.cors-reflect-origin`（反射 Origin + Allow-Credentials） | blocking | CWE-942 |
 | `vibesec.g5.swagger-exposed`、`graphql-introspection`、`debug-stacktrace` | advisory | CWE-200 / CWE-209 |
 | `vibesec.g5.missing-rate-limit` | advisory | CWE-770 |
-| 缺 Token / Target / staging 未啟動 | `incomplete` | — |
+| 缺 Token / Target / staging 未啟動 / 目標不在 `config/targets.yaml` / ZAP 報告缺席 | `incomplete` | — |
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
@@ -216,6 +225,7 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 1. **缺 Token 行為**：移除 `VIBESEC_TOKEN_B` → G5 `incomplete`（`status_reason: "VIBESEC_TOKEN_B missing"`），絕不 pass。
 2. **靶場正例**（`examples/vulnapp`）：B 讀 A 的 todo 回 200 → `bola-cross-account`；`alg:none` 被接受；`/api/import` 讀到 `169.254.169.254` 的角色名；`/docs` 回 200。
 3. **反例**：修復後 B 讀 A 回 404、`alg:none` 回 401、SSRF 被 egress allowlist 擋 → 對應 finding `retest_result: fixed`、`validation_status: confirmed`。
-4. **只打授權目標**：harness 拒絕 `VIBESEC_TARGET_URL` 指向非 staging / 非允許清單的主機（CLAUDE.md 規則 8）；單元測試覆蓋此拒絕。
+4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（CLAUDE.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 內嵌探針與 `scripts/g6_cost_probe.py` 都不送任何請求。
+4a. **ZAP 接線**：`python3 scripts/g5_zap.py selftest` 以合成報告驗證規則對應、IGNORE 過濾、來源合併與「報告缺席 → untested」。
 5. **證據留存**：每個 blocking 發現有 `reports/g5/*.http`（Token 已遮罩）與 `evidence_grade: E3`。
 6. **回填白箱**：Stack Trace 洩漏的路徑在 SARIF 有對應位置；BOLA 端點能對回 G4 的 `missing-owner-filter` finding。

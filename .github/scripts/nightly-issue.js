@@ -15,6 +15,7 @@ const JOB_LABELS = {
   'semgrep-full': 'Semgrep 全量',
   'g1-full': 'G1 全量供應鏈',
   'g1-attest': 'G1 SBOM 來源證明（簽發 + 驗證）',
+  'g2-history': 'G2 全歷史祕密掃描（gitleaks git）',
   evals: '評測（run_evals.py，對照 baseline）',
 };
 
