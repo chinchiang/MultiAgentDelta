@@ -116,8 +116,10 @@ def _https_only_opener():
 def http_json(url):
     """GET JSON。暫時性錯誤（連線中斷、傳輸截斷、逾時、429、5xx）重試 RETRIES 次；其餘 HTTP 錯誤（如 404）立即拋出。
     重試仍失敗就拋出，由呼叫端記 incomplete。"""
-    req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1/0.1"})
     for attempt in range(RETRIES + 1):
+        # 每次重試都建新的 Request：ProxyHandler 會改寫傳入的 Request（set_proxy），重用同一個物件時，
+        # 經 http:// proxy 的第二、三次嘗試會變成 type=http 並以「unknown url type: http」失敗——暫時性錯誤其實沒被重試
+        req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1/0.1"})
         try:
             with _https_only_opener().open(req, timeout=TIMEOUT) as r:
                 return json.loads(r.read().decode())
@@ -980,9 +982,10 @@ def selftest():
             def __exit__(self, *a): return False
             def read(self): return b'{"ok": 1}'
         class _Flaky:
-            def __init__(self, errs): self.errs, self.n = list(errs), 0
+            def __init__(self, errs): self.errs, self.n, self.reqs = list(errs), 0, []
             def open(self, req, timeout=None):
                 self.n += 1
+                self.reqs.append(req)
                 if self.errs:
                     raise self.errs.pop(0)
                 return _Resp()
@@ -1003,8 +1006,27 @@ def selftest():
                     ok = False
                 if ok != want_ok or fl.n != want_n:
                     fails.append(f"http_json：{why}（成功={ok}，呼叫 {fl.n} 次）")
+                if len({id(r) for r in fl.reqs}) != len(fl.reqs):
+                    fails.append(f"http_json：{why}——重試重用了同一個 Request（ProxyHandler 會改寫它）")
         finally:
             _https_only_opener, BACKOFF = real_net
+        # 真的經過 http:// proxy（本機已關閉的埠 → 連線被拒）：每次嘗試都必須是同一種錯誤，
+        # 不能在重試時變成「unknown url type: http」（Request 被 ProxyHandler 改寫後重用的症狀）
+        import socket
+        with socket.socket() as s_:
+            s_.bind(("127.0.0.1", 0)); dead = s_.getsockname()[1]
+        saved = {k: os.environ.pop(k) for k in list(os.environ) if k.lower() in ("https_proxy", "http_proxy", "all_proxy", "no_proxy")}
+        os.environ["https_proxy"] = f"http://127.0.0.1:{dead}"
+        BACKOFF = 0
+        try:
+            http_json("https://registry.npmjs.org/left-pad")
+            fails.append("http_json 經已關閉的 proxy 不應成功")
+        except Exception as e:
+            if "unknown url type" in str(e):
+                fails.append(f"http_json 經 http:// proxy 重試時 Request 被改寫：{e}")
+        finally:
+            os.environ.pop("https_proxy", None); os.environ.update(saved)
+            BACKOFF = real_net[1]
         with tempfile.TemporaryDirectory() as d:
             rf = Path(d) / "AGENTS.md"
             rf.write_text("pip install -r requirements.lock.txt\n`pip install -e git+https://example.com/x.git`\n"
