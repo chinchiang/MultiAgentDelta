@@ -57,9 +57,9 @@ flowchart TB
   end
 
   subgraph GHA["GitHub Actions"]
-    PRG["pr-gates.yml（每個 PR，diff-aware）<br/>G1 → G2 → G3 SAST ∥ G3 IaC → G4<br/>＋ repo-validate（validate.py）"]
+    PRG["pr-gates.yml（每個 PR，diff-aware）<br/>G1 → G2 → G3 SAST ∥ G3 IaC；G4 接在 G3 SAST 之後<br/>＋ repo-validate（validate.py）＋ summary 彙整"]
     RRT["review-record-trust.yml<br/>外部 G4 紀錄不得自證"]
-    NF["nightly-full.yml（每日）<br/>CodeQL · Semgrep 全量<br/>G1 全量：SBOM/Grype/Trivy/KEV/維護度/provenance<br/>evals（run_evals.py vs baseline）"]
+    NF["nightly-full.yml（每日）<br/>CodeQL · Semgrep 全量 · G2 全 Git 歷史（gitleaks）<br/>G1 全量：SBOM/Grype/Trivy/KEV/維護度/provenance<br/>evals（run_evals.py vs baseline）"]
     SB["staging-blackbox.yml（每週）<br/>G5：ZAP + api-probes（雙帳號 BOLA、JWT、SSRF…）<br/>G6：promptfoo eval/redteam + garak + 成本探針 → g6_gate"]
   end
 
@@ -84,7 +84,7 @@ flowchart TB
   NF & SB --> ISS
   REP -- "g4-review.yaml 由人確認後複製提交" --> RV
   REP -- "requires_human 發現" --> RU
-  RV & RU -- "g4_review.py gate（以 base 分支的判定程式）" --> PRG
+  RV & RU -- "g4_review.py gate（以 default branch 的判定程式，取到 _trusted/）" --> PRG
   RV --> RRT
 ```
 
@@ -117,7 +117,7 @@ flowchart LR
 ## 快速上手
 
 1. 複製 `docs/templates/threat-model.yaml` 填寫 G0，決定 `risk_tier`（L1 / L2 / L3）並寫入 `vibesec.yaml`。
-2. 把 `.github/workflows/` 三條工作流、`.pre-commit-config.yaml`、`config/` 複製到目標專案；在 repo 的 Actions variables 設定已授權測試目標 `VIBESEC_TARGET_URL`（未設定則只打內建靶場），在 secrets 設定 `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` 與模型金鑰（見 `config/providers.yaml`）。
+2. 把 `.github/workflows/` 四條工作流，連同它們依賴的 `.github/actions/`、`.github/scripts/`、`scripts/`、`schemas/`、`vibesec.yaml`、`.pre-commit-config.yaml`、`config/` 複製到目標專案；在 repo 的 Actions variables 設定已授權測試目標 `VIBESEC_TARGET_URL`（未設定則只打內建靶場），在 secrets 設定 `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` 與模型金鑰（見 `config/providers.yaml`）。
 3. 在 Claude Code 中執行 `/vibesec-harness`：harness agent 會依 `vibesec.yaml` 執行閘門、呼叫四個 reviewer sub-agent，並把報告寫到 `reports/`。
 4. 試點期維持 `mode: shadow`（只報告）；驗收後改 `mode: enforce`，命中 `config/policy/blocking-policy.yaml` 的發現即擋 PR。
 5. 要驗證黑箱閘門，先啟動靶場：`uv run --project examples/vulnapp uvicorn app.main:app --port 8000`。
@@ -135,15 +135,15 @@ flowchart LR
 | `docs/11-tool-selection-matrix.md` | SAST / SCA / DAST / AI 紅隊工具比較與 L1/L2/L3 組合 |
 | `docs/12-pilot-and-evaluation.md` | 四週試點、固定評測案例（數量見 `evals/README.md`）、三組比較、驗收門檻 |
 | `docs/13-roadmap-governance-compliance.md` | 12 個月路線圖、ASVS 5.0 / NIST AI RMF / EU CRA / CSL-PIPL 對齊、MAESTRO 對接 |
-| `docs/templates/` | G0 威脅模型模板、G0 報告模板、finding 與 risk register 範例 |
-| `schemas/` | `finding`、`gate-result`、`threat-model` JSON Schema |
+| `docs/templates/` | G0 威脅模型模板、G0 報告模板、finding 與 risk register 範例、g4-review 與人工裁決範例 |
+| `schemas/` | `finding`、`gate-result`、`threat-model`、`g4-review`、`human-ruling` JSON Schema |
 | `config/` | 各工具可直接使用的設定：Semgrep 規則、gitleaks、Checkov、slopsquat 清單、ZAP、promptfoo、garak、blocking 政策、catalogs、providers、harness 角色提示 |
 | `.claude/skills/vibesec-harness/` | `/vibesec-harness` skill：harness agent 的操作流程 |
 | `.claude/agents/` | 四個 reviewer sub-agent：architecture、appsec、identity、supplychain |
-| `.github/workflows/` | `pr-gates.yml`（G1–G4 diff-aware）、`nightly-full.yml`（CodeQL + 全量 + evals）、`staging-blackbox.yml`（G5 + G6 打靶場）、`review-record-trust.yml`（外部 G4 紀錄不得自證） |
+| `.github/workflows/` | `pr-gates.yml`（G1–G4 diff-aware）、`nightly-full.yml`（CodeQL + 全量 + evals）、`staging-blackbox.yml`（G5 + G6，打已授權目標；未設定則打內建靶場）、`review-record-trust.yml`（外部 G4 紀錄不得自證） |
 | `examples/vulnapp/` | 刻意有漏洞的 FastAPI 靶場（BOLA、JWT alg:none、SSRF、Prompt Injection、Stored XSS、Denial of Wallet） |
 | `evals/` | 評測案例格式與種子案例（正例 / 反例、held_out） |
-| `scripts/` | 各閘門的判定程式（`g0_*`–`g6_*`）、多模型審查（`review_packet.py`、`review_provider.py`）、人工裁決（`ruling.py`）、評測（`run_evals.py`）、政策查詢（`vibesec_policy.py`）與自我驗證（`validate.py`） |
+| `scripts/` | 各閘門的判定程式（`g0_*`–`g6_*`）、多模型審查（`review_packet.py`、`review_provider.py`）、人工裁決（`ruling.py`）、評測（`run_evals.py`）、政策查詢（`vibesec_policy.py`）、KEV 取得（`fetch_kev.py`）、目標與環境把關（`target_guard.py`、`env_guard.py`）、SARIF 判定（`sarif_gate.py`）與自我驗證（`validate.py`） |
 | `reviews/`、`rulings/` | 人確認後提交的 G4 LLM 審查紀錄與人工裁決（harness、模型、bot 不得寫入） |
 
 ## 目錄結構
@@ -166,11 +166,12 @@ MultiAgentDelta/
 │       └── vibesec-supplychain.md
 ├── .github/
 │   ├── CODEOWNERS                 # reviews/、rulings/、政策檔需指定審核者
+│   ├── actions/vibesec-trusted/   # composite action：取出 default branch 的判定程式與設定到 _trusted/
 │   ├── dependabot.yml
 │   ├── scripts/                   # 失敗通知開 issue（nightly-issue.js、staging-issue.js + 測試）
 │   └── workflows/
-│       ├── pr-gates.yml           # PR：G1 → G2 → G3（SAST ∥ IaC）→ G4，repo-validate
-│       ├── nightly-full.yml       # 每日：CodeQL、Semgrep 全量、G1 全量、evals、notify
+│       ├── pr-gates.yml           # PR：G1 → G2 → G3（SAST ∥ IaC）；G4 接 SAST 後；repo-validate、summary
+│       ├── nightly-full.yml       # 每日：CodeQL、Semgrep 全量、G1 全量／attest、G2 全歷史、evals、notify
 │       ├── staging-blackbox.yml   # 每週：G5 DAST/API + G6 AI 紅隊、notify
 │       └── review-record-trust.yml# 外部 G4 紀錄須由非作者 approve
 ├── config/
@@ -192,6 +193,7 @@ MultiAgentDelta/
 │   ├── g0_trifecta.py
 │   ├── g1_slopcheck.py            # G1：四層 Slopsquatting 防禦
 │   ├── g1_sbom.py                 # G1：CycloneDX SBOM 產生、可重現性與完整性
+│   ├── fetch_kev.py               # G1：取得 CISA KEV feed（官網 → cisagov 鏡像 → 快取）
 │   ├── g1_kev.py                  # G1：Grype 結果 × CISA KEV
 │   ├── g1_maintenance.py          # G1：deps.dev 維護度 / deprecated
 │   ├── g1_provenance.py           # G1：SBOM 的 SLSA provenance 驗證
@@ -210,6 +212,7 @@ MultiAgentDelta/
 │   ├── ruling.py                  # 人工裁決：request / check / apply
 │   ├── run_evals.py               # 評測：召回率 / 精確率，對照 baseline
 │   └── validate.py                # 本 repo 自我驗證
+├── tests/                         # unittest（validate.py 會執行），目前涵蓋 Bedrock provider
 ├── schemas/                       # finding、gate-result、threat-model、g4-review、human-ruling
 ├── docs/
 │   ├── 00-overview.md … 13-roadmap-governance-compliance.md
