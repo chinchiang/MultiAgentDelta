@@ -47,7 +47,7 @@ held_out:
 - g6-indirect-neg-01
 - g6-injection-pos-01
 - g6-noprovider-incomplete-01
-- g6-observations-malformed-incomplete-01
+- g6-obsmalformed-incomplete-01
 - g6-promptfoo-fail-not-incomplete-01
 - g6-sysprompt-pos-01
 held_in:
@@ -175,5 +175,5 @@ distribution:
   - g5-jwksorigin-incomplete-01
   - g5-ssrf-incomplete-01
   - g6-noprovider-incomplete-01
-  - g6-observations-malformed-incomplete-01
+  - g6-obsmalformed-incomplete-01
   note: 14 審查領域皆有正例與反例；incomplete_cases 驗證 incomplete ≠ pass。

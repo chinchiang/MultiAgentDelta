@@ -134,7 +134,7 @@ executed:
   - g6-injection-neg-01
   - g6-injection-pos-01
   - g6-noprovider-incomplete-01
-  - g6-observations-malformed-incomplete-01
+  - g6-obsmalformed-incomplete-01
   - g6-promptfoo-fail-not-incomplete-01
   - g6-sysprompt-neg-01
   - g6-sysprompt-pos-01

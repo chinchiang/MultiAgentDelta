@@ -421,7 +421,7 @@ if yaml is not None:
             "by_domain": dict(sorted(_co.Counter(c.get("domain") for c in cases.values()).items())),
             "by_polarity": {"neg": sum(1 for c in cases.values() if not (c.get("expected") or {}).get("should_flag")),
                             "pos": sum(1 for c in cases.values() if (c.get("expected") or {}).get("should_flag"))},
-            # 依 expected.gate_status 判斷：以前用 id 正規式，g6-observations-malformed-incomplete-01（名稱含連字號）就漏了
+            # 依 expected.gate_status 判斷：以前用 id 正規式，名稱含連字號的 incomplete 案例（原 g6-observations-malformed-…，已改名）就漏了
             "incomplete_cases": sorted(cid for cid, c in cases.items() if (c.get("expected") or {}).get("gate_status") == "incomplete"),
         }
         _have = split.get("distribution") or {}
