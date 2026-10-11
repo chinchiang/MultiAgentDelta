@@ -1,0 +1,10 @@
+# CI 共用的 Python 相依（判定程式、validate.py、g4_review.py、sarif_gate.py 等）。
+# 只列直接相依；完整鎖定（含遞移相依與 SHA-256）在 requirements-ci.txt，CI 一律以
+#   pip install --require-hashes -r requirements-ci.txt
+# 安裝（G1 供應鏈：安裝的程式碼必須是審過的那一份）。改這個檔後重新產生鎖定檔：
+#   uv pip compile requirements-ci.in --python-version 3.11 --generate-hashes \
+#     --exclude-newer <UTC 時間，今天減 14 天以上，例如 2026-09-27T00:00:00Z> -o requirements-ci.txt
+# 冷卻期對齊 vibesec.yaml cooldown_days（14）：pr-gates 的 G1 會對本鎖定檔做冷卻期檢查。--exclude-newer 請用帶 Z 的
+# UTC 時間（只寫日期時 uv 依本機時區解讀，可能多放進半天內發布的版本）。
+PyYAML==6.0.3
+jsonschema==4.25.1

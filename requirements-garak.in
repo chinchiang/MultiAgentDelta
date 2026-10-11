@@ -1,0 +1,17 @@
+# staging-blackbox.yml 的 G6 garak 步驟（該步驟持有 LLM API 金鑰：安裝的程式碼必須是鎖定的那一份）。
+# torch 用 PyTorch CPU index 的 +cpu 版（PyPI 版會連帶裝 CUDA，約 9.6 GB；CPU 版約 2 GB）；其餘套件來自 PyPI。
+# 版本與 staging-blackbox.yml 的 GARAK_VERSION／TORCH_VERSION 一致；升版須同時改兩處（validate.py 會比對）。
+# 鎖定檔 requirements-garak.txt（含遞移相依與 SHA-256），CI 安裝方式：
+#   pip install --require-hashes -r requirements-garak.txt \
+#     --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+# 兩個 index 並列不會造成相依混淆：每個檔案都必須符合鎖定的 SHA-256。重新產生：
+#   uv pip compile requirements-garak.in --python-version 3.11 --python-platform x86_64-manylinux_2_28 \
+#     --generate-hashes --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match \
+#     --exclude-newer <UTC 時間，今天減 14 天以上，例如 2026-09-27T00:00:00Z> -o requirements-garak.txt
+# （PyTorch index 不提供上傳時間，uv 會對它的檔案發出 missing upload date 警告；torch 版本的發布日須人工確認。）
+# G1 冷卻期檢查只查 PyPI，查不到 torch==2.14.0+cpu 的發布時間 → 碰到本檔的 PR，G1 會記 incomplete（不是 pass）。
+# 冷卻期對齊 vibesec.yaml cooldown_days（14）：pr-gates 的 G1 會對本鎖定檔做冷卻期檢查。--exclude-newer 請用帶 Z 的
+# UTC 時間（只寫日期時 uv 依本機時區解讀，可能多放進半天內發布的版本）。
+# 重新產生前先刪掉舊的 requirements-garak.txt：uv 會沿用舊檔的釘版，而 PyTorch index 的檔案沒有發布時間，會解不出來。
+torch==2.14.0+cpu
+garak==0.17.0

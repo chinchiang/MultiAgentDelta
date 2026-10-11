@@ -1,0 +1,46 @@
+# VibeSec：以雜湊鎖定檔安裝 CI 的 Python 相依（pip install --require-hashes -r）。
+#
+# 為什麼：未鎖定的 `pip install pyyaml` 每次都解析到 PyPI 上最新的版本與遞移相依；上游套件被入侵時，
+# 被竄改的版本會直接在閘門 job 裡執行（G1 供應鏈的同一個理由，docs/02-g1-supply-chain.md）。鎖定檔列出每個套件（含遞移相依）的
+# 版本與 SHA-256，--require-hashes 讓 pip 拒絕任何不符的檔案，也拒絕鎖定檔以外的套件。
+#
+# 鎖定檔本身決定「要執行哪些程式碼」，所以和判定程式一樣優先取 default branch 的版本（_trusted/，由
+# .github/actions/vibesec-trusted 或 job 自己的 sparse checkout 取出；根目錄檔案在 cone mode 下一律包含）。
+# source: trusted 時 _trusted/ 沒有這個檔（只會發生在「引入鎖定檔的 PR 合併前」）→ 警告並退回 PR 的版本：
+# 仍強制雜湊，只是雜湊清單由 PR 決定，靠 CODEOWNERS（/requirements-*.txt）把關。
+# source: workspace 用於沒有 _trusted/ 的 job（nightly 排程只在 default branch 執行，工作區就是 default branch）。
+#
+# 修改鎖定檔的方法見各 requirements-*.in 的檔頭；scripts/validate.py 檢查 workflow 內每個 pip install 都走鎖定檔。
+name: vibesec-pip-install
+description: 以 --require-hashes 從雜湊鎖定檔安裝 Python 相依（優先使用 default branch 的鎖定檔）
+inputs:
+  requirements:
+    description: 鎖定檔路徑（相對 repo 根目錄），例如 requirements-ci.txt
+    required: true
+  source:
+    description: trusted（優先 _trusted/，缺席時警告並退回工作區）或 workspace（只用工作區）
+    required: false
+    default: trusted
+runs:
+  using: composite
+  steps:
+    - name: pip install --require-hashes
+      shell: bash
+      env:
+        REQ: ${{ inputs.requirements }}
+        SOURCE: ${{ inputs.source }}
+      run: |
+        case "$SOURCE" in
+          trusted)
+            if [ -f "_trusted/$REQ" ]; then FILE="_trusted/$REQ"
+            else
+              echo "::warning::default branch（_trusted/）沒有 $REQ，改用 PR 的版本（仍強制 SHA-256；引入鎖定檔的 PR 合併後即不再發生）"
+              FILE="$REQ"
+            fi ;;
+          workspace) FILE="$REQ" ;;
+          *) echo "::error::source 只能是 trusted 或 workspace：$SOURCE"; exit 2 ;;
+        esac
+        # 鎖定檔缺席 → 安裝失敗（不退回未鎖定的 pip install：缺工具時由各閘門記 incomplete，不是用未驗證的套件湊數）
+        test -f "$FILE" || { echo "::error::找不到鎖定檔 $FILE"; exit 2; }
+        echo "使用鎖定檔：$FILE"
+        python3 -m pip install --disable-pip-version-check --require-hashes -r "$FILE"

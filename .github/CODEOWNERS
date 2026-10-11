@@ -43,5 +43,9 @@
 # CI 執行的閘門腳本：pull_request 事件跑 PR head 的版本，改腳本即可改判定（第三次 harness 審查 N3）
 /scripts/                          @chinchiang
 
+# CI 的 Python 雜湊鎖定檔：決定 CI 安裝並執行哪些套件（含遞移相依），改了等於改 CI 執行的程式碼
+/requirements-*.in                 @chinchiang
+/requirements-*.txt                @chinchiang
+
 # CI 本身（workflows、composite actions、通知腳本、dependabot）與本檔
 /.github/                          @chinchiang

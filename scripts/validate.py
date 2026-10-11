@@ -636,6 +636,69 @@ if yaml is not None:
                             + (f"（{_P.risk_tier} 有效 {_P.tier(_r)}）" if _P.tier(_r) != _P.base_tier(_r) else ""))
         ok("docs 政策表的 tier 與政策一致")
 
+# --- CI 的 pip install 一律走雜湊鎖定檔（G1 供應鏈；.github/actions/vibesec-pip-install）---
+# workflow／composite action 中每個 pip install 都要 --require-hashes -r <鎖定檔>；確實需要例外時，在同一行或上一行
+# 加註解標記 `vibesec: allow-unlocked-pip` 並寫明理由。鎖定檔的每個套件都要有 SHA-256，且版本與 workflow 中釘選的一致。
+_PIP_RE = re.compile(r"\bpip3?\s+install\b|\bpython3?\s+-m\s+pip\s+install\b")
+_PIP_ALLOW = "vibesec: allow-unlocked-pip"
+_ci_files = sorted(glob.glob(str(ROOT / ".github/workflows/*.yml"))) + \
+            sorted(glob.glob(str(ROOT / ".github/actions/**/action.yml"), recursive=True))
+_pip_sites = 0
+for _f in _ci_files:
+    _rel = pathlib.Path(_f).relative_to(ROOT)
+    _lines = pathlib.Path(_f).read_text(encoding="utf-8").splitlines()
+    for _i, _ln in enumerate(_lines):
+        _code = _ln.split(" #", 1)[0] if not _ln.lstrip().startswith("#") else ""
+        if not _PIP_RE.search(_code) or "name:" in _code.split("pip", 1)[0]:
+            continue   # 註解、步驟名稱裡提到 pip install 不算安裝
+        _j, _full = _i, _code
+        while _full.rstrip().endswith("\\") and _j + 1 < len(_lines):   # shell 續行
+            _j += 1; _full = _full.rstrip()[:-1] + " " + _lines[_j]
+        _pip_sites += 1
+        if _PIP_ALLOW in _ln or (_i and _PIP_ALLOW in _lines[_i - 1]):
+            warn(f"{_rel}:{_i + 1}: pip install 標記為允許不鎖定（{_PIP_ALLOW}）")
+        elif not (re.search(r"--require-hashes\b", _full) and re.search(r"(?:^|\s)-r\s", _full)):
+            err(f"{_rel}:{_i + 1}: pip install 未使用 --require-hashes -r <鎖定檔>（改用 .github/actions/vibesec-pip-install）")
+for _f in _ci_files:
+    for _m in re.finditer(r"uses:\s*\./\.github/actions/vibesec-pip-install\s*\n\s*with:\s*\n\s*requirements:\s*(\S+)",
+                          pathlib.Path(_f).read_text(encoding="utf-8")):
+        if not (ROOT / _m.group(1)).is_file():
+            err(f"{pathlib.Path(_f).relative_to(ROOT)}: vibesec-pip-install 指向不存在的鎖定檔 {_m.group(1)}")
+_locks = {}
+for _f in sorted(glob.glob(str(ROOT / "requirements-*.txt"))):
+    _name = pathlib.Path(_f).name
+    _pins, _cur = {}, None
+    for _ln in pathlib.Path(_f).read_text(encoding="utf-8").splitlines():
+        _s = _ln.strip()
+        _m = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==(\S+)", _s)
+        if _m:
+            _cur = _m.group(1).lower().replace("_", "-"); _pins[_cur] = [_m.group(2).rstrip(" \\;"), 0]
+        elif _s.startswith("--hash=sha256:") and _cur:
+            _pins[_cur][1] += 1
+        elif _s and not _s.startswith("#"):
+            err(f"{_name}: 無法辨識的行（鎖定檔只能有 name==version 與 --hash）：{_s[:80]}")
+    for _p, (_v, _h) in _pins.items():
+        if not _h:
+            err(f"{_name}: {_p}=={_v} 沒有 --hash（--require-hashes 會拒絕安裝）")
+    if not _pins:
+        err(f"{_name}: 沒有任何鎖定的套件")
+    _locks[_name] = {_p: _v for _p, (_v, _h) in _pins.items()}
+_sb = ROOT / ".github/workflows/staging-blackbox.yml"
+if _sb.is_file() and "requirements-garak.txt" in _locks:
+    _sbt = _sb.read_text(encoding="utf-8")
+    for _env, _pkg, _suffix in (("GARAK_VERSION", "garak", ""), ("TORCH_VERSION", "torch", "+cpu")):
+        _m = re.search(rf'^\s*{_env}:\s*"([^"]+)"', _sbt, re.M)
+        _have = _locks["requirements-garak.txt"].get(_pkg)
+        if not _m or _have != _m.group(1) + _suffix:
+            err(f"staging-blackbox.yml 的 {_env}（{_m.group(1) if _m else '缺席'}）與 requirements-garak.txt 的 {_pkg}=={_have} 不一致")
+if "requirements-evals.txt" in _locks:
+    for _f in _ci_files:
+        for _m in re.finditer(r"image:\s*semgrep/semgrep:(\S+)", pathlib.Path(_f).read_text(encoding="utf-8")):
+            if _locks["requirements-evals.txt"].get("semgrep") != _m.group(1):
+                err(f"{pathlib.Path(_f).name}: semgrep 容器 {_m.group(1)} 與 requirements-evals.txt 的 semgrep=="
+                    f"{_locks['requirements-evals.txt'].get('semgrep')} 不一致（評測與閘門會用不同版本）")
+ok(f"CI 的 pip install 一律走雜湊鎖定檔（{_pip_sites} 處；鎖定檔 {len(_locks)} 份）")
+
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
 for w in warns: print(f"  WARN {w}")
