@@ -91,9 +91,35 @@ def export_tree(target: pathlib.Path, commit: str, dest: pathlib.Path) -> str:
                               capture_output=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError) as e:
         raise SbomError(f"無法從 {target} 匯出 {commit}（需要 git repo）：{e}") from e
-    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
-        tf.extractall(dest, filter="data")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+            tf.extractall(dest, filter="data")
+    except (tarfile.TarError, OSError) as e:
+        # 例如 `* export-ignore` 讓 git archive 輸出空的 tar：以前未捕捉、整支崩潰
+        raise SbomError(f"無法解開 {sha[:12]} 的匯出內容（{type(e).__name__}）；可能是 .gitattributes 的 export-ignore 略過了所有檔案") from e
+    _check_export_attrs(target, sha, dest)
     return sha
+
+
+def _check_export_attrs(target: pathlib.Path, sha: str, dest: pathlib.Path) -> None:
+    """git archive 會套用受測樹自己 .gitattributes 的 export-ignore／export-subst：PR 加一行
+    `package-lock.json export-ignore`，syft 與鎖定檔核對看到的是同一棵被刪過的樹（結果一致），KEV 命中就消失了。
+    比對 commit 的檔案清單與匯出結果；有檔案被略過，或有檔案設了 export-subst（內容會被改寫）→ SbomError（incomplete）。"""
+    try:
+        ls = subprocess.run(["git", "-C", str(target), "ls-tree", "-r", "-z", sha],
+                            capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")
+        tracked = [e.split("\t", 1)[1] for e in ls.split("\0") if "\t" in e and not e.startswith("160000 ")]
+        attrs = subprocess.run(["git", "-C", str(target), "check-attr", "--source", sha, "-z", "--stdin",
+                                "export-ignore", "export-subst"], input="\0".join(tracked).encode("utf-8", "surrogateescape"),
+                               capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape").split("\0")
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise SbomError(f"無法核對 {sha[:12]} 的匯出屬性（git ls-tree／check-attr 失敗）：{e}") from e
+    flagged = sorted({attrs[i] for i in range(0, len(attrs) - 2, 3) if attrs[i + 2] not in ("unspecified", "unset", "")})
+    missing = sorted(p for p in tracked if not os.path.lexists(dest / p))
+    if flagged or missing:
+        shown = (flagged or missing)[:EXAMPLES]
+        raise SbomError(f"受測樹以 .gitattributes 的 export-ignore／export-subst 改變了匯出內容（{len(set(flagged) | set(missing))} 個檔案，"
+                        f"例如 {', '.join(shown)}）：SBOM 與鎖定檔核對看不到原始內容，無法確認")
 
 
 def syft_binary() -> str:
@@ -318,6 +344,16 @@ def selftest() -> list[str]:
             fails.append("SbomError 時應刪除上一次的 --sbom 輸出，不讓下游用到舊 SBOM")
         if run(pathlib.Path(d) / "not-a-repo", "HEAD", out, fake([full, full]))["status"] != "incomplete":
             fails.append("無法匯出 commit 應為 incomplete")
+        # .gitattributes export-ignore／export-subst：git archive 會略過或改寫檔案，SBOM 與核對看到的是被刪過的樹
+        for attr in ("web/package-lock.json export-ignore", "requirements.lock.txt export-subst", "* export-ignore"):
+            (repo / ".gitattributes").write_text(attr + "\n"); git("add", "-A"); git("commit", "-qm", "attr")
+            s = run(repo, "HEAD", out, fake([full, full]))
+            if s["status"] != "incomplete" or "export-" not in (s["status_reason"] or ""):
+                fails.append(f".gitattributes「{attr}」應讓 SBOM incomplete（得到 {s['status']}：{s.get('status_reason')}）")
+        (repo / ".gitattributes").write_text("*.png binary\n"); git("add", "-A"); git("commit", "-qm", "attr-ok")
+        if run(repo, "HEAD", out, fake([full, full]))["status"] != "pass":
+            fails.append("與匯出無關的 .gitattributes（binary）不應影響結果")
+        git("rm", "-q", ".gitattributes"); git("commit", "-qm", "rm-attr")
         (repo / "yarn.lock").write_text("# yarn\n"); git("add", "-A"); git("commit", "-qm", "yarn")
         s = run(repo, "HEAD", out, fake([full, full]))
         if s["status"] != "incomplete" or "yarn.lock" not in s["status_reason"]:

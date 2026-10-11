@@ -208,14 +208,13 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
-  # G2 機密與金鑰（PR 範圍的 commit；gitleaks-action 只掃本 PR 新增的 commit）
+  # G2 機密與金鑰（PR 範圍的 commit：base..HEAD，含 merge 帶入的 commit）
   # 全 Git 歷史（含已刪除的舊金鑰）由 nightly-full.yml 的 g2-history job 每晚掃描。
   g2-secrets:
     name: G2 機密與金鑰
     permissions:
       contents: read
       security-events: write   # upload-sarif
-      pull-requests: read      # gitleaks-action 列出 PR 的 commit；PR 留言已關閉，不需寫入
     needs: g1-supply-chain
     if: always()
     runs-on: ubuntu-latest
@@ -231,18 +230,34 @@ jobs:
         id: trusted
         uses: ./.github/actions/vibesec-trusted
 
-      - name: Gitleaks（PR 範圍的 commit）
+      # 以前用 gitleaks-action：它無法帶旗標，會採信受測方的 `# gitleaks:allow`、被 .gitattributes 的 binary／-diff
+      # 蒙蔽（git log -p 只印 Binary files differ），且以 --no-merges --first-parent 掃描，漏掉經 merge 帶進來的 commit
+      # （三者皆已實測）。改成與 nightly 相同、比對 checksum 的 gitleaks 二進位，旗標由我們決定。
+      - name: Gitleaks（PR 範圍的 commit；不採信 gitleaks:allow 與 .gitattributes）
         id: gitleaks
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: _trusted/config/gitleaks.toml   # 規則取自 default branch
-          GITLEAKS_VERSION: "8.28.0"   # 固定版本（不用 action 內建預設）；與 pre-commit、nightly 同版
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
-          GITLEAKS_ENABLE_SUMMARY: "true"
-          # 不在 PR 留言（避免此第三方 action 需要 pull-requests: write）；結果經 SARIF 與 job summary 呈現
-          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_VERSION: "8.28.0"   # 與 pre-commit、nightly 同版
+          GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          # PR：base..HEAD（HEAD 是 PR 的 merge commit，含 merge 帶入的 commit）；手動觸發沒有 base → 只掃 HEAD 這個 commit
+          if [ -n "${BASE_SHA}" ]; then RANGE="${BASE_SHA}..HEAD"; else RANGE="-1 HEAD"; fi
+          # --exit-code 0：有命中也回 0，由 sarif_gate.py 判定；非 0 = 工具錯誤 → 不留不完整的 SARIF，G2 記 incomplete
+          set +e
+          "$RUNNER_TEMP/gitleaks" git . --config _trusted/config/gitleaks.toml --gitleaks-ignore-path .gitleaksignore \
+            --ignore-gitleaks-allow --log-opts="--text ${RANGE}" \
+            --redact --no-banner --exit-code 0 --report-format sarif --report-path results.sarif 2>&1 | tail -5
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "gitleaks exit=$code（範圍：${RANGE}）"
+          if [ "$code" != "0" ]; then rm -f results.sarif; echo "::error::gitleaks 執行失敗（exit $code）→ G2 incomplete"; exit "$code"; fi
 
       - name: 檢查 .env 是否在 .gitignore 且無已追蹤的 .env 檔
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
@@ -408,6 +423,24 @@ jobs:
       - name: 套用受信任的 Checkov 設定
         shell: bash
         run: rm -rf config/checkov && cp -r _trusted/config/checkov config/checkov
+
+      # 行內抑制（checkov:skip=…、trivy:ignore:…）寫在受測的 IaC 裡、不受 CODEOWNERS 把關，checkov／trivy 一定採信
+      # （實測 Dockerfile 加兩行 checkov:skip，發現 3 筆變 1 筆），兩者也都沒有關閉的選項。工作區只是被掃描的資料：
+      # 掃描前把標記改寫成無效字串，作法同 semgrep 的 --disable-nosem（例外只能經 blocking-policy 核准）。
+      - name: 停用受測方的行內抑制註解（checkov:skip／trivy:ignore）
+        shell: bash
+        run: |
+          # git grep：0 = 有命中、1 = 沒有命中、其他 = 錯誤 → 中止（不能確認就不掃，G3 IaC 記 incomplete；不吞錯）
+          set +e
+          git grep -lzIE 'checkov:skip|trivy:ignore' -- . ':(exclude)_trusted' > "$RUNNER_TEMP/vibesec-suppressions.lst"
+          rc=$?
+          set -e
+          if [ "$rc" -gt 1 ]; then echo "::error::git grep 失敗（exit $rc），無法確認行內抑制註解 → 不執行 IaC 掃描"; exit 1; fi
+          while IFS= read -r -d '' f; do
+            sed -i -E 's/checkov:skip/checkov-skip-disabled-by-vibesec/g; s/trivy:ignore/trivy-ignore-disabled-by-vibesec/g' -- "$f"
+            echo "::warning file=$f::已停用行內抑制註解（checkov:skip／trivy:ignore 不採信；例外只能經 blocking-policy 核准）"
+            printf '%s\n' "$f" >> reports/_neutralized-suppressions.txt
+          done < "$RUNNER_TEMP/vibesec-suppressions.lst"
 
       - name: Checkov（IaC → SARIF）
         continue-on-error: true

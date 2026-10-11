@@ -409,8 +409,12 @@ jobs:
         run: |
           mkdir -p reports
           # --exit-code 0：有命中也回 0，由 sarif_gate.py 判定；非 0 = 工具錯誤 → 刪掉不完整的 SARIF，G2 記 incomplete
+          # --ignore-gitleaks-allow：程式碼裡的 `# gitleaks:allow` 是受測方自己寫的，不採信（例外只能經 blocking-policy）
+          # --log-opts --text：.gitattributes 設 binary／-diff 時 git log -p 只印 "Binary files differ"，gitleaks 完全看不到
+          #   內容（實測 0 筆）；--text 強制以文字比對。--all --full-history 與 gitleaks 預設相同（掃所有 ref）
           set +e
           "$RUNNER_TEMP/gitleaks" git --config config/gitleaks.toml --gitleaks-ignore-path .gitleaksignore \
+            --ignore-gitleaks-allow --log-opts="--text --all --full-history" \
             --redact --no-banner --exit-code 0 --report-format sarif --report-path reports/g2-history.sarif . 2>&1 | tail -5
           code=${PIPESTATUS[0]}
           set -e
