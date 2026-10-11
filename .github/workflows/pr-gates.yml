@@ -146,8 +146,9 @@ jobs:
           sarif_file: reports/grype.sarif
           category: vibesec-g1-grype
 
-      # KEV feed：先取 nightly 在 main 留下的快取，再嘗試下載最新版；下載失敗就沿用快取
-      # （g1_kev.py 的摘要記錄 feed 發布時間，看得出是否用了舊資料）。兩者皆無 → KEV 檢查 incomplete。
+      # KEV feed：先取 nightly 在 main 留下的快取，再以 fetch_kev.py 下載最新版（官網 → cisagov/kev-data 鏡像）；
+      # 下載失敗就沿用快取（reports/kev-source.json 與 g1_kev.py 摘要記錄來源與 feed 發布時間，看得出是否用了舊資料）。
+      # 皆無 → 不寫出 feed，KEV 檢查 incomplete、G1 的 KEV 控制記 untested（incomplete ≠ pass）。
       - name: Restore KEV 快取（nightly 富化快取）
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -160,13 +161,8 @@ jobs:
       - name: 下載 CISA KEV feed
         continue-on-error: true
         run: |
-          mkdir -p .cache
-          if curl -fsSL --retry 3 --max-time 60 -A vibesec-pr -o .cache/kev.new.json \
-               https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json; then
-            mv .cache/kev.new.json .cache/kev.json
-          else
-            echo "::warning::KEV feed 下載失敗；沿用快取（若有）"
-          fi
+          mkdir -p .cache reports
+          python3 _trusted/scripts/fetch_kev.py --out .cache/kev.json --meta reports/kev-source.json
 
       # KEV 命中 → vibesec.g1.kev-hit（blocking），結果併入 g1-gate.json，由 summary 依 mode 決定是否阻擋。
       # 與 slopcheck 相同：shadow 模式下不讓 job 變紅；enforce 模式下命中（exit 1）或 incomplete（exit 2）都會擋。

@@ -171,6 +171,14 @@ jobs:
           output: reports/trivy-full.sarif
           severity: CRITICAL,HIGH,MEDIUM,LOW
 
+      # KEV feed：官網 → cisagov/kev-data 鏡像 → 快取（.cache/kev.json），來源與 dateReleased 記在 reports/kev-source.json。
+      # 三者皆不可用 → 不寫出 feed，下方富化的 kev 記 null、g1_kev.py 記 incomplete（incomplete ≠ pass）。
+      - name: 取得 CISA KEV feed（scripts/fetch_kev.py）
+        continue-on-error: true
+        run: |
+          mkdir -p reports .cache
+          python3 scripts/fetch_kev.py --out .cache/kev.json --meta reports/kev-source.json
+
       - name: EPSS / KEV 富化（inline python, stdlib；分欄記錄、不混算）
         continue-on-error: true
         run: |
@@ -194,22 +202,23 @@ jobs:
 
           enrichment = {}
 
-          # KEV 清單（整包快取 1 天）
-          kev_cache = CACHE / "kev.json"
-          kev_set = {}
+          # KEV 清單：由前一步 scripts/fetch_kev.py 取得（官網 → 鏡像 → 快取），格式檢查與 g1_kev.py 共用。
+          # feed 不可用 → kev_set = None：每筆 kev 記 null（未知），不是 false（incomplete ≠ pass，CLAUDE.md #2）
+          import sys; sys.path.insert(0, "scripts")
+          from g1_kev import load_kev
+          kev_set, kev_released, kev_reason = None, None, None
           try:
-              if kev_cache.exists() and (NOW.timestamp() - kev_cache.stat().st_mtime) < 86400:
-                  kev_data = json.loads(kev_cache.read_text(encoding="utf-8"))
-              else:
-                  req = urllib.request.Request("https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
-                                               headers={"User-Agent": "vibesec-nightly"})
-                  with urllib.request.urlopen(req, timeout=60) as r:
-                      kev_data = json.loads(r.read().decode("utf-8"))
-                  kev_cache.write_text(json.dumps(kev_data), encoding="utf-8")
-              for v in kev_data.get("vulnerabilities", []):
-                  kev_set[v.get("cveID")] = v.get("dateAdded")
+              kev_src = json.loads(pathlib.Path("reports/kev-source.json").read_text(encoding="utf-8"))
           except Exception as e:
-              print(f"KEV 取得失敗：{e}")
+              kev_src = {"status": "unknown", "status_reason": f"來源紀錄無法讀取：{type(e).__name__}"}
+          try:
+              if kev_src.get("status") not in ("fetched", "cached"):
+                  raise ValueError(kev_src.get("status_reason") or "KEV feed 未取得")
+              kev_set, kev_released = load_kev(CACHE / "kev.json")
+          except Exception as e:
+              kev_set, kev_reason = None, f"KEV 未知：{type(e).__name__}: {e}"
+              print(kev_reason)
+          kev_checked_at = iso(NOW) if kev_set is not None else None
 
           # EPSS 逐一（或批次）查詢，附查詢日
           query_date = NOW.date().isoformat()
@@ -228,7 +237,12 @@ jobs:
                   print(f"EPSS {cve} 失敗：{e}")
               enrichment[cve] = {
                   "epss": epss, "epss_date": epss_date, "epss_query_date": query_date,
-                  "kev": cve in kev_set, "kev_date": kev_set.get(cve),
+                  # KEV 與日期分欄；feed 不可用時 kev/kev_date/kev_checked_at 皆 null 並附原因
+                  "kev": (cve in kev_set) if kev_set is not None else None,
+                  "kev_date": kev_set.get(cve) if kev_set is not None else None,
+                  "kev_checked_at": kev_checked_at, "kev_catalog_released": kev_released,
+                  "kev_source": kev_src.get("source") if kev_set is not None else None,
+                  "kev_status_reason": kev_reason,
               }
           (REPORTS / "enrichment.json").write_text(json.dumps(enrichment, ensure_ascii=False, indent=2), encoding="utf-8")
           print(f"寫出 reports/enrichment.json（{len(enrichment)} 筆）")
@@ -240,7 +254,7 @@ jobs:
       - name: G1 KEV 命中（vibesec.g1.kev-hit）
         run: |
           python3 scripts/g1_kev.py --grype reports/grype-full.json --kev-feed .cache/kev.json \
-            --sarif reports/g1-kev.sarif --json reports/g1-kev.json
+            --sarif reports/g1-kev.sarif --json reports/g1-kev.json --kev-source reports/kev-source.json
 
       - name: Upload KEV SARIF
         if: always() && hashFiles('reports/g1-kev.sarif') != ''

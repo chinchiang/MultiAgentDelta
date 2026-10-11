@@ -32,12 +32,25 @@ def load_yaml(p: pathlib.Path):
     docs = list(yaml.safe_load_all(p.read_text()))
     return docs[0] if len(docs) == 1 else docs
 
+# 不受驗的目錄：CI 的受信任副本（_trusted/）、本機 agent worktree、git 內部、第三方套件與虛擬環境
+_YAML_SKIP_DIRS = {".git", "node_modules", ".venv"}
+_YAML_SKIP_PREFIXES = (("_trusted",), (".claude", "worktrees"))
+
+def yaml_files(root: pathlib.Path) -> list[pathlib.Path]:
+    """列出受驗樹中所有 *.yaml／*.yml，含隱藏目錄與隱藏檔。
+    glob("**") 預設略過以 . 開頭的路徑，以前 .github/workflows、.github/dependabot.yml、
+    .pre-commit-config.yaml、.claude/** 都沒做語法檢查；改用 os.walk 一併納入。"""
+    out = []
+    for d, dirs, files in os.walk(root):
+        rel_d = pathlib.Path(d).relative_to(root)
+        dirs[:] = sorted(x for x in dirs if x not in _YAML_SKIP_DIRS
+                         and not any((rel_d / x).parts[:len(p)] == p for p in _YAML_SKIP_PREFIXES))
+        out += [pathlib.Path(d, f) for f in files if f.endswith((".yaml", ".yml"))]
+    return sorted(out)
+
 if yaml is not None:
-    for f in sorted(glob.glob(str(ROOT / "**/*.yaml"), recursive=True)) + \
-             sorted(glob.glob(str(ROOT / "**/*.yml"), recursive=True)):
-        rel = pathlib.Path(f).relative_to(ROOT)
-        if rel.parts[:1] == ("_trusted",) or rel.parts[:2] == (".claude", "worktrees"):
-            continue   # CI 的受信任副本、本機 agent worktree：不是受驗的樹
+    for f in yaml_files(ROOT):
+        rel = f.relative_to(ROOT)
         try:
             list(yaml.safe_load_all(open(f)))
             ok(f"YAML ok: {rel}")
@@ -395,7 +408,7 @@ try:
             for e in _ev["errors"]: err(f"{_f.relative_to(ROOT)}: {e}")
             if not _ev["errors"]: ok(f"G4 審查紀錄 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py", "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py", "g4_access.py", "g0_threat_model.py", "env_guard.py", "target_guard.py", "g5_zap.py", "g6_cost_probe.py", "g6_gate.py"):
+        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "fetch_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py", "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py", "g4_access.py", "g0_threat_model.py", "env_guard.py", "target_guard.py", "g5_zap.py", "g6_cost_probe.py", "g6_gate.py"):
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])

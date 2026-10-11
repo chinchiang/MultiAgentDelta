@@ -327,7 +327,6 @@ class KevRunner(Runner):
     驗證的是 scripts/g1_kev.py 的比對與判定，不含 grype 本身（nightly 以真實 grype 執行）。"""
     name = "g1-kev"
     RULE = "vibesec.g1.kev-hit"
-    FEED = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
     def __init__(self, network: bool):
         self.network = network
@@ -352,16 +351,17 @@ class KevRunner(Runner):
     def _kev(self) -> tuple[pathlib.Path | None, str | None]:
         if self._feed or self._err:
             return self._feed, self._err
-        import urllib.request
+        # 與 CI 相同的取得邏輯（scripts/fetch_kev.py：官網 → cisagov/kev-data 鏡像，並檢查 feed 結構）
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("fetch_kev", ROOT / "scripts/fetch_kev.py")
+        fk = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fk)
         path = pathlib.Path(self._dir.name) / "kev.json"
-        try:
-            req = urllib.request.Request(self.FEED, headers={"User-Agent": "vibesec-evals"})
-            # 固定的 https 常數 URL（非使用者輸入），不經 file:// 等 scheme
-            with urllib.request.build_opener(urllib.request.HTTPSHandler).open(req, timeout=60) as r:  # nosemgrep
-                path.write_bytes(r.read())
+        meta = fk.fetch(path)
+        if meta["status"] == "fetched":
             self._feed = path
-        except Exception as e:
-            self._err = f"KEV feed 下載失敗：{type(e).__name__}"
+        else:
+            self._err = f"KEV feed 下載失敗：{'；'.join(meta['errors'])[:200]}"
         return self._feed, self._err
 
     def run(self, case):

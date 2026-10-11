@@ -10,8 +10,9 @@
   - 評分不混算（CLAUDE.md #4）：CVSS、EPSS、KEV 分欄記錄；這裡只記 KEV 是否收錄與收錄日期，不改嚴重度、不相乘。
 
 用法：
+  python3 scripts/fetch_kev.py --out .cache/kev.json --meta reports/kev-source.json   # 官網 → 鏡像 → 快取
   python3 scripts/g1_kev.py --grype reports/grype-full.json --kev-feed .cache/kev.json \\
-                            --sarif reports/g1-kev.sarif --json reports/g1-kev.json
+                            --sarif reports/g1-kev.sarif --json reports/g1-kev.json --kev-source reports/kev-source.json
   # PR 階段：把結果併入 g1_slopcheck.py 產生的 G1 gate-result（summary 依此彙整）
   python3 scripts/g1_kev.py ... --merge-gate reports/g1-gate.json
   python3 scripts/g1_kev.py selftest
@@ -289,8 +290,14 @@ def main(argv=None) -> int:
     ap.add_argument("--sarif", required=True)
     ap.add_argument("--json", required=True)
     ap.add_argument("--merge-gate", help="併入既有的 G1 gate-result（就地更新）；檔案不存在則略過")
+    ap.add_argument("--kev-source", help="scripts/fetch_kev.py 的來源紀錄（--meta）；附進摘要，看得出用了官網、鏡像或舊快取")
     a = ap.parse_args(argv)
     summary, hits = run(pathlib.Path(a.grype), pathlib.Path(a.kev_feed))
+    if a.kev_source:
+        try:
+            summary["kev_source"] = json.loads(pathlib.Path(a.kev_source).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            summary["kev_source"] = {"status": "unknown", "status_reason": f"來源紀錄無法讀取：{type(e).__name__}"}
     for out in (a.sarif, a.json):
         pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
