@@ -263,11 +263,13 @@ def selftest() -> list[str]:
         except PacketError:
             pass
         # 遮罩至少遮住 8 個字元：以前一律留前 4 後 4，8 字元的祕密原樣保留、9–11 字元只遮 1–3 個
-        for secret in ("hunter22", "abcdefghi", "abcdefghijk1", "sk-" + "Q7" * 20):
-            masked = mask(f"pw={secret}", [secret])
-            shown = masked[3:].split("[masked sha256:")[0].replace("…", "")
-            if secret in masked or len(shown) > len(secret) - 8:
-                fails.append(f"{len(secret)} 字元的祕密遮罩後露出 {len(shown)} 字元（至少要遮住 8 個）：{masked}")
+        # 失敗訊息只報字元數，不印遮罩結果：遮罩失敗時其中就含祕密（規則 7；CodeQL py/clear-text-logging-sensitive-data）
+        for sample in ("hunter22", "abcdefghi", "abcdefghijk1", "sk-" + "Q7" * 20):
+            masked = mask(f"pw={sample}", [sample])
+            n_shown = len(masked[3:].split("[masked sha256:")[0].replace("…", ""))
+            n_total = len(sample)
+            if sample in masked or n_shown > n_total - 8:
+                fails.append(f"{n_total} 字元的祕密遮罩後露出 {n_shown} 字元（至少要遮住 8 個）")
         if not mask("k=" + "sk-" + "Q7" * 20, ["sk-" + "Q7" * 20]).startswith("k=sk-Q…Q7Q7[masked sha256:"):
             fails.append("16 字元以上的祕密維持前 4 後 4 加指紋")
         # gitleaks:allow 不採信：假 gitleaks 模擬真實行為（有 allow 註解時不回報，除非帶 --ignore-gitleaks-allow）
