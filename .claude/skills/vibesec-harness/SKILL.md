@@ -139,9 +139,10 @@ promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json -
 garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
 python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/raw/G6/g6-cost.json   # 成本面（LLM10）
 python3 scripts/g6_gate.py --eval reports/raw/G6/promptfoo.json --redteam-skipped "<原因>" \
-  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --cost reports/raw/G6/g6-cost.json --gate reports/raw/G6/g6-gate.json
+  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --cost reports/raw/G6/g6-cost.json --gate reports/raw/G6/g6-gate.json \
+  --mode "$(python3 -c 'import yaml; print(yaml.safe_load(open("vibesec.yaml"))["mode"])')"   # 必填，取自 vibesec.yaml
 # 目標被拒（TARGET_DENIED）時不跑上面任何工具，改用：
-# python3 scripts/g6_gate.py --target-denied "<target_guard 輸出>" --gate reports/raw/G6/g6-gate.json
+# python3 scripts/g6_gate.py --target-denied "<target_guard 輸出>" --gate reports/raw/G6/g6-gate.json --mode <vibesec.yaml 的 mode>
 ```
 
 `project.contains_llm: false` → `not_applicable`，`status_reason: "project.contains_llm is false"`。對應 `checks` → `vibesec.g6.<check-kebab>`。

@@ -32,6 +32,9 @@ jobs:
       g5_blocking: ${{ steps.verdict.outputs.g5_blocking }}
       g6_status: ${{ steps.verdict.outputs.g6_status }}
       g6_blocking: ${{ steps.verdict.outputs.g6_blocking }}
+      # 靶場驗收：必要工具中沒有 state=ran 的（逗號分隔；空字串 = 都跑了）
+      g5_missing_tools: ${{ steps.verdict.outputs.g5_missing_tools }}
+      g6_missing_tools: ${{ steps.verdict.outputs.g6_missing_tools }}
     # 執行期才從 registry 抓的工具一律釘版（與 actions 釘 SHA 同理）：浮動的 @latest／未釘版 pip 會讓上游被入侵的版本
     # 直接在持有 LLM 金鑰的步驟裡執行（vibesec-harness G0 發現：供應鏈層致命三要素）。版本須已發布滿
     # vibesec.yaml cooldown_days（14）天；Dependabot 不管這兩個，升版請手動確認發布日。
@@ -52,9 +55,10 @@ jobs:
         id: trusted
         uses: ./.github/actions/vibesec-trusted
 
-      # G5 探針與 scripts/g6_gate.py 都經 vibesec_policy 讀政策（PyYAML）；缺 PyYAML 會讓閘門檔缺席
-      - name: 安裝 PyYAML
-        run: pip install pyyaml
+      # G5 探針與 scripts/g6_gate.py 都經 vibesec_policy 讀政策（PyYAML）；缺 PyYAML 會讓閘門檔缺席。
+      # jsonschema 給 scripts/gate_verdict.py 驗 gate JSON；缺席時所有閘門判為 incomplete（不會變成 pass）
+      - name: 安裝 PyYAML / jsonschema
+        run: pip install pyyaml jsonschema
 
       - name: Install uv
         continue-on-error: true
@@ -831,10 +835,12 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
-      # 唯一會讓 job 因閘門結果變紅的步驟（不加 continue-on-error）：
-      #   shadow，或目標是靶場（本來就應該 fail，退步由 notify 判斷）→ 只報告；
-      #   enforce 且外部目標 → 任一閘門 fail 且 blocking > 0，或閘門 incomplete／缺席且列在
-      #   blocking-policy 的 incomplete_gate_is_blocking_in_enforce → exit 1；政策檔讀不到 → exit 2（不知道也要擋）。
+      # 唯一會讓 job 因閘門結果變紅的步驟（不加 continue-on-error）；判定在 scripts/gate_verdict.py（與 pr-gates 共用）：
+      #   每份 gate JSON 以 schema 驗證；缺席／無法解析／不符 schema／狀態不是 pass、fail、not_applicable → incomplete。
+      #   shadow，或目標是靶場（本來就應該 fail，退步由 notify 判斷）→ 只報告；靶場另做偵測驗收（--lab）：
+      #   G5／G6 都要 fail 且 blocking > 0，且必要工具（vibesec.yaml tools＋成本探針）都 state=ran，結果輸出給 notify。
+      #   enforce 且外部目標 → blocking > 0 → exit 1；閘門 incomplete／缺席且列在 blocking-policy 的
+      #   incomplete_gate_is_blocking_in_enforce → exit 2；mode 或政策檔讀不到 → exit 2（不知道也要擋）。
       - name: 黑箱彙整與判定（shadow 僅報告；enforce 對外部目標阻擋）
         id: verdict
         if: always()
@@ -843,58 +849,20 @@ jobs:
           VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
           IS_VULNAPP: ${{ steps.target.outputs.is_vulnapp }}
         run: |
-          python3 - <<'EOF'
-          import json, os, sys
-          mode = os.environ.get("VIBESEC_MODE") or "missing"
-          lab = os.environ.get("IS_VULNAPP") == "true"
-          rows = [f"# VibeSec 黑箱閘門狀態（G5 / G6；mode：`{mode}`；目標：{'靶場' if lab else '外部'}）", "",
-                  "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
-          states = {}
-          for gid in ("g5", "g6"):
-              try:
-                  g = json.load(open(f"reports/{gid}-gate.json", encoding="utf-8"))
-                  fc = g.get("findings_count") or {}
-                  st, bl = g.get("status") or "missing", fc.get("blocking", "")
-                  rows.append(f"| {g.get('gate')} | `{st}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {g.get('status_reason') or ''} |")
-              except Exception:
-                  st, bl = "missing", ""
-                  rows.append(f"| {gid.upper()} | `missing` | - | - | 沒有產出閘門結果（incomplete ≠ pass） |")
-              states[gid.upper()] = (st, bl)
-          rows += ["", "> 攻擊性探針僅對 config/targets.yaml 允許的目標執行；缺 token／目標限制的檢查記為 untested，incomplete ≠ pass。"]
-          # 供 notify job 使用；缺 gate 檔記為 missing（incomplete ≠ pass）
-          go = os.environ.get("GITHUB_OUTPUT")
-          if go:
-              with open(go, "a", encoding="utf-8") as fh:
-                  for gid, (st, bl) in states.items():
-                      fh.write(f"{gid.lower()}_status={st}\n{gid.lower()}_blocking={bl}\n")
-          block, code, notes = [], 0, []
-          if mode not in ("shadow", "enforce"):
-              block.append(f"mode 無法取得（{mode}）"); code = 2
-          elif mode == "enforce" and not lab:
-              try:
-                  import yaml
-                  pol = yaml.safe_load(open("_trusted/config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
-                  inc_block = set(pol.get("incomplete_gate_is_blocking_in_enforce") or [])
-              except Exception as e:
-                  block.append(f"blocking-policy 無法讀取（{type(e).__name__}）"); code = 2
-                  inc_block = set()
-              for gid, (st, bl) in states.items():
-                  if st == "fail" and isinstance(bl, int) and bl > 0:
-                      block.append(f"{gid} fail（blocking {bl}）"); code = code or 1
-                  elif st in ("incomplete", "missing") and gid in inc_block:
-                      block.append(f"{gid} {st}（政策：enforce 下 incomplete 也擋）"); code = code or 1
-                  elif st in ("incomplete", "missing"):
-                      notes.append(f"{gid} {st} 依政策只報告（不在 incomplete_gate_is_blocking_in_enforce），追蹤 issue 會列出")
-          rows.append("")
-          rows.append("**判定：阻擋** — " + "；".join(block) if block else
-                      f"**判定：不阻擋**（{'shadow 只報告' if mode == 'shadow' else '靶場只報告' if lab else '沒有 blocking 發現'}）"
-                      + ("；" + "；".join(notes) if notes else ""))
-          text = "\n".join(rows)
-          sp = os.environ.get("GITHUB_STEP_SUMMARY")
-          if sp: open(sp, "a", encoding="utf-8").write(text + "\n")
-          print(text)
-          sys.exit(code)
-          EOF
+          V=_trusted/scripts/gate_verdict.py
+          if [ ! -f "$V" ]; then
+            # 過渡：default branch 還沒有 gate_verdict.py 時（引入它的 PR 合併前）。shadow 只報告，暫用工作區版本；
+            # enforce 下不使用未受信任的判定程式 → 直接擋（incomplete ≠ pass）。
+            if [ "$VIBESEC_MODE" != "shadow" ]; then
+              echo "::error::default branch 沒有 scripts/gate_verdict.py，enforce 下不使用工作區版本判定 → exit 2"; exit 2
+            fi
+            echo "::warning::default branch 尚無 scripts/gate_verdict.py，本次（shadow，只報告）暫用工作區版本；政策、schema、mode 仍取自 _trusted/"
+            V=scripts/gate_verdict.py
+          fi
+          args=(--profile staging --policy-root _trusted --mode "$VIBESEC_MODE"
+                --gate G5=reports/g5-gate.json --gate G6=reports/g6-gate.json)
+          [ "$IS_VULNAPP" = "true" ] && args+=(--lab)
+          python3 "$V" "${args[@]}"
 
       - name: 清除 token 暫存檔
         if: always()

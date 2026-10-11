@@ -2,8 +2,10 @@
 //
 // 何時算「有問題」（evaluate）：
 //   - blackbox job 失敗或取消，或 G5 / G6 沒有產出閘門結果 → 有問題（incomplete ≠ pass）。
-//   - 目標是靶場（examples/vulnapp，刻意有漏洞）：G5、G6 都「應該」是 fail 且 blocking > 0。
-//     不是的話代表偵測能力退步（探針壞了、規則失效），要通知；fail 本身不通知。
+//   - 目標是靶場（examples/vulnapp，刻意有漏洞）：G5、G6 都「應該」是 fail 且 blocking > 0，
+//     而且必要工具（scripts/gate_verdict.py --lab 依 vibesec.yaml tools＋成本探針計算）都要實際執行。
+//     不是的話代表偵測能力退步（探針壞了、規則失效、工具沒跑），要通知；fail 本身不通知。
+//     必要工具沒跑時，即使找到漏洞也不算驗收通過（只靠另一個工具找到漏洞，會掩蓋沒跑的那一個）。
 //   - 目標是外部已授權環境（vars.VIBESEC_TARGET_URL）：G5 / G6 不是 pass（fail 或 incomplete）就通知。
 // 有問題 → 找「未關閉、帶 MARKER 的追蹤 issue」：沒有就開、有就留言；恢復 → 留言並關閉；一直正常 → 不寫入。
 // 輸入只來自本 workflow 的 job 結果與輸出，不讀任何外部使用者可控內容。
@@ -12,7 +14,9 @@
 const MARKER = '<!-- vibesec-staging-failure -->';
 const GATES = ['g5', 'g6'];
 
-// blackbox：needs.blackbox，{ result, outputs: { is_vulnapp, g5_status, g5_blocking, g6_status, g6_blocking } }
+// blackbox：needs.blackbox，{ result, outputs: { is_vulnapp, g5_status, g5_blocking, g5_missing_tools, g6_status, g6_blocking, g6_missing_tools } }
+// gX_status 已由 gate_verdict.py 正規化：缺檔 → missing；無法解析／不符 schema／untested 等 → incomplete。
+// gX_missing_tools：逗號分隔的未執行必要工具，空字串 = 都跑了。
 function evaluate(blackbox) {
   const problems = [];
   const result = blackbox && blackbox.result;
@@ -28,6 +32,10 @@ function evaluate(blackbox) {
     } else if (lab) {
       if (status !== 'fail' || !(blocking > 0)) {
         problems.push(`${name} 在靶場上預期 \`fail\` 且有 blocking，實際為 \`${status}\`（blocking ${Number.isNaN(blocking) ? '?' : blocking}）：偵測能力可能退步`);
+      }
+      const missingTools = String(out[`${g}_missing_tools`] || '').trim();
+      if (missingTools) {
+        problems.push(`${name} 在靶場上有必要工具未執行（${missingTools}）：即使找到漏洞也不算驗收通過`);
       }
     } else if (status !== 'pass') {
       problems.push(`${name} 為 \`${status}\`（blocking ${Number.isNaN(blocking) ? '?' : blocking}）`);

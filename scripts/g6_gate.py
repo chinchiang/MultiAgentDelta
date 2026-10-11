@@ -16,8 +16,8 @@
       [--redteam reports/g6-promptfoo-redteam.json | --redteam-skipped "未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret"] \
       [--garak-glob 'reports/g6-garak*.report.jsonl'] \
       --cost reports/g6-cost.json \
-      --gate reports/g6-gate.json --sarif reports/g6.sarif [--mode shadow|enforce]
-  python3 scripts/g6_gate.py --target-denied "<原因>" --gate … --sarif …   # 目標未通過 scripts/target_guard.py
+      --gate reports/g6-gate.json --sarif reports/g6.sarif --mode shadow|enforce
+  python3 scripts/g6_gate.py --target-denied "<原因>" --gate … --sarif … --mode …   # 目標未通過 scripts/target_guard.py
   python3 scripts/g6_gate.py selftest
 成本面（LLM10 denial_of_wallet_cost）由 scripts/g6_cost_probe.py 實測後以 --cost 帶入；未提供或無法解析 → untested。
 退出碼：0 已寫出結果（不論 pass/fail/incomplete；是否阻擋由 workflow 的彙整步驟依 mode 與政策決定）。
@@ -411,7 +411,7 @@ def selftest() -> list[str]:
                 args += ["--cost", str(dp / "cost.json")]
             import contextlib, io
             with contextlib.redirect_stdout(io.StringIO()):
-                main(args + (extra or []))
+                main(args + ["--mode", "shadow"] + (extra or []))
             return json.loads((dp / "gate.json").read_text(encoding="utf-8"))
 
         g = run({"state": "pass", "reason": "HTTP 413"})
@@ -516,7 +516,9 @@ def main(argv=None) -> int:
     ap.add_argument("--sarif")
     ap.add_argument("--cost", help="scripts/g6_cost_probe.py 的輸出（denial_of_wallet_cost）")
     ap.add_argument("--target-denied", help="目標未通過 scripts/target_guard.py 的原因：不讀任何結果，閘門 incomplete")
-    ap.add_argument("--mode", default="shadow", choices=["shadow", "enforce"])
+    # 不設預設值：以前預設 shadow，workflow 漏傳時 gate JSON 會靜默記成 shadow。mode 一律由 workflow 傳入
+    # 受信任的值（vibesec-trusted action）；漏傳 → argparse 失敗、不寫 gate 檔 → 彙整判為 missing（incomplete ≠ pass）
+    ap.add_argument("--mode", required=True, choices=["shadow", "enforce"])
     a = ap.parse_args(argv)
     started = now()
     c = Collector(*load_catalog())

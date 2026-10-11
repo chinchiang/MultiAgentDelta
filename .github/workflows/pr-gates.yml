@@ -913,59 +913,30 @@ jobs:
             --tool checkov=$A/vibesec-g3-iac-reports/results_sarif.sarif \
             --tool trivy=$A/vibesec-g3-iac-reports/trivy-config.sarif --out reports/g3-gate.json
 
-      - name: 彙整 gate-status 矩陣
+      # 判定邏輯在 scripts/gate_verdict.py（與 staging-blackbox 共用）：每份 gate JSON 以 schema 驗證，缺席／無法解析／
+      # 不符 schema／狀態不是 pass、fail、not_applicable → incomplete；mode 與 blocking-policy 取自 _trusted/。
+      - name: 彙整 gate-status 矩陣（scripts/gate_verdict.py）
         shell: bash
         env:
           VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
-          MODE="$VIBESEC_MODE"
           mkdir -p reports
           # 只取各 job 自己上傳的 gate 檔：以前用 find 混抓所有 artifact 裡的同名檔，PR head 的 G1 程式可寫一份假的 g4-gate.json 蓋掉受信任的那份
           [ -f _artifacts/vibesec-g1-reports/g1-gate.json ] && cp _artifacts/vibesec-g1-reports/g1-gate.json reports/g1-gate.json
           [ -f _artifacts/vibesec-g4-reports/g4-gate.json ] && cp _artifacts/vibesec-g4-reports/g4-gate.json reports/g4-gate.json
-          python3 - "$MODE" <<'EOF'
-          import json, glob, os, sys, pathlib, yaml
-          MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
-          # incomplete 會擋的閘門以 default branch 的 blocking-policy 為準（PR 自己的政策檔不能決定自己的結果）
-          _pol = yaml.safe_load(open("_trusted/config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
-          BLOCKING_GATES = set(_pol.get("incomplete_gate_is_blocking_in_enforce") or [])
-          rows = []; fail = False; incomplete_block = False
-          seen = {}
-          for p in sorted(glob.glob("reports/*-gate.json")):
-              try: g = json.load(open(p, encoding="utf-8"))
-              except Exception: continue
-              seen[g.get("gate")] = g
-          out = ["# VibeSec 閘門狀態", "", f"模式：`{MODE}`", "",
-                 "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
-          for gid in ["G1", "G2", "G3", "G4"]:
-              g = seen.get(gid)
-              if not g:
-                  # 沒有 gate 結果 = 沒有證據顯示該閘門跑完；對 incomplete 會擋的閘門，enforce 下視同 incomplete
-                  out.append(f"| {gid} | `incomplete` | - | - | 未產生 gate 結果（job 失敗或 artifact 缺席） |")
-                  if MODE == "enforce" and gid in BLOCKING_GATES:
-                      incomplete_block = True
-                  continue
-              st = g.get("status", "untested")
-              fc = g.get("findings_count", {})
-              reason = g.get("status_reason") or ""
-              out.append(f"| {gid} | `{st}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {reason} |")
-              if MODE == "enforce":
-                  if st == "fail" or (fc.get("blocking", 0) or 0) > 0:
-                      fail = True
-                  if st == "incomplete" and gid in BLOCKING_GATES:
-                      incomplete_block = True
-          out += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。"]
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          text = "\n".join(out)
-          if summary_path:
-              open(summary_path, "a", encoding="utf-8").write(text + "\n")
-          print(text)
-          pathlib.Path("reports/gate-status.md").write_text(text + "\n", encoding="utf-8")
-          if MODE == "enforce" and incomplete_block:
-              print("::error::enforce 模式下 blocking 閘門 incomplete → exit 2"); sys.exit(2)
-          if MODE == "enforce" and fail:
-              print("::error::enforce 模式下存在 blocking 發現 → exit 1"); sys.exit(1)
-          EOF
+          V=_trusted/scripts/gate_verdict.py
+          if [ ! -f "$V" ]; then
+            # 過渡：引入 gate_verdict.py 的 PR 合併前，default branch 還沒有這支程式。shadow 只報告，暫用 PR 版本；
+            # enforce 下判定程式不可信任 PR head → 不判定、直接擋（incomplete ≠ pass）。
+            if [ "$VIBESEC_MODE" != "shadow" ]; then
+              echo "::error::default branch 沒有 scripts/gate_verdict.py，enforce 下不使用 PR 版本判定 → exit 2"; exit 2
+            fi
+            echo "::warning::default branch 尚無 scripts/gate_verdict.py，本次（shadow，只報告）暫用 PR 版本；政策、schema、mode 仍取自 _trusted/"
+            V=scripts/gate_verdict.py
+          fi
+          python3 "$V" --profile pr --policy-root _trusted --mode "$VIBESEC_MODE" \
+            --gate G1=reports/g1-gate.json --gate G2=reports/g2-gate.json \
+            --gate G3=reports/g3-gate.json --gate G4=reports/g4-gate.json --out reports/gate-status.md
 
       - name: Upload 彙整 reports
         if: always()

@@ -37,6 +37,20 @@ test('lab: G5 pass or incomplete, or fail with 0 blocking, means detection regre
   }
 });
 
+test('lab: a required tool that did not run is a problem even when vulnerabilities were found', () => {
+  assert.deepEqual(evaluate(bb({ ...labOk.outputs, g5_missing_tools: '', g6_missing_tools: '' })).problems, []);
+  const e = evaluate(bb({ ...labOk.outputs, g5_missing_tools: 'zap-api-scan', g6_missing_tools: 'garak,vibesec-g6-cost-probe' }));
+  assert.equal(e.problems.length, 2);
+  assert.match(e.problems[0], /G5.*zap-api-scan.*不算驗收通過/);
+  assert.match(e.problems[1], /G6.*garak,vibesec-g6-cost-probe/);
+  // 狀態退步與工具未執行分別列出
+  assert.equal(evaluate(bb({ ...labOk.outputs, g5_status: 'incomplete', g5_missing_tools: 'zap-baseline' })).problems.length, 2);
+});
+
+test('external target: missing_tools is not a lab acceptance check (status already decides)', () => {
+  assert.deepEqual(evaluate(bb({ ...extOk.outputs, g5_missing_tools: 'zap-api-scan' })).problems, []);
+});
+
 test('external target: fail or incomplete is a problem; pass is not', () => {
   assert.deepEqual(evaluate(extOk).problems, []);
   assert.equal(evaluate(bb({ ...extOk.outputs, g5_status: 'fail', g5_blocking: '2' })).problems.length, 1);
