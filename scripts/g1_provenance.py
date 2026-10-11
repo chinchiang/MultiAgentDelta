@@ -114,6 +114,21 @@ def selftest() -> list[str]:
             fails.append("命中時 SARIF 應有 1 筆 advisory")
         if to_sarif(*run(sb, "o/r", "w", verify=cases[0][1]))["runs"][0]["results"]:
             fails.append("驗證成功時 SARIF 不應有結果")
+        # gh_verify 必須把 --repo 與 --signer-workflow 傳給 gh：少了 --signer-workflow，任何 workflow（含 PR 的）簽發的
+        # 證明都會驗過；以前 selftest 全部用假的 verify，這個參數從沒被檢查
+        seen = []
+        _run0, _which0 = subprocess.run, shutil.which
+        try:
+            shutil.which = lambda name: "/usr/bin/gh"
+            subprocess.run = lambda argv, **k: (seen.append(argv), subprocess.CompletedProcess(argv, 0, "[]", ""))[1]
+            gh_verify(sb, "o/r", "o/r/.github/workflows/nightly-full.yml")
+        finally:
+            subprocess.run, shutil.which = _run0, _which0
+        argv = seen[0] if seen else []
+        pair = lambda flag: argv[argv.index(flag) + 1] if flag in argv[:-1] else None
+        if argv[1:3] != ["attestation", "verify"] or pair("--signer-workflow") != "o/r/.github/workflows/nightly-full.yml" \
+                or pair("--repo") != "o/r":
+            fails.append(f"gh_verify 應以 attestation verify --repo o/r --signer-workflow <workflow> 呼叫 gh（得到 {argv}）")
     return fails
 
 

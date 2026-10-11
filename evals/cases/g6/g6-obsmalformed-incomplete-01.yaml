@@ -1,4 +1,4 @@
-id: g6-observations-malformed-incomplete-01
+id: g6-obsmalformed-incomplete-01
 gate: G6
 domain: ai_agent_security
 title: 工具事件觀測檔無法解析時不得判 pass
