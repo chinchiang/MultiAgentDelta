@@ -251,26 +251,43 @@ jobs:
           VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
           mkdir -p reports
-          fail=0
+          # 三種結果分開記（格式同 scripts/env_guard.py --json）：以前壓成同一個 env_gitignore_fail，已提交的 .env
+          # 也只記成 advisory 的 env-not-ignored（位置 .gitignore），G2 照樣 pass
+          gi_fail=0
           if [ -f .gitignore ] && grep -Eq '(^|/)\.env' .gitignore; then
             echo "OK: .env* 已列入 .gitignore"
           else
-            echo "::error::.env* 未列入 .gitignore（require_env_in_gitignore: true）"; fail=1
+            echo "::error::.env* 未列入 .gitignore（require_env_in_gitignore: true）"; gi_fail=1
           fi
-          # docs/03 §4：範本 .env.example 不算（只放佔位值、本來就該提交）；其餘 .env* 被追蹤即失敗
+          # docs/03 §4：範本 .env.example 不算（只放佔位值、本來就該提交）；其餘 .env* 被追蹤即為 env-committed
           # core.quotepath=false：含非 ASCII 的路徑否則會被加引號跳脫，regex 比對不到（第四次審視 S-7）
-          TRACKED=$(git -c core.quotepath=false ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -Ev '(^|/)\.env\.example$' || true)
+          # git ls-files 失敗 → error（G2 incomplete）：以前管線吞掉失敗，當成「沒有已追蹤的 .env」
+          ENV_ERROR=""
+          if ! LS=$(git -c core.quotepath=false ls-files); then
+            ENV_ERROR="git ls-files 失敗：無法確認 .env 未入版控"; echo "::error::$ENV_ERROR"
+          fi
+          TRACKED=$(printf '%s\n' "$LS" | grep -E '(^|/)\.env(\..*)?$' | grep -Ev '(^|/)\.env\.example$' || true)
           if [ -n "$TRACKED" ]; then
-            echo "::error::偵測到已追蹤的 .env 檔："; echo "$TRACKED"; fail=1
-          else
+            echo "::error::偵測到已追蹤的 .env 檔："; echo "$TRACKED"
+          elif [ -z "$ENV_ERROR" ]; then
             echo "OK: 無已追蹤的 .env 檔"
           fi
-          echo "{\"gate\":\"G2\",\"rule_id\":\"vibesec.g2.env-not-ignored\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
+          GI_FAIL=$gi_fail TRACKED="$TRACKED" ENV_ERROR="$ENV_ERROR" python3 -I - > reports/g2-envcheck.json <<'PY'
+          import json, os
+          print(json.dumps({"gate": "G2", "rule_id": "vibesec.g2.env-not-ignored", "env_gitignore_fail": int(os.environ["GI_FAIL"]),
+                            "committed_rule_id": "vibesec.g2.env-committed",
+                            "committed": sorted(l for l in os.environ["TRACKED"].splitlines() if l),
+                            "error": os.environ["ENV_ERROR"] or None}, ensure_ascii=False))
+          PY
           # 是否擋 job 依 blocking-policy 的有效 tier：CI 取 _trusted/（default branch）；run_evals.py 在暫存目錄執行時由 VIBESEC_CONFIG 找 repo 根
           ROOT=$(dirname "${VIBESEC_CONFIG:-$PWD/_trusted/vibesec.yaml}")
           TIER=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-not-ignored | awk '{print $2}')
-          echo "policy tier: ${TIER}"
-          if [ "${VIBESEC_MODE}" = "enforce" ] && [ "$fail" = "1" ] && [ "$TIER" = "blocking" ]; then exit 1; fi
+          TIER_COMMITTED=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-committed | awk '{print $2}')
+          echo "policy tier: env-not-ignored=${TIER} env-committed=${TIER_COMMITTED}"
+          if [ "${VIBESEC_MODE}" = "enforce" ]; then
+            if [ "$gi_fail" = "1" ] && [ "$TIER" = "blocking" ]; then exit 1; fi
+            if [ -n "$TRACKED" ] && [ "$TIER_COMMITTED" = "blocking" ]; then exit 1; fi
+          fi
 
       - name: Upload Gitleaks SARIF（若產生）
         if: always() && hashFiles('results.sarif') != ''

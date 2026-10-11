@@ -618,13 +618,16 @@ def parse_manifest(paths):
             e, b = _lock_packages(data)
             out += [("pypi", n, v) for n, v in e]
             bad += [f"{p.name}: {x}" for x in b]
-        elif re.search(r'requirements.*\.txt$', p.name):
+        elif REQUIREMENTS_RE.search(p.as_posix()):
             for line in text.splitlines():
                 x = _pep508(line.split(" #", 1)[0])
                 if x:
                     out.append(("pypi", x[0], x[1]))
                 elif x is False:
                     bad.append(f"{p.name}: {line.strip()[:60]}")
+        else:
+            # 被當成 manifest 卻沒有對應的解析器：套件一個都沒查，不能當成「沒有相依」（incomplete ≠ pass）
+            bad.append(f"{p.name}: 沒有對應的解析器，其中的套件未檢查")
     # 去重
     seen, uniq = set(), []
     for eco, n, v in out:
@@ -817,7 +820,12 @@ def staged_files():
         return None, f"git diff --cached 失敗（exit {r.returncode}：{(r.stderr.strip().splitlines() or ['?'])[0][:120]}）"
     return [l for l in r.stdout.splitlines() if l.strip()], None
 
-MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$')
+# requirements 檔：檔名含 requirements 的 .txt（requirements-dev.txt、locks/python-requirements.txt），或 requirements/ 目錄下的
+# .txt（requirements/base.txt）。選檔與解析共用這一條：以前選檔對整段路徑比對、解析只看檔名，requirements/base.txt
+# 被選進來卻一個套件都沒查，G1 照樣 pass。
+REQUIREMENTS_RE = re.compile(r'(?:[^/]*requirements[^/]*|(?:^|/)requirements/(?:[^/]+/)*[^/]+)\.txt$')
+MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$'
+                         r'|' + REQUIREMENTS_RE.pattern)
 # 有 manifest 樣式但尚無解析器的檔：其中的套件無法逐一檢查 → incomplete（不是 pass；以前 Pipfile／setup.py 根本不被當 manifest）
 UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$')
 # 全量掃描（--target、非 git 目錄）時略過的目錄：安裝產物與快取，不是專案宣告的相依
@@ -1408,6 +1416,20 @@ def selftest():
             fails.append(f"規則檔同一行多個套件都要查（得到 {sorted(ment)}）")
         if not MANIFEST_RE.search("Pipfile") or not UNPARSED_RE.search("setup.py") or not MANIFEST_RE.search("npm-shrinkwrap.json"):
             fails.append("Pipfile／setup.py 應被當成尚無解析器的 manifest；npm-shrinkwrap 應被當成鎖定檔")
+        # requirements/ 子目錄：以前選檔會選到 requirements/base.txt，解析卻只看檔名 base.txt，一個套件都沒查 → pass
+        (D / "requirements").mkdir()
+        (D / "requirements/base.txt").write_text("requests==2.31.0\nreqeusts-helperz==0.0.1\n")
+        if not MANIFEST_RE.search("requirements/base.txt") or not MANIFEST_RE.search("requirements/prod/web.txt"):
+            fails.append("requirements/ 目錄下的 .txt 應被當成 manifest")
+        if MANIFEST_RE.search("docs/notes.txt") or MANIFEST_RE.search("requirements/README.md"):
+            fails.append("requirements 以外的 .txt、requirements/ 下的非 .txt 不是 manifest")
+        ents, bad = parse_manifest([D / "requirements/base.txt"])
+        if sorted(n for _, n, _ in ents) != ["reqeusts-helperz", "requests"] or bad:
+            fails.append(f"requirements/base.txt 的套件都要解析出來（得到 {ents} / {bad}）")
+        # 被選為 manifest 卻沒有解析器 → 回報無法驗證（不是 0 個套件、沒有問題）
+        (D / "weird-package.lock").write_text("whatever\n")
+        if parse_manifest([D / "weird-package.lock"])[1] != ["weird-package.lock: 沒有對應的解析器，其中的套件未檢查"]:
+            fails.append("沒有解析器的 manifest 應回報無法驗證")
         # uv.lock／poetry.lock：git、url、本地封存檔、私有 registry 來源不查公開 PyPI，回報無法驗證
         (D / "uv.lock").write_text(
             'version = 1\n[[package]]\nname = "proj"\nversion = "0.1.0"\nsource = { editable = "." }\n'
@@ -1618,7 +1640,7 @@ def main(argv):
         if Path(m).name in ("package-lock.json", "npm-shrinkwrap.json"):
             entries, _ = npm_lock(m)
             indirect[m] = {(n.lower(), v) for n, v, d in entries if not d} - {(n.lower(), v) for n, v, d in entries if d}
-        elif re.search(r'requirements.*\.txt$', Path(m).name):
+        elif REQUIREMENTS_RE.search(Path(m).as_posix()):
             indirect[m] = requirements_indirect(m)
 
     # registry 查詢：同一個 (生態系, 名稱, 版本) 只查一次，並行查詢（鎖定檔動輒上千筆）

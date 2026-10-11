@@ -3,15 +3,21 @@
 
 檢查：(1) 無已追蹤的 .env / .env.* 檔（.env.example / .env.sample 除外）；
       (2) .gitignore 含 .env 規則。
-用法：python3 scripts/env_guard.py [--target <dir>]（預設本 repo；scripts/g2_secrets.py 以 check() 檢查被測專案）
-退出碼：0 通過；1 阻擋。
+用法：python3 scripts/env_guard.py [--target <dir>] [--json]（預設本 repo；scripts/g2_secrets.py 以 record() 檢查被測專案）
+  --json：印出 g2-envcheck.json（scripts/sarif_gate.py --envcheck 的輸入），三種結果分開記：
+    env_gitignore_fail（.gitignore 少規則，RULE_IGNORE）、committed（已提交的機密檔，RULE_COMMITTED）、
+    error（git 無法列出追蹤檔 → incomplete）。以前三種壓成同一個 0/1，已提交的 .env 也只記成 advisory 的
+    「.gitignore 少一條規則」，G2 照樣 pass。
+退出碼：0 通過（--json 一律 0，結論在 JSON 裡）；1 阻擋。
 """
 from __future__ import annotations
-import sys, re, subprocess, fnmatch
+import json, sys, re, subprocess, fnmatch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOW = re.compile(r'\.env\.(example|sample|template)$')
+RULE_IGNORE = "vibesec.g2.env-not-ignored"
+RULE_COMMITTED = "vibesec.g2.env-committed"
 ENV_RE = re.compile(r'(^|/)\.env(\.[^/]*)?$')
 
 def tracked(root=ROOT):
@@ -49,20 +55,26 @@ def ignores_env(gi_text: str) -> bool:
             ignored = not neg
     return ignored
 
-def check(root=ROOT):
-    """回傳錯誤訊息清單；空清單 = 通過。"""
+def record(root=ROOT):
+    """g2-envcheck.json 的內容：.gitignore 少規則、已提交的機密檔、git 失敗分開記（見檔首說明）。"""
     root = Path(root)
     files = tracked(root)
-    errs = []
-    if files is None:
-        errs.append("無法列出已追蹤檔案（不是 git repo 或 git 失敗）：無法確認 .env 未入版控（incomplete ≠ pass）。")
-        files = []
-    bad = [f for f in files if ENV_RE.search(f) and not ALLOW.search(f)]
-    if bad:
-        errs.append("已追蹤的機密檔（應移出版控並撤銷其中憑證）：\n  - " + "\n  - ".join(bad))
     gi = root / ".gitignore"
-    gi_text = gi.read_text() if gi.exists() else ""
-    if not ignores_env(gi_text):
+    return {"gate": "G2", "rule_id": RULE_IGNORE,
+            "env_gitignore_fail": 0 if ignores_env(gi.read_text() if gi.exists() else "") else 1,
+            "committed_rule_id": RULE_COMMITTED,
+            "committed": sorted(f for f in files or [] if ENV_RE.search(f) and not ALLOW.search(f)),
+            "error": None if files is not None else "無法列出已追蹤檔案（不是 git repo 或 git 失敗）：無法確認 .env 未入版控"}
+
+def check(root=ROOT):
+    """回傳錯誤訊息清單；空清單 = 通過。"""
+    rec = record(root)
+    errs = []
+    if rec["error"]:
+        errs.append(rec["error"] + "（incomplete ≠ pass）。")
+    if rec["committed"]:
+        errs.append("已追蹤的機密檔（應移出版控並撤銷其中憑證）：\n  - " + "\n  - ".join(rec["committed"]))
+    if rec["env_gitignore_fail"]:
         errs.append(".gitignore 未包含 .env 規則（新建的 .env 可能被誤加入）。")
     return errs
 
@@ -73,6 +85,8 @@ def selftest():
         D = Path(d)
         if not any("無法列出" in e for e in check(D)):
             fails.append("非 git 目錄應回報無法確認（fail closed）")
+        if not record(D)["error"] or record(D)["committed"]:
+            fails.append("非 git 目錄：record() 應記 error（incomplete），不是「沒有已提交的檔」")
         env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x", "HOME": d, "PATH": __import__("os").environ.get("PATH", "")}
         subprocess.run(["git", "init", "-q", "."], cwd=D, check=True, env=env)
         (D / ".gitignore").write_text(".env\n")
@@ -81,6 +95,9 @@ def selftest():
         errs = check(D)
         if not any("設定/.env" in e for e in errs) or any(".env.example" in e for e in errs):
             fails.append(f"含非 ASCII 路徑的已追蹤 .env 應被抓到，.env.example 不算（得到 {errs}）")
+        rec = record(D)
+        if rec["committed"] != ["設定/.env"] or rec["env_gitignore_fail"] or rec["error"]:
+            fails.append(f"record() 應把已提交的 .env 記在 committed，不是 .gitignore 少規則（得到 {rec}）")
         subprocess.run(["git", "rm", "-q", "--cached", "設定/.env"], cwd=D, check=True, env=env)
         if check(D):
             fails.append(f"移出版控後應通過（得到 {check(D)}）")
@@ -101,6 +118,9 @@ def main(argv):
         print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
         return 1 if fails else 0
     root = Path(argv[argv.index("--target") + 1]) if "--target" in argv[:-1] else ROOT
+    if "--json" in argv:
+        print(json.dumps(record(root), ensure_ascii=False))
+        return 0
     errs = check(root)
     if errs:
         print("⛔ G2 .env 防護阻擋：\n" + "\n".join(errs), file=sys.stderr)

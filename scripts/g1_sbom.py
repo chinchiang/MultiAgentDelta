@@ -32,8 +32,10 @@ RULE = "vibesec.g1.sbom-incomplete"
 CONTROL = "VS-G1-SBOM"
 VERSION = "1.0.0"
 SPEC = re.compile(r"^1\.(\d+)$")
-# 與 g1_slopcheck.MANIFEST_RE 一致：檔名含 requirements 的 .txt 都算（例如 locks/python-requirements.txt）
-LOCKFILE = re.compile(r"(?:(?:^|/)(?:package-lock\.json|uv\.lock|poetry\.lock)|requirements[^/]*\.txt)$")
+# 與 g1_slopcheck.REQUIREMENTS_RE 一致：檔名含 requirements 的 .txt（locks/python-requirements.txt），
+# 或 requirements/ 目錄下的 .txt（requirements/base.txt）
+LOCKFILE = re.compile(r"(?:(?:^|/)(?:package-lock\.json|uv\.lock|poetry\.lock)"
+                      r"|[^/]*requirements[^/]*\.txt|(?:^|/)requirements/(?:[^/]+/)*[^/]+\.txt)$")
 UNPARSED = re.compile(r"(?:^|/)(pnpm-lock\.yaml|yarn\.lock)$")
 PURL = re.compile(r"^pkg:(npm|pypi)/([^@?#]+)@([^?#]+)")
 SYFT_ENV = {"SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES": "true", "SYFT_CHECK_FOR_APP_UPDATE": "false"}
@@ -289,6 +291,8 @@ def selftest() -> list[str]:
             fails.append("requirements 只核對以 == 釘選者")
         if s["lockfiles"].get("locks/python-requirements.txt", {}).get("pinned") != 1:
             fails.append("檔名含 requirements 的 .txt（locks/python-requirements.txt）也要核對")
+        if not LOCKFILE.search("requirements/base.txt") or LOCKFILE.search("docs/notes.txt"):
+            fails.append("requirements/ 目錄下的 .txt 也要核對（與 g1_slopcheck.REQUIREMENTS_RE 一致），其他 .txt 不算")
         if "requirements-dev.txt" in s["lockfiles"] and s["lockfiles"]["requirements-dev.txt"]["pinned"]:
             fails.append("沒有釘選的 requirements 不應產生核對項目")
         nodev = bom("pkg:npm/left-pad@1.3.0", "pkg:pypi/typing-extensions@4.12.2", "pkg:pypi/idna@3.10")

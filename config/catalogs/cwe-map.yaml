@@ -148,7 +148,16 @@ rules:
                      gitleaks:vibesec-glm-zhipu-api-key, gitleaks:vibesec-google-ai-studio-key]
   vibesec.g2.env-not-ignored:
     cwe: CWE-538
-    title: ".env 存在但未列入 .gitignore，或 .env 已被提交"
+    title: ".gitignore 未忽略 .env（新建的 .env 可能被誤加入）"
+    control_ids: [ASVS5-V13.3]
+    gate: G2
+    policy_tier: advisory
+  # 以前與 env-not-ignored 是同一條：已提交的 .env 只記成 advisory 的「.gitignore 少一條規則」（位置 .gitignore），
+  # 但 blocking-policy 對 env-not-ignored 的理由是「尚未實際提交祕密」。拆開後 tier 由 blocking-policy 決定
+  # （目前未列入 → default_tier advisory；要升 blocking 須由人類在獨立 PR 修改政策，CLAUDE.md 規則 1）
+  vibesec.g2.env-committed:
+    cwe: CWE-538
+    title: ".env／.env.* 機密檔已被 git 追蹤（.env.example 等範本除外）"
     control_ids: [ASVS5-V13.3]
     gate: G2
     policy_tier: advisory

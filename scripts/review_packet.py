@@ -14,7 +14,9 @@ Claude Code 的 reviewer sub-agent 能自己讀 repo，scripts/review_provider.p
 內容一律取自 commit（git show），不讀工作目錄。
 
 不可違反（CLAUDE.md 規則 7）：
-  - 送出前以 gitleaks（本 repo 的 config/gitleaks.toml）掃描要附上的內容，命中的字串一律換成前 4 後 4 加 sha256 指紋。
+  - 送出前以 gitleaks（本 repo 的 config/gitleaks.toml）掃描要附上的內容，命中的字串一律換成遮罩加 sha256 指紋
+    （至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）。被測程式碼的 `gitleaks:allow` 註解不採信
+    （--ignore-gitleaks-allow）：那是被測專案自己寫的，不能決定祕密要不要送出去。
     gitleaks 缺席或失敗 → 無法確認祕密已遮罩，不產生審查包（exit 2）。審查包的資料分級沿用 --base（必須宣告，否則不產生），不在這裡判定；--base 內容一併掃描遮罩。
   - 超過 --max-bytes → 不產生（exit 2），不默默截斷：截斷後的審查包會讓模型以為看到了全部。
 離開碼：0 產生；2 無法產生（缺 gitleaks、掃描失敗、超過上限、找不到 commit 或威脅模型）；4 參數錯誤。
@@ -125,17 +127,21 @@ def gitleaks_scan(texts: dict[str, str]) -> list[str]:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
         report = pathlib.Path(d) / "report.json"
+        # --ignore-gitleaks-allow：受測程式碼寫 `# gitleaks:allow` 就能讓金鑰不被遮罩、明文送雲端（同 g2_secrets 掃外部目標）
         r = subprocess.run([binary, "dir", str(src), "--config", str(ROOT / "config/gitleaks.toml"), "--no-banner",
                             "--report-format", "json", "--report-path", str(report), "--exit-code", "0",
-                            "--log-level", "error"], capture_output=True, text=True, timeout=300)
+                            "--ignore-gitleaks-allow", "--log-level", "error"], capture_output=True, text=True, timeout=300)
         if r.returncode != 0 or not report.is_file():
             raise PacketError(f"gitleaks 掃描失敗（exit {r.returncode}）：不產生審查包")
         return sorted({h["Secret"] for h in json.loads(report.read_text() or "[]") if h.get("Secret")})
 
 
 def mask(text: str, hits: list[str]) -> str:
+    """命中字串換成遮罩加 sha256 指紋。至少遮住 8 個字元：以前一律留前 4 後 4，8 字元的密碼等於全文照抄。"""
     for s in sorted(hits, key=len, reverse=True):
-        text = text.replace(s, f"{s[:4]}…{s[-4:]}[masked sha256:{hashlib.sha256(s.encode()).hexdigest()[:12]}]")
+        k = min(4, max(0, (len(s) - 8) // 2))
+        shown = f"{s[:k]}…{s[-k:]}" if k else "…"
+        text = text.replace(s, f"{shown}[masked sha256:{hashlib.sha256(s.encode()).hexdigest()[:12]}]")
     return text
 
 
@@ -183,7 +189,7 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
     pkt["threat_model_full"] = numbered(mask(tm, hits))
     pkt["source_files"] = files
     pkt["source_files_note"] = (f"{note}（docs/09 §6）。只附上列檔案，不送整個 repo。"
-                                f"gitleaks 命中 {len(hits)} 個字串，已遮罩為前 4 後 4 加 sha256 指紋。"
+                                f"gitleaks 命中 {len(hits)} 個字串，已遮罩並附 sha256 指紋。"
                                 + (f"略過 {len(skipped)} 個非文字檔（未附上，模型沒看到）：{'、'.join(skipped)}。" if skipped else ""))
     size = len(json.dumps(pkt, ensure_ascii=False).encode())
     if size > max_bytes:
@@ -256,6 +262,38 @@ def selftest() -> list[str]:
             build(base, repo, threat_model="docs/missing.yaml", scan=fake); fails.append("缺威脅模型必須拒絕")
         except PacketError:
             pass
+        # 遮罩至少遮住 8 個字元：以前一律留前 4 後 4，8 字元的祕密原樣保留、9–11 字元只遮 1–3 個
+        # 失敗訊息只報字元數，不印遮罩結果：遮罩失敗時其中就含祕密（規則 7；CodeQL py/clear-text-logging-sensitive-data）
+        for sample in ("hunter22", "abcdefghi", "abcdefghijk1", "sk-" + "Q7" * 20):
+            masked = mask(f"pw={sample}", [sample])
+            n_shown = len(masked[3:].split("[masked sha256:")[0].replace("…", ""))
+            n_total = len(sample)
+            if sample in masked or n_shown > n_total - 8:
+                fails.append(f"{n_total} 字元的祕密遮罩後露出 {n_shown} 字元（至少要遮住 8 個）")
+        if not mask("k=" + "sk-" + "Q7" * 20, ["sk-" + "Q7" * 20]).startswith("k=sk-Q…Q7Q7[masked sha256:"):
+            fails.append("16 字元以上的祕密維持前 4 後 4 加指紋")
+        # gitleaks:allow 不採信：假 gitleaks 模擬真實行為（有 allow 註解時不回報，除非帶 --ignore-gitleaks-allow）
+        allowed = "sk-" + "A1" * 20
+        (repo / "app/util.py").write_text(f"KEY = '{allowed}'  # gitleaks:allow\n")
+        git(repo, "commit", "-qam", "allow-comment")
+        fake_bin = pathlib.Path(d) / "fake-gitleaks"
+        fake_bin.write_text("#!/bin/sh\n"
+                            "report=; prev=; allow=0\n"
+                            "for a in \"$@\"; do [ \"$prev\" = --report-path ] && report=$a; "
+                            "[ \"$a\" = --ignore-gitleaks-allow ] && allow=1; prev=$a; done\n"
+                            f"if [ $allow = 1 ]; then echo '[{{\"Secret\": \"{allowed}\"}}]' > \"$report\"; "
+                            "else echo '[]' > \"$report\"; fi\n")
+        fake_bin.chmod(0o755)
+        old = os.environ.get("VIBESEC_GITLEAKS")
+        os.environ["VIBESEC_GITLEAKS"] = str(fake_bin)
+        try:
+            pkt = build(base, repo)
+            if allowed in json.dumps(pkt) or "[masked sha256:" not in pkt["source_files"].get("app/util.py", ""):
+                fails.append("被測程式碼的 gitleaks:allow 註解不得讓祕密免遮罩（gitleaks 須帶 --ignore-gitleaks-allow）")
+        finally:
+            os.environ.pop("VIBESEC_GITLEAKS", None)
+            if old is not None:
+                os.environ["VIBESEC_GITLEAKS"] = old
         old = os.environ.pop("VIBESEC_GITLEAKS", None); path = os.environ.get("PATH", "")
         os.environ["PATH"] = ""
         try:

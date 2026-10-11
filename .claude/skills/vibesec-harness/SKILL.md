@@ -75,7 +75,7 @@ git -C "$TARGET" diff --name-only <base>...HEAD -- package.json package-lock.jso
 python3 scripts/g2_secrets.py --target "$TARGET" --out-dir reports/raw/G2 --gate reports/gates/G2.json
 ```
 
-外部專案：目標專案自己的 `gitleaks:allow` 註解不採信，`.gitleaksignore` 會在 `status_reason` 註明待人工確認。命中的祕密：`title` / `description` 只留前 4 後 4 遮罩與 `sha256`；通過格式驗證者 → `vibesec.g2.hardcoded-secret`（blocking）。
+外部專案：目標專案自己的 `gitleaks:allow` 註解不採信，`.gitleaksignore` 會在 `status_reason` 註明待人工確認。命中的祕密：`title` / `description` 只留遮罩（至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）與 `sha256`；通過格式驗證者 → `vibesec.g2.hardcoded-secret`（blocking）。
 
 ### G3 SAST / IaC
 
