@@ -7,7 +7,9 @@
 
 只對 config/targets.yaml 允許的目標送請求（scripts/target_guard.py；CLAUDE.md 規則 8）；被拒 → untested，不送任何請求。
 對 <target><path> POST {"message": "A"*chars, "context": "", "session_id": "vibesec-cost-probe"}：
-  HTTP 400／413／422／429                      → pass（有長度上限或配額）
+  HTTP 413／429                                → pass（有長度上限或配額）
+  HTTP 400／422 且錯誤內容指出過長（string_too_long、max_length、too long…）→ pass
+  HTTP 400／422 但是與長度無關的驗證錯誤（例如 pydantic missing：欄位名稱不符）→ untested
   2xx 且回應 JSON 的 usage 總 token ≤ max-tokens → pass（有可見的 token 預算，例如截斷輸入）
   其他 2xx                                     → fail（接受超長輸入、看不到成本上限）
   401／403、5xx、其他狀態、逾時、連線失敗        → untested（無法判定；incomplete ≠ pass）
@@ -21,7 +23,30 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from target_guard import GuardConfigError, check as guard_check  # noqa: E402
 
 CHECK, CONTROL = "denial_of_wallet_cost", "LLM10:2025"
-REJECT = {400, 413, 422, 429}
+REJECT = {413, 429}            # 413 Payload Too Large、429 配額／速率限制：本身就是「有上限」
+VALIDATION = {400, 422}        # 一般驗證錯誤（FastAPI 的 body 形狀不符也是 422）：要看錯誤內容是不是在說「太長」
+_LENGTH_HINTS = ("too long", "too_long", "too large", "too_large", "max_length", "maxlength", "max length",
+                 "at most", "exceed", "長度", "過長", "太長", "上限")
+
+
+def _validation_kind(body: bytes) -> tuple[bool, str]:
+    """400／422 回應是不是「長度上限」：回傳 (是否長度相關, 不含回應內容的摘要)。
+    pydantic／FastAPI：detail 是 [{type, loc, msg, input}]，input 會回顯請求內容，所以只取 type 與 loc 當摘要。"""
+    try:
+        d = json.loads(body.decode("utf-8", "replace"))
+    except Exception:
+        d = None
+    det = d.get("detail") if isinstance(d, dict) else None
+    if isinstance(det, list) and det and all(isinstance(x, dict) for x in det):
+        texts = [f"{x.get('type') or ''} {x.get('msg') or ''}".lower() for x in det]
+        locs = [".".join(str(p) for p in x["loc"]) if isinstance(x.get("loc"), list) else "?" for x in det]
+        summary = "、".join(f"{x.get('type') or '?'}@{l}" for x, l in zip(det, locs))[:200]
+        return all(any(h in t for h in _LENGTH_HINTS) for t in texts), summary
+    if isinstance(d, dict):
+        txt = " ".join(str(d.get(k) or "") for k in ("detail", "error", "message", "msg", "code", "type"))
+    else:
+        txt = body[:4000].decode("utf-8", "replace")
+    return any(h in txt.lower() for h in _LENGTH_HINTS), "錯誤內容非 pydantic 格式"
 
 
 def _usage_total(body: bytes) -> int | None:
@@ -72,7 +97,11 @@ def probe(target: str, path: str = "/chat", chars: int = 200000, max_tokens: int
         with _OPENER.open(req, timeout=timeout) as resp:
             status, raw = resp.status, resp.read(1 << 20)
     except urllib.error.HTTPError as e:
-        status, raw = e.code, b""
+        try:
+            raw = e.read(1 << 16) if e.code in VALIDATION else b""
+        except Exception:
+            raw = b""
+        status = e.code
     except Exception as e:
         res["evidence"]["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
         res["reason"] = f"請求失敗（{type(e).__name__}），無法判定成本控制"
@@ -81,6 +110,14 @@ def probe(target: str, path: str = "/chat", chars: int = 200000, max_tokens: int
     ev["http_status"], ev["elapsed_ms"] = status, int((time.monotonic() - t0) * 1000)
     if status in REJECT:
         res["state"], res["reason"] = "pass", f"超長輸入（{chars} 字元）被拒絕：HTTP {status}"
+    elif status in VALIDATION:
+        about_len, summary = _validation_kind(raw)
+        if about_len:
+            res["state"], res["reason"] = "pass", f"超長輸入（{chars} 字元）被長度驗證拒絕：HTTP {status}（{summary}）"
+        else:
+            # 例如欄位名稱不符（pydantic missing）：請求沒被當成超長訊息處理，不能當作「有長度上限」
+            res["reason"] = (f"HTTP {status} 是與長度無關的驗證錯誤（{summary}），探針請求格式可能與端點不符，"
+                             "無法判定成本控制")
     elif 200 <= status < 300:
         total = _usage_total(raw)
         ev["usage_total_tokens"] = total
@@ -119,7 +156,13 @@ def selftest() -> list[str]:
                              "accept": (200, b'{"reply":"ok"}'),
                              "usage_ok": (200, b'{"reply":"ok","usage":{"input_tokens":4000,"output_tokens":100}}'),
                              "usage_big": (200, b'{"reply":"ok","usage":{"total_tokens":60000}}'),
-                             "auth": (401, b"{}"), "error": (500, b"{}")}[m]
+                             "auth": (401, b"{}"), "error": (500, b"{}"),
+                             "pyd_len": (422, b'{"detail":[{"type":"string_too_long","loc":["body","message"],'
+                                              b'"msg":"String should have at most 4000 characters","input":"AAAAAAAA"}]}'),
+                             "pyd_missing": (422, b'{"detail":[{"type":"missing","loc":["body","prompt"],'
+                                                  b'"msg":"Field required","input":{"message":"AAAAAAAA"}}]}'),
+                             "bad_400": (400, b'{"detail":"invalid session_id"}'),
+                             "len_400": (400, b'{"error":"message too long"}')}[m]
             try:
                 self.send_response(code); self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
@@ -131,11 +174,14 @@ def selftest() -> list[str]:
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     try:
         for mode, want in (("reject", "pass"), ("accept", "fail"), ("usage_ok", "pass"), ("usage_big", "fail"),
-                           ("auth", "untested"), ("error", "untested")):
+                           ("auth", "untested"), ("error", "untested"), ("pyd_len", "pass"),
+                           ("pyd_missing", "untested"), ("bad_400", "untested"), ("len_400", "pass")):
             behavior["mode"] = mode
             r = probe(base, chars=10000, timeout=10)
             if r["state"] != want:
                 fails.append(f"{mode}：預期 {want}，實際 {r['state']}（{r['reason']}）")
+            if "AAAA" in json.dumps(r):
+                fails.append(f"{mode}：結果不得保存回應內容（pydantic 的 input 會回顯請求）")
         before = hits["n"]
         r = probe("http://example.com", chars=10, timeout=5)
         if r["state"] != "untested" or "授權" not in (r["reason"] or ""):
