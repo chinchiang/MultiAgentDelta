@@ -118,7 +118,7 @@ role: harness
 - `0`：`mode: shadow`；或 enforce 且無 blocking 發現、無 blocking 閘門 incomplete。
 - `1`：enforce 且存在 `policy_tier: blocking` 且 `validation_status != refuted` 的發現。
 - `2`：enforce 且 `incomplete_gate_is_blocking_in_enforce` 內閘門 incomplete；或主設定無法載入。
-- 同時符合 1 與 2 → 回 1，summary 兩者都列。
+- 同時符合 1 與 2 → 回 1，summary 兩者都列。（harness 本機規則；CI 的實際優先序見 docs/08 §8）
 
 ## 9. 硬性禁止
 

@@ -93,7 +93,7 @@
         },
         "requires_human": { "type": "boolean" },
         "human_decision": { "type": ["string", "null"] },
-        "ruling_ref": { "type": ["string", "null"], "description": "人工裁決紀錄路徑，例如 rulings/VS-20261003-1a2b3c4d.yaml（docs/09 §7）" }
+        "ruling_ref": { "type": ["string", "null"], "description": "人工裁決紀錄路徑，例如 rulings/VS-20261003-1a2b3c4d.yaml（docs/09 §12）" }
       }
     },
     "retest_result": { "type": ["string", "null"], "enum": ["fixed", "still_present", "regressed", "not_retested", null] },

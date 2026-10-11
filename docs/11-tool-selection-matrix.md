@@ -24,7 +24,7 @@ Vibe Coding 產生的程式碼有兩個傳統工具難以覆蓋的面向：AI �
 | **Socket / DevSentinel** | — | 行為分析 / 惡意套件 / Slopsquatting | 商業 / 免費層 | 安裝前驗證存在性、下載量、冷卻期 |
 | **SlopCheck / SlopScan** | — | Markdown、`.cursorrules`、`AGENTS.md` | 開源 / API | Agent 規則檔中捏造套件名 |
 
-G1 的四層快篩（存在性、相似度、安裝 Hook、冷卻期）以純 stdlib Python 內嵌於 `pr-gates.yml`，再接 Syft + Grype/Trivy 做 SBOM 與 CVE。詳見 `docs/02-g1-supply-chain.md`。
+G1 的四層快篩（存在性、相似度、安裝 Hook、冷卻期）以純 stdlib Python 實作於 `scripts/g1_slopcheck.py`，由 `pr-gates.yml` 呼叫，再接 Syft + Grype/Trivy 做 SBOM 與 CVE。詳見 `docs/02-g1-supply-chain.md`。
 
 ## 三、Secrets
 
@@ -59,7 +59,7 @@ G1 的四層快篩（存在性、相似度、安裝 Hook、冷卻期）以純 st
  • Trivy + Gitleaks      • Socket / DevSentinel   • SonarQube AI Code Assurance
  • OWASP ZAP (+Nuclei)   • Trivy + Burp Suite Pro • 商用 DAST + 委外滲透測試
  • garak / promptfoo     • PyRIT + promptfoo      • 商用 AI 紅隊平台 + 沙箱隔離 + HITL
- （重點 G1、G2）          （六閘門全開）           （六閘門深度加倍、對齊 EU CRA / ISO 27001）
+ （重點 G1、G2；政策上 L1 只套用 G1、G2，下列 ZAP／garak／promptfoo 為自願加碼）  （六閘門全開）  （六閘門深度加倍、對齊 EU CRA / ISO 27001）
 ```
 
 - **L1**：全開源、零授權費；跨檔污點較弱、需自行整合 SARIF。

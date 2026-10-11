@@ -28,7 +28,7 @@ G0 的角色是在寫第一行程式碼前，把這兩件事變成**明文**：�
 | `major_change` | 重大架構變更：新增對外介面、新增資料儲存、改變驗證方式、新增第三方整合 | 更新受影響的 flows / trust_boundaries / threats，重算 risk_tier |
 | `agent_introduction` | 導入 LLM Agent、MCP 伺服器、新工具，或既有 Agent 新增能力 | 更新 `agents[]`，重跑 Lethal Trifecta 檢驗 |
 
-性質：**阻擋性文件閘門**。`project.threat_model` 指向的檔案不存在或不符 schema → G0 狀態 `incomplete`（`status_reason: "threat model missing"`），harness 不得把 `risk_tier` 當成已決定；在 `enforce` 模式下 G0 incomplete 使 exit code 為 2。
+性質：**阻擋性文件閘門**。`project.threat_model` 指向的檔案不存在或不符 schema → G0 狀態 `incomplete`（`status_reason: "threat model missing"`），harness 不得把 `risk_tier` 當成已決定；本機／harness 執行 `g0_threat_model.py` 時 incomplete 回傳 exit 2；CI 內 G0 由 `repo-validate`（`validate.py`）檢查（錯誤為 exit 1），G0 不在 `incomplete_gate_is_blocking_in_enforce`（目前僅 G1、G2）清單內。
 
 ## 核心任務
 
@@ -137,13 +137,13 @@ LLM 輔助（非裁決）：harness 可請 `architecture` reviewer 依 DFD 提�
 | 報告 | `docs/templates/g0-report.md` |
 | 分級參數 | `vibesec.yaml` → `risk_tier`、`gates.g0_threat_model` |
 | MAESTRO 對照 | `config/catalogs/maestro-layers.yaml` |
-| 畫圖（可選） | OWASP Threat Dragon、pytm（程式化 DFD）、draw.io；圖檔放 `docs/threat-models/` |
+| 畫圖（可選） | OWASP Threat Dragon、pytm（程式化 DFD）、draw.io；圖檔可自行放在 `docs/threat-models/`（目錄尚未建立） |
 
 ## 阻擋政策
 
 | 條件 | 結果 |
 |---|---|
-| threat-model 缺失 / 不符 schema | `incomplete`（enforce 時 exit 2） |
+| threat-model 缺失 / 不符 schema | `incomplete`（本機執行 exit 2；CI 由 validate.py 檢查，不在 enforce 擋 merge 清單） |
 | Lethal Trifecta 全 true 且無 mitigation | `fail`（blocking） |
 | `risk_tier` 兩處不一致或低於推導值 | `fail`（blocking） |
 | `contains_llm: true` 但未用 MAESTRO（`vibesec.g0.maestro-missing`） | advisory |
@@ -155,8 +155,8 @@ LLM 輔助（非裁決）：harness 可請 `architecture` reviewer 依 DFD 提�
 | `risk_tier` | 啟用閘門 | 深度要求 | 工具組合（docs/11） |
 |---|---|---|---|
 | **L1** 純內部、不含 LLM、不處理個資 | G1、G2；G3–G6 記 `not_applicable` 並附理由（例如「internal, no LLM」） | G1 冷卻期 + 黑名單；G2 全歷史 | 全開源：Semgrep CE + Trivy + Gitleaks |
-| **L2** 對外或處理業務資料 | G1–G6 全開 | G3 需跨檔污點（Semgrep Pro 或夜間 CodeQL）；G5 需雙帳號 BOLA；G6 五項檢查 | Semgrep Pro / CodeQL + Socket / DevSentinel + Trivy + Burp Suite Pro + PyRIT / promptfoo |
-| **L3** 對外 + 個資 / 商業機密 + 高權限 Agent | G1–G6 全開且深度加倍 | 正式威脅建模（ASVS 5.0 L3 明列）；委外滲透；商用 AI 紅隊平台；沙箱隔離 + HITL 為必要；`review.min_families_for_high_risk` 建議提高到 3 | Checkmarx / Snyk + SonarQube AI Code Assurance + 商用 DAST + 委外滲透；對齊 EU CRA / ISO 27001 |
+| **L2** 對外或處理業務資料 | G1–G6 全開 | G3 需跨檔污點（Semgrep Pro 或夜間 CodeQL）；G5 需雙帳號 BOLA；G6 五項檢查 | 建議組合（非本 repo 現況，現況為 Semgrep CE、CodeQL、Checkov、Trivy、ZAP、promptfoo、garak）：Semgrep Pro / CodeQL + Socket / DevSentinel + Trivy + Burp Suite Pro + PyRIT / promptfoo |
+| **L3** 對外 + 個資 / 商業機密 + 高權限 Agent | G1–G6 全開且深度加倍 | 正式威脅建模（ASVS 5.0 L3 明列）；委外滲透；商用 AI 紅隊平台；沙箱隔離 + HITL 為必要；`review.min_families_for_high_risk` 建議提高到 3 | 建議組合（規劃，非現況）：Checkmarx / Snyk + SonarQube AI Code Assurance + 商用 DAST + 委外滲透；對齊 EU CRA / ISO 27001 |
 
 ## MAESTRO 七層對照表（CSA，2025 年 2 月）
 

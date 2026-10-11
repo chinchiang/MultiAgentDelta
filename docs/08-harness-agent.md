@@ -67,7 +67,7 @@ stateDiagram-v2
 | ParseNative | SARIF 2.1.0 取 `runs[].results[]` 與 `tool.driver.rules[]`；JSON（grype、trivy、gitleaks、zap、promptfoo、garak）各自的 adapter | 解析失敗 → 該工具 `state: error`，閘門 `incomplete` |
 | Normalise | 產生 `id`（`VS-YYYYMMDD-<8 hex>`，hex 取 `sha256(rule_id + path + line + commit)` 前 8 碼）、`rule_id` 前綴、`location`、`evidence_refs`、`sources` | 欄位缺失以 `null` 補，不得省略 |
 | ApplyPolicy | 查 `blocking:` / `advisory:` / `tier_overrides.<tier>` / `exceptions:` 決定 `policy_tier` | 規則不在任何清單 → `default_tier` |
-| Review | 僅對 `llm_review: true` 的閘門（G4）與 E1 / E2 且 policy_tier 為 blocking 或 P0 / P1 候選的發現送審 | provider 失敗 → 意見缺席，見 docs/09 §9 |
+| Review | 僅對 `llm_review: true` 的閘門（G4）與 E1 / E2 且 policy_tier 為 blocking 或 P0 / P1 候選的發現送審 | provider 失敗 → 意見缺席，見 docs/09 §11 |
 | Score | 依 docs/10：CVSS v4.0 向量（工具提供或 reviewer 提議、人工確認後才填）、EPSS / KEV 查詢、E 等級、P 優先序 | 查詢 API 失敗 → `epss: null`、`kev: null`，`notes` 記原因；不影響閘門狀態 |
 | GateResult | 寫 `reports/gates/G<N>.json`（符合 `schemas/gate-result.schema.json`） | — |
 | WriteReports | 合併寫出 `output.*` 四個檔案 | — |
@@ -105,7 +105,7 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 - `diff_aware: true` 的閘門（G1、G3、G4）在 PR 事件只處理 `git diff --name-only <base>...HEAD` 的檔案；G1 另外比對 lockfile 的新增 / 升版項目。
 - `diff_aware: false` 的閘門（G2）永遠全量：祕密可能在舊 commit。
 - G5、G6 沒有 diff 概念，永遠對目標全量。
-- 夜間工作流（`.github/workflows/nightly-full.yml`）把所有閘門以 `scope: full` 重跑，並加上 `g3_sast_iac.nightly_full: [codeql]`。
+- 夜間工作流（`.github/workflows/nightly-full.yml`）跑 CodeQL、Semgrep 全量、G1 全量／attest、G2 全 Git 歷史與 evals；G3 IaC、G4 不在夜間重跑，G5／G6 由 `staging-blackbox.yml` 每週日跑。
 - gate result 必須記錄 `scope` 與 `diff_base`；PR 階段 `scope: diff` 的「pass」只代表「變更部分通過」，`summary.md` 要寫明。
 
 ## 7. Timeout 與 `incomplete ≠ pass`
@@ -138,7 +138,7 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 | `1` | `mode: enforce` 且至少一個 `policy_tier: blocking` 的發現 `validation_status != refuted` | 阻擋 PR / 部署 |
 | `2` | `mode: enforce` 且 `incomplete_gate_is_blocking_in_enforce` 內的閘門 `incomplete`；或主設定無法載入 | 「不知道」也要擋。這是 incomplete ≠ pass 的 CI 落地 |
 
-優先序：若同時有 blocking 發現與 blocking 閘門 incomplete，回 `1`（有確定的壞消息優先於不確定），但 `summary.md` 必須同時列出兩者。整體 exit code 為所有閘門 exit code 的最大值（`1` 與 `2` 同時存在時取 `1`，見上）。
+優先序（依現行 CI 實作）：PR 的 `pr-gates.yml` summary 先判 blocking 閘門 incomplete → `2`，再判 blocking 發現 → `1`，兩者同時存在時為 `2`；`staging-blackbox.yml` 的 verdict 步驟中 blocking 失敗與 blocking 閘門 incomplete 都回 `1`，只有 mode 或政策檔無法載入才回 `2`。`summary.md` 必須同時列出兩者。
 
 ## 9. 報告產物
 
@@ -146,7 +146,7 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 
 | 檔案 | 內容 | 消費者 |
 |---|---|---|
-| `reports/vibesec.sarif` | SARIF 2.1.0，只含 `location.kind` 為 `code / dependency / config` 的發現；每個 run 對應一個工具；`rule.id` 為 `rule_id`，`properties` 帶 vibesec 欄位（對映表見 docs/10 §8） | GitHub Code Scanning |
+| `reports/vibesec.sarif` | SARIF 2.1.0，只含 `location.kind` 為 `code / dependency / config` 的發現；每個 run 對應一個工具；`rule.id` 為 `rule_id`，`properties` 帶 vibesec 欄位（對映表見 docs/10 §7） | GitHub Code Scanning |
 | `reports/findings.json` | `{ "findings": [Finding...] }`，全部發現，含 `review.opinions[]` | 人工分流、evals、儀表板 |
 | `reports/risk_register.json` | `location.kind: architecture` 與 `prompt` 的發現，加上 G0 的 open threats | AppSec / 治理 |
 | `reports/gates/G<N>.json` | 每道閘門一個 gate result | CI、coverage 計算 |
@@ -162,7 +162,7 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 | Gate | Status | Scope | Tools (ran/missing/timeout/error) | Blocking | Advisory | Coverage |
 | G1 | pass | diff | syft ✓ grype ✓ trivy ✓ | 0 | 3 | 6/6 |
 | G2 | fail | full | gitleaks ✓ | 1 | 0 | 2/2 |
-| G5 | incomplete | full | zap-baseline ✗(missing) api-probes ✗(error) | – | – | 0/8 |
+| G5 | incomplete | full | zap-baseline ✗(missing) api-probes ✗(error) | – | – | 0/10（示意） |
 
 ## 2. INCOMPLETE（未完成，不等於通過）
 > ⚠ G5: two_account_test required but VIBESEC_TOKEN_B unset
@@ -200,7 +200,7 @@ INCOMPLETE 區塊永遠出現；沒有 incomplete 時寫「無」。
 
 ### (b) GitHub Actions
 
-三條工作流：`pr-gates.yml`（G1–G4，diff-aware）、`nightly-full.yml`（CodeQL + 全量）、`staging-blackbox.yml`（G5 + G6）。Actions 內**只跑確定性工具**，不呼叫 LLM；把 SARIF 上傳 Code Scanning、把 `findings.json` 與 gate results 當 artifact 保留。LLM 審查由 (a) 或 (c) 讀取 artifact 後執行。Actions 自身也是被審對象：第三方 Action 必須固定完整 SHA、`permissions:` 最小化、`pull_request_target` 需追查完整路徑（docs/09 §7）。
+四條工作流：`pr-gates.yml`（G1–G4；Semgrep 與 G1 diff-aware，其餘全樹）、`nightly-full.yml`（CodeQL、Semgrep 全量、G1、G2 歷史、evals）、`staging-blackbox.yml`（G5 + G6）、`review-record-trust.yml`（外部 G4 紀錄不得自證）。Actions 以確定性工具為主；唯一例外是 staging 的選用 promptfoo redteam 會用模型金鑰呼叫 LLM（評分／攻擊生成）。SARIF 上傳 Code Scanning、各 `reports/*-gate.json` 當 artifact 保留；`findings.json`、`risk_register.json`、`summary.md`、`vibesec.sarif` 目前不是 CI 產物，而是由 harness agent（skill）彙整產生。LLM 審查由 (a) 或 (c) 讀取 artifact 後執行。Actions 自身也是被審對象：第三方 Action 必須固定完整 SHA、`permissions:` 最小化、`pull_request_target` 需追查完整路徑（docs/09 §9 原則 2）。
 
 ### (c) 未來 Python CLI（僅規格）
 
@@ -222,7 +222,7 @@ CLI 讀同一份 `vibesec.yaml`，實作同一個狀態機，透過 `config/prov
 5. `evidence_grade` 與 `validation_status` 分開；兩者都不是嚴重度。
 6. 高風險控制至少兩個 family；第一輪不交換；最多兩輪交叉；保留少數意見；不多數決；分歧 `requires_human: true`。
 7. 資料不出境：見 §12。報告中的祕密只保留遮罩（前 4 後 4）與 sha256 指紋。
-8. G5 / G6 探針只打 `VIBESEC_TARGET_URL` 指向的授權環境；harness 必須在發送任何請求前確認該 URL 不在正式環境網域清單內。
+8. G5 / G6 探針只打 `VIBESEC_TARGET_URL` 指向的授權環境；harness 必須在發送任何請求前以 `scripts/target_guard.py` 確認該 URL 在 `config/targets.yaml` 的授權允許清單內（預設拒絕；`denied_host_suffixes` 目前為空）。
 
 ## 12. 資料駐留規則
 
@@ -231,6 +231,6 @@ CLI 讀同一份 `vibesec.yaml`，實作同一個狀態機，透過 `config/prov
 - 取 `location.path` 對應元件在威脅模型 `assets[].sensitivity` 的最高等級；無威脅模型時一律視為 `confidential`。
 - 程式碼片段本身預設 `internal`；含祕密（即使已遮罩）、個資樣本、客戶資料 → `confidential` 或 `pii`。
 - 例外：威脅模型把原始碼資產標為 `sensitivity: public`（公開 repo，例如本 repo 的 `a-source`）時，取自該 repo 的程式碼與文件片段為 `public`；但上一條的升級條件仍優先（含祕密、個資、客戶資料的片段照樣是 `confidential`／`pii`）。
-- 只有 `allowed_data_classes` 包含該等級的 provider 才可收到該內容。雲端 provider（anthropic、openai、glm、deepseek）預設不收 `confidential` / `pii`；這類內容只送 `rotation.sensitive_data_providers` 列出的地端／內網 provider（`iec-deepseek`、`iec-glm`、`lmstudio-local`、`onprem_vllm`）。
+- 只有 `allowed_data_classes` 包含該等級的 provider 才可收到該內容。雲端 provider（`anthropic-cloud`、`openai-cloud`、`anthropic-bedrock`、`gemini-cloud`、`glm-cloud`、`deepseek-cloud`）預設不收 `confidential` / `pii`；這類內容只送 `rotation.sensitive_data_providers` 列出的地端／內網 provider（`iec-deepseek`、`iec-glm`、`lmstudio-local`、`onprem_vllm`）。
 - 若沒有任何可用 provider 符合分級 → 該發現 `pending`、`notes` 記 `no provider allowed for data_class=pii`，閘門對該控制 `incomplete`。harness **不得**為了湊足兩個 family 而降級資料分類或改送不被允許的 provider。
 - 中國廠區（CSL / DSL / PIPL）專案：`providers.yaml` 只啟用地端 provider，並且報告只傳去識別化統計（見 `docs/13-roadmap-governance-compliance.md`）。

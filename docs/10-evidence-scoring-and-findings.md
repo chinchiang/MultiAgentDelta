@@ -49,7 +49,7 @@
 
 | 維度 | 採用方式 | 欄位 |
 |---|---|---|
-| 技術嚴重度 | CVSS v4.0，保存完整向量與每項判定依據，由確定性計算器計分（`scoring.cvss_version: "4.0"`）；工具只給 v3.1 時照記 `cvss_version: "3.1"`，不換算 | `severity`、`cvss_version`、`cvss_vector`、`cvss_score` |
+| 技術嚴重度 | CVSS v4.0，保存完整向量與每項判定依據，由確定性計算器計分（計算器尚未實作，目前僅 `g1_kev.py` 沿用 grype 提供的向量與分數；`scoring.cvss_version: "4.0"`）；工具只給 v3.1 時照記 `cvss_version: "3.1"`，不換算 | `severity`、`cvss_version`、`cvss_vector`、`cvss_score` |
 | 企業情境 | 已知時補 Threat（E）/ Environmental（CR/IR/AR、Modified Base）指標，寫入同一向量；未知前提在 `notes` 明列 | `cvss_vector`（含 `/E:`、`/CR:` 等段）、`notes` |
 | 外部利用訊號 | 有 CVE 時記 EPSS 機率與查詢日、KEV 狀態與日期（`record_epss`、`record_kev`）；無 CVE 全填 `null` | `epss`、`epss_date`、`kev`、`kev_date` |
 | 證據可信度 | E0–E3；低可信度不把高衝擊問題自動降為低風險 | `evidence_grade` |
@@ -117,9 +117,9 @@
                 "package": null, "version": null, "url": "https://staging.example/orders/1001",
                 "commit": "a1b2c3d" },
   "evidence_refs": [
-    { "kind": "http_exchange", "ref": "reports/raw/G5/api-probes/bola-1001.json",
+    { "kind": "http_exchange", "ref": "reports/raw/G5/api-probes/bola-1001.json（示意；CI 目前只產 SARIF 與 gate JSON）",
       "digest": "sha256:…", "note": "expected 403, got 200 with A's order body" },
-    { "kind": "model_review", "ref": "reports/raw/review/VS-20261003-9f3a1c2e/identity-authz-r1.json",
+    { "kind": "model_review", "ref": "reports/raw/G4/review/round1-identity-authz-<provider>.json",
       "digest": null, "note": "2 families confirm; cites app/routers/orders.py:42" }
   ],
   "review": {
@@ -160,7 +160,7 @@
 | `cwe` | `rules[].properties.tags: ["external/cwe/cwe-89"]`；`rules[].relationships[]` 指向 CWE taxonomy |
 | `location.path / start_line / end_line` | `result.locations[0].physicalLocation.artifactLocation.uri` / `region.startLine` / `region.endLine` |
 | `location.package / version` | `result.locations[0].logicalLocations[0].fullyQualifiedName`（`pkg:npm/axois@1.0.0` purl） |
-| `id` | `result.fingerprints["vibesec/id"]`；`partialFingerprints["vibesec/stable"]` = sha256(rule_id+path) |
+| `id` | `result.fingerprints["vibesec/id"]`；`partialFingerprints["vibesec/stable"]` = sha256(rule_id+path)（規格；目前尚無程式產生這些欄位） |
 | `evidence_grade`, `validation_status`, `policy_tier`, `priority`, `control_id`, `cve`, `epss`, `epss_date`, `kev`, `kev_date`, `cvss_vector`, `gate` | `result.properties.vibesec/<欄位名>` |
 | `evidence_refs[]` | `result.relatedLocations[]`（code_excerpt）與 `result.attachments[]`（tool_output、http_exchange） |
 | `sources.tool / tool_version` | `run.tool.driver.name / version` |
@@ -211,6 +211,6 @@ coverage_ratio = (pass + fail) / (pass + fail + pending + untested)
 
 - 修復驗證使用**新版本**（新 commit / digest），重跑原失敗案例與相關安全對照案例；`retest_result` 設 `fixed` / `still_present` / `regressed`。
 - `fixed` 需同等級證據：E3 的發現要再次實測回 403 或重現失敗；不得只因程式被改動就標 fixed。
-- `regressed`：先前 `fixed` 的發現在後續版本再度出現（以 `partialFingerprints["vibesec/stable"]` 比對）→ 自動升回原 priority，`notes` 記回歸 commit。
+- `regressed`：先前 `fixed` 的發現在後續版本再度出現（以 `partialFingerprints["vibesec/stable"]` 比對；回歸比對尚未實作）→ 自動升回原 priority，`notes` 記回歸 commit。
 - 重測前 `retest_result: not_retested`；`refuted` 的發現不重測（`null`）。
 - 重測結果寫回同一 `id`，不另開新 finding；歷史保留在 `evidence_refs[]`。

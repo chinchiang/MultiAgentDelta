@@ -13,7 +13,7 @@ def complete(messages: list[Message], json_schema: dict, temperature: float = 0)
 
 - `messages`：`[{"role": "system", "content": <角色提示>}, {"role": "user", "content": <審查包>}]`。
 - `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。`scripts/review_provider.py` 依審查包判斷契約：`output` 要 `{"opinions", "general"}` 者為 G4 審查摘要，否則為 §3 的單一 opinion；回應不是 JSON 或不符契約時重試一次，再不符記 `error`，不替模型改寫格式。重試時在原審查包後附上「上一次哪裡不符、應回什麼形狀」；temperature 0 下送出同一份內容只會得到同一個回應，不附說明的重試沒有意義。被拒絕的回應原樣保存在輸出的 `rejected_attempts`（不採用，只供稽核）；無法解析成 JSON 的文字不保存（記為 `null`）。供應商 `finish_reason`／`stop_reason`／`stopReason` 顯示被內容過濾或截斷（不是 `stop`／`end_turn`／`stop_sequence`）時直接記 `error`，不當成格式錯誤重試。所有回傳路徑（含 `note`、被拒絕的回應）都會遮罩供應商金鑰；Bedrock 另遮罩 `AWS_SECRET_ACCESS_KEY` 與 `AWS_SESSION_TOKEN`，遮罩後留 SHA-256 指紋。`anthropic-bedrock` 已由人類決定啟用（2026-10-10，只收 `public`／`internal`，CLAUDE.md 規則 7）；憑證可用明確金鑰，或 `aws_profile_env`（預設 `AWS_PROFILE`）指名的 AWS SSO profile，只用這個指名的 profile，不落到預設憑證鏈；SSO token 過期記 `error`。
-- `temperature` 固定 `0`，讓同一 `prompt_version` 下的輸出可比較。
+- `temperature` 固定 `0`（例外：`anthropic-bedrock` 為 `null`，見欄位表），讓同一 `prompt_version` 下的輸出可比較。
 
 六個 `family`：`anthropic`、`openai`、`google`（Gemini）、`glm`、`deepseek`、`nvidia`（Nemotron，本機 LM Studio）（`schemas/finding.schema.json` 另允許 `fake` 供 evals 用）。`family` 是「同一基礎模型血統」的標籤；同一 family 的兩個 provider（例如雲端 OpenAI 與地端 vLLM 跑的 OpenAI 系開源模型）**不算**兩個 family。
 
@@ -37,7 +37,7 @@ def complete(messages: list[Message], json_schema: dict, temperature: float = 0)
 
 角色依專案適用性啟用（`review.roles`），不等於每個發現都要四個角色、也不等於每個角色都要四個模型。
 
-| 角色 | 範圍（對應 §6 領域） | 輸入 | 可以下的結論 | 不可以下的結論 |
+| 角色 | 範圍（對應 §8 領域） | 輸入 | 可以下的結論 | 不可以下的結論 |
 |---|---|---|---|---|
 | `architecture` | 應用架構、資料可信度與完整性、AI/Agent 安全（架構面）、Insecure error handling（fail-open） | 威脅模型、DFD、元件清單、G4 靜態檢查結果、相關檔案 | 攻擊路徑是否成立、控制缺口在哪、是否為「程式缺陷」或「縱深防禦缺口」 | 不得給 CVSS 分數（架構缺口不硬編分數）；不得宣稱「無其他風險」 |
 | `appsec` | 一般安全弱點、XSS、CSP、Input validation、Insecure error handling（洩漏） | Semgrep / CodeQL 告警、ZAP 結果、程式片段（source→sink 路徑） | 告警是否為真（confirm/refute）、提議 CWE 與 CVSS 向量（待人工確認） | 不得以「有 CSP」反駁 XSS；不得以「缺 CSP」宣稱可利用 XSS |
@@ -75,7 +75,7 @@ def complete(messages: list[Message], json_schema: dict, temperature: float = 0)
 - `proposed_control_id` / `proposed_cwe` **只能是 harness 隨審查包附上的 catalog 片段內的 ID**（`review.ids_from_catalogs_only: true`）。harness 收到不在 catalog 的 ID 一律改 `null` 並在 `notes` 記「reviewer proposed CWE-xxx not in catalog」。
 - `cited_evidence` 為空時，`verdict` 只能是 `uncertain`。
 - `verdict: confirm` 不會自動把 finding 設為 `confirmed`；它只是意見。`validation_status` 由 harness 依 docs/10 §2 規則與人工裁決決定。
-- 模型輸出的任何「信心百分比」欄位會被丟棄，不寫入 finding（§8）。
+- 模型輸出的任何「信心百分比」欄位會被丟棄，不寫入 finding（§10）。
 - `cited_evidence`、`proposed_*`、`defect_kind` 寫入 `evidence_refs[]`（kind `model_review`）與 `notes`，`review.opinions[]` 只保留 schema 定義的欄位。
 
 ## 4. 輪次協定
@@ -126,9 +126,9 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 ## 6. 輪替與成本政策
 
 - 角色 → 偏好 family 在 `providers.yaml rotation.roles` 定義（例如 `appsec: [anthropic, openai]`、`supplychain-cicd: [openai, deepseek]`）。第一個可用且資料分級允許者為主、第二個為第二 family。
-- 每個發現的審查呼叫上限：`角色數 × 2 family × 3 round`。超過 `review.budget`（若設定）→ 剩餘發現 `pending`，`notes` 記 `review budget exhausted`，**不得**為省錢改用單 family 放行高風險控制。
+- 每個發現的審查呼叫上限：`角色數 × 2 family × 3 round`。超過預算（設定於 `config/providers.yaml` 的 `rotation.budget`，**目前只是設定，沒有程式強制執行**）→ 剩餘發現 `pending`，`notes` 記 `review budget exhausted`，**不得**為省錢改用單 family 放行高風險控制。
 - 審查包只送 diff 周邊 ±40 行與被引用的檔案，不送整個 repo；G4 架構審查送威脅模型與元件清單。由 `scripts/review_packet.py` 從受測 commit 產生：full 範圍附威脅模型全文與其以 `path:line` 引用的檔案，diff 範圍附每個變更 hunk 前後 40 行；內容先經 gitleaks 掃描並遮罩命中字串，gitleaks 缺席或超過大小上限就不產生（不截斷）。
-- 同一 `rule_id + path` 在 30 天內已有 E3 人工裁決 → 不重送，沿用舊裁決並標 `retest_result`。
+- （規劃，尚未實作）同一 `rule_id + path` 在 30 天內已有 E3 人工裁決 → 不重送，沿用舊裁決並標 `retest_result`。
 - 地端 provider 不計 token 成本但計時間；`timeout_seconds` 到期即 error。
 
 ## 7. Prompt 版本
@@ -186,7 +186,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 
 **流程**
 
-1. harness 產出 `reports/findings.json` 與 `summary.md` 的「需人工裁決」區塊。
+1. harness（agent）產出 `reports/findings.json` 與 `summary.md` 的「需人工裁決」區塊。
 2. `python3 scripts/ruling.py request <finding_id>` 產生一則可直接貼在 PR 的「請求裁決」留言：列出全部意見（含少數方）與裁決者要做的事。
 3. 裁決者重放或人工核對證據，複製範例為 `rulings/<finding_id>.yaml` 填寫，**逐一回應每則少數意見**。
 4. `python3 scripts/ruling.py check rulings/<finding_id>.yaml` 通過後開 PR，**由另一位人員審查**；PR 就是稽核軌跡（誰、何時、依據什麼）。
