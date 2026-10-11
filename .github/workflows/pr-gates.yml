@@ -464,7 +464,7 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           VIBESEC_CONFIG: _trusted/vibesec.yaml   # 政策與 vibesec_policy.py 取自 default branch
         run: |
-          python3 - <<'EOF'
+          python3 -I - <<'EOF'
           # G4 靜態檢查：隱形 Unicode（Rules File Backdoor）、Supabase RLS、Agent 工具 allow-list、單層 middleware 授權
           import json, re, pathlib, os, datetime, glob, sys
           NOW = datetime.datetime.now(datetime.timezone.utc)
@@ -841,7 +841,7 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'rulings/*.yaml' > "$RUNNER_TEMP/rulings.txt"
-          python3 - "$RUNNER_TEMP/rulings.txt" <<'PY'
+          python3 -I - "$RUNNER_TEMP/rulings.txt" <<'PY'
           import os, sys, yaml
           author = os.environ["PR_AUTHOR"].strip().lower()
           files = [l.strip() for l in open(sys.argv[1]) if l.strip()]
@@ -923,7 +923,7 @@ jobs:
           # 只取各 job 自己上傳的 gate 檔：以前用 find 混抓所有 artifact 裡的同名檔，PR head 的 G1 程式可寫一份假的 g4-gate.json 蓋掉受信任的那份
           [ -f _artifacts/vibesec-g1-reports/g1-gate.json ] && cp _artifacts/vibesec-g1-reports/g1-gate.json reports/g1-gate.json
           [ -f _artifacts/vibesec-g4-reports/g4-gate.json ] && cp _artifacts/vibesec-g4-reports/g4-gate.json reports/g4-gate.json
-          python3 - "$MODE" <<'EOF'
+          python3 -I - "$MODE" <<'EOF'
           import json, glob, os, sys, pathlib, yaml
           MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
           # incomplete 會擋的閘門以 default branch 的 blocking-policy 為準（PR 自己的政策檔不能決定自己的結果）

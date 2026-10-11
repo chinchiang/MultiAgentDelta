@@ -42,11 +42,13 @@ runs:
     # 不依賴 PyYAML：semgrep 容器沒有，pip 也不一定裝得起來。只讀「最上層」的 mode／risk_tier（行首無縮排），
     # 去掉尾端註解與引號（`mode: "enforce"` 帶引號時 awk 會得到含引號的值，enforce 就不擋）。
     # 檔案缺席、找不到 mode 或值不合法 → exit 2：不預設 shadow（在 enforce 下預設 shadow 等於靜默放行）。
+    # `python3 -I -`：工作目錄是 PR head，`python3 -` 會把目前目錄排在 sys.path 最前面，PR 放一支 re.py／pathlib.py
+    # 就能蓋掉標準函式庫、改寫輸出的 mode；-I 不把目前目錄放進 sys.path，也忽略 PYTHON* 環境變數與使用者 site-packages。
     - name: 讀取受信任的 mode / risk_tier
       id: cfg
       shell: bash
       run: |
-        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        python3 -I - <<'PY' >> "$GITHUB_OUTPUT"
         import sys, re, pathlib
         p = pathlib.Path("_trusted/vibesec.yaml")
         if not p.is_file():
