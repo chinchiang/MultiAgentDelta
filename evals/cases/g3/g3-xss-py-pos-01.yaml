@@ -1,0 +1,22 @@
+id: g3-xss-py-pos-01
+gate: G3
+domain: xss
+title: FastAPI 路由把查詢參數未編碼即以 HTMLResponse 輸出
+input:
+  kind: code
+  path: app/main.py
+  snippet: |
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
+
+    app = FastAPI()
+
+    @app.get("/greet")
+    def greet(name: str):
+        return HTMLResponse("<h1>Hello " + name + "</h1>")
+expected:
+  should_flag: true
+  control_id: ASVS5-V1.1
+  rule_id: vibesec.g3.xss-unescaped-render-py
+  policy_tier: advisory
+held_out: false
