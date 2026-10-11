@@ -31,7 +31,7 @@ notes: 靶場 examples/vulnapp 可重現。
 
 - 每個適用領域**至少一正例與一反例**。
 - 至少 **1/3** 案例 `held_out: true`；清單集中於 `evals/split.yaml`。
-- 總數目標 **≥ 60**（目前 129）。
+- 總數目標 **≥ 60**（目前 130）。
 - `domain` 使用 14 審查領域的固定代碼：`application_architecture`、`general_vulnerabilities`、`xss`、`csp`、`authentication`、`authorization`、`dependency`、`build_supply_chain`、`github_actions`、`secret_exposure`、`input_validation`、`error_handling`、`data_integrity`、`ai_agent_security`。
 - `gate_status` 案例驗證閘門在工具／環境失敗時回報的狀態：例如「incomplete ≠ pass」（工具或環境無法完成時，閘門必須回報 incomplete，而非 pass），或「已實測的失敗不得因其他層缺金鑰而被改寫成 incomplete」（`gate_status: fail`）。以 `input.integration` 指定整合層情境；`expected.coverage`（控制 → 狀態）與 `expected.status_reason_contains` 可進一步要求某個覆蓋項的狀態與 status_reason 的內容。
 - 含隱形字元或假金鑰的 fixture 以 YAML 跳脫或佔位值表示，避免觸發本 repo 自身的 G2／G4 掃描。
@@ -66,6 +66,7 @@ python3 scripts/run_evals.py --no-network                                       
   - `integration`：`expected.gate_status` 案例，依 `input.integration` 以受控情境執行 CI **同一支**判定程式，比對閘門結果 JSON：
     - `g1-registry-timeout`：`g1_slopcheck.py --gate` 經「接受連線但永不回應」的本機 HTTPS proxy 查 registry，查詢真的逾時（約 30 秒；不需外網）。
     - `g5-endpoint-405`：staging workflow 中同一份 G5 api-probes 打本機 stub（`/openapi.json` 回 200、其餘一律 405）。
+    - `g5-off-origin`：同上，但 stub 的 OIDC discovery `jwks_uri` 與 `/openapi.json` 的 `paths` 鍵（絕對 URL、`@host:port/…`）指向另一個埠的 canary 伺服器；canary 收到任何請求即記 incomplete（規則 8：探針只能打授權目標的同一來源）。
     - `g6-gate`：`g6_gate.py` 吃依 `config/promptfoo/tests.yaml` 組出的 promptfoo 結果，以及 `input.fixture` 指定的 redteam／garak／成本探針情境。
     結果記 **STATUS_OK**（閘門狀態、預期 fail 時的發現、`expected.coverage`、`expected.status_reason_contains` 皆相符）或 **STATUS_WRONG**，另列「狀態驗證」欄，不計入召回率／精確率。
 - 其餘案例（未標記 `target_app` 的 `http`、`prompt`、`config`，或沒有本機執行器的規則）記為 **untested** 並列出原因（含 `config/catalogs/cwe-map.yaml` 的 `implemented_by`，指出實際由誰實作）；執行器失敗記 **incomplete**。兩者都不計入召回率／精確率，也不算通過。

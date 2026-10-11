@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse, json, pathlib, sys, time, urllib.error, urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from target_guard import GuardConfigError, check as guard_check  # noqa: E402
+from target_guard import GuardConfigError, check as guard_check, same_origin  # noqa: E402
 
 CHECK, CONTROL = "denial_of_wallet_cost", "LLM10:2025"
 REJECT = {413, 429}            # 413 Payload Too Large、429 配額／速率限制：本身就是「有上限」
@@ -88,6 +88,11 @@ def probe(target: str, path: str = "/chat", chars: int = 200000, max_tokens: int
         return res
     if not url.lower().startswith(("http://", "https://")):
         res["reason"] = "只允許 http/https"
+        return res
+    # --path 接在 target 後面：「@evil/x」會變成帳密混淆、打到別的主機；最終 URL 必須與已授權目標同源
+    same, why = same_origin(url, target.rstrip("/"))
+    if not same:
+        res["reason"] = f"拒絕：非授權來源（{why}），未送出請求"
         return res
     body = json.dumps({"message": "A" * chars, "context": "", "session_id": "vibesec-cost-probe"}).encode()
     req = urllib.request.Request(url, data=body, method="POST",
@@ -188,6 +193,9 @@ def selftest() -> list[str]:
             fails.append(f"未授權目標應 untested：{r}")
         if hits["n"] != before:
             fails.append("未授權目標不得送出請求")
+        r = probe(base, path="@example.com/chat", chars=10, timeout=5)
+        if r["state"] != "untested" or "非授權來源" not in (r["reason"] or "") or hits["n"] != before:
+            fails.append(f"path 造成非同源（@host）應 untested 且不送請求：{r}")
         with tempfile.TemporaryDirectory() as d:
             r = probe(base, chars=10, timeout=5, root=pathlib.Path(d))
             if r["state"] != "untested" or hits["n"] != before:
