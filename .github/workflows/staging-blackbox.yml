@@ -388,7 +388,7 @@ jobs:
           VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
           IS_VULNAPP: ${{ steps.target.outputs.is_vulnapp }}
         run: |
-          python3 - <<'EOF'
+          python3 -I - <<'EOF'
           import json, os, sys
           mode = os.environ.get("VIBESEC_MODE") or "missing"
           lab = os.environ.get("IS_VULNAPP") == "true"
@@ -424,6 +424,9 @@ jobs:
                   block.append(f"blocking-policy 無法讀取（{type(e).__name__}）"); code = 2
                   inc_block = set()
               for gid, (st, bl) in states.items():
+                  # 狀態白名單：untested／pending／未知字串都代表沒有證據顯示跑完 → 視同 incomplete
+                  if st not in ("pass", "fail", "not_applicable", "incomplete", "missing"):
+                      st = "incomplete"
                   if st == "fail" and isinstance(bl, int) and bl > 0:
                       block.append(f"{gid} fail（blocking {bl}）"); code = code or 1
                   elif st in ("incomplete", "missing") and gid in inc_block:

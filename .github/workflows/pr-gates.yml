@@ -354,7 +354,8 @@ jobs:
           fi
           # --disable-nosem：`# nosemgrep` 寫在一般程式碼裡、不受 CODEOWNERS 把關，PR 作者加一行就能讓發現消失；
           # 例外只能經 blocking-policy 核准（與 scripts/g3_sast.py 對外部專案的處理一致，第一輪審查 C8）
-          semgrep ci --disable-nosem \
+          # --max-target-bytes=0：預設會靜默跳過 >1 MB 的檔案（實測不留任何通知）；改成照掃，逾時則由 sarif_gate 記 incomplete
+          semgrep ci --disable-nosem --max-target-bytes=0 \
             --config _trusted/config/semgrep/vibesec-rules.yaml \
             --config p/owasp-top-ten \
             --config p/security-audit \
@@ -496,6 +497,24 @@ jobs:
           REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
           # _trusted/ 是 default branch 的判定程式副本，不是被掃描的專案內容
           def _skip(p): return str(p).startswith(("_trusted/", "./_trusted/", ".git/")) or "/node_modules/" in str(p)
+          # 列檔一律用 os.walk：glob 的 ** 會跳過 .agents/、.cursor/ 等隱藏目錄，PR 把高危工具放進隱藏目錄就看不到
+          def _files(*exts):
+              out = []
+              for root, dirs, files in os.walk("."):
+                  dirs[:] = [x for x in dirs if x not in (".git", "node_modules", "_trusted")]
+                  for fn in files:
+                      if fn.endswith(exts):
+                          out.append(os.path.normpath(os.path.relpath(os.path.join(root, fn), ".")).replace(os.sep, "/"))
+              return sorted(out)
+          # 讀檔失敗（目錄名為 x.sql、指向目錄的 symlink、權限）不得讓整步崩潰而丟掉其他發現；
+          # 對應控制記 untested（沒看到內容不等於沒有問題），已有 blocking 發現照樣 fail
+          READ_ERR = {}
+          def _read(p, ctl):
+              try:
+                  return pathlib.Path(p).read_text(encoding="utf-8", errors="replace")
+              except Exception as e:
+                  READ_ERR.setdefault(ctl, []).append(f"{p}（{type(e).__name__}）")
+                  return None
 
           results = []; rules = {}
           def add(rule_id, level, msg, uri, line=1):
@@ -541,12 +560,11 @@ jobs:
           # 2) Supabase migrations RLS
           # 兩個 glob 會重疊（supabase/migrations 也符合 **/migrations）→ 去重，避免同一檔案重複回報
           SQL_MIGRATIONS = 0   # 沒有任何 migration → ASVS5-V8.2 not_applicable（沒有可查的表，不是「已啟用 RLS」）
-          for p in sorted(set(glob.glob("supabase/migrations/**/*.sql", recursive=True) + glob.glob("**/migrations/**/*.sql", recursive=True))):
+          for p in [f for f in _files(".sql") if f.startswith("supabase/migrations/") or "/migrations/" in f or f.startswith("migrations/")]:
               if _skip(p): continue
-              fp = pathlib.Path(p)
-              if not fp.exists(): continue
               SQL_MIGRATIONS += 1
-              body = fp.read_text(encoding="utf-8", errors="replace")
+              body = _read(p, "ASVS5-V8.2")
+              if body is None: continue
               if re.search(r'disable\s+row\s+level\s+security', body, re.I):
                   add("vibesec.g4.supabase-rls-disabled", "error", f"{p} 明確停用 RLS（全表暴露風險）", p, 1)
               for m in re.finditer(r'create\s+table\s+(?:if\s+not\s+exists\s+)?["`]?([A-Za-z0-9_.]+)', body, re.I):
@@ -557,11 +575,10 @@ jobs:
 
           # 3) Agent 工具 allow-list lint（高危工具暴露）
           DANGEROUS = r'(delete_user|execute_sql|drop_table)'
-          for p in glob.glob("**/*.py", recursive=True) + glob.glob("**/*.ts", recursive=True) + glob.glob("**/*.js", recursive=True):
+          for p in _files(".py", ".ts", ".js"):
               if _skip(p): continue
-              fp = pathlib.Path(p)
-              try: body = fp.read_text(encoding="utf-8", errors="replace")
-              except Exception: continue
+              body = _read(p, "VS-G4-AGENT-TOOL-ALLOWLIST")
+              if body is None: continue
               if re.search(r'(tool|register_tool|tools\s*=|@tool)', body) and re.search(DANGEROUS, body, re.I):
                   for i, ln in enumerate(body.splitlines(), 1):
                       if re.search(DANGEROUS, ln, re.I):
@@ -600,14 +617,14 @@ jobs:
                           if not m: break
                           out.append((m.group(1), j + 1))
               return out
-          HITL_FILES = (glob.glob("**/*.py", recursive=True) + glob.glob("**/*.ts", recursive=True) + glob.glob("**/*.js", recursive=True)
-                        + [f for ext in ("yml", "yaml", "json") for f in glob.glob(f"**/*.{ext}", recursive=True)
+          HITL_FILES = (_files(".py", ".ts", ".js")
+                        + [f for f in _files(".yml", ".yaml", ".json")
                            if not f.startswith(".github/")])   # workflow 的 deploy／release job 不是 Agent 工具
           HITL_FILES = [f for f in HITL_FILES if not f.startswith("evals/cases/")]   # 評測 fixture（同 .semgrepignore 的 evals/）
           for p in HITL_FILES:
               if _skip(p): continue
-              try: body = pathlib.Path(p).read_text(encoding="utf-8", errors="replace")
-              except Exception: continue
+              body = _read(p, "ASVS5-V2.3")
+              if body is None: continue
               if not TOOL_CTX.search(body) or HITL_SIGNAL.search(body):
                   continue
               risky = [(n, i) for n, i in _tool_names(body) if HI_TOOL.search(n)]
@@ -618,7 +635,7 @@ jobs:
                       f"請確認執行前有人工確認與稽核（若核准做在其他檔案，於 LLM 審查說明）", p, i)
 
           # 4) 單層 middleware 授權（CVE-2025-29927 類）— advisory
-          for p in glob.glob("**/middleware.ts", recursive=True) + glob.glob("middleware.ts"):
+          for p in [f for f in _files("middleware.ts") if f.rsplit("/", 1)[-1] == "middleware.ts"]:
               if _skip(p): continue
               add("vibesec.g4.single-middleware-authz", "note",
                   f"偵測到 Next.js {p}：請確認授權不只靠單層 middleware（CVE-2025-29927），資料層需獨立 authz", p, 1)
@@ -633,10 +650,10 @@ jobs:
           def _name(n):
               return n.attr if isinstance(n, ast.Attribute) else n.id if isinstance(n, ast.Name) else ""
           mw_hits, route_auth = [], False
-          for p in sorted(glob.glob("**/*.py", recursive=True)):
-              if _skip(p) or "site-packages/" in p or p.startswith("venv/"): continue
-              try: src = pathlib.Path(p).read_text(encoding="utf-8", errors="replace")
-              except Exception: continue
+          for p in _files(".py"):
+              if _skip(p) or "site-packages/" in p or p.startswith(("venv/", ".venv/")): continue
+              src = _read(p, "ASVS5-V8.3")
+              if src is None: continue
               if not re.search(r'^\s*(from|import)\s+(fastapi|starlette)\b', src, re.M): continue
               try: tree = ast.parse(src)
               except (SyntaxError, ValueError): continue
@@ -681,7 +698,13 @@ jobs:
           LLM_PENDING = "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 或人工完成"
           status = "fail" if blocking else "incomplete"
           status_reason = LLM_PENDING if status == "incomplete" else f"靜態檢查 {blocking} 筆 blocking；另：{LLM_PENDING}"
-          def _state(*ids): return "fail" if any(r["ruleId"] in ids for r in results) else "pass"
+          if READ_ERR:
+              status_reason += "；部分檔案無法讀取，對應控制記 untested：" + "；".join(f"{k}：{'、'.join(v[:3])}" for k, v in READ_ERR.items())
+          def _state(*ids, ctl=None):
+              if any(r["ruleId"] in ids for r in results): return "fail"
+              return "untested" if ctl in READ_ERR else "pass"
+          def _why(ctl):
+              return ("無法讀取：" + "、".join(READ_ERR[ctl][:5])) if ctl in READ_ERR else None
           gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "full",
                   "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
                   "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
@@ -690,12 +713,12 @@ jobs:
                   "findings_count": {"blocking": blocking, "advisory": advisory},
                   "coverage": [
                       {"control_id": "VS-G4-RULES-FILE-UNICODE", "state": _state("vibesec.g4.rules-file-invisible-unicode"), "reason": None},
-                      ({"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls"), "reason": None}
+                      ({"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls", ctl="ASVS5-V8.2"), "reason": _why("ASVS5-V8.2")}
                        if SQL_MIGRATIONS else
                        {"control_id": "ASVS5-V8.2", "state": "not_applicable", "reason": "沒有 supabase／migrations 的 .sql 檔，RLS 靜態檢查無對象"}),
-                      {"control_id": "ASVS5-V8.3", "state": _state("vibesec.g4.single-middleware-authz"), "reason": None},
-                      {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure"), "reason": None},
-                      {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl"), "reason": None},
+                      {"control_id": "ASVS5-V8.3", "state": _state("vibesec.g4.single-middleware-authz", ctl="ASVS5-V8.3"), "reason": _why("ASVS5-V8.3")},
+                      {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure", ctl="VS-G4-AGENT-TOOL-ALLOWLIST"), "reason": _why("VS-G4-AGENT-TOOL-ALLOWLIST")},
+                      {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl", ctl="ASVS5-V2.3"), "reason": _why("ASVS5-V2.3")},
                       {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
                   ]}
           (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -963,13 +986,25 @@ jobs:
                       incomplete_block = True
                   continue
               st = g.get("status", "untested")
-              fc = g.get("findings_count", {})
+              fc = g.get("findings_count") if isinstance(g.get("findings_count"), dict) else {}
               reason = g.get("status_reason") or ""
-              out.append(f"| {gid} | `{st}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {reason} |")
+              # 狀態白名單：只有 pass／fail／not_applicable／incomplete 是判定；untested、pending、缺欄位或未知字串
+              # 都代表「沒有證據顯示跑完」→ 視同 incomplete（incomplete ≠ pass）
+              eff = st if st in ("pass", "fail", "not_applicable", "incomplete") else "incomplete"
+              # G1：slopcheck 先寫 gate，SBOM 與 KEV 再併入；併入失敗（例如缺 PyYAML、腳本提早結束）時 gate 會停在
+              # slopcheck 的 pass，但 VS-G1-SBOM 仍是 pending、也沒有 KEV 控制 → 不能當成 pass
+              if gid == "G1" and eff == "pass":
+                  cov = {c.get("control_id"): c.get("state") for c in (g.get("coverage") or []) if isinstance(c, dict)}
+                  miss = [c for c in ("VS-G1-SBOM", "ASVS5-V15.2") if cov.get(c) in (None, "pending")]
+                  if miss:
+                      eff = "incomplete"
+                      reason = (reason + "；" if reason else "") + "SBOM／KEV 結果未併入（" + "、".join(miss) + " 缺席或 pending）"
+              shown = st if st == eff else f"{st} → {eff}"
+              out.append(f"| {gid} | `{shown}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {reason} |")
               if MODE == "enforce":
-                  if st == "fail" or (fc.get("blocking", 0) or 0) > 0:
+                  if eff == "fail" or (fc.get("blocking", 0) or 0) > 0:
                       fail = True
-                  if st == "incomplete" and gid in BLOCKING_GATES:
+                  if eff == "incomplete" and gid in BLOCKING_GATES:
                       incomplete_block = True
           out += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。"]
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
