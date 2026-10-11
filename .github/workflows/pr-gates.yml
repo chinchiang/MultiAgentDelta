@@ -527,10 +527,12 @@ jobs:
 
           # 2) Supabase migrations RLS
           # 兩個 glob 會重疊（supabase/migrations 也符合 **/migrations）→ 去重，避免同一檔案重複回報
+          SQL_MIGRATIONS = 0   # 沒有任何 migration → ASVS5-V8.2 not_applicable（沒有可查的表，不是「已啟用 RLS」）
           for p in sorted(set(glob.glob("supabase/migrations/**/*.sql", recursive=True) + glob.glob("**/migrations/**/*.sql", recursive=True))):
               if _skip(p): continue
               fp = pathlib.Path(p)
               if not fp.exists(): continue
+              SQL_MIGRATIONS += 1
               body = fp.read_text(encoding="utf-8", errors="replace")
               if re.search(r'disable\s+row\s+level\s+security', body, re.I):
                   add("vibesec.g4.supabase-rls-disabled", "error", f"{p} 明確停用 RLS（全表暴露風險）", p, 1)
@@ -675,8 +677,12 @@ jobs:
                   "findings_count": {"blocking": blocking, "advisory": advisory},
                   "coverage": [
                       {"control_id": "VS-G4-RULES-FILE-UNICODE", "state": _state("vibesec.g4.rules-file-invisible-unicode"), "reason": None},
-                      {"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls"), "reason": None},
+                      ({"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls"), "reason": None}
+                       if SQL_MIGRATIONS else
+                       {"control_id": "ASVS5-V8.2", "state": "not_applicable", "reason": "沒有 supabase／migrations 的 .sql 檔，RLS 靜態檢查無對象"}),
+                      {"control_id": "ASVS5-V8.3", "state": _state("vibesec.g4.single-middleware-authz"), "reason": None},
                       {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure"), "reason": None},
+                      {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl"), "reason": None},
                       {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
                   ]}
           (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
