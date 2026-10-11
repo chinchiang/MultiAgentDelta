@@ -1,3 +1,7 @@
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
 # CLAUDE.md — VibeSec repo 規範（給 harness agent 與所有 AI 協作者）
 
 本 repo 是「Vibe Coding 六道資安閘門（G0–G6）」框架的文件、設定與靶場。主設定在 `vibesec.yaml`，流程定義在 `docs/08-harness-agent.md`，harness skill 在 `.claude/skills/vibesec-harness/SKILL.md`。
@@ -19,11 +23,47 @@
 - 控制 ID：ASVS 用 `ASVS5-V<章>.<節>`（自編到節，非官方需求編號，見 `config/catalogs/asvs-5.0-controls.yaml` 的免責說明）；OWASP LLM Top 10 用 `LLM01:2025`…`LLM10:2025`；MAESTRO 用 `MAESTRO-L1`…`MAESTRO-L7`；vibesec 自有控制用 `VS-G<N>-<NAME>`。
 - Finding ID：`VS-YYYYMMDD-<8 hex>`。
 - 所有輸出必須符合 `schemas/finding.schema.json`、`schemas/gate-result.schema.json`。SARIF 2.1.0 給程式位置類發現；架構類發現進 `risk_register.json`。
-- 文件以正體中文撰寫，技術名詞保留英文；每份閘門文件固定章節：對抗成因 / 觸發時機與性質 / 核心任務 / 自動化作法 / 工具與設定檔 / 阻擋政策 / 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）/ 驗證方式。
+- 文件提供正體中文（臺灣慣用語）與英文雙語：同一份 Markdown 先放正體中文、再放英文，以 `<a id="zh-tw"></a>`、`<a id="english"></a>` 分段，檔首放切換連結。技術名詞、程式識別碼、指令與 ID 保留原文。修改任一語言段落時，必須在同一個 PR 更新另一語言；兩者有出入時以**正體中文版為準**。程式碼註解與工具輸出維持正體中文。
+- 每份閘門文件固定章節：對抗成因 / 觸發時機與性質 / 核心任務 / 自動化作法 / 工具與設定檔 / 阻擋政策 / 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）/ 驗證方式。
 
 ## 驗證指令
 
 ```bash
 python3 scripts/validate.py          # YAML 語法、JSON schema、範例檔、catalogs ID 一致性
 uv run --project examples/vulnapp uvicorn app.main:app --port 8000   # 啟動靶場
+```
+
+---
+
+<a id="english"></a>
+
+# CLAUDE.md — VibeSec Repository Rules (for the harness agent and all AI contributors)
+
+This repository holds the documentation, configuration, and lab for the "Vibe Coding six security gates (G0–G6)" framework. The main configuration is `vibesec.yaml`, the process is defined in `docs/08-harness-agent.md`, and the harness skill lives in `.claude/skills/vibesec-harness/SKILL.md`.
+
+## Mandatory rules
+
+1. **Gates cannot be bypassed.** Do not disable, skip, or relax any gate with `enabled: true` in `vibesec.yaml`, and do not edit `config/policy/blocking-policy.yaml` to demote blocking to advisory so a check passes. Policy changes must be decided by a human in a separate PR.
+2. **incomplete ≠ pass.** Missing tools, timeouts, API failures, missing accounts or documents, or an environment that cannot start → the gate status is `incomplete` with a `status_reason`. Never report a pass.
+3. **IDs come only from the catalogs.** CWE, CVE, ASVS control IDs, and OWASP LLM Top 10 IDs must come from `config/catalogs/`; never guess. If an ID cannot be found, use `null` and explain in `notes`.
+4. **Do not combine scores.** Record the CVSS v4.0 vector and score, EPSS with its query date, and KEV with its date in separate fields. No custom `CVSS × EPSS × model confidence` multiplication. Model self-reported confidence is never turned into an evidence grade.
+5. **Evidence grade and validation status are separate.** `evidence_grade` (E0–E3) describes how trustworthy the evidence is; `validation_status` (pending/confirmed/refuted) describes the current conclusion. Neither equals severity.
+6. **Multi-model review rules.** High-risk controls need independent checks by models from at least two different `family` values; round 1 does not exchange conclusions; at most two cross-examination rounds follow; minority opinions are kept; no majority vote; disagreement goes to human adjudication (`requires_human: true`).
+7. **No exfiltration.** Unclassified data stays with on-premises providers; only providers whose `allowed_data_classes` in `config/providers.yaml` include the data class may receive that content. Secrets in reports keep only a mask and a fingerprint.
+8. **Attack only the lab.** `examples/vulnapp` is a deliberately vulnerable test target. G5/G6 offensive probes may run only against the authorized test environment that `VIBESEC_TARGET_URL` points to.
+
+## Naming and format conventions
+
+- Gate IDs: `G0`–`G6`. Rule IDs: `vibesec.g<N>.<kebab-name>`; external tool rules keep their original names with a prefix: `gitleaks:`, `semgrep:`, `trivy:`, `grype:`, `checkov:`, `zap:`, `promptfoo:`, `garak:`.
+- Control IDs: ASVS uses `ASVS5-V<chapter>.<section>` (self-assigned down to the section, not official requirement numbers; see the disclaimer in `config/catalogs/asvs-5.0-controls.yaml`); OWASP LLM Top 10 uses `LLM01:2025`…`LLM10:2025`; MAESTRO uses `MAESTRO-L1`…`MAESTRO-L7`; vibesec's own controls use `VS-G<N>-<NAME>`.
+- Finding ID: `VS-YYYYMMDD-<8 hex>`.
+- All output must conform to `schemas/finding.schema.json` and `schemas/gate-result.schema.json`. SARIF 2.1.0 is for code-location findings; architecture findings go into `risk_register.json`.
+- Documentation is bilingual, in Traditional Chinese (Taiwan usage) and English: each Markdown file has the Traditional Chinese section first, then the English section, separated by `<a id="zh-tw"></a>` and `<a id="english"></a>`, with language links at the top. Technical terms, code identifiers, commands, and IDs stay in their original form. When either language section changes, the other must be updated in the same PR; if they disagree, **the Traditional Chinese version prevails**. Code comments and tool output stay in Traditional Chinese.
+- Every gate document has fixed sections: adversarial causes / triggers and nature / core tasks / automation / tools and configuration files / blocking policy / mapped controls (ASVS, CWE, LLM Top 10, MAESTRO) / verification.
+
+## Verification commands
+
+```bash
+python3 scripts/validate.py          # YAML syntax, JSON schema, examples, catalog ID consistency
+uv run --project examples/vulnapp uvicorn app.main:app --port 8000   # start the lab
 ```
