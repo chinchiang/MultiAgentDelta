@@ -74,10 +74,27 @@ runs:
     - name: 套用受信任的忽略清單並清掉工具輸出
       shell: bash
       run: |
+        # _trusted 是保留名稱：各掃描工具以 --exclude／skip-dirs 排除它，而這些排除不錨定在根目錄
+        # （semgrep --exclude、checkov skip_path 是子字串、G4 os.walk 依目錄名），PR 把程式放在 src/_trusted/ 就不會被掃。
+        # 受測樹出現任何 _trusted 路徑一律失敗，不靠各工具的排除規則逐一補洞。
+        RESERVED=$(git ls-files -z 2>/dev/null | tr '\0' '\n' | grep -E '(^|/)_trusted(/|$)' | head -20 || true)
+        if [ -n "$RESERVED" ]; then
+          echo "::error::受測樹含保留路徑 _trusted（掃描工具會略過它）：請改名。例如："; echo "$RESERVED"
+          exit 1
+        fi
         for f in .semgrepignore .gitleaksignore .trivyignore; do
           if [ -f "_trusted/$f" ]; then cp "_trusted/$f" "$f"; echo "套用 _trusted/$f"
           elif [ -e "$f" ]; then rm -f "$f"; echo "移除 PR head 的 $f（default branch 沒有這個檔）"
           fi
         done
+        # 工具也會讀「任何深度」或工作目錄的受測方設定：semgrep 採信子目錄的 .semgrepignore（實測 src/.semgrepignore 寫 *
+        # 就藏住整個 src/），trivy 自動載入工作目錄的 trivy.yaml（實測 skip-dirs 讓發現歸零），checkov 載入掃描目錄的
+        # .checkov.yaml。工作區只是被掃描的資料，一律刪除；根目錄的忽略清單已在上面換成受信任版本。
+        find . \( -path ./_trusted -o -path ./.git \) -prune -o -type f \
+          \( -name .semgrepignore -o -name .gitleaksignore -o -name '.trivyignore*' -o -name 'trivy.y*ml' -o -name '.checkov.y*ml' \) \
+          -print | while IFS= read -r f; do
+            case "$f" in ./.semgrepignore|./.gitleaksignore|./.trivyignore) continue ;; esac
+            rm -f -- "$f"; echo "::warning::移除受測方的工具設定 $f（設定只採用 default branch 的版本）"
+          done
         rm -rf reports results.sarif
         mkdir -p reports

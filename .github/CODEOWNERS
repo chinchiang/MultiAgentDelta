@@ -15,6 +15,12 @@
 /.semgrepignore                    @chinchiang
 /.gitleaksignore                   @chinchiang
 /.trivyignore                      @chinchiang
+# .gitattributes 的 export-ignore／export-subst 會改變 git archive 的匯出內容（G1 SBOM／KEV），binary／-diff 會讓
+# git log -p 看不到內容（G2）；CI 已各自防範（g1_sbom 核對匯出清單、gitleaks --text），此為第二道
+/.gitattributes                    @chinchiang
+**/.gitattributes                  @chinchiang
+# 測試：validate.py 執行 tests/ 的 unittest；刪掉或清空測試等於拿掉一層把關
+/tests/                            @chinchiang
 # 評測：baseline 只增不減；案例被改弱等於 baseline 被改弱
 /evals/                            @chinchiang
 # 輸出格式的 schema：放寬 schema 等於放寬紀錄的要求
