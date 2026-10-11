@@ -1,0 +1,22 @@
+id: g5-jwksorigin-incomplete-01
+gate: G5
+domain: authentication
+title: OIDC discovery 的 jwks_uri 指向其他來源時不得抓取，alg confusion 記 untested
+input:
+  kind: http
+  target: /.well-known/openid-configuration
+  steps:
+  - 'GET /.well-known/openid-configuration -> {jwks_uri: http://127.0.0.1:<另一埠>/jwks.json}'
+  - 'GET /openapi.json -> paths 含絕對 URL 與 @host:port/… 形式的鍵，皆指向另一埠'
+  - 探針不得對另一埠送出任何請求（規則 8），JWKS 取不到公鑰 → untested
+  integration: g5-off-origin   # run_evals.py：G5 api-probes 打本機 stub；canary 伺服器收到任何請求即判執行失敗
+expected:
+  should_flag: true
+  control_id: ASVS5-V9.1
+  rule_id: vibesec.g5.jwt-alg-confusion
+  policy_tier: blocking
+  gate_status: incomplete
+  coverage:
+    jwt_alg_confusion: untested   # 只能抓同源 JWKS；非同源 jwks_uri 略過並寫進原因，不得改抓或判 pass
+held_out: false
+notes: 目標控制的 URL（discovery 的 jwks_uri、openapi 的 paths 鍵）不得讓 runner 打其他主機或帶出 Authorization。

@@ -858,10 +858,12 @@ class IntegrationRunner(Runner):
     檢查閘門狀態（incomplete ≠ pass）。案例以 input.integration 指定情境：
       g1-registry-timeout  g1_slopcheck.py 經「接受連線但永不回應」的本機 proxy 查 registry（真的逾時）
       g5-endpoint-405      staging workflow 的 G5 api-probes 打本機 stub（/openapi.json 200、其餘 405）
+      g5-off-origin        同上，但 stub 的 OIDC discovery jwks_uri 與 openapi paths 指向另一個埠的 canary 伺服器：
+                           canary 收到任何請求（含帶 Authorization 的）即判執行失敗（規則 8：只能打授權目標）
       g6-gate              g6_gate.py 吃依 config/promptfoo/tests.yaml 組出的結果 fixture（input.fixture）
     run() 回傳 (hits, err, gate)；gate 是閘門結果 JSON（status、status_reason、coverage）。"""
     name = "integration"
-    SCENARIOS = ("g1-registry-timeout", "g5-endpoint-405", "g6-gate")
+    SCENARIOS = ("g1-registry-timeout", "g5-endpoint-405", "g5-off-origin", "g6-gate")
 
     def handles(self, case):
         sc = case["input"].get("integration")
@@ -869,7 +871,7 @@ class IntegrationRunner(Runner):
             return "案例未標記 input.integration（整合層情境）"
         if sc not in self.SCENARIOS:
             return f"未知的整合層情境 {sc!r}"
-        if case["gate"] != {"g1-registry-timeout": "G1", "g5-endpoint-405": "G5", "g6-gate": "G6"}[sc]:
+        if case["gate"] != {"g1-registry-timeout": "G1", "g5-endpoint-405": "G5", "g5-off-origin": "G5", "g6-gate": "G6"}[sc]:
             return f"情境 {sc} 不適用 {case['gate']}"
         return None
 
@@ -877,6 +879,7 @@ class IntegrationRunner(Runner):
         sc = case["input"]["integration"]
         try:
             return {"g1-registry-timeout": self._g1_timeout, "g5-endpoint-405": self._g5_405,
+                    "g5-off-origin": self._g5_off_origin,
                     "g6-gate": self._g6_gate}[sc](case)
         except (OSError, subprocess.SubprocessError, ValueError, KeyError) as e:
             return None, f"整合層情境 {sc} 執行失敗：{type(e).__name__}：{str(e)[:120]}", None
@@ -924,21 +927,22 @@ class IntegrationRunner(Runner):
                 c.close()
         return {f.get("rule_id") for f in out.get("findings", [])}, None, gate
 
-    # -- G5：端點回 405 ------------------------------------------------------
-    def _g5_405(self, case):
+    # -- G5：端點回 405／目標回應指向其他來源 ----------------------------------
+    @staticmethod
+    def _stub(routes: dict, log: list | None = None):
+        """本機 stub：routes 為 GET 路徑 → JSON body，其餘一律 405；log 不為 None 時記下每個請求（方法、路徑、是否帶 Authorization）。"""
         import http.server, threading
-        probe_sh = _workflow_step("G5 api-probes")
-        if not probe_sh:
-            return None, "staging workflow 中找不到 G5 api-probes 步驟", None
 
         class H(http.server.BaseHTTPRequestHandler):
             def _reply(self):
                 n = int(self.headers.get("Content-Length") or 0)
                 if n:
                     self.rfile.read(n)
-                ok = self.command == "GET" and self.path.split("?")[0] == "/openapi.json"
-                body = b"{}" if ok else b'{"detail":"Method Not Allowed"}'
-                self.send_response(200 if ok else 405)
+                if log is not None:
+                    log.append((self.command, self.path, bool(self.headers.get("Authorization"))))
+                hit = routes.get(self.path.split("?")[0]) if self.command == "GET" else None
+                body = json.dumps(hit).encode() if hit is not None else b'{"detail":"Method Not Allowed"}'
+                self.send_response(200 if hit is not None else 405)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -950,20 +954,56 @@ class IntegrationRunner(Runner):
 
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        url = f"http://127.0.0.1:{srv.server_address[1]}"
+        return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+    @staticmethod
+    def _g5_probe(url: str, token_a: str = "eval-token-a"):
+        probe_sh = _workflow_step("G5 api-probes")
+        if not probe_sh:
+            return None, "staging workflow 中找不到 G5 api-probes 步驟", None
+        with tempfile.TemporaryDirectory() as d:
+            tok = pathlib.Path(d) / "tokens"; tok.mkdir()
+            (tok / "a").write_text(token_a); (tok / "b").write_text("eval-token-b")
+            env = {**os.environ, "VIBESEC_TARGET_URL": url, "HAS_A": "true", "HAS_B": "true",
+                   "VIBESEC_TOKEN_DIR": str(tok), "VIBESEC_MODE": "shadow", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
+            subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
+                           capture_output=True, text=True, timeout=300)
+            gate = json.loads((pathlib.Path(d) / "reports/g5-gate.json").read_text(encoding="utf-8"))
+            sarif = json.loads((pathlib.Path(d) / "reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
+        hits = {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", []) if r.get("level") != "note"}
+        return hits, None, gate
+
+    def _g5_405(self, case):
+        srv, url = self._stub({"/openapi.json": {}})
         try:
-            with tempfile.TemporaryDirectory() as d:
-                tok = pathlib.Path(d) / "tokens"; tok.mkdir()
-                (tok / "a").write_text("eval-token-a"); (tok / "b").write_text("eval-token-b")
-                env = {**os.environ, "VIBESEC_TARGET_URL": url, "HAS_A": "true", "HAS_B": "true",
-                       "VIBESEC_TOKEN_DIR": str(tok), "VIBESEC_MODE": "shadow", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
-                subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
-                               capture_output=True, text=True, timeout=300)
-                gate = json.loads((pathlib.Path(d) / "reports/g5-gate.json").read_text(encoding="utf-8"))
-                sarif = json.loads((pathlib.Path(d) / "reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
+            return self._g5_probe(url)
         finally:
             srv.shutdown(); srv.server_close()
-        hits = {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", []) if r.get("level") != "note"}
+
+    def _g5_off_origin(self, case):
+        import base64
+        b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+        canary_log: list = []
+        # canary 提供看起來有效的 JWKS：探針若真的去抓，就會往下走 alg confusion，canary_log 也會留下紀錄
+        canary, curl = self._stub({"/jwks.json": {"keys": [{"kty": "RSA", "kid": "k1", "n": "sXch", "e": "AQAB"}]},
+                                   "/x": {}, "/y": {}}, canary_log)
+        cport = curl.rsplit(":", 1)[1]
+        # openapi 的 paths 鍵：絕對 URL 與「@host:port/…」（接在目標 URL 後會變成帳密混淆）都指向 canary
+        srv, url = self._stub({"/openapi.json": {"paths": {f"{curl}/x": {"post": {}}, f"@127.0.0.1:{cport}/y": {"post": {}}}},
+                               "/.well-known/openid-configuration": {"jwks_uri": f"{curl}/jwks.json"}})
+        token = f"{b64({'alg': 'RS256', 'typ': 'JWT', 'kid': 'k1'})}.{b64({'sub': 'alice'})}.c2ln"
+        try:
+            hits, err, gate = self._g5_probe(url, token)
+        finally:
+            srv.shutdown(); srv.server_close(); canary.shutdown(); canary.server_close()
+        if err:
+            return hits, err, gate
+        if canary_log:
+            auth = sum(1 for *_, a in canary_log if a)
+            return None, f"探針對非授權來源送出 {len(canary_log)} 個請求（{auth} 個帶 Authorization）：{canary_log[:3]}", None
+        reason = next((c.get("reason") or "" for c in gate.get("coverage") or [] if c.get("control_id") == "jwt_alg_confusion"), "")
+        if "非授權來源" not in reason:
+            return None, f"jwt_alg_confusion 的原因應寫明略過非授權來源的 jwks_uri，實際：{reason[:120]}", None
         return hits, None, gate
 
     # -- G6：g6_gate.py 彙整 -------------------------------------------------

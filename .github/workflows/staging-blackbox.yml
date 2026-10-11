@@ -207,7 +207,7 @@ jobs:
           ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
           sys.path.insert(0, str(ROOT / "scripts"))
           from vibesec_policy import Policy
-          from target_guard import GuardConfigError, check as guard_check
+          from target_guard import GuardConfigError, check as guard_check, same_origin
           POLICY = Policy(ROOT)
           def _read(name):
               d = os.environ.get("VIBESEC_TOKEN_DIR", "")
@@ -237,8 +237,14 @@ jobs:
               def redirect_request(self, *a, **k): return None
           OPENER = urllib.request.build_opener(_NoRedirect)
 
+          # 同源限制：path 可能來自目標回應（openapi 的 paths 鍵、discovery 的 jwks_uri），絕對 URL 會打到任意主機，
+          # "@evil/x" 之類的鍵接在 URL 後也會變成帳密混淆。最終 URL 一律與已授權的 URL 比對 scheme／主機／埠，
+          # 不同源就不送（也就不會把 Authorization 帶出去）
           def req(path, method="GET", token=None, data=None, headers=None, timeout=15):
-              url = path if path.startswith("http") else URL + path
+              url = path if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", path or "") else URL + (path or "")
+              _same, _why = same_origin(url, URL)
+              if not _same:
+                  return None, f"拒絕：非授權來源（{_why}），未送出請求"
               h = {"User-Agent": "vibesec-g5-probes"}
               if token: h["Authorization"] = f"Bearer {token}"
               if headers: h.update(headers)
@@ -400,6 +406,7 @@ jobs:
           def _token_alg(tok):
               try: return (json.loads(_b64u_dec(tok.split(".")[0])).get("alg") or "").upper()
               except Exception: return ""
+          JWKS_SKIPPED = []   # discovery 給的非同源 jwks_uri：不抓（規則 8），寫進 jwt_alg_confusion 的原因
           def _fetch_pem():
               # 依 token 的 kid 從常見 JWKS 位置取 RSA 公鑰
               try: kid = json.loads(_b64u_dec(TA.split(".")[0])).get("kid")
@@ -409,7 +416,12 @@ jobs:
               if body_oidc:
                   try:
                       ju = json.loads(body_oidc).get("jwks_uri")
-                      if ju: uris.insert(0, ju)
+                      if isinstance(ju, str) and ju:
+                          # jwks_uri 由目標決定：只收同源絕對 URL 或站內路徑，其餘略過，不送請求
+                          _abs = ju if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", ju) else (URL + ju if ju.startswith("/") and not ju.startswith("//") else ju)
+                          _same, _why = same_origin(_abs, URL)
+                          if _same: uris.insert(0, _abs)
+                          else: JWKS_SKIPPED.append(f"OIDC discovery 的 jwks_uri {ju[:200]!r} 非授權來源，未抓取（{_why}）")
                   except Exception: pass
               for u in uris:
                   s_j, body_j = req(u)
@@ -433,8 +445,10 @@ jobs:
               pem = _fetch_pem()
               if not pem:
                   coverage["jwt_alg_confusion"] = "untested"
+                  _skip = "；".join(JWKS_SKIPPED)
+                  if _skip: coverage_reasons["jwt_alg_confusion"] = f"未能從同源 JWKS 取得 RSA 公鑰；{_skip}"
                   add("vibesec.g5.jwt-alg-confusion", "note",
-                      "未能從 JWKS 取得 RSA 公鑰 → untested，建議人工/Burp 驗證")
+                      "未能從 JWKS 取得 RSA 公鑰 → untested，建議人工/Burp 驗證" + (f"（{_skip}）" if _skip else ""))
               else:
                   try:
                       h_b64, p_b64, _ = TA.split(".")

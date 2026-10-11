@@ -2,14 +2,20 @@
 """VibeSec 目標授權檢查：G5／G6 探針送出前，確認目標在 config/targets.yaml 的允許範圍內（CLAUDE.md 規則 8）。
 
   python3 scripts/target_guard.py check <url>   # 0 允許；1 拒絕；2 設定缺席或無法解析（incomplete ≠ pass）
+  python3 scripts/target_guard.py same-origin <url> <base>   # 0 同源；1 非同源或無法解析
   python3 scripts/target_guard.py selftest
 
-  from target_guard import check
+  from target_guard import check, same_origin
   allowed, reason = check(url, root)            # 設定缺席或壞掉 → GuardConfigError
+  ok, reason = same_origin(url, base)           # 探針送出前：最終 URL 必須與已授權的 base 同源
 
 規則（細節見 config/targets.yaml）：只收 http/https；帶帳密的 URL 拒絕；雲端 metadata 位址拒絕；
 denied_host_suffixes 優先；allowed_hosts／allowed_host_suffixes 允許；其餘預設拒絕。
 只比對主機名，不做 DNS 解析：允許清單只能放受控的網域（staging DNS 由擁有者控制）。
+
+same_origin：check 只授權 base；目標回應裡的 URL（OIDC discovery 的 jwks_uri、openapi 的 paths 鍵）由目標控制，
+直接拿去送請求等於讓目標指揮 runner 打任意主機（還可能帶 Authorization）。送出前以 scheme、主機、埠完全相同判定，
+帶帳密、非 http/https、空白／控制字元、非 ASCII 主機（IDN 同形字）、反斜線、主機含 % 一律拒絕。
 """
 from __future__ import annotations
 import ipaddress, pathlib, sys, urllib.parse
@@ -92,6 +98,85 @@ def check(url: str, root: pathlib.Path | str | None = None) -> tuple[bool, str]:
     return False, f"{host} 不在 {CONFIG} 的允許清單（預設拒絕）"
 
 
+def _origin(url: str) -> tuple[str, str, int]:
+    """回傳 (scheme, host, port)；任何可疑寫法丟 ValueError（寧可拒絕，不猜瀏覽器／urllib 會怎麼解讀）。"""
+    if not isinstance(url, str) or not url:
+        raise ValueError("URL 為空")
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in url):
+        raise ValueError("URL 含空白或控制字元")
+    if "\\" in url:
+        raise ValueError("URL 含反斜線")
+    u = urllib.parse.urlsplit(url)
+    scheme = u.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"只允許 http/https，收到 {u.scheme or '（無）'!r}")
+    if "@" in u.netloc:
+        raise ValueError("URL 帶帳密（user@host）")
+    if not u.netloc.isascii() or "%" in u.netloc:
+        raise ValueError("主機含非 ASCII 或百分比編碼（IDN／編碼混淆）")
+    host = u.hostname
+    if not host:
+        raise ValueError("URL 沒有主機名")
+    port = u.port  # 非法埠號丟 ValueError
+    return scheme, host.lower(), port or (443 if scheme == "https" else 80)
+
+
+def same_origin(url: str, base: str) -> tuple[bool, str]:
+    """url 與 base 的 scheme、主機、埠完全相同才 True；不做 DNS 解析、不正規化尾點（嚴格比對）。"""
+    try:
+        want = _origin(base)
+    except ValueError as e:
+        return False, f"授權目標 URL 無法解析（{e}）"
+    try:
+        got = _origin(url)
+    except ValueError as e:
+        return False, f"{url!r} 無法判定來源（{e}）"
+    if got != want:
+        return False, f"{got[0]}://{got[1]}:{got[2]} 與授權來源 {want[0]}://{want[1]}:{want[2]} 不同"
+    return True, "同源"
+
+
+def _same_origin_selftest() -> list[str]:
+    fails: list[str] = []
+    base = "http://127.0.0.1:8000"
+    cases = [
+        ("http://127.0.0.1:8000/.well-known/jwks.json", True, "同源絕對 URL"),
+        ("HTTP://127.0.0.1:8000/x", True, "scheme 大小寫"),
+        (base + "/__vibesec_nonexistent__/%ff", True, "路徑中的百分比編碼"),
+        (base + "//evil.example.com/x", True, "base + '//host' 仍是同源路徑"),
+        ("http://127.0.0.1:8001/jwks.json", False, "不同埠"),
+        ("https://127.0.0.1:8000/", False, "不同 scheme"),
+        ("http://127.0.0.1/", False, "預設埠 80 ≠ 8000"),
+        ("http://evil.example.com/jwks.json", False, "不同主機"),
+        ("http://localhost:8000/", False, "別名主機（不做 DNS 解析）"),
+        ("http://127.0.0.1.:8000/", False, "尾點（嚴格比對）"),
+        (base + "@evil.example.com/x", False, "base + '@host' 路徑注入成帳密"),
+        ("http://127.0.0.1:8000@evil.example.com/", False, "帳密混淆"),
+        ("http://u:p@127.0.0.1:8000/", False, "帶帳密（主機相同）"),
+        ("file:///etc/passwd", False, "file scheme"),
+        ("//127.0.0.1:8000/x", False, "無 scheme 的 network-path"),
+        ("/jwks.json", False, "相對路徑不是絕對 URL"),
+        ("http://127.0.0.1:8000 /x", False, "空白"),
+        ("http://127.0.0.1:8000\t/x", False, "控制字元"),
+        ("http://127.0.0.1:8000\\@evil.example.com/", False, "反斜線"),
+        ("http://ｅvil.example.com/", False, "IDN 全形字"),
+        ("http://127.0.0.1%3a8000/", False, "主機百分比編碼"),
+        ("http://127.0.0.1:99999/", False, "非法埠號"),
+        ("", False, "空字串"),
+    ]
+    for url, want, label in cases:
+        got, why = same_origin(url, base)
+        if got is not want:
+            fails.append(f"same_origin {label}：{url!r} 預期 {'同源' if want else '拒絕'}，實際 {'同源' if got else '拒絕'}（{why}）")
+    if same_origin("https://api.staging.example.com/a", "https://api.staging.example.com")[0] is not True:
+        fails.append("same_origin：https 預設埠 443 應與省略埠相同")
+    if same_origin("https://api.staging.example.com:443/a", "https://API.staging.example.com/")[0] is not True:
+        fails.append("same_origin：明寫 :443 與主機大小寫應視為同源")
+    if same_origin(base, "ftp://127.0.0.1")[0]:
+        fails.append("same_origin：base 本身非 http/https 時必須拒絕")
+    return fails
+
+
 def selftest() -> list[str]:
     import tempfile
     fails: list[str] = []
@@ -143,7 +228,7 @@ def selftest() -> list[str]:
         if ok: fails.append(f"repo 的 {CONFIG} 不得允許 example.com")
     except GuardConfigError as e:
         fails.append(f"repo 的 {CONFIG}：{e}")
-    return fails
+    return fails + _same_origin_selftest()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -153,6 +238,10 @@ def main(argv: list[str] | None = None) -> int:
         for f in fails: print(f"FAIL {f}")
         print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
         return 1 if fails else 0
+    if len(argv) == 3 and argv[0] == "same-origin":
+        ok, why = same_origin(argv[1], argv[2])
+        print(("同源：" if ok else "拒絕：") + why)
+        return 0 if ok else 1
     if len(argv) == 2 and argv[0] == "check":
         try:
             ok, why = check(argv[1])
