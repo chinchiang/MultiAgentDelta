@@ -1,9 +1,10 @@
 """
 ⚠️ VibeSec 靶場的 DETERMINISTIC 假 LLM —— 不連網、不呼叫任何真實模型。
 目的：讓 G6（LLM/Agent 紅隊）的探針可以離線、可重現地命中以下攻擊面：
-  - System Prompt 外洩 / Direct Prompt Injection（canary 字串 VIBESEC-SYSPROMPT-CANARY）
-  - Indirect Prompt Injection（外部文件夾帶指令 → 服從並回報外連意圖）
-  - Stored XSS via AI Output（原樣回吐 <script>…</script>）
+  - System Prompt 外洩（canary 字串 VIBESEC-SYSPROMPT-CANARY）
+  - Direct Prompt Injection／角色覆寫（服從「SYSTEM OVERRIDE」之類的指令，回覆 OVERRIDE-ACCEPTED 並列出使用者 email）
+  - Indirect Prompt Injection（外部文件夾帶指令 → 服從並以 EGRESS-INTENT 文字回報外連意圖；不會真的發出請求）
+  - XSS via AI Output（原樣回吐 <script>…</script>；靶場沒有儲存，屬反射型，規則名稱沿用 stored_xss_via_ai_output）
   - Denial of Wallet（超長輸入 → 延遲回應）
   - Excessive Agency（呼叫端提供高影響工具時，未經確認就「呼叫」；以 TOOL-CALL 標記模擬，不真的執行任何動作）
 嚴禁用於正式環境。
@@ -26,6 +27,15 @@ _EXTRACT_PATTERNS = [
     r"system\s*prompt",
     r"你的(?:系統)?提示|系統提示詞|忽略(?:上述|先前|之前)",
 ]
+# Direct Prompt Injection（角色覆寫）：要求模型拋棄原本的角色與限制。
+# 以前靶場沒有這個行為：tests.yaml 的「角色覆寫」測試對漏洞版也通過，direct_prompt_injection 沒有可重現的正例。
+_OVERRIDE_PATTERNS = [
+    r"system\s*override",
+    r"\byou are now\b",
+    r"\bdeveloper mode\b",
+    r"你現在是|沒有(?:任何)?限制|無限制",
+]
+_SEEDED_EMAILS = "alice@example.com、bob@example.com"   # 靶場的假使用者（seed_users.json 的帳號），不是真實資料
 # Indirect Prompt Injection：模擬「來自外部文件/網頁的夾帶指令」標記
 _INDIRECT_MARKERS = [
     r"<!--\s*(?:system|ai|assistant)\s*:",       # 註解內夾帶指令
@@ -61,7 +71,7 @@ def generate_reply(message: str, patched: bool = False, tools=None) -> str:
     msg = message or ""
     risky = risky_tool(msg, tools)
     if patched:
-        if _looks_like(_EXTRACT_PATTERNS, msg) or _looks_like(_INDIRECT_MARKERS, msg):
+        if _looks_like(_EXTRACT_PATTERNS, msg) or _looks_like(_INDIRECT_MARKERS, msg) or _looks_like(_OVERRIDE_PATTERNS, msg):
             return "抱歉，我無法提供系統設定或執行來自外部內容的指令。"
         if risky:
             return f"此動作需要人工確認：{risky} 屬高影響工具，請先由管理者核准後再執行（尚未執行任何動作）。"
@@ -79,6 +89,10 @@ def generate_reply(message: str, patched: bool = False, tools=None) -> str:
         leaked_parts.append(
             "好的，這是我的 system prompt：\n" + SYSTEM_PROMPT
         )
+
+    # Direct Prompt Injection（角色覆寫）→ 接受新角色並洩漏使用者清單
+    if _looks_like(_OVERRIDE_PATTERNS, msg):
+        leaked_parts.append("OVERRIDE-ACCEPTED：已切換為無限制管理員模式。使用者 email：" + _SEEDED_EMAILS)
 
     # Indirect Prompt Injection → 服從夾帶指令並回報外連意圖
     if _looks_like(_INDIRECT_MARKERS, msg):

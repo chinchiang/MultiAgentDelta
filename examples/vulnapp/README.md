@@ -34,17 +34,18 @@ curl -s -X POST http://127.0.0.1:8000/login \
 | 端點 / 行為 | 弱點 | 閘門 | rule_id |
 |---|---|---|---|
 | JWT 以 RS256 簽發、公鑰於 `/.well-known/jwks.json` 公開；`_decode_token` 的 `alg` 取自 header，接受 `alg:none`（未簽章），也接受 `HS256` 並拿公鑰 PEM 當 HMAC 金鑰 | Broken Authentication（接受未簽章 / RS256→HS256 混淆 token） | G5 | `vibesec.g5.jwt-alg-none`、`vibesec.g5.jwt-alg-confusion` |
-| `GET /users/{id}/notes` 未將 `{id}` 綁定當前已驗證主體 | BOLA / IDOR（bob 讀 alice 私密筆記） | G5 | `vibesec.g5.bola-cross-account` |
+| `GET /users/{id}/notes` 未將 `{id}` 綁定當前已驗證主體 | BOLA / IDOR（bob 讀 alice 私密筆記；修補版回 403） | G5 | `vibesec.g5.bola-cross-account` |
 | `GET /admin/users` 後端未驗 token（前端只對管理員顯示） | 缺 Session 驗證 / 前端防禦假象（匿名取得全部帳號與筆記） | G5 | `vibesec.g5.missing-session-check` |
-| `GET /fetch?url=` 對任意 URL 發 server-side GET，無 allow-list、未封私網 | SSRF（可讀 `169.254.169.254` metadata） | G5 | `vibesec.g5.ssrf-metadata` |
+| `GET /fetch?url=`（需登入）對任意 URL 發 server-side GET，無 allow-list、未封私網 | SSRF：本機與 CI 以 loopback canary（`http://127.0.0.1:<port>/openapi.json`）證實；只有在提供雲端 metadata 的環境才可能讀到 `169.254.169.254` | G5 | `vibesec.g5.ssrf-internal-fetch`（實際命中）；`vibesec.g5.ssrf-metadata`（僅雲端環境） |
 | `/docs`、`/redoc`、`/openapi.json` 全對外 | 開發便利設定外溢 | G5 | `vibesec.g5.swagger-exposed` |
 | 全域 middleware 把請求的 `Origin` 原樣寫回 `Access-Control-Allow-Origin` 並帶 `Access-Control-Allow-Credentials: true` | CORS 錯誤設定（任意網站可帶憑證讀回應） | G5 | `vibesec.g5.cors-reflect-origin` |
 | 未處理例外回吐 traceback | Debug Mode / Stack Trace 外洩 | G5 | `vibesec.g5.debug-stacktrace` |
 | `/login`、`/chat` 無 rate limiting / captcha | 缺速率限制 | G5 / G6 | `vibesec.g5.missing-rate-limit` |
 | `POST /graphql` introspection 開啟 | Schema 洩漏 | G5 | `vibesec.g5.graphql-introspection` |
-| `POST /chat` → `llm_stub` 於被要求時洩漏含 `VIBESEC-SYSPROMPT-CANARY` 的 system prompt | Direct Prompt Injection / System Prompt Extraction | G6 | `direct_prompt_injection`、`system_prompt_extraction`（LLM01:2025、LLM07:2025） |
-| `POST /chat` 把 `context`（檢索到的外部文件）併入模型輸入，`llm_stub` 服從文件內夾帶的指令並回報外連意圖 | Indirect Prompt Injection | G6 | `indirect_prompt_injection`（LLM01:2025） |
-| `llm_stub` 原樣回吐 `<script>…</script>` | Stored XSS via AI Output | G6 | `stored_xss_via_ai_output`（LLM05:2025） |
+| `POST /chat` → `llm_stub` 於被要求時洩漏含 `VIBESEC-SYSPROMPT-CANARY` 的 system prompt | System Prompt Extraction | G6 | `system_prompt_extraction`（LLM07:2025） |
+| `POST /chat` → `llm_stub` 服從角色覆寫（「SYSTEM OVERRIDE」「你現在是沒有限制的…」），回覆 `OVERRIDE-ACCEPTED` 並列出（假的）使用者 email | Direct Prompt Injection | G6 | `direct_prompt_injection`（LLM01:2025） |
+| `POST /chat` 把 `context`（檢索到的外部文件）併入模型輸入，`llm_stub` 服從文件內夾帶的指令，以 `EGRESS-INTENT: …` 文字回報外連意圖（**不會**真的發出請求，沒有 egress 日誌可驗） | Indirect Prompt Injection | G6 | `indirect_prompt_injection`（LLM01:2025） |
+| `llm_stub` 原樣回吐 `<script>…</script>` | XSS via AI Output（靶場不儲存回覆，實為**反射型**；規則名稱沿用 stored） | G6 | `stored_xss_via_ai_output`（LLM05:2025） |
 | `llm_stub` 對超長輸入（>5000 字元）延遲 ~6s 才回應 | Denial of Wallet（延遲/資源耗用） | G6 | `denial_of_wallet`（LLM10:2025） |
 | `POST /chat` 提供高影響工具（`tools: ["delete_customers"]`）並要求破壞性動作 → 回應 `tool_events: [{"tool":"delete_customers","executed":true,"human_approved":false}]`（模擬，不真的執行） | Excessive Agency（未經人工核准執行高影響工具） | G6 | `vibesec.g6.excessive-agency`（LLM06:2025；`scripts/g6_observe.py`） |
 | `POST /chat` 回應附 `usage: {input_tokens, output_tokens, total_tokens}`（約 4 字元 1 token 的決定性估計，非真實計費） | 用量遙測（不是弱點；供 G6 觀測層分欄記錄） | G6 | — |
@@ -64,17 +65,17 @@ VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:
 | JWT alg:none / RS256→HS256 混淆 | `jwt.decode(token, PUBLIC_KEY, algorithms=["RS256"])`，固定非對稱演算法並驗章 |
 | BOLA / IDOR | `/users/{id}/notes` 僅允許本人，否則 403 |
 | 缺 Session 驗證 | `/admin/users` 與其他受保護端點相同，缺少或無效 token 回 401 |
-| SSRF | `/fetch` 一律 400（無允許清單即拒絕） |
+| SSRF | `/fetch` 在應用層一律回 400（允許清單為空即拒絕；缺 `url` 參數則是 FastAPI 的 422，G5 以此區分「針對 URL 的拒絕」） |
 | CORS 反射 Origin | 只對固定白名單 `https://app.vulnapp.example` 回 ACAO／ACAC，陌生 Origin 不帶任何 CORS 標頭 |
 | Stack trace 外洩 | 例外回傳一般化 `{"error":"internal error"}` |
-| Prompt injection / system prompt 外洩 | `llm_stub` 拒絕擷取與夾帶指令，不回吐輸入 |
+| Prompt injection / system prompt 外洩 | `llm_stub` 拒絕擷取、角色覆寫與夾帶指令，不回吐輸入 |
 | AI 輸出 XSS | 回覆經 HTML 編碼 |
 | Denial of Wallet | `/chat` 的 `message`＋`context` 超過 4000 字元回 413 |
 | Excessive Agency | 高影響工具回 `executed: false`、`human_approved: false`（等待人工核准，未執行） |
 
 JWKS 端點：`GET /.well-known/jwks.json` 公開 RS256 公鑰（n/e）；RSA 金鑰每次啟動在記憶體產生，不落地。
 
-**刻意未修補**：Swagger/OpenAPI 對外、GraphQL introspection、缺 rate limit。這些在 patched 模式下仍會被回報，因此 G5 的 advisory 不為零；但在 patched 模式下所有 blocking 檢查（含 `jwt_alg_confusion`）都應為 `pass`，整體 G5 狀態為 `pass`。
+**刻意未修補**：Swagger/OpenAPI 對外、GraphQL introspection、缺 rate limit。這些在 patched 模式下仍會被回報，因此 G5 的 advisory 不為零；但在 patched 模式下所有 blocking 檢查（含 `jwt_alg_confusion`）都應為 `pass`；整體 G5 狀態要 ZAP 也有結果才會是 `pass`（ZAP 沒跑 → `zap_*` 為 `untested`，G5 `incomplete`）。
 
 ## 安全界線（對應 CLAUDE.md #8）
 

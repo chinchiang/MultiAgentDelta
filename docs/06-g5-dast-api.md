@@ -229,7 +229,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 - **失敗通知**：`staging-blackbox.yml` 的 notify job（僅 main）依 `.github/scripts/staging-issue.js` 判定：靶場上 G5／G6 應為 `fail` 且有 blocking，否則視為偵測退步；外部目標 G5／G6 非 `pass`（fail 或 incomplete）；job 失敗或缺閘門結果 → 開／更新追蹤 issue，恢復後自動關閉。
 
 1. **缺 Token 行為**：移除 `VIBESEC_TOKEN_B` → G5 `incomplete`（`status_reason: "VIBESEC_TOKEN_B missing"`），絕不 pass。
-2. **靶場正例**（`examples/vulnapp`）：B 讀 A 的 todo 回 200 → `bola-cross-account`；`alg:none` 被接受；`/api/import` 讀到 `169.254.169.254` 的角色名；`/docs` 回 200。
+2. **靶場正例**（`examples/vulnapp`）：bob 的 token 讀 alice 的 `/users/1/notes` 回 200 → `bola-cross-account`（修補版回 403）；`alg:none` 被接受；`/fetch?url=` 抓到 loopback canary → `ssrf-internal-fetch`（本機沒有雲端 metadata，`ssrf-metadata` 只在雲端環境可能命中；修補版在應用層回 400）；`/docs` 回 200。
 3. **反例**：修復後 B 讀 A 回 404、`alg:none` 回 401、SSRF 被 egress allowlist 擋 → 對應 finding `retest_result: fixed`、`validation_status: confirmed`。
 4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（CLAUDE.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 探針（`scripts/g5_api_probes.py`）與 `scripts/g6_cost_probe.py` 都不送任何請求。
 4a. **ZAP 接線**：`python3 scripts/g5_zap.py selftest` 以合成報告驗證規則對應、IGNORE 過濾、來源合併與「報告缺席 → untested」。
