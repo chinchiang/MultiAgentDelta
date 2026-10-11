@@ -16,7 +16,7 @@ const GATES = ['g5', 'g6'];
 
 // blackbox：needs.blackbox，{ result, outputs: { is_vulnapp, g5_status, g5_blocking, g5_missing_tools, g6_status, g6_blocking, g6_missing_tools } }
 // gX_status 已由 gate_verdict.py 正規化：缺檔 → missing；無法解析／不符 schema／untested 等 → incomplete。
-// gX_missing_tools：逗號分隔的未執行必要工具，空字串 = 都跑了。
+// gX_missing_tools：逗號分隔的未執行必要工具，空字串 = 都跑了；欄位不存在 = 無法確認（算有問題）。
 function evaluate(blackbox) {
   const problems = [];
   const result = blackbox && blackbox.result;
@@ -33,8 +33,12 @@ function evaluate(blackbox) {
       if (status !== 'fail' || !(blocking > 0)) {
         problems.push(`${name} 在靶場上預期 \`fail\` 且有 blocking，實際為 \`${status}\`（blocking ${Number.isNaN(blocking) ? '?' : blocking}）：偵測能力可能退步`);
       }
-      const missingTools = String(out[`${g}_missing_tools`] || '').trim();
-      if (missingTools) {
+      const rawMissing = out[`${g}_missing_tools`];
+      const missingTools = String(rawMissing || '').trim();
+      if (rawMissing === undefined || rawMissing === null) {
+        // 輸出不存在 ≠ 都跑了：判定步驟沒跑完或 workflow 沒接上輸出，無法確認必要工具（incomplete ≠ pass）
+        problems.push(`${name} 沒有回報必要工具的執行情形：無法確認是否都已執行，不算驗收通過`);
+      } else if (missingTools) {
         problems.push(`${name} 在靶場上有必要工具未執行（${missingTools}）：即使找到漏洞也不算驗收通過`);
       }
     } else if (status !== 'pass') {

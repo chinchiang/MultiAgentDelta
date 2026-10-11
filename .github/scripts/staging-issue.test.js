@@ -21,7 +21,7 @@ function mockGithub(openIssues = []) {
 const context = { repo: { owner: 'o', repo: 'r' }, serverUrl: 'https://github.com', runId: 9, sha: 'abcdef1234567' };
 const core = { info: () => {} };
 const bb = (outputs, result = 'success') => ({ result, outputs });
-const labOk = bb({ is_vulnapp: 'true', g5_status: 'fail', g5_blocking: '4', g6_status: 'fail', g6_blocking: '3' });
+const labOk = bb({ is_vulnapp: 'true', g5_status: 'fail', g5_blocking: '4', g6_status: 'fail', g6_blocking: '3', g5_missing_tools: '', g6_missing_tools: '' });
 const extOk = bb({ is_vulnapp: 'false', g5_status: 'pass', g5_blocking: '0', g6_status: 'pass', g6_blocking: '0' });
 const tracking = { number: 7, body: `${MARKER}\nold` };
 
@@ -45,6 +45,13 @@ test('lab: a required tool that did not run is a problem even when vulnerabiliti
   assert.match(e.problems[1], /G6.*garak,vibesec-g6-cost-probe/);
   // 狀態退步與工具未執行分別列出
   assert.equal(evaluate(bb({ ...labOk.outputs, g5_status: 'incomplete', g5_missing_tools: 'zap-baseline' })).problems.length, 2);
+});
+
+test('lab: absent missing_tools output means tool execution is unknown → problem (incomplete ≠ pass)', () => {
+  const { g5_missing_tools, g6_missing_tools, ...noReport } = labOk.outputs;
+  const e = evaluate(bb(noReport));
+  assert.equal(e.problems.length, 2);
+  assert.match(e.problems[0], /G5 沒有回報必要工具的執行情形/);
 });
 
 test('external target: missing_tools is not a lab acceptance check (status already decides)', () => {
