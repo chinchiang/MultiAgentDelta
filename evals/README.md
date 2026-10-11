@@ -40,7 +40,7 @@ notes: 靶場 examples/vulnapp 可重現。
 
 ## 三組比較
 
-以 `evals/split.yaml` 的 held-in 子集調整 prompt，held-out 子集量測：召回率、精確率、共同漏報、每模型新增有效發現、人工確認時間、成本。三組為：工具+單模型、工具+同模型多代理、工具+不同模型多代理。
+以 `evals/split.yaml` 的 held-in 子集調整 prompt，held-out 子集量測：召回率、精確率、共同漏報、每模型新增有效發現、人工確認時間、成本。三組為：工具+單模型、工具+同模型多代理、工具+不同模型多代理。盲測輸入以 `scripts/prepare_comparison.py` 產生、以 `scripts/compare_reviews.py` 評分，步驟見 `docs/12-pilot-and-evaluation.md` §三（尚未執行）。
 
 ## 執行評測（`scripts/run_evals.py`）
 
