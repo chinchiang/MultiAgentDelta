@@ -7,13 +7,17 @@
   - 未提供某一層的結果（缺 --redteam／--redteam-skipped、缺 --garak-glob、缺 --cost、缺 --observations）或結果為空 → 該層 untested。
   - vibesec.yaml gates.g6_ai_red_team.checks 宣告的每個 check 都必須有實測結果（pass／fail），否則記 untested。
   - promptfoo eval 退出碼非零但結果中沒有斷言失敗、或退出碼不是 0／100（工具錯誤，結果可能不完整）→ untested；
-    退出碼 100 且有斷言失敗 → 照實記 fail。
+    退出碼 100 且有斷言失敗 → 照實記 fail。promptfoo redteam 同樣看退出碼（--redteam-exit-code）。
+  - promptfoo redteam：設定（--redteam-config）列出的 plugin 在結果中沒有任何測試 → 該 plugin untested。
+  - garak：報告缺 completion 紀錄（執行中途結束）、log 有 Traceback／❌（中止）、有送出攻擊但沒有評估結果的 probe、
+    設定中指名但沒有結果的 probe 或 probe 家族 → untested（以前只要有任何 eval 紀錄，其餘就默認為完成）。
   - 只有所有層都實際執行且無失敗才是 pass。
 規則 ID 只查 config/catalogs/cwe-map.yaml（CLAUDE.md #3）；查不到者 policy_tier 視為 advisory 並在 message 註明。
 
 用法：
   python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json \
-      [--redteam reports/g6-promptfoo-redteam.json | --redteam-skipped "未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret"] \
+      [--redteam reports/g6-promptfoo-redteam.json [--redteam-exit-code N] [--redteam-config config/promptfoo/promptfooconfig.yaml]
+       | --redteam-skipped "未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret"] \
       [--garak-glob 'reports/g6-garak*.report.jsonl'] \
       --cost reports/g6-cost.json --observations reports/g6-observations.json \
       --gate reports/g6-gate.json --sarif reports/g6.sarif [--mode shadow|enforce]
@@ -154,7 +158,21 @@ def ingest_promptfoo_eval(c: Collector, path: str | None, exit_code: int | None)
         c.reasons.append(why)
 
 
-def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None):
+def redteam_expected_plugins(config_path: str | None) -> list[str] | None:
+    """promptfoo 設定 redteam.plugins 的 id 清單；未提供設定 → None（不比對），讀不到或格式不符 → []（呼叫端記 untested）。"""
+    if not config_path:
+        return None
+    try:
+        import yaml
+        plugins = ((yaml.safe_load(pathlib.Path(config_path).read_text(encoding="utf-8")) or {}).get("redteam") or {}).get("plugins")
+        ids = [p if isinstance(p, str) else (p or {}).get("id") for p in plugins or []]
+        return [str(i) for i in ids if i]
+    except Exception:
+        return []
+
+
+def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None,
+                             exit_code: int | None = None, config_path: str | None = None):
     if skipped:
         c.tools.append({"name": "promptfoo-redteam", "version": None, "state": "missing", "exit_code": None,
                         "output_ref": None, "duration_seconds": None})
@@ -186,9 +204,11 @@ def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None
         c.reasons.append("promptfoo redteam 結果沒有任何測試")
         return
     failed = errored = 0
+    seen: set[str] = set()
     for r in rows:
         md = ((r.get("testCase") or {}).get("metadata")) or r.get("metadata") or {}
         plugin = md.get("pluginId") or md.get("plugin") or "unknown"
+        seen.add(str(plugin))
         if r.get("success"):
             continue
         if r.get("failureReason") == PF_ERROR:
@@ -204,6 +224,26 @@ def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None
         c.reasons.append(f"promptfoo redteam 有 {errored} 個測試執行錯誤")
     else:
         c.cover("promptfoo-redteam", "LLM01:2025", "pass")
+    c.tools[-1]["exit_code"] = exit_code
+    # 退出碼：與 eval 相同（100 = 有測試失敗；其他非零 = 工具錯誤或逾時，結果可能不完整）
+    if exit_code not in (None, 0) and (exit_code != PF_FAILED_EXIT or not failed):
+        why = f"promptfoo redteam 退出碼 {exit_code}" + ("，結果中沒有測試失敗（工具錯誤或結果不完整）" if not failed
+                                                         else "（非測試失敗的退出碼，結果可能不完整）")
+        c.cover("promptfoo-redteam", "LLM01:2025", "untested", why)
+        c.reasons.append(why)
+    # 設定要求的 plugin 必須都有結果：集合型 plugin（pii、harmful）展開成 pii:direct 等子 plugin，以前綴比對。
+    # 以前只看「有沒有失敗」：生成階段漏掉某些 plugin（逾時、模型拒答、遠端生成被停用）時照樣 pass。
+    expected = redteam_expected_plugins(config_path)
+    if expected == []:
+        why = f"無法讀取 redteam 設定的 plugin 清單（{config_path}），無法確認每個 plugin 都有測試"
+        c.cover("promptfoo-redteam", "LLM01:2025", "untested", why)
+        c.reasons.append(why)
+    for plug in expected or []:
+        if not any(s == plug or s.startswith(plug + ":") for s in seen):
+            c.cover(f"promptfoo-redteam:{plug}", "LLM01:2025", "untested", f"redteam plugin {plug} 沒有任何測試結果")
+    _miss = [p for p in expected or [] if f"promptfoo-redteam:{p}" in c.coverage]
+    if _miss:
+        c.reasons.append(f"redteam plugin 沒有測試結果：{', '.join(_miss)}")
 
 
 COST_RULE, COST_CHECK = "vibesec.g6.denial-of-wallet", "denial_of_wallet"
@@ -290,15 +330,26 @@ def garak_abort_reason(log_path: str | None) -> str | None:
     return None
 
 
-def garak_expected_families(config_path: str | None) -> list[str]:
-    """讀 garak 設定的 run.spec.include，取 probe 家族名（probes.dan → dan）。"""
+def garak_aborted(log_path: str | None) -> str | None:
+    """已有報告時判斷 garak 是否中途中止：log 有 Traceback 或 ❌ 才算（重試中的連線錯誤等單行警告不算），回傳原因。"""
+    try:
+        text = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace") if log_path else ""
+    except OSError:
+        return None
+    if "Traceback (most recent call last)" in text or "❌" in text:
+        return garak_abort_reason(log_path) or "garak log 有未處理的例外"
+    return None
+
+
+def garak_expected_specs(config_path: str | None) -> list[str]:
+    """讀 garak 設定的 run.spec.include：probes.dan → dan（家族）、probes.dan.Dan_11_0 → dan.Dan_11_0（指定 probe）。"""
     try:
         import yaml
         spec = ((yaml.safe_load(pathlib.Path(config_path).read_text(encoding="utf-8")) or {}).get("run") or {}).get("spec") or {}
     except Exception:
         return []
     inc = spec.get("include") or [] if isinstance(spec, dict) else []
-    return [s.split(".")[1] for s in inc if isinstance(s, str) and s.startswith("probes.") and len(s.split(".")) > 1]
+    return [s.removeprefix("probes.") for s in inc if isinstance(s, str) and s.startswith("probes.") and len(s.split(".")) > 1]
 
 
 def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None, config_path: str | None = None):
@@ -322,6 +373,9 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None,
                     "output_ref": files[0], "duration_seconds": None})
     evals = 0
     seen_families: set[str] = set()
+    seen_probes: set[str] = set()       # 有 eval 紀錄的 probe（dan.Dan_11_0）
+    attempted: set[str] = set()         # 有 attempt 紀錄的 probe
+    unfinished: list[str] = []          # 缺 completion 紀錄的報告
     for f in files:
         try:
             text = pathlib.Path(f).read_text(encoding="utf-8", errors="replace")
@@ -330,16 +384,24 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None,
             c.cover(f"garak-report:{pathlib.Path(f).name}", "LLM01:2025", "untested", why)
             c.reasons.append(why)
             continue
+        completed = False
         for line in text.splitlines():
             try:
                 e = json.loads(line)
             except Exception:
                 continue
-            if not isinstance(e, dict) or e.get("entry_type") != "eval":
+            if not isinstance(e, dict):
+                continue
+            if e.get("entry_type") == "completion":
+                completed = True
+            elif e.get("entry_type") == "attempt" and e.get("probe_classname"):
+                attempted.add(str(e["probe_classname"]).removeprefix("probes."))
+            if e.get("entry_type") != "eval":
                 continue
             evals += 1
             probe, det = str(e.get("probe") or "?"), str(e.get("detector") or "?")
             seen_families.add(probe.split(".")[0])
+            seen_probes.add(probe)
             rule = GARAK_RULES.get(probe.split(".")[0], f"garak:{probe}.{det}")
             ctrl = c.control(rule, "LLM01:2025")
             check = rule.removeprefix("vibesec.g6.").replace("-", "_") if rule.startswith("vibesec.g6.") else None
@@ -359,16 +421,31 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None,
                 c.finding(rule, f"garak：{probe} / {det} 命中 {fails}/{total}", "garak")
             else:
                 c.cover(f"garak:{probe}", ctrl, "pass", check=check)
-    why = garak_abort_reason(log_path)
+        if not completed:
+            unfinished.append(pathlib.Path(f).name)
+    why = garak_aborted(log_path)
     suffix = f"（中止：{why}）" if why else ""
+    # 執行完整性（garak 0.17：每次執行結束寫一筆 completion；中途崩潰或逾時就沒有）→ 整層 untested
+    if unfinished or why:
+        detail = (f"garak 報告缺 completion 紀錄（執行未正常結束）：{', '.join(unfinished)}" if unfinished
+                  else "garak log 顯示執行中止") + suffix
+        c.cover("garak", "LLM01:2025", "untested", detail)
+        c.reasons.append(detail)
+    # probe 層級：送出攻擊卻沒有評估結果（detector 失敗、中途結束）→ 該 probe untested
+    for probe in sorted(attempted - seen_probes):
+        rule = GARAK_RULES.get(probe.split(".")[0], f"garak:{probe}")
+        c.cover(f"garak:{probe}", c.control(rule, "LLM01:2025"), "untested", f"garak {probe} 有送出攻擊但沒有評估結果{suffix}")
+    if attempted - seen_probes:
+        c.reasons.append(f"garak probe 沒有評估結果：{', '.join(sorted(attempted - seen_probes))}")
     if not evals:
         c.cover("garak", "LLM01:2025", "untested", f"garak 報告中沒有 eval 紀錄{suffix}")
         c.reasons.append(f"garak 報告中沒有 eval 紀錄{suffix}")
         return
     # 設定中要求、但報告裡沒有任何 eval 的 probe 家族（逾時或中途崩潰）→ untested，不得默認為 pass
-    missing = [fam for fam in garak_expected_families(config_path) if fam not in seen_families]
+    missing = [sp for sp in garak_expected_specs(config_path)
+               if not any(p == sp or p.startswith(sp + ".") for p in seen_probes)]
     for fam in missing:
-        rule = GARAK_RULES.get(fam, f"garak:{fam}")
+        rule = GARAK_RULES.get(fam.split(".")[0], f"garak:{fam}")
         c.cover(f"garak:{fam}", c.control(rule, "LLM01:2025"), "untested", f"garak 未完成 {fam}{suffix}")
     if missing:
         c.reasons.append(f"garak 未完成：{', '.join(missing)}{suffix}")
@@ -439,8 +516,11 @@ def selftest() -> list[str]:
         ok_rows = [row(ck) for ck in all_checks]
         (dp / "eval.json").write_text(json.dumps({"results": {"results": ok_rows}}), encoding="utf-8")
         (dp / "red.json").write_text(json.dumps({"results": {"results": [{"success": True}]}}), encoding="utf-8")
-        (dp / "g6-garak.report.jsonl").write_text(json.dumps({"entry_type": "eval", "probe": "dan.Dan_11_0",
-            "detector": "dan.DAN", "total_evaluated": 5, "fails": 0}) + "\n", encoding="utf-8")
+        garak_lines = lambda *extra, done=True: "".join(json.dumps(x) + "\n" for x in (
+            {"entry_type": "attempt", "probe_classname": "dan.Dan_11_0", "status": 2},
+            {"entry_type": "eval", "probe": "dan.Dan_11_0", "detector": "dan.DAN", "total_evaluated": 5, "fails": 0},
+            *extra, *([{"entry_type": "completion", "run": "r"}] if done else [])))
+        (dp / "g6-garak.report.jsonl").write_text(garak_lines(), encoding="utf-8")
 
         obs_probe = lambda events, status=200: {"schema": "vibesec-g6-observations/v1", "denied": None, "probes": [
             {"id": "agency", "tools_offered": ["delete_customers"], "http_status": status, "tool_events": events,
@@ -550,6 +630,43 @@ def selftest() -> list[str]:
                 fails.append(f"garak 報告無法讀取 → incomplete；實際 {g['status']}（{g['status_reason']}）")
         except Exception as e:
             fails.append(f"garak 報告 OSError 不得丟出例外：{type(e).__name__}")
+        # garak 完整性：缺 completion（中途結束）、有 attempt 沒有 eval 的 probe、log 有 Traceback → incomplete
+        for name, text, log in (("缺 completion", garak_lines(done=False), None),
+                                ("probe 只有 attempt", garak_lines({"entry_type": "attempt", "probe_classname": "encoding.InjectBase64"}), None),
+                                ("log 有 Traceback", garak_lines(), "Traceback (most recent call last):\nAssertionError: boom\n")):
+            (dp / "gk").mkdir(exist_ok=True)
+            (dp / "gk/g6-garak.report.jsonl").write_text(text, encoding="utf-8")
+            extra = []
+            if log:
+                (dp / "gk.log").write_text(log, encoding="utf-8"); extra = ["--garak-log", str(dp / "gk.log")]
+            g = run(cost_ok, extra, base=ev + red + ["--garak-glob", str(dp / "gk/g6-garak*.report.jsonl")])
+            if g["status"] != "incomplete" or "garak" not in (g["status_reason"] or ""):
+                fails.append(f"garak {name} → incomplete；實際 {g['status']}（{g['status_reason']}）")
+        # 以下用乾淨的目錄（前面的案例在 dp 放了壞掉的 garak 報告，會被預設 glob 收進來）
+        (dp / "ok").mkdir(exist_ok=True)
+        (dp / "ok/g6-garak.report.jsonl").write_text(garak_lines(), encoding="utf-8")
+        gk = ["--garak-glob", str(dp / "ok/g6-garak*.report.jsonl")]
+        # 設定指名的 probe（probes.dan.Dan_11_0 有結果、probes.encoding 家族沒有）→ 缺的那個 untested
+        (dp / "garak.yaml").write_text("run:\n  spec:\n    include: [probes.dan.Dan_11_0, probes.encoding]\n", encoding="utf-8")
+        g = run(cost_ok, ["--garak-config", str(dp / "garak.yaml")], base=ev + red + gk)
+        if g["status"] != "incomplete" or "encoding" not in (g["status_reason"] or "") or "Dan_11_0" in (g["status_reason"] or ""):
+            fails.append(f"garak 設定指名但無結果的 probe → incomplete（只列缺的）；實際 {g['status']}（{g['status_reason']}）")
+        # promptfoo redteam：設定要求的 plugin 沒有結果、退出碼異常 → incomplete；集合型 plugin 以前綴比對
+        (dp / "pf.yaml").write_text("redteam:\n  plugins:\n    - pii\n    - id: bola\n", encoding="utf-8")
+        prow = lambda plug, ok=True: {"success": ok, "failureReason": 0 if ok else PF_ASSERT, "testCase": {"metadata": {"pluginId": plug}}}
+        (dp / "red2.json").write_text(json.dumps({"results": {"results": [prow("pii:direct"), prow("bola")]}}), encoding="utf-8")
+        red2 = ["--redteam", str(dp / "red2.json"), "--redteam-config", str(dp / "pf.yaml")]
+        g = run(cost_ok, base=ev + red2 + gk)
+        if g["status"] != "pass":
+            fails.append(f"redteam 每個 plugin 都有結果（pii 以 pii:direct 涵蓋）→ pass；實際 {g['status']}（{g['status_reason']}）")
+        (dp / "red3.json").write_text(json.dumps({"results": {"results": [prow("pii:direct")]}}), encoding="utf-8")
+        g = run(cost_ok, base=ev + ["--redteam", str(dp / "red3.json"), "--redteam-config", str(dp / "pf.yaml")] + gk)
+        if g["status"] != "incomplete" or "bola" not in (g["status_reason"] or ""):
+            fails.append(f"redteam plugin bola 沒有結果 → incomplete；實際 {g['status']}（{g['status_reason']}）")
+        for code, want in (("1", "incomplete"), ("124", "incomplete"), ("100", "incomplete"), ("0", "pass")):
+            g = run(cost_ok, ["--redteam-exit-code", code], base=ev + red2 + gk)
+            if g["status"] != want:
+                fails.append(f"redteam 退出碼 {code}（全部通過）→ {want}；實際 {g['status']}（{g['status_reason']}）")
         g = run({"state": "pass"}, ["--target-denied", "example.com 不在允許清單"])
         if g["status"] != "incomplete" or "授權" not in (g["status_reason"] or "") or g["tools"]:
             fails.append(f"--target-denied → incomplete 且不讀任何結果；實際 {g['status']} tools={g['tools']}")
@@ -569,6 +686,8 @@ def main(argv=None) -> int:
     ap.add_argument("--eval-exit-code", type=int)
     ap.add_argument("--redteam")
     ap.add_argument("--redteam-skipped")
+    ap.add_argument("--redteam-exit-code", type=int)
+    ap.add_argument("--redteam-config", help="promptfoo redteam 設定檔；比對 redteam.plugins 中要求但沒有結果的 plugin")
     ap.add_argument("--garak-glob")
     ap.add_argument("--garak-log", help="garak stdout/stderr；無報告時擷取中止原因")
     ap.add_argument("--garak-config", help="garak 設定檔；比對 run.spec 中要求但未完成的 probe 家族")
@@ -587,7 +706,7 @@ def main(argv=None) -> int:
         c.reasons.append(why)
     else:
         ingest_promptfoo_eval(c, a.eval_path, a.eval_exit_code)
-        ingest_promptfoo_redteam(c, a.redteam, a.redteam_skipped)
+        ingest_promptfoo_redteam(c, a.redteam, a.redteam_skipped, a.redteam_exit_code, a.redteam_config)
         ingest_garak(c, a.garak_glob, a.garak_log, a.garak_config)
         ingest_cost(c, a.cost)
         ingest_observations(c, a.observations)

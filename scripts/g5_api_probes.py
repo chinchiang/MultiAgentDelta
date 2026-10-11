@@ -139,6 +139,23 @@ def _protected_paths():
     m = re.search(r"^\s*protected_paths\s*:\s*\[([^\]]*)\]", txt, re.M)
     return [x.strip().strip("'\"") for x in m.group(1).split(",") if x.strip()] if m else []
 
+def _graphql_shaped(body):
+    """回應是否為 GraphQL 格式（JSON 物件且有 errors 或 data 鍵）。"""
+    try:
+        d = json.loads(body or "")
+    except ValueError:
+        return False
+    return isinstance(d, dict) and ("errors" in d or "data" in d)
+
+def _cors_paths():
+    """CORS 探測的端點：受保護路徑與 JWT 探針端點（實際 API），最後才是 /openapi.json 與 /。
+    以前只測 /openapi.json：CORS 設定常只套在 API 路由（或文件已關閉回 404），測不到也記 pass。"""
+    seen, out = set(), []
+    for p in [*_protected_paths(), *JWT_PROBE_PATHS, "/openapi.json", "/"]:
+        if p and p not in seen:
+            seen.add(p); out.append(p)
+    return out
+
 def _write_gate(gstatus, status_reason, blocking, advisory, cov, zap_tools, started, probe_state="ran"):
     gate = {"gate": "G5", "status": gstatus, "status_reason": status_reason,
             "mode": os.environ.get("VIBESEC_MODE", "shadow"), "scope": "full", "diff_base": None,
@@ -216,36 +233,56 @@ def main():
         elif s in (404, 405):   # 沒有 GraphQL 端點：不適用，不是「已關閉 introspection」
             coverage["graphql_introspection"] = "not_applicable"
             coverage_reasons["graphql_introspection"] = f"POST /graphql 回 HTTP {s}：目標沒有 GraphQL 端點"
+        elif s in (200, 400) and _graphql_shaped(body):
+            # GraphQL 伺服器回了標準的 {"errors": …} 或 {"data": …}，但沒有 __schema：introspection 已關閉
+            coverage["graphql_introspection"] = "pass"
         else:
-            coverage["graphql_introspection"] = "pass" if s is not None else "untested"
+            # 401／403（需登入才看得到 schema，未以帳號實測）、3xx、5xx、連線失敗、非 GraphQL 格式的 200（SPA 首頁）
+            # 都不能證明 introspection 已關閉：以前除了 404／405 一律記 pass
+            coverage["graphql_introspection"] = "untested"
+            coverage_reasons["graphql_introspection"] = (f"POST /graphql 回 HTTP {s}，不是 GraphQL 格式的拒絕回應，無法判定"
+                                                         if s is not None else "POST /graphql 請求失敗")
 
     # ---- cors_reflect_origin ----
     # 帶一個不可能在白名單內的 Origin（RFC 2606 保留網域）；ACAO 反射它且 ACAC: true → 任意網站可帶 cookie/憑證讀回應
+    # 判定：任一端點反射 → fail；至少一個實際存在的端點（非 404、有回應）沒有反射 → pass；其餘 untested
     if reachable:
         EVIL = "https://vibesec-cors-probe.invalid"
         h = {"User-Agent": "vibesec-g5-probes", "Origin": EVIL}
         if HAS_A: h["Authorization"] = f"Bearer {TA}"
-        try:
-            with OPENER.open(urllib.request.Request(URL + "/openapi.json", headers=h), timeout=15) as resp:
-                acao, acac = resp.headers.get("Access-Control-Allow-Origin"), resp.headers.get("Access-Control-Allow-Credentials")
-        except urllib.error.HTTPError as e:
-            acao, acac = e.headers.get("Access-Control-Allow-Origin"), e.headers.get("Access-Control-Allow-Credentials")
-        except Exception:
-            acao = acac = False
-        if acao is False:
-            coverage["cors_reflect_origin"] = "untested"
-        elif acao == EVIL and str(acac).lower() == "true":
+        reflected, clean, tried = None, [], []
+        for p in _cors_paths():
+            if not same_origin(URL + p, URL)[0]:
+                continue
+            try:
+                with OPENER.open(urllib.request.Request(URL + p, headers=h), timeout=15) as resp:
+                    code, hdr = resp.status, resp.headers
+            except urllib.error.HTTPError as e:
+                code, hdr = e.code, e.headers
+            except Exception:
+                tried.append(f"{p}→失敗"); continue
+            tried.append(f"{p}→{code}")
+            acao, acac = hdr.get("Access-Control-Allow-Origin"), hdr.get("Access-Control-Allow-Credentials")
+            if acao == EVIL and str(acac).lower() == "true":
+                reflected = f"{p}（HTTP {code}）"; break
+            if code != 404:
+                clean.append(p)
+        if reflected:
             add("vibesec.g5.cors-reflect-origin", "error",
-                "CORS 反射任意 Origin 且 Access-Control-Allow-Credentials: true")
+                f"CORS 反射任意 Origin 且 Access-Control-Allow-Credentials: true：{reflected}")
             coverage["cors_reflect_origin"] = "fail"
-        else:
+        elif clean:
             coverage["cors_reflect_origin"] = "pass"
+        else:
+            coverage["cors_reflect_origin"] = "untested"
+            coverage_reasons["cors_reflect_origin"] = "沒有任何實際存在的端點可測 CORS（" + "、".join(tried) + "）"
 
     # ---- debug_stacktrace ----
     if reachable:
         markers = ("Traceback (most recent call last)", "File \"", "Exception", "at line")
         leaked = lambda b: bool(b) and any(m in b for m in markers)
         s, body = req("/__vibesec_nonexistent__/%ff", "GET")
+        answered = s is not None          # 至少有一個請求真的得到 HTTP 回應，「沒洩漏」才有意義
         if not leaked(body):
             # 型別混淆輸入：對 openapi 列出、無 path 參數的 POST 端點（最多 5 個）送數值型欄位，誘發未處理例外
             try:
@@ -256,12 +293,17 @@ def main():
                 posts = []
             for path in posts:
                 s, body = req(path, "POST", data={"query": 0, "message": 0, "input": 0, "id": 0})
+                answered = answered or s is not None
                 if leaked(body):
                     break
         if leaked(body):
             add("vibesec.g5.debug-stacktrace", "warning",
                 "錯誤回應洩漏 stack trace（Debug Mode 外溢）")
             coverage["debug_stacktrace"] = "fail"
+        elif not answered:
+            # 以前所有請求都失敗（逾時、連線中斷）也記 pass
+            coverage["debug_stacktrace"] = "untested"
+            coverage_reasons["debug_stacktrace"] = "錯誤誘發請求都沒有得到 HTTP 回應"
         else:
             coverage["debug_stacktrace"] = "pass"
 
@@ -392,21 +434,30 @@ def main():
         def ssrf_try(ep, key, target):
             out = []
             q = urllib.parse.urlencode({key: target})
-            out.append(req(f"{ep}?{q}", "GET", token=TA or None))
-            out.append(req(ep, "POST", token=TA or None, data={key: target}))
-            return [(s, (b or "").replace(target, "")) for s, b in out]
+            out.append(("GET",) + req(f"{ep}?{q}", "GET", token=TA or None))
+            out.append(("POST",) + req(ep, "POST", token=TA or None, data={key: target}))
+            return [(m, s, (b or "").replace(target, "")) for m, s, b in out]
+        # 400／403 要是「針對這個 URL 參數」的拒絕才算防護：同一端點、同一方法改帶無關的參數名，
+        # 若也回同一個狀態碼（缺參數驗證、整個端點需登入、WAF 一律擋）→ 不是對內部 URL 的拒絕，不算 pass。
+        _baseline = {}
+        def ssrf_baseline(ep, method):
+            if (ep, method) not in _baseline:
+                junk = {"vibesec_unrelated": "x"}
+                _baseline[(ep, method)] = (req(f"{ep}?{urllib.parse.urlencode(junk)}", "GET", token=TA or None) if method == "GET"
+                                           else req(ep, "POST", token=TA or None, data=junk))[0]
+            return _baseline[(ep, method)]
         ssrf_hit = False; internal_hit = False; refused = False; reached = False
         for ep in ["/fetch", "/api/fetch", "/import", "/api/import", "/proxy", "/url"]:
             for key in ["url", "uri", "target", "endpoint"]:
-                for s, body in ssrf_try(ep, key, META):
+                for m, s, body in ssrf_try(ep, key, META):
                     if s == 200: reached = True
-                    if s in (400, 403): refused = True
+                    if s in (400, 403) and ssrf_baseline(ep, m) != s: refused = True
                     if s == 200 and any(m in body for m in ("ami-id", "instance-id", "iam/security-credentials", '"compute"')):
                         add("vibesec.g5.ssrf-metadata", "error",
                             f"SSRF：端點 {ep}（{key}）可讀取雲端 metadata 169.254.169.254")
                         ssrf_hit = True; break
                 if not internal_hit:
-                    for s, body in ssrf_try(ep, key, CANARY):
+                    for _m, s, body in ssrf_try(ep, key, CANARY):
                         if s == 200 and "openapi" in body:  # 已移除回顯的 canary URL；內容可能被 JSON 轉義
                             add("vibesec.g5.ssrf-internal-fetch", "error",
                                 f"SSRF：端點 {ep}（{key}）會替使用者抓取內部位址 127.0.0.1（loopback canary 命中）")
@@ -419,6 +470,8 @@ def main():
             coverage["ssrf_metadata"] = "pass"
         else:
             coverage["ssrf_metadata"] = "untested"
+            coverage_reasons["ssrf_metadata"] = ("端點接受了內部 URL 但未見 metadata 內容，無法判定" if reached else
+                                                 "沒有端點針對 URL 參數明確拒絕內部位址（400／403 與無關參數的回應相同或沒有回應）")
 
     # ---- session_check ----
     # 受保護路徑由 vibesec.yaml gates.g5_dast_api.protected_paths 列出（探針無法從外部推斷哪些端點該受保護）。
@@ -632,6 +685,74 @@ def selftest():
                     fails.append(f"jwt_alg_none（{mode}）的 gate 不符 schema：{list(schema.iter_errors(g))[0].message}")
         finally:
             srv.shutdown(); srv.server_close()
+
+    # 其他探針：以可設定路由的本機假目標實測 pass／fail／untested（以前 CORS 只測 /openapi.json、GraphQL 401 記 pass、
+    # 錯誤誘發請求全失敗記 pass、SSRF 的 400 不論原因都算拒絕）
+    def serve_routes(route):
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def _reply(self):
+                r = route(self.command, self.path, self.headers)
+                if r is None:                       # 不回應、直接斷線
+                    self.close_connection = True; return
+                code, hdrs, body = r
+                self.send_response(code)
+                for k, v in {"Content-Type": "application/json", **hdrs}.items(): self.send_header(k, v)
+                self.end_headers(); self.wfile.write(body.encode())
+            do_GET = do_POST = do_OPTIONS = _reply
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv
+
+    def probe(route, control):
+        srv = serve_routes(route)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                env = {"VIBESEC_TARGET_URL": f"http://127.0.0.1:{srv.server_address[1]}", "VIBESEC_CONFIG": str(repo / "vibesec.yaml")}
+                _, g = run_in(d, env)
+                return next((c for c in (g or {}).get("coverage", []) if c["control_id"] == control), None)
+        finally:
+            srv.shutdown(); srv.server_close()
+
+    reflect = lambda h: {"Access-Control-Allow-Origin": h.get("Origin", ""), "Access-Control-Allow-Credentials": "true"}
+    def base(method, path, h, extra):
+        r = extra(method, path.split("?")[0], path, h)
+        if r == "DROP": return None                 # 斷線、不回應
+        if r is not None: return r
+        return (200, {}, "{}") if path == "/openapi.json" else (404, {}, "{}")
+    cases = [
+        ("cors_reflect_origin", "untested", "API 端點都不存在、/openapi.json 404",
+         lambda m, p, full, h: (404, {}, "{}") if p == "/openapi.json" else None),
+        ("cors_reflect_origin", "fail", "只有 /me 反射 Origin",
+         lambda m, p, full, h: (200, reflect(h), "{}") if p == "/me" else None),
+        ("cors_reflect_origin", "pass", "實際端點存在且不反射",
+         lambda m, p, full, h: (401, {}, "{}") if p == "/me" else None),
+        ("graphql_introspection", "untested", "POST /graphql 回 401",
+         lambda m, p, full, h: (401, {}, "{}") if p == "/graphql" else None),
+        ("graphql_introspection", "untested", "POST /graphql 回非 GraphQL 的 200",
+         lambda m, p, full, h: (200, {"Content-Type": "text/html"}, "<html></html>") if p == "/graphql" else None),
+        ("graphql_introspection", "pass", "GraphQL 回 errors、沒有 __schema",
+         lambda m, p, full, h: (400, {}, '{"errors":[{"message":"introspection disabled"}]}') if p == "/graphql" else None),
+        ("graphql_introspection", "fail", "GraphQL 回 __schema",
+         lambda m, p, full, h: (200, {}, '{"data":{"__schema":{"types":[]}}}') if p == "/graphql" else None),
+        ("debug_stacktrace", "untested", "錯誤誘發請求都斷線",
+         lambda m, p, full, h: "DROP" if p.startswith("/__vibesec") else None),
+        ("debug_stacktrace", "pass", "錯誤回應不洩漏",
+         lambda m, p, full, h: (404, {}, '{"detail":"Not Found"}') if p.startswith("/__vibesec") else None),
+        ("ssrf_metadata", "untested", "/fetch 對任何參數都回 400",
+         lambda m, p, full, h: (400, {}, '{"error":"bad request"}') if p == "/fetch" else None),
+        ("ssrf_metadata", "pass", "/fetch 只對 url 參數回 400、無關參數回 422",
+         lambda m, p, full, h: ((400, {}, '{"error":"blocked"}') if ("url=" in full or m == "POST") else (422, {}, "{}"))
+                               if p == "/fetch" else None),
+    ]
+    for control, want, name, extra in cases:
+        got = probe(lambda m, p, h, extra=extra: base(m, p, h, extra), control)
+        if got is None:
+            fails.append(f"{control}（{name}）沒有覆蓋項")
+        elif got["state"] != want:
+            fails.append(f"{control}（{name}）應為 {want}（得到 {got}）")
+        elif want == "untested" and not got.get("reason"):
+            fails.append(f"{control}（{name}）untested 時應說明原因")
 
     return fails
 
