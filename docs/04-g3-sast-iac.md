@@ -149,7 +149,7 @@ python3 scripts/g3_sast.py --target ../MultiAgentBeta [--base <ref>] --out-dir r
 | 工具 | 用途 | 設定 |
 |---|---|---|
 | Semgrep CE / Pro（semgrep.dev） | 污點分析、自訂規則、PR 首選 | `config/semgrep/vibesec-rules.yaml` + `p/owasp-top-ten` + `p/security-audit` |
-| CodeQL | 夜間跨檔跨函式 | `nightly-full.yml` |
+| CodeQL | 夜間跨檔跨函式（SARIF 上傳 GitHub Code Scanning 作為證據，目前未接進任何閘門裁決，屬 advisory／證據型） | `nightly-full.yml` |
 | Checkov | Terraform / Dockerfile / K8s / GHA / secrets | `config/checkov/.checkov.yaml`、`config/checkov/custom/*.yaml` |
 | Trivy（`trivy config`） | IaC 第二意見 | — |
 | `scripts/g3_sast.py` | 本機／harness：三個工具 → G3 gate JSON；`--target` 掃其他專案 | 同上三份設定 |

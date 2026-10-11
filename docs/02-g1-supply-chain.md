@@ -181,7 +181,7 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 | 自製檢查（harness G1 步驟） | 四層防禦 | `config/slopsquat/*.yaml`、`*.txt` |
 | syft | SBOM（CycloneDX JSON；可改 SPDX） | `sbom_format: cyclonedx-json` |
 | grype | SBOM 比對 NVD / GHSA | `grype sbom:…` |
-| trivy | 漏洞 + 祕密 + IaC + K8s；2026 預設首選（Apache-2.0） | `trivy sbom` / `trivy fs` |
+| trivy | 漏洞 + 祕密 + IaC + K8s；2026 預設首選（Apache-2.0） | `trivy sbom` / `trivy fs`（PR 階段 `trivy fs` 的 SARIF 僅上傳 Code Scanning 作為證據，未併入 G1／G3 gate 裁決；G1 漏洞裁決由 grype→KEV 驅動） |
 | Socket / DevSentinel（可選） | 行為分析、幻覺套件 | API token 放 repo secret |
 | SlopCheck / SlopScan（可選） | Markdown、.cursorrules、AGENTS.md 掃描 | — |
 | FIRST EPSS、CISA KEV | 加值 | `cooldown.yaml.sbom.enrich` |

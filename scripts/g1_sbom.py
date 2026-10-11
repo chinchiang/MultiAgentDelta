@@ -191,7 +191,7 @@ def findings(summary: dict) -> list[dict]:
 
 def to_sarif(found: list[dict]) -> dict:
     level = {"blocking": "error", "advisory": "warning"}
-    return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
+    return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", "version": "2.1.0",
             "runs": [{"tool": {"driver": {"name": "vibesec-g1-sbom", "version": VERSION,
                                           "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
                                           "rules": [{"id": RULE, "name": RULE, "shortDescription": {"text": "SBOM 缺少鎖定檔釘選的套件"}}]
