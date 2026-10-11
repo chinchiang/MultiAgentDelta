@@ -59,7 +59,8 @@ jobs:
         run: |
           mkdir -p reports
           set +e
-          semgrep scan \
+          # --disable-nosem 與 PR 閘門一致；--max-target-bytes=0：不靜默跳過 >1 MB 的檔案
+          semgrep scan --disable-nosem --max-target-bytes=0 \
             --config config/semgrep/vibesec-rules.yaml \
             --config p/owasp-top-ten \
             --config p/security-audit \

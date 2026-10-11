@@ -158,7 +158,9 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
                              + "、".join(inline[:5]) + (" …" if len(inline) > 5 else ""))
         deadline = time.monotonic() + timeout
         cmd = ["scan"] + [x for c in semgrep_configs(g3_config()) for x in ("--config", c)]
-        cmd += ["--sarif", "--output", str(sarifs["semgrep"]), "--metrics=off", "--disable-version-check", "--quiet"]
+        # --max-target-bytes=0：semgrep 預設靜默跳過 >1 MB 的檔案；改成照掃，逾時由 sarif_gate 記 incomplete
+        cmd += ["--sarif", "--output", str(sarifs["semgrep"]), "--metrics=off", "--disable-version-check", "--quiet",
+                "--max-target-bytes=0"]
         if base:
             cmd += ["--baseline-commit", base]
         if external:
