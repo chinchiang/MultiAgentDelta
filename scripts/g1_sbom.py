@@ -5,7 +5,7 @@
   1. 從受測 commit 匯出乾淨的樹（`git archive`，不讀工作目錄，所以本機裝過的 node_modules／.venv 不會混進來），
      以 syft 產生兩次 CycloneDX JSON；兩次的 components 集合必須相同（docs/02「驗證方式」第 4 項：SBOM 可重現）。
   2. 結構檢查：bomFormat 為 CycloneDX、specVersion 1.4 以上、components 是清單。
-  3. 完整性：受測樹中每個鎖定檔（package-lock.json、uv.lock、poetry.lock、requirements*.txt 中以 == 釘選者）
+  3. 完整性：受測樹中每個鎖定檔（package-lock.json、npm-shrinkwrap.json、uv.lock、poetry.lock、requirements*.txt 中以 == 釘選者）
      釘選的每個套件版本，都必須以 purl 出現在 SBOM。缺漏 → vibesec.g1.sbom-incomplete（tier 依 blocking-policy），
      一個鎖定檔一筆，並讓 VS-G1-SBOM 為 fail。
      syft 預設不收 npm devDependencies；建置工具在建置時會執行，屬供應鏈範圍，所以這裡固定開啟
@@ -13,7 +13,7 @@
 
 不可違反：
   - incomplete ≠ pass（CLAUDE.md #2）：缺 syft、syft 失敗、SBOM 無法解析或格式不符、兩次產出不同、
-    受測樹含尚無解析器的鎖定檔（pnpm-lock.yaml、yarn.lock）→ status=incomplete、退出碼 2。
+    受測樹含尚無解析器的鎖定檔（pnpm-lock.yaml、yarn.lock、bun.lock、Pipfile.lock、pdm.lock、pylock.toml）→ status=incomplete、退出碼 2。
   - 本程式不放寬也不改寫政策：tier 一律取自 config/policy/blocking-policy.yaml（scripts/vibesec_policy.py）。
 
 用法：
@@ -34,9 +34,11 @@ VERSION = "1.0.0"
 SPEC = re.compile(r"^1\.(\d+)$")
 # 與 g1_slopcheck.REQUIREMENTS_RE 一致：檔名含 requirements 的 .txt（locks/python-requirements.txt），
 # 或 requirements/ 目錄下的 .txt（requirements/base.txt）
-LOCKFILE = re.compile(r"(?:(?:^|/)(?:package-lock\.json|uv\.lock|poetry\.lock)"
+LOCKFILE = re.compile(r"(?:(?:^|/)(?:package-lock\.json|npm-shrinkwrap\.json|uv\.lock|poetry\.lock)"
                       r"|[^/]*requirements[^/]*\.txt|(?:^|/)requirements/(?:[^/]+/)*[^/]+\.txt)$")
-UNPARSED = re.compile(r"(?:^|/)(pnpm-lock\.yaml|yarn\.lock)$")
+# npm／PyPI 生態系中尚無解析器的鎖定檔：裡面釘選的套件無法逐一核對是否出現在 SBOM → incomplete（不是 pass）。
+# 以前只認 pnpm-lock.yaml、yarn.lock：npm-shrinkwrap.json、Pipfile.lock 等被當成「沒有鎖定檔」，核對直接通過。
+UNPARSED = re.compile(r"(?:^|/)(pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Pipfile\.lock|pdm\.lock|pylock(?:\.[^/]+)?\.toml)$")
 PURL = re.compile(r"^pkg:(npm|pypi)/([^@?#]+)@([^?#]+)")
 SYFT_ENV = {"SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES": "true", "SYFT_CHECK_FOR_APP_UPDATE": "false"}
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__"}
@@ -358,6 +360,13 @@ def selftest() -> list[str]:
         s = run(repo, "HEAD", out, fake([full, full]))
         if s["status"] != "incomplete" or "yarn.lock" not in s["status_reason"]:
             fails.append(f"含無解析器的鎖定檔應為 incomplete：{s}")
+        for name in ("Pipfile.lock", "sub/bun.lock", "pdm.lock", "pylock.toml", "pylock.dev.toml"):
+            if not UNPARSED.search(name):
+                fails.append(f"{name} 是尚無解析器的鎖定檔，應讓 SBOM 核對 incomplete（以前被當成沒有鎖定檔）")
+        if UNPARSED.search("docs/pylock-notes.md") or UNPARSED.search("Pipfile.lock.bak"):
+            fails.append("非鎖定檔不應被當成無解析器的鎖定檔")
+        if not LOCKFILE.search("app/npm-shrinkwrap.json"):
+            fails.append("npm-shrinkwrap.json（格式同 package-lock.json）應核對 SBOM 是否完整")
         old = os.environ.get("VIBESEC_SYFT")
         try:
             os.environ["VIBESEC_SYFT"] = str(pathlib.Path(d) / "missing-syft")

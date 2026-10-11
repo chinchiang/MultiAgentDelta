@@ -25,6 +25,9 @@ SOURCES = (
     ("cisagov-kev-data-mirror", "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json"),
 )
 MAX_BYTES = 64 * 1024 * 1024   # feed 目前約 1–2 MB；上限防止異常回應塞爆磁碟
+# 快取年齡上限：CISA 每週更新 KEV 數次；快取的 dateReleased 超過此天數就不採用（記 incomplete）。
+# 以前任何年齡的快取都接受，而快取可能來自很久以前的 Actions cache，甚至是 PR 強制提交的 .cache/kev.json（第二輪審查 M11）
+MAX_CACHE_AGE_DAYS = 7
 
 
 def _now() -> str:
@@ -60,7 +63,18 @@ def validate_feed(raw: bytes) -> dict:
     return data
 
 
-def fetch(out: pathlib.Path, fetcher: Callable[[str], bytes] = http_fetch) -> dict:
+def _age_days(released: str | None, now: datetime.datetime | None = None) -> float | None:
+    try:
+        t = datetime.datetime.fromisoformat(str(released).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    return ((now or datetime.datetime.now(datetime.timezone.utc)) - t).total_seconds() / 86400
+
+
+def fetch(out: pathlib.Path, fetcher: Callable[[str], bytes] = http_fetch, max_age_days: float = MAX_CACHE_AGE_DAYS,
+          now: datetime.datetime | None = None) -> dict:
     """依序嘗試 SOURCES，成功即原子寫入 out。回傳來源紀錄（status: fetched／cached／incomplete）。"""
     errors: list[str] = []
     for name, url in SOURCES:
@@ -80,6 +94,9 @@ def fetch(out: pathlib.Path, fetcher: Callable[[str], bytes] = http_fetch) -> di
     if out.is_file():
         try:
             data = validate_feed(out.read_bytes())
+            age = _age_days(data.get("dateReleased"), now)
+            if age is None or age > max_age_days:
+                raise ValueError(f"快取過舊或發布時間無法解析（dateReleased {data.get('dateReleased')}，上限 {max_age_days:g} 天）")
             return {"status": "cached", "status_reason": "所有來源下載失敗，沿用快取",
                     "source": "cache", "source_url": None, "date_released": data.get("dateReleased"),
                     "catalog_size": len(data["vulnerabilities"]), "fetched_at": None, "errors": errors}
@@ -131,12 +148,18 @@ def selftest() -> list[str]:
             m = fetch(out, fake({cisa: bad, mirror: good}))
             if m["source"] != "cisagov-kev-data-mirror":
                 fails.append(f"結構不符的 feed 不得採用：{bad[:40]!r} → {m}")
-        # 4. 兩者皆失敗、有舊快取 → cached，帶舊的 dateReleased（看得出是舊資料）
+        # 4. 兩者皆失敗、有年齡上限內的快取 → cached，帶 dateReleased（看得出新舊）
+        _now_fixed = datetime.datetime(2026, 1, 3, tzinfo=datetime.timezone.utc)
         out.write_bytes(old)
-        m = fetch(out, fake({}))
+        m = fetch(out, fake({}), now=_now_fixed)
         if m["status"] != "cached" or m["date_released"] != "2026-01-01T00:00:00Z" or len(m["errors"]) != 2 \
                 or out.read_bytes() != old:
             fails.append(f"兩來源皆失敗應沿用快取並標記：{m}")
+        # 4b. 快取超過年齡上限 → incomplete（不採用舊資料判 KEV pass），並刪除
+        out.write_bytes(old)
+        m = fetch(out, fake({}), now=datetime.datetime(2026, 3, 1, tzinfo=datetime.timezone.utc))
+        if m["status"] != "incomplete" or out.exists() or not any("過舊" in e for e in m["errors"]):
+            fails.append(f"超過年齡上限的快取應為 incomplete 並刪除：{m}")
         # 5. 兩者皆失敗、快取壞掉 → incomplete，且刪除壞快取
         out.write_bytes(b"{not json")
         m = fetch(out, fake({}))
@@ -148,7 +171,7 @@ def selftest() -> list[str]:
             fails.append(f"無可用 feed 應為 incomplete（不是 pass）：{m}")
         # 7. 鏡像下載失敗時不得覆蓋既有的好快取為半成品
         out.write_bytes(old)
-        fetch(out, fake({cisa: b"{", mirror: b"{"}))
+        fetch(out, fake({cisa: b"{", mirror: b"{"}), now=_now_fixed)
         if out.read_bytes() != old or out.with_name(out.name + ".download").exists():
             fails.append("下載失敗不得覆蓋快取或留下暫存檔")
         # 8. 下游 g1_kev.load_kev 能讀取 fetch 寫出的 feed

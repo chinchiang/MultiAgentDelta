@@ -10,6 +10,11 @@ import json, os, sys, glob, re, pathlib
 # 受驗的樹：預設是本腳本所在的 repo。CI 另以 default branch 的 validate.py 驗 PR head（VIBESEC_PROJECT_ROOT），
 # 讓 PR 不能先削弱 validate.py 再轉綠（第一輪審查 C1）
 ROOT = pathlib.Path(os.environ.get("VIBESEC_PROJECT_ROOT") or pathlib.Path(__file__).resolve().parent.parent).resolve()
+# 判定模組（g4_review、g0_trifecta、vibesec_policy）一律從「本腳本所在的樹」import：CI 跑的是 default branch 的 validate.py，
+# 以前卻 sys.path.insert(ROOT/scripts) 去 import PR head 的模組，PR 改 scripts/g4_review.py 在 import 時把
+# __main__.err 換掉，「受信任版本」那一步就轉綠了（第二輪審查 M3）。資料（受驗的檔案）仍讀 ROOT。
+CODE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(CODE))
 errors: list[str] = []
 warns: list[str] = []
 oks: list[str] = []
@@ -428,7 +433,6 @@ try:
         # （規則與 provider／family 一致性、檔名 = commit；對 PR head 是否過期由 CI 的 G4 job 判斷，外部紀錄由 g4_access.py 對目標 HEAD 判斷）
         _gs = ROOT / "schemas/g4-review.schema.json"
         _s4 = json.load(open(_gs)); _V.check_schema(_s4); ok("schema 合法: g4-review")
-        sys.path.insert(0, str(ROOT / "scripts"))
         import g4_review as _g4
         _cfg4 = _g4.load_cfg()
         for _f in ([ROOT / "docs/templates/g4-review.example.yaml"] + sorted((ROOT / "reviews/g4").glob("*.yaml"))
@@ -453,11 +457,31 @@ try:
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
         # tests/ 的 unittest：沒有 selftest 子命令的模組測試（例如 Bedrock 呼叫邊界），與 selftest 同一層級把關
-        if (ROOT / "tests").is_dir():
+        # 以前 tests/ 不存在就靜默略過，Python 3.11 的 unittest 遇到 0 個測試也回 0：刪掉或清空測試照樣通過。
+        # 現在：受驗樹必須有 tests/；本腳本所在樹（CI 為 default branch）有的測試檔不得被刪，且 def test_ 數量不得變少；
+        # 實際執行的測試數必須 > 0。
+        _ref_tests = sorted((CODE.parent / "tests").glob("test_*.py"))
+        for _t in _ref_tests:
+            _mine = ROOT / "tests" / _t.name
+            if not _mine.is_file():
+                err(f"tests/{_t.name} 在受驗樹中被刪除（default branch 有此測試）")
+                continue
+            _need = len(re.findall(r"^\s*def test_", _t.read_text(encoding="utf-8"), re.M))
+            _have = len(re.findall(r"^\s*def test_", _mine.read_text(encoding="utf-8"), re.M))
+            if _have < _need:
+                err(f"tests/{_t.name} 的測試由 {_need} 個減為 {_have} 個")
+        if not (ROOT / "tests").is_dir():
+            err("缺 tests/ 目錄（unittest 無法執行；incomplete ≠ pass）")
+        else:
             _r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=ROOT,
                                 capture_output=True, text=True)
-            if _r.returncode == 0: ok("tests/ unittest")
-            else: err("tests/ unittest 失敗：" + (_r.stdout + _r.stderr).strip()[-400:])
+            _ran = re.search(r"Ran (\d+) tests?", _r.stderr or "")
+            if _r.returncode != 0:
+                err("tests/ unittest 失敗：" + (_r.stdout + _r.stderr).strip()[-400:])
+            elif not _ran or int(_ran.group(1)) == 0:
+                err("tests/ 沒有執行任何測試（0 個測試不算通過）")
+            else:
+                ok(f"tests/ unittest（{_ran.group(1)} 個測試）")
 except ImportError:
     print("ERROR: jsonschema 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr); sys.exit(2)
 
@@ -482,7 +506,6 @@ try:
                 err(f"{_tm_rel} 仍是範本內容（system.name: example-project）")
             else:
                 ok(f"威脅模型 ok: {_tm_rel}")
-                sys.path.insert(0, str(ROOT / "scripts"))
                 from g0_trifecta import trifecta_findings
                 for f in trifecta_findings(_d, ROOT, str(_tm_rel)):
                     if f["policy_tier"] == "blocking":
@@ -505,7 +528,6 @@ except ImportError:
 # --- tier 一致性：blocking-policy 是唯一來源（scripts/vibesec_policy.py）；cwe-map／semgrep metadata／evals／docs 政策表
 #     的 tier 必須等於政策的「基礎 tier」（不含 tier_overrides），否則文件說會擋、CI 實際不擋（或相反）。
 if yaml is not None:
-    sys.path.insert(0, str(ROOT / "scripts"))
     try:
         from vibesec_policy import Policy as _Policy
         _P = _Policy(ROOT)
