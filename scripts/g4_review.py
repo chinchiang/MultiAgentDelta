@@ -137,8 +137,20 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
 
     # findings：意見只能來自實際執行的 provider；分歧／少數意見／family 不足必須 requires_human；結論只能來自人工裁決
     effective = []
+    # tier 只來自本工具樹（ROOT，受信任）的 blocking-policy.yaml＋risk_tier；紀錄（作者可寫）只能更嚴、不能降級
+    try:
+        from vibesec_policy import Policy
+        policy = Policy(ROOT)
+    except Exception as e:   # 政策讀不到 → 一律視為 blocking（fail closed）
+        policy = None
+        incomplete.append(f"阻擋政策無法載入（{type(e).__name__}: {e}），LLM 發現一律以 blocking 處理")
     for f in record["findings"]:
         fid = f["id"]
+        pol_tier = policy.tier(f["rule_id"]) if policy is not None else "blocking"
+        tier = "blocking" if "blocking" in (pol_tier, f["policy_tier"]) else "advisory"
+        if f["policy_tier"] != tier:
+            incomplete.append(f"{fid}: 紀錄宣告 policy_tier={f['policy_tier']}，但 {f['rule_id']} 依阻擋政策（risk_tier "
+                              f"{policy.risk_tier if policy else '?'}）為 {tier}；以政策為準，紀錄不得降級（請修正紀錄）")
         for o in f["opinions"]:
             if o["provider"] not in ran:
                 errors.append(f"{fid}: 意見來自未執行的 provider {o['provider']}")
@@ -158,7 +170,7 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
         op_families = {o["family"] for o in f["opinions"]}
         divergent = len(verdicts) > 1 or "uncertain" in verdicts
         has_minority = any(o.get("minority") for o in f["opinions"])
-        high_risk = f["policy_tier"] == "blocking"
+        high_risk = tier == "blocking"
         needs_human = divergent or has_minority or (high_risk and len(op_families) < cfg["min_families"])
         ruling = None
         if f.get("ruling_ref"):
@@ -185,7 +197,7 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
             req_human = dec == "defer"
         else:
             status, req_human = f["validation_status"], f["requires_human"] or needs_human
-        effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": f["policy_tier"],
+        effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": tier,
                           "validation_status": status, "requires_human": req_human, "ruling_ref": f.get("ruling_ref")})
     return {"errors": errors, "incomplete": incomplete, "findings": effective, "families": len(families)}
 
@@ -443,8 +455,9 @@ def selftest() -> list[str]:
         fails.append("範例（requires_human、無裁決）→ 閘門應為 pending")
     fid = rec["findings"][0]["id"]
 
-    # 有效裁決 confirm → advisory 發現 confirmed，無 blocking → pass
-    r2 = copy.deepcopy(rec); r2["findings"][0]["ruling_ref"] = f"rulings/{fid}.yaml"
+    # 有效裁決 confirm → advisory 發現 confirmed，無 blocking → pass（規則須在政策上也是 advisory）
+    r2 = copy.deepcopy(rec); r2["findings"][0].update(ruling_ref=f"rulings/{fid}.yaml", policy_tier="advisory",
+                                                      rule_id="vibesec.g4.single-middleware-authz")
     ev2 = evaluate(r2, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
     if ev2["errors"]:
         fails.append(f"附有效裁決應通過：{ev2['errors']}")
@@ -457,6 +470,50 @@ def selftest() -> list[str]:
     ev3 = evaluate(r3, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
     if ev3["errors"] or gate_of(r3, ev3)["status"] != "fail":
         fails.append("blocking 發現經裁決 confirm → 閘門應為 fail")
+    # 紀錄不能把政策 blocking 的規則降為 advisory（schema 只收 vibesec.g4.*；本 repo L3 下 missing-owner-filter 等由
+    # tier_overrides 升為 blocking）。政策下沒有任何 G4 blocking 規則時，以 risk_tier L3 的同一份政策檔驗證
+    import vibesec_policy
+    pol = vibesec_policy.Policy(ROOT)
+    if not any(r.startswith("vibesec.g4.") for r in pol.effective_blocking()):
+        pol = vibesec_policy.Policy(ROOT, risk_tier="L3")
+    g4_blocking = sorted(r for r in pol.effective_blocking() if r.startswith("vibesec.g4."))
+    if not g4_blocking:
+        fails.append("政策（含 L3 tier_overrides）沒有任何 vibesec.g4.* blocking 規則，無法驗證紀錄降級")
+    saved_policy = vibesec_policy.Policy
+    vibesec_policy.Policy = lambda *a, **k: pol
+    try:
+        for rid in g4_blocking:
+            rd = copy.deepcopy(r2); rd["findings"][0].update(rule_id=rid, policy_tier="advisory")
+            evd = evaluate(rd, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
+            gd = gate_of(rd, evd)
+            if evd["errors"] or evd["findings"][0]["policy_tier"] != "blocking" or gd["status"] != "fail" \
+                    or gd["findings_count"]["blocking"] < 1:
+                fails.append(f"紀錄把政策 blocking 的 {rid} 寫成 advisory、裁決 confirm → 應以 blocking 計且閘門 fail（{gd['status']}）")
+            if not any("不得降級" in e for e in evd["incomplete"]):
+                fails.append(f"{rid}：紀錄 tier 低於政策應記入 incomplete")
+            # 高風險（政策 blocking）即使紀錄寫 advisory，family 不足也必須交人工
+            rh = copy.deepcopy(rec); fh = rh["findings"][0]
+            fh.update(rule_id=rid, policy_tier="advisory", requires_human=False, ruling_ref=None)
+            fh["opinions"] = [dict(o, verdict="confirm", minority=False) for o in fh["opinions"] if o["family"] == fh["opinions"][0]["family"]]
+            if not any("requires_human 必須為 true" in e for e in evaluate(rh, cfg, controls, None)["errors"]):
+                fails.append(f"{rid}：政策 blocking、只有一個 family 的意見 → requires_human 必須為 true（紀錄寫 advisory 不能跳過）")
+    finally:
+        vibesec_policy.Policy = saved_policy
+
+    # 紀錄比政策嚴（advisory 規則宣告 blocking）→ 採較嚴者、不記 incomplete
+    rs = copy.deepcopy(r2); rs["findings"][0]["policy_tier"] = "blocking"
+    evs = evaluate(rs, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
+    if evs["findings"][0]["policy_tier"] != "blocking" or any("不得降級" in e for e in evs["incomplete"]):
+        fails.append("紀錄宣告比政策嚴的 tier → 應採 blocking、不記降級")
+    # 政策載入失敗 → fail closed（blocking）
+    def _broken(*a, **k): raise OSError("blocking-policy.yaml 不存在")
+    vibesec_policy.Policy = _broken
+    try:
+        evb = evaluate(r2, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
+    finally:
+        vibesec_policy.Policy = saved_policy
+    if evb["findings"][0]["policy_tier"] != "blocking" or not any("阻擋政策無法載入" in e for e in evb["incomplete"]):
+        fails.append("阻擋政策無法載入 → LLM 發現應以 blocking 處理並記 incomplete")
     # 無發現、兩 family、coverage pass → pass
     r4 = copy.deepcopy(rec); r4["findings"] = []; r4["coverage"] = [{"control_id": LLM_CONTROL, "state": "pass", "reason": None}]
     ev4 = evaluate(r4, cfg, controls, None)
