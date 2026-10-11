@@ -87,7 +87,7 @@ def suspicious(name, popular):
 
 - 命中 → `vibesec.g1.hallucinated-package`（blocking），finding.notes 記 `looks_like`。
 - `blacklist.yaml` 的 `status` 分三類：`confirmed_malicious`（曾被下架 / CERT 證實，例如 `crossenv`、`colourama`、`jeIlyfish`、`torchtriton`）、`hallucination_prone`（`axois`、`reqeusts`、`python-dotenv-env`、`yaml`、`beautifulsoup`；`huggingface-cli` 也是 LLM 常捏造的名稱，PyPI 上並不存在，真正提供該指令的套件是 `huggingface-hub`）、`confusable_legit`（真實存在但易混淆，例如 `sklearn` 應為 `scikit-learn`、`pytorch` 應為 `torch`）。
-- **規則檔也要掃**（`scan_agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "**/*.md"]`）：AI 助手會「照做」規則檔裡的 `pip install foo`；在這些檔案發現未知 / 黑名單套件 → `vibesec.g1.rules-file-unknown-package`。帶值旗標後面的是檔案、路徑或 URL，不是套件名（`pip install -r requirements.txt`、`-e git+https://…`、`--index-url …`、`npm install --registry …`；清單見 `scripts/g1_slopcheck.py` 的 `VALUE_FLAGS`）；同一個檔重複提及同一個套件只記一次。同時這一步順便執行 G4 的隱形 Unicode 掃描（`VS-G4-RULES-FILE-UNICODE`）。
+- **規則檔也要掃**（`scan_agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "**/*.md"]`）：AI 助手會「照做」規則檔裡的 `pip install foo`；在這些檔案發現未知 / 黑名單套件 → `vibesec.g1.rules-file-unknown-package`。帶值旗標後面的是檔案、路徑或 URL，不是套件名（`pip install -r requirements.txt`、`-e git+https://…`、`--index-url …`、`npm install --registry …`；清單見 `scripts/g1_slopcheck.py` 的 `VALUE_FLAGS`）；同一個檔重複提及同一個套件只記一次。掃哪些檔取 `vibesec.yaml` 的 `scan_agent_rule_files` 與 `cooldown.yaml` 的 `agent_rule_files` 聯集（含 `CLAUDE.md`、`.cursor/rules/**/*.mdc`）；安裝指令除內建樣式（`pip`／`pipx`／`uv pip install`、`python -m pip install`、`uv`／`poetry`／`pdm`／`rye add`、`npm`／`pnpm`／`yarn`／`bun add|install|i`）外，另比對 `cooldown.yaml` 的 `install_command_regex`，兩者取聯集。同時這一步順便執行 G4 的隱形 Unicode 掃描（`VS-G4-RULES-FILE-UNICODE`）。
 
 ### 第 3 層：安裝鉤子
 
@@ -169,9 +169,9 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
   --sarif reports/raw/G1/slopcheck.sarif --gate reports/raw/G1/slopcheck-gate.json > reports/raw/G1/slopcheck.json
 ```
 
-只給 `--target` → 全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（`scope: full`）；`--changed-files`、`--staged`、`--base`、相對路徑都以目標專案為準。設定、清單與阻擋政策取自本 repo；`blocking-policy.yaml` 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用。`pnpm-lock.yaml`、`yarn.lock` 尚無解析器 → `incomplete` 並列出檔名。
+只給 `--target` → 全量掃描目標專案追蹤中的所有 manifest 與 agent 規則檔（`scope: full`）；`--changed-files`、`--staged`、`--base`、相對路徑都以目標專案為準。設定、清單與阻擋政策取自本 repo；`blocking-policy.yaml` 的 `exceptions` 只核准給本 repo 路徑，對外部專案不套用。`pnpm-lock.yaml`、`yarn.lock` 尚無解析器 → `incomplete` 並列出檔名。`--manifest`／`--rules-file` 指定的檔不存在 → `incomplete`；`--changed-files` 列出的檔不存在時，給了 `--base` 且 base 有這個檔（這次 diff 刪掉）→ 略過並註記，base 也沒有 → `incomplete`。`--staged` 取不到暫存區變更（非 git 目錄、git 失敗）→ `incomplete`（exit 2），不是「沒有變更」。`--staged`、`--changed-files`、`--base` 都記 `scope: diff`。名稱相似度門檻讀 `cooldown.yaml` 的 `similarity.difflib_ratio_min`、`levenshtein_max`、`min_name_length`。
 
-`package-lock.json`（lockfileVersion 1–3）逐筆解析（別名取實名、略過 workspace 連結）：每個條目都做 registry 存在性、冷卻期、安裝 hook、週下載與黑名單；名稱相似度只做**直接相依**（根目錄與 workspace 宣告的相依；v1 取同目錄 `package.json`），間接相依的名稱由上游決定、不是開發者或 AI 打出來的。`requirements*.txt` 鎖定檔（pip-compile、uv export）沒有直接／間接的標記，改以 PyPI 該版本的 `requires_dist` 推得：同檔其他套件宣告為相依者視為間接相依（自己需要自己不算）；查不到 `requires_dist` 就照直接相依比對，不會少查。`resolved` 不在 npm registry（git、file、tarball URL、私有 registry）或版本不是 semver 的條目無法以 registry 驗證 → `incomplete` 並列出。同一個（名稱, 版本）只查一次，registry 以 8 個並行查詢；連線中斷、傳輸截斷、逾時、429、5xx 重試 2 次（404 不重試），仍失敗 → `incomplete`。
+`package-lock.json`（lockfileVersion 1–3）逐筆解析（別名取實名、略過 workspace 連結）：每個條目都做 registry 存在性、冷卻期、安裝 hook、週下載與黑名單；名稱相似度只做**直接相依**（根目錄與 workspace 宣告的相依；v1 取同目錄 `package.json`），間接相依的名稱由上游決定、不是開發者或 AI 打出來的。`requirements*.txt` 鎖定檔（pip-compile、uv export）沒有直接／間接的標記，改以 PyPI 該版本的 `requires_dist` 推得：同檔其他套件宣告為相依者視為間接相依（自己需要自己不算）；查不到 `requires_dist` 就照直接相依比對，不會少查。`resolved` 不在 npm registry（git、file、tarball URL、私有 registry）或版本不是 semver 的條目無法以 registry 驗證 → `incomplete` 並列出。`uv.lock`／`poetry.lock` 中 git、url、本地封存檔或非 pypi.org 的 registry／index 來源的條目同樣不查公開 PyPI，記 `incomplete` 並列出（本地專案 editable／virtual／directory 略過）。鎖定版本不在 registry 發布紀錄（PyPI 先依 PEP 440 比對，`==2.32` 即 `2.32.0`）、發布時間不明、npm 週下載量查不到 → 冷卻期／安裝 hook／週下載沒查到，記 `incomplete`。同一個（名稱, 版本）只查一次，registry 以 8 個並行查詢；連線中斷、傳輸截斷、逾時、429、5xx 重試 2 次（404 不重試），仍失敗 → `incomplete`。
 
 ## 工具與設定檔
 
