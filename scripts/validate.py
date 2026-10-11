@@ -431,8 +431,11 @@ try:
                 ok(f"威脅模型 ok: {_tm_rel}")
                 sys.path.insert(0, str(ROOT / "scripts"))
                 from g0_trifecta import trifecta_findings
-                for f in trifecta_findings(_d):
-                    err(f"{_tm_rel}：{f['rule_id']}（blocking）— {f['reason']}")
+                for f in trifecta_findings(_d, ROOT, str(_tm_rel)):
+                    if f["policy_tier"] == "blocking":
+                        err(f"{_tm_rel}：{f['rule_id']}（blocking）— {f['reason']}")
+                    else:   # blocking-policy 例外（已接受風險、有到期日）：不擋，但每次都看得到
+                        warn(f"{_tm_rel}：{f['rule_id']}（advisory，例外）— {f['reason']}")
                 _order = {"L1": 1, "L2": 2, "L3": 3}
                 _decl, _model = _vb.get("risk_tier"), _d.get("risk_tier")
                 if _decl != _model:

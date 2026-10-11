@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """VibeSec G0：致命三要素（Lethal Trifecta）決定性檢查。
 
-規則（docs/01「Lethal Trifecta」）：agents[] 中三要素
+規則（docs/01 §5「致命三要素」）：agents[] 中三要素
 （accesses_private_data、exposed_to_untrusted_content、can_communicate_externally）皆 true，
-且 mitigations 為空、trifecta_leg_cut 為 null → vibesec.g0.lethal-trifecta-open（blocking）。
+且沒有任何「切腳」mitigation 附可驗證證據 → vibesec.g0.lethal-trifecta-open（blocking）。
+  - human_in_the_loop 是補償、不算切腳（docs/01 §5 表格），只有它通過驗證仍報。
+  - trifecta_leg_cut 只是宣告：必須有切該腳的 mitigation（§5 表格）附可驗證證據，否則照報。
 
 只判斷威脅模型「宣告」的內容；宣告是否屬實（例如 mitigation 是否真的生效）屬 G0 人工／LLM 審查範圍。
 
@@ -12,6 +14,7 @@
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import sys
 from pathlib import Path
@@ -19,6 +22,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RULE = "vibesec.g0.lethal-trifecta-open"
 LEGS = ("accesses_private_data", "exposed_to_untrusted_content", "can_communicate_externally")
+HITL = "human_in_the_loop"   # 補償：不算切腳，只能與 LEG_CUTS 之一並用（docs/01 §5）
+LEG_CUTS = {"external_comms": ("sandbox", "egress_allowlist", "tool_allowlist"),   # docs/01 §5「切哪隻腳」表格
+            "private_data": ("read_only_data",), "untrusted_content": ("no_untrusted_input",)}
 
 
 def _permission_rules(path: Path) -> set[str] | None:
@@ -99,24 +105,65 @@ def load_threat_model(path: Path) -> tuple[dict | None, str | None]:
     return tm, None
 
 
-def trifecta_findings(threat_model: dict, root: Path | None = None) -> list[dict]:
-    """三要素皆成立、未切腳，且沒有任何「有可驗證證據」的 mitigation → 發現。
-    只宣告 mitigation 名稱不算數（第二次 harness 審查發現 A：宣告與落實不符時 fail-open）。
-    root：mitigation_evidence 的 ref 相對的專案根目錄（被檢查的專案）；tier 一律取自本 repo 的政策。"""
+def policy_exception(agent_id, tm_rel: str | None, today=None) -> tuple[dict | None, list[str]]:
+    """本 repo blocking-policy 中適用這個 agent 的未過期例外（只降為 advisory，發現保留；與 sarif_gate 相同）。
+    G0 的例外必須寫明 agent_id：只寫 path_glob 會連同同一份威脅模型裡之後新增的 agent 一起放行。
+    回傳 (例外或 None, 被忽略的例外說明)。讀取失敗 → 不套用任何例外（fail closed）。"""
+    if not tm_rel:
+        return None, []
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from g1_slopcheck import load_exceptions   # 同一份例外規則：欄位完整且未過期
+        valid, ignored = load_exceptions(today)
+    except Exception as e:
+        return None, [f"blocking-policy 例外無法讀取（{type(e).__name__}），未套用"]
+    notes = [x for x in ignored if x.startswith(RULE)]
+    for ex in valid:
+        if ex["rule_id"] != RULE or not fnmatch.fnmatchcase(tm_rel, ex["path_glob"]):
+            continue
+        if not ex.get("agent_id"):
+            notes.append(f"{RULE} @ {ex['path_glob']}：G0 例外缺 agent_id，未套用")
+        elif ex["agent_id"] == agent_id:
+            return ex, notes
+    return None, notes
+
+
+def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str | None = None, today=None) -> list[dict]:
+    """三要素皆成立，且沒有任何「切腳」mitigation 有可驗證證據 → 發現。
+    只宣告 mitigation 名稱不算數（第二次 harness 審查發現 A：宣告與落實不符時 fail-open）；同理：
+      - human_in_the_loop 不算切腳（docs/01 §5），只有它通過驗證仍報；
+      - trifecta_leg_cut 只是宣告，宣告了也要有切該腳的 mitigation 附可驗證證據（否則改一個欄位就能跳過檢查）。
+    root：mitigation_evidence 的 ref 相對的專案根目錄（被檢查的專案）；tier 一律取自本 repo 的政策。
+    tm_rel：本 repo 威脅模型的相對路徑；有給才套用 blocking-policy 例外（外部專案不給：例外只核准給本 repo）。"""
     root = root or ROOT
     out = []
     for a in (threat_model or {}).get("agents") or []:
-        if not all(a.get(k) is True for k in LEGS) or a.get("trifecta_leg_cut") is not None:
+        if not all(a.get(k) is True for k in LEGS):
             continue
+        leg = a.get("trifecta_leg_cut")
+        cutters = LEG_CUTS.get(leg, ()) if leg is not None else tuple(m for ms in LEG_CUTS.values() for m in ms)
         evid = a.get("mitigation_evidence") or {}
-        results = [verify_mitigation(m, evid.get(m) or [], root, a.get("high_impact_tools") or [])
-                   for m in a.get("mitigations") or []]
-        if any(ok for ok, _ in results):
+        results = {m: verify_mitigation(m, evid.get(m) or [], root, a.get("high_impact_tools") or [])
+                   for m in a.get("mitigations") or []}
+        if any(ok for m, (ok, _) in results.items() if m in cutters):
             continue
-        why = "；".join(msg for _, msg in results) if results else "沒有 mitigation"
-        out.append({"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": _tier(),
-                    "agent": a.get("id"),
-                    "reason": f"agent {a.get('id')!r} 三要素皆成立、未切斷任何一腳，且沒有可驗證的 mitigation（{why}）"})
+        why = [msg for _, msg in results.values()] or ["沒有 mitigation"]
+        if results.get(HITL, (False,))[0]:
+            why.append(f"{HITL} 是補償、不算切腳，須與切腳的 mitigation 並用")
+        if leg is not None and not any(m in cutters for m in results):
+            why.append(f"宣告 trifecta_leg_cut: {leg}，但 mitigations 沒有切這隻腳的項目（{'、'.join(cutters) or '無'}）")
+        head = (f"宣告切斷 {leg}，但沒有切該腳且可驗證的 mitigation" if leg is not None
+                else "未切斷任何一腳，且沒有可驗證的切腳 mitigation")
+        f = {"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": _tier(),
+             "agent": a.get("id"), "reason": f"agent {a.get('id')!r} 三要素皆成立、{head}（{'；'.join(why)}）"}
+        ex, notes = policy_exception(a.get("id"), tm_rel, today)
+        if ex is not None:   # 已接受風險：降為 advisory，發現與理由照實保留
+            f["policy_tier"] = "advisory"
+            f["exception"] = {k: ex.get(k) for k in ("path_glob", "agent_id", "approved_by", "expires")}
+            f["reason"] += f"；依 blocking-policy 例外降為 advisory（核准：{ex['approved_by']}，到期：{ex['expires']}）"
+        elif notes:
+            f["reason"] += "；" + "；".join(notes)
+        out.append(f)
     return out
 
 
@@ -125,29 +172,44 @@ def selftest() -> list[str]:
     fails: list[str] = []
     agent = lambda **kw: {"agents": [{"id": "a", "accesses_private_data": True, "exposed_to_untrusted_content": True,
                                       "can_communicate_externally": True, "trifecta_leg_cut": None, **kw}]}
-    ev = lambda rules, ref=".claude/settings.json": {"human_in_the_loop": [{"kind": "claude_permission", "ref": ref, "rules": rules}]}
-    cov = lambda rules, covers: {"human_in_the_loop": [{"kind": "claude_permission", "ref": ".claude/settings.json",
-                                                        "rules": rules, "covers": covers}]}
+    ev = lambda rules, ref=".claude/settings.json", m="human_in_the_loop": {m: [{"kind": "claude_permission", "ref": ref, "rules": rules}]}
+    cov = lambda rules, covers, m="human_in_the_loop": {m: [{"kind": "claude_permission", "ref": ".claude/settings.json",
+                                                             "rules": rules, "covers": covers}]}
     with tempfile.TemporaryDirectory() as d:
         root = Path(d); (root / ".claude").mkdir()
         (root / ".claude/settings.json").write_text(json.dumps({"permissions": {"ask": ["mcp__x__merge"], "deny": ["Bash(rm *)"]}}))
+        TA = "tool_allowlist"
         cases = [
             ("無 mitigation", agent(mitigations=[]), True),
-            ("只宣告、無證據", agent(mitigations=["human_in_the_loop"]), True),
-            ("證據規則不在設定檔", agent(mitigations=["human_in_the_loop"], mitigation_evidence=ev(["mcp__x__other"])), True),
-            ("證據檔不存在", agent(mitigations=["human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge"], "nope.json")), True),
-            ("證據路徑跳出 repo", agent(mitigations=["human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge"], "../x.json")), True),
-            ("ask＋deny 皆涵蓋", agent(mitigations=["human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge", "Bash(rm *)"])), False),
-            ("已切腳", agent(mitigations=[], trifecta_leg_cut="external_comms"), False),
-            ("一項可驗證即可", agent(mitigations=["tool_allowlist", "human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge"])), False),
-            ("high_impact_tools 全涵蓋", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge", "rm"],
-                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"], "rm": ["Bash(rm *)"]})), False),
-            ("high_impact_tools 有未涵蓋者", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge", "rm"],
-                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"]})), True),
-            ("high_impact_tools 但沒有 covers", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge"],
+            ("只宣告、無證據", agent(mitigations=[TA]), True),
+            ("證據規則不在設定檔", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__other"], m=TA)), True),
+            ("證據檔不存在", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__merge"], "nope.json", m=TA)), True),
+            ("證據路徑跳出 repo", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__merge"], "../x.json", m=TA)), True),
+            ("ask＋deny 皆涵蓋", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__merge", "Bash(rm *)"], m=TA)), False),
+            # docs/01 §5：human_in_the_loop 不算切腳——證據再完整，只有它仍報
+            ("只有 HITL（證據完整）", agent(mitigations=["human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge", "Bash(rm *)"])), True),
+            ("只有 HITL（high_impact_tools 全涵蓋）", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge", "rm"],
+                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"], "rm": ["Bash(rm *)"]})), True),
+            ("HITL ＋ 可驗證的切腳 mitigation", agent(mitigations=[TA, "human_in_the_loop"],
+                mitigation_evidence={**ev(["Bash(rm *)"], m=TA), **ev(["mcp__x__merge"])}), False),
+            # trifecta_leg_cut 只是宣告：須有切該腳的 mitigation 且證據可驗證
+            ("只宣告切腳、無 mitigation", agent(mitigations=[], trifecta_leg_cut="external_comms"), True),
+            ("宣告切腳、mitigation 無證據", agent(mitigations=["egress_allowlist"], trifecta_leg_cut="external_comms"), True),
+            ("宣告切腳、只有 HITL 證據", agent(mitigations=["human_in_the_loop"], trifecta_leg_cut="external_comms",
                 mitigation_evidence=ev(["mcp__x__merge"])), True),
-            ("covers 引用 rules 以外的規則", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge"],
-                mitigation_evidence=cov(["mcp__x__merge"], {"merge": ["mcp__x__other"]})), True),
+            ("宣告切腳、證據屬於切別腳的 mitigation", agent(mitigations=[TA], trifecta_leg_cut="private_data",
+                mitigation_evidence=ev(["mcp__x__merge"], m=TA)), True),
+            ("宣告切腳、切該腳的 mitigation 可驗證", agent(mitigations=[TA], trifecta_leg_cut="external_comms",
+                mitigation_evidence=ev(["mcp__x__merge"], m=TA)), False),
+            ("一項可驗證即可", agent(mitigations=["egress_allowlist", TA], mitigation_evidence=ev(["mcp__x__merge"], m=TA)), False),
+            ("high_impact_tools 全涵蓋", agent(mitigations=[TA], high_impact_tools=["merge", "rm"],
+                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"], "rm": ["Bash(rm *)"]}, m=TA)), False),
+            ("high_impact_tools 有未涵蓋者", agent(mitigations=[TA], high_impact_tools=["merge", "rm"],
+                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"]}, m=TA)), True),
+            ("high_impact_tools 但沒有 covers", agent(mitigations=[TA], high_impact_tools=["merge"],
+                mitigation_evidence=ev(["mcp__x__merge"], m=TA)), True),
+            ("covers 引用 rules 以外的規則", agent(mitigations=[TA], high_impact_tools=["merge"],
+                mitigation_evidence=cov(["mcp__x__merge"], {"merge": ["mcp__x__other"]}, m=TA)), True),
             ("改名 mitigation 也要涵蓋高影響工具", agent(mitigations=["egress_allowlist"], high_impact_tools=["merge"],
                 mitigation_evidence={"egress_allowlist": [{"kind": "claude_permission", "ref": ".claude/settings.json", "rules": ["Bash(rm *)"]}]}), True),
         ]
@@ -180,6 +242,34 @@ def selftest() -> list[str]:
             rc = main(["g0_trifecta.py", str(ROOT / "docs/templates/threat-model.yaml")])
         if rc == 2:
             fails.append("符合 schema 的威脅模型不應為 incomplete")
+    # blocking-policy 例外：只對本 repo 威脅模型、須寫 agent_id；降為 advisory、發現保留；過期或缺欄位不套用
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import g1_slopcheck as _gs
+    real = _gs.load_exceptions
+    ex = {"rule_id": RULE, "path_glob": "docs/threat-model.yaml", "agent_id": "a", "reason": "t", "approved_by": "o", "expires": "2099-01-01"}
+    tm_open = agent(mitigations=[])
+    try:
+        _gs.load_exceptions = lambda today=None: ([ex], [])
+        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")
+        if [(f["policy_tier"], bool(f.get("exception"))) for f in got] != [("advisory", True)] or "到期：2099-01-01" not in got[0]["reason"]:
+            fails.append(f"符合的例外 → advisory、發現保留並註明到期日：{got}")
+        if [f["policy_tier"] for f in trifecta_findings(tm_open)] != [_tier()]:
+            fails.append("沒給 tm_rel（外部專案、評測）→ 不套用例外")
+        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="other/tm.yaml")] != [_tier()]:
+            fails.append("path_glob 不符 → 不套用例外")
+        _gs.load_exceptions = lambda today=None: ([dict(ex, agent_id="b")], [])
+        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")] != [_tier()]:
+            fails.append("agent_id 不同 → 不套用例外")
+        _gs.load_exceptions = lambda today=None: ([{k: v for k, v in ex.items() if k != "agent_id"}], [])
+        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")
+        if got[0]["policy_tier"] != _tier() or "缺 agent_id" not in got[0]["reason"]:
+            fails.append(f"G0 例外缺 agent_id → 不套用並註明：{got}")
+        _gs.load_exceptions = real
+        expired = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", today=__import__("datetime").date(2999, 1, 1))
+        if any(f["policy_tier"] == "advisory" and f.get("exception") for f in expired):
+            fails.append("例外過期 → 不套用")
+    finally:
+        _gs.load_exceptions = real
     return fails
 
 

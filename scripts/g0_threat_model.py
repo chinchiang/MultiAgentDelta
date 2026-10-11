@@ -192,8 +192,17 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
             reasons.append(f"{shown} 仍是範本（docs/templates/ 或 system.name: example-project）：G0 需要描述被檢查系統的模型")
             return done("incomplete")
         # 三要素：證據檔在被檢查專案（副本）內核對；--threat-model 指向目標之外時，證據仍以目標為準
-        findings = trifecta_findings(tm, copy)
+        # blocking-policy 例外只核准給本 repo：外部專案不套用
+        try:
+            tm_rel = None if external else path.resolve().relative_to(copy.resolve()).as_posix()
+        except ValueError:
+            tm_rel = None
+        findings = trifecta_findings(tm, copy, tm_rel)
     open_agents = [f for f in findings if f["policy_tier"] == "blocking"]
+    for f in findings:
+        if f.get("exception"):   # 已接受風險：照實寫進 status_reason，不讓它看起來像「已切斷」
+            reasons.append(f"致命三要素未切斷：{f['agent']}（依 blocking-policy 例外降為 advisory，核准 {f['exception']['approved_by']}、"
+                           f"到期 {f['exception']['expires']}）")
     cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "fail" if open_agents else "pass"
     if open_agents:
         reasons.append("致命三要素未切斷：" + "、".join(str(f["agent"]) for f in open_agents))
@@ -295,6 +304,8 @@ def selftest() -> list[str]:
         if g["status"] != "incomplete" or "範本" not in (g["status_reason"] or ""):
             fails.append("模型仍是範本 → incomplete")
         good = dict(template, system=dict(template["system"], name="proj"))
+        (repo / ".claude").mkdir()                # 範本的 egress_allowlist 證據（docs/01 §5：切腳也要可驗證）
+        (repo / ".claude/settings.json").write_text(json.dumps({"permissions": {"deny": ["WebFetch"]}}))
         commit_model(good)
         g = run(repo, out)
         head = git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -326,14 +337,14 @@ def selftest() -> list[str]:
             fails.append("不符 schema → incomplete")
         # 三要素未切斷：證據檔是指向目標之外的 symlink（例如操作者本機的 Claude Code 設定）→ 不採信；目標的政策檔不得降級
         (outside / "settings.json").write_text(json.dumps({"permissions": {"ask": ["mcp__x__merge"]}}))
-        (repo / ".claude").mkdir()
+        (repo / ".claude/settings.json").unlink()
         (repo / ".claude/settings.json").symlink_to(outside / "settings.json")
         (repo / "config/policy").mkdir(parents=True)
         (repo / "config/policy/blocking-policy.yaml").write_text(
             "version: 1\ndefault_tier: advisory\nblocking: []\nadvisory: [{rule_id: vibesec.g0.lethal-trifecta-open}]\n")
-        agent = dict(good["agents"][0], trifecta_leg_cut=None, mitigations=["human_in_the_loop"],
-                     mitigation_evidence={"human_in_the_loop": [{"kind": "claude_permission", "ref": ".claude/settings.json",
-                                                                  "rules": ["mcp__x__merge"]}]})
+        agent = dict(good["agents"][0], trifecta_leg_cut=None, mitigations=["tool_allowlist"],
+                     mitigation_evidence={"tool_allowlist": [{"kind": "claude_permission", "ref": ".claude/settings.json",
+                                                               "rules": ["mcp__x__merge"]}]})
         commit_model(dict(good, agents=[agent]))
         g = run(repo, out)
         if g["status"] != "fail" or g["findings_count"]["blocking"] != 1:
@@ -363,8 +374,10 @@ def selftest() -> list[str]:
             fails.append("檢查不得改動被測專案的工作目錄")
     with tempfile.TemporaryDirectory() as d:
         g = run(ROOT, pathlib.Path(d))
-        if g["status"] != "pass" or g["findings_count"] != {"blocking": 0, "advisory": 0}:
-            fails.append(f"本 repo 的威脅模型 → pass、無發現（得到 {g['status']}，{g['findings_count']}：{g['status_reason']}）")
+        # 本 repo：不得有 blocking；advisory 只能是 blocking-policy 核准、未過期的已接受風險（c-claude，例外到期即恢復 blocking）
+        unexcepted = [f for f in json.loads((pathlib.Path(d) / "g0-findings.json").read_text())["findings"] if not f.get("exception")]
+        if g["status"] != "pass" or g["findings_count"]["blocking"] or unexcepted:
+            fails.append(f"本 repo 的威脅模型 → pass、除已核准例外外無發現（得到 {g['status']}，{g['findings_count']}：{g['status_reason']}）")
         g = run(ROOT, pathlib.Path(d), vibesec=gset("g4_access_control_review", enabled=False))
         if g["status"] != "pass" or g["findings_count"]["advisory"] < 1:
             fails.append(f"本 repo：G4 停用但 threats 指向 G4 → advisory（不擋），得到 {g['status']}，{g['findings_count']}")
