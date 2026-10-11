@@ -421,7 +421,7 @@ def build(c: Collector, mode: str, started: str) -> tuple[dict, dict]:
             "tools": c.tools, "findings_count": {"blocking": blocking, "advisory": advisory},
             "coverage": cov}
     sarif = {"version": "2.1.0",
-             "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+             "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
              "runs": [{"tool": {"driver": {"name": "vibesec-g6", "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
                                            "rules": list(c.rules.values())}},
                        "results": c.results}]}

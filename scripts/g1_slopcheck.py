@@ -989,7 +989,7 @@ def write_sarif(path, findings):
                           | ({"exception": f["exception"]} if f.get("exception") else {})
                           | ({"allowlist": f["allowlist"]} if f.get("allowlist") else {}),
         })
-    sarif = {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
+    sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", "version": "2.1.0",
              "runs": [{"tool": {"driver": {"name": "vibesec-slopcheck", "version": "2.0.0",
                                            "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
                                            "rules": list(rules.values())}},

@@ -95,6 +95,37 @@ try:
         if errs:
             for e in errs: err(f"finding.example.json 不符 schema: {e.message} @ {list(e.path)}")
         else: ok("finding.example.json 通過 schema")
+    # 執行期實際產物（harness／本機跑過才有；CI 的乾淨 checkout 沒有 reports/ → 略過）：
+    # 不只驗範本，實際輸出也要符合 schema，否則 schema 很完整但正式輸出沒人用機器把關（incomplete ≠ pass）。
+    fj = ROOT / "reports/findings.json"
+    if fj.exists() and "finding" in schemas:
+        try:
+            data = json.load(open(fj))
+        except (ValueError, OSError) as e:
+            err(f"reports/findings.json 無法解析：{e}"); data = None
+        items = data.get("findings", []) if isinstance(data, dict) else (data if isinstance(data, list) else None)
+        if data is not None and items is None:
+            err("reports/findings.json 應為 finding 陣列或含 findings 的物件")
+        elif items is not None:
+            bad = 0
+            for i, f in enumerate(items):
+                fe = sorted(schemas["finding"].iter_errors(f), key=str)
+                for e in fe:
+                    bad += 1
+                    err(f"reports/findings.json[{i}]（{f.get('id') if isinstance(f, dict) else '?'}）不符 schema: {e.message} @ {list(e.path)}")
+            if not bad:
+                ok(f"reports/findings.json 通過 schema（{len(items)} 筆）")
+    # 執行期 gate JSON：reports/gates/G*.json 與 reports/*-gate.json（存在才驗）
+    if "gate-result" in schemas:
+        for gp in sorted(glob.glob(str(ROOT / "reports/gates/G*.json"))) + sorted(glob.glob(str(ROOT / "reports/*-gate.json"))):
+            try:
+                ge = sorted(schemas["gate-result"].iter_errors(json.load(open(gp))), key=str)
+            except (ValueError, OSError) as e:
+                err(f"{pathlib.Path(gp).name} 無法解析：{e}"); continue
+            if ge:
+                for e in ge: err(f"{pathlib.Path(gp).name} 不符 gate-result schema: {e.message} @ {list(e.path)}")
+            else:
+                ok(f"{pathlib.Path(gp).name} 通過 gate-result schema")
     # 威脅模型模板
     tm = ROOT / "docs/templates/threat-model.yaml"
     if tm.exists() and "threat-model" in schemas and yaml is not None:
