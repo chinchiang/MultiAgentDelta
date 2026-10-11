@@ -31,7 +31,7 @@ notes: 靶場 examples/vulnapp 可重現。
 
 - 每個適用領域**至少一正例與一反例**。
 - 至少 **1/3** 案例 `held_out: true`；清單集中於 `evals/split.yaml`。
-- 總數目標 **≥ 60**（目前 130）。
+- 總數目標 **≥ 60**（目前 133）。
 - `domain` 使用 14 審查領域的固定代碼：`application_architecture`、`general_vulnerabilities`、`xss`、`csp`、`authentication`、`authorization`、`dependency`、`build_supply_chain`、`github_actions`、`secret_exposure`、`input_validation`、`error_handling`、`data_integrity`、`ai_agent_security`。
 - `gate_status` 案例驗證閘門在工具／環境失敗時回報的狀態：例如「incomplete ≠ pass」（工具或環境無法完成時，閘門必須回報 incomplete，而非 pass），或「已實測的失敗不得因其他層缺金鑰而被改寫成 incomplete」（`gate_status: fail`）。以 `input.integration` 指定整合層情境；`expected.coverage`（控制 → 狀態）與 `expected.status_reason_contains` 可進一步要求某個覆蓋項的狀態與 status_reason 的內容。
 - 含隱形字元或假金鑰的 fixture 以 YAML 跳脫或佔位值表示，避免觸發本 repo 自身的 G2／G4 掃描。
@@ -61,13 +61,13 @@ python3 scripts/run_evals.py --no-network                                       
   - `g4-static`：G4 的 `kind: code|iac` 案例，且 `rule_id` 由 `pr-gates.yml` 的 G4 靜態檢查實作。執行器把 snippet 寫回 `input.path` 的原路徑（保留目錄，例如 `.github/copilot-instructions.md`），再執行 workflow 中**同一份**程式碼；所有 SARIF 等級都算偵測。`vibesec.g4.mcp-missing-resource-indicator`（`g4-mcp-resource-*`，2 正例、2 反例）目前只由本機版 `scripts/g4_access.py` 的 `mcp_resource_check` 實作（CI inline 步驟尚未包含），執行器對同一個 fixture 目錄再呼叫該函式，與 `g4_access.py` 併入結果的方式相同。
   - `gitleaks`／`checkov`：預期規則在 `config/catalogs/cwe-map.yaml` 有 `implemented_by`（例如 `checkov:CKV2_VIBESEC_1`）。執行器以 CI **同一份**設定檔（`config/gitleaks.toml`、`config/checkov/.checkov.yaml` 含 check allow-list 與自訂政策）掃 fixture，再依 `implemented_by` 對回 vibesec 規則；allow-list 外的檢查不算偵測。本機沒有 gitleaks 時可設 `VIBESEC_GITLEAKS=<路徑>`；nightly 會下載固定版本並驗證 SHA-256。
   - `env-check`：`vibesec.g2.env-not-ignored`。在暫存 git repo 依 `input.files`／`input.gitignore` 建立並追蹤檔案，再執行 `pr-gates.yml` 中**同一份** `.env` 檢查步驟。
-  - `vulnapp`：標記 `input.target_app: vulnapp` 的 G5／G6 案例。執行器在 127.0.0.1 隨機埠啟動 `examples/vulnapp`；G5 執行 staging workflow 中**同一份** api-probes 程式碼（level=note 的「未能實測」結果不算偵測），G6 把 prompt 送到 `/chat`，以與 `config/promptfoo/tests.yaml` 相同的決定性斷言判定。只有靶場確實可重現該行為的案例才可標記；描述假想目標（例如期望 403 的反例、靶場沒有的端點）的案例維持 untested。`input.target_app: vulnapp-patched` 的案例改以 `VIBESEC_VULNAPP_MODE=patched` 另起一個實例，作為同一探針的反例。`--no-target` 可跳過。G6 的檢索文件（`input.retrieved_doc`）以 `context` 欄位送出，與 promptfoo 的 `{{document}}` 相同，靶場把它併入模型輸入；`input.tools` 以 `tools` 欄位送出（模擬 function calling）。
+  - `vulnapp`：標記 `input.target_app: vulnapp` 的 G5／G6 案例。執行器在 127.0.0.1 隨機埠啟動 `examples/vulnapp`；G5 執行 staging workflow 中**同一份** api-probes 程式碼（level=note 的「未能實測」結果不算偵測），G6 把 prompt 送到 `/chat`，以與 `config/promptfoo/tests.yaml` 相同的決定性斷言判定。只有靶場確實可重現該行為的案例才可標記；描述假想目標（例如期望 403 的反例、靶場沒有的端點）的案例維持 untested。`input.target_app: vulnapp-patched` 的案例改以 `VIBESEC_VULNAPP_MODE=patched` 另起一個實例，作為同一探針的反例。`--no-target` 可跳過。G6 的檢索文件（`input.retrieved_doc`）以 `context` 欄位送出，與 promptfoo 的 `{{document}}` 相同，靶場把它併入模型輸入；`input.tools` 以 `tools` 欄位送出（模擬 function calling）。案例標 `input.observe: tool_events` 時改走結構化觀測層：以 staging 同一支 `scripts/g6_observe.py`（授權目標、同源、不跟隨 redirect）送出，依回應的 `tool_events` 由 `scripts/llm_observations.py` 判定（高影響工具 `executed: true` 且 `human_approved: false` → 命中 `vibesec.g6.excessive-agency`）；回應沒有可解析的 `tool_events` → untested。
   - `zap`：回應標頭案例（`input.kind: config` ＋ `input.headers`），且預期規則由 ZAP 實作（cwe-map `implemented_by: zap:<id>`，例如 `vibesec.g3.missing-csp` ← `zap:10038`）。在 127.0.0.1 起一個回傳案例標頭的 HTML stub，以 docker 跑 ZAP baseline（映像與 staging 的 `zaproxy/action-baseline` 預設相同，可用 `VIBESEC_ZAP_IMAGE` 覆寫；設定檔同為 `config/zap/api-scan.conf`），再以 `scripts/g5_zap.py`（staging 同一支）對回 vibesec 規則。每案約 30 秒；本機沒有 docker 或 daemon 無法連線 → untested。
   - `integration`：`expected.gate_status` 案例，依 `input.integration` 以受控情境執行 CI **同一支**判定程式，比對閘門結果 JSON：
     - `g1-registry-timeout`：`g1_slopcheck.py --gate` 經「接受連線但永不回應」的本機 HTTPS proxy 查 registry，查詢真的逾時（約 30 秒；不需外網）。
     - `g5-endpoint-405`：staging workflow 中同一份 G5 api-probes 打本機 stub（`/openapi.json` 回 200、其餘一律 405）。
     - `g5-off-origin`：同上，但 stub 的 OIDC discovery `jwks_uri` 與 `/openapi.json` 的 `paths` 鍵（絕對 URL、`@host:port/…`）指向另一個埠的 canary 伺服器；canary 收到任何請求即記 incomplete（規則 8：探針只能打授權目標的同一來源）。
-    - `g6-gate`：`g6_gate.py` 吃依 `config/promptfoo/tests.yaml` 組出的 promptfoo 結果，以及 `input.fixture` 指定的 redteam／garak／成本探針情境。
+    - `g6-gate`：`g6_gate.py` 吃依 `config/promptfoo/tests.yaml` 組出的 promptfoo 結果，以及 `input.fixture` 指定的 redteam／garak／成本探針／觀測層（`observations: pass|fail|malformed`）情境。
     結果記 **STATUS_OK**（閘門狀態、預期 fail 時的發現、`expected.coverage`、`expected.status_reason_contains` 皆相符）或 **STATUS_WRONG**，另列「狀態驗證」欄，不計入召回率／精確率。
 - 其餘案例（未標記 `target_app` 的 `http`、`prompt`、`config`，或沒有本機執行器的規則）記為 **untested** 並列出原因（含 `config/catalogs/cwe-map.yaml` 的 `implemented_by`，指出實際由誰實作）；執行器失敗記 **incomplete**。兩者都不計入召回率／精確率，也不算通過。
 - 金鑰類 fixture 用佔位符（`{{FAKE_ANTHROPIC_KEY}}`、`{{FAKE_OPENAI_KEY}}`），由執行器在暫存檔中展開，repo 內不放金鑰形字串。

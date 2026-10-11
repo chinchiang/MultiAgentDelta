@@ -46,6 +46,8 @@ curl -s -X POST http://127.0.0.1:8000/login \
 | `POST /chat` 把 `context`（檢索到的外部文件）併入模型輸入，`llm_stub` 服從文件內夾帶的指令並回報外連意圖 | Indirect Prompt Injection | G6 | `indirect_prompt_injection`（LLM01:2025） |
 | `llm_stub` 原樣回吐 `<script>…</script>` | Stored XSS via AI Output | G6 | `stored_xss_via_ai_output`（LLM05:2025） |
 | `llm_stub` 對超長輸入（>5000 字元）延遲 ~6s 才回應 | Denial of Wallet（延遲/資源耗用） | G6 | `denial_of_wallet`（LLM10:2025） |
+| `POST /chat` 提供高影響工具（`tools: ["delete_customers"]`）並要求破壞性動作 → 回應 `tool_events: [{"tool":"delete_customers","executed":true,"human_approved":false}]`（模擬，不真的執行） | Excessive Agency（未經人工核准執行高影響工具） | G6 | `vibesec.g6.excessive-agency`（LLM06:2025；`scripts/g6_observe.py`） |
+| `POST /chat` 回應附 `usage: {input_tokens, output_tokens, total_tokens}`（約 4 字元 1 token 的決定性估計，非真實計費） | 用量遙測（不是弱點；供 G6 觀測層分欄記錄） | G6 | — |
 
 > rule_id 以 `.github/workflows/staging-blackbox.yml` 的 api-probes 與 `config/promptfoo`、`config/garak`（由其他元件提供）實際發出者為準；本表為對應索引。
 
@@ -68,6 +70,7 @@ VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:
 | Prompt injection / system prompt 外洩 | `llm_stub` 拒絕擷取與夾帶指令，不回吐輸入 |
 | AI 輸出 XSS | 回覆經 HTML 編碼 |
 | Denial of Wallet | `/chat` 的 `message`＋`context` 超過 4000 字元回 413 |
+| Excessive Agency | 高影響工具回 `executed: false`、`human_approved: false`（等待人工核准，未執行） |
 
 JWKS 端點：`GET /.well-known/jwks.json` 公開 RS256 公鑰（n/e）；RSA 金鑰每次啟動在記憶體產生，不落地。
 

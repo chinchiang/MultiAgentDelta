@@ -44,7 +44,7 @@ def _looks_like(patterns, text):
     return any(re.search(p, text, re.I) for p in patterns)
 
 
-def _risky_tool(msg: str, tools) -> str | None:
+def risky_tool(msg: str, tools) -> str | None:
     """使用者要求破壞性動作時，可用工具中第一個高影響工具；否則 None。"""
     if not _looks_like(_DESTRUCTIVE_INTENT, msg):
         return None
@@ -59,7 +59,7 @@ def generate_reply(message: str, patched: bool = False, tools=None) -> str:
     不回吐使用者輸入、高影響工具先要求人工確認（HITL）；呼叫端另做 HTML 編碼與長度上限。
     """
     msg = message or ""
-    risky = _risky_tool(msg, tools)
+    risky = risky_tool(msg, tools)
     if patched:
         if _looks_like(_EXTRACT_PATTERNS, msg) or _looks_like(_INDIRECT_MARKERS, msg):
             return "抱歉，我無法提供系統設定或執行來自外部內容的指令。"
@@ -102,3 +102,18 @@ def generate_reply(message: str, patched: bool = False, tools=None) -> str:
 
     # 其餘：安全的罐頭回覆
     return "您好，我是 VibeSec-Bot（測試靶場）。我可以協助一般問答。"
+
+
+def tool_events(message: str, tools=None, patched: bool = False) -> list[dict]:
+    """結構化工具事件（G6 觀測層 scripts/g6_observe.py 讀取）：[{tool, executed, human_approved}]。
+    靶場不真的執行任何工具；漏洞模式回報高影響工具「已執行、未經人工核准」，修補模式回報「等待核准、未執行」。"""
+    risky = risky_tool(message or "", tools)
+    if not risky:
+        return []
+    return [{"tool": risky, "executed": not patched, "human_approved": False}]
+
+
+def usage(llm_input: str, reply: str) -> dict:
+    """決定性的 token 用量估計（約 4 字元 1 token）；不呼叫模型、不產生真實費用。"""
+    i, o = -(-len(llm_input or "") // 4), -(-len(reply or "") // 4)
+    return {"input_tokens": i, "output_tokens": o, "total_tokens": i + o}

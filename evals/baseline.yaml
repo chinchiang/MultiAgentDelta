@@ -119,6 +119,8 @@ executed:
   - g5-swagger-pos-01
   - g6-agency-neg-01
   - g6-agency-pos-01
+  - g6-agency-telemetry-neg-01
+  - g6-agency-telemetry-pos-01
   - g6-dow-neg-01
   - g6-dow-pos-01
   - g6-indirect-neg-01
@@ -126,6 +128,7 @@ executed:
   - g6-injection-neg-01
   - g6-injection-pos-01
   - g6-noprovider-incomplete-01
+  - g6-observations-malformed-incomplete-01
   - g6-promptfoo-fail-not-incomplete-01
   - g6-sysprompt-neg-01
   - g6-sysprompt-pos-01

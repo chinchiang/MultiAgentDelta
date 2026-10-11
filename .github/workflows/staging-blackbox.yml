@@ -326,7 +326,19 @@ jobs:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: python3 _trusted/scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-cost.json
 
-      - name: G6 彙整（promptfoo eval + redteam + garak + 成本探針 → reports/g6-gate.json）
+      # 觀測層（LLM06 excessive_agency_telemetry）：送 tests.yaml 宣告的探針（不含 20 萬字元成本探針），讀回應的
+      # tool_events／usage；只對授權目標同源送出、不跟隨 redirect；觀測檔不保存回覆內容。缺遙測 → untested
+      - name: G6 觀測層（scripts/g6_observe.py：工具事件與用量遙測）
+        if: steps.target.outputs.allowed == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
+        run: |
+          python3 _trusted/scripts/g6_observe.py --target "$VIBESEC_TARGET_URL" \
+            --tests _trusted/config/promptfoo/tests.yaml --out reports/g6-observations.json
+
+      - name: G6 彙整（promptfoo eval + redteam + garak + 成本探針 + 觀測層 → reports/g6-gate.json）
         if: always()
         shell: bash
         env:
@@ -342,7 +354,7 @@ jobs:
             exit 0
           fi
           args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config _trusted/config/garak/vibesec.probes.yaml
-                --cost reports/g6-cost.json --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE")
+                --cost reports/g6-cost.json --observations reports/g6-observations.json --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE")
           [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
           if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
           else args+=(--redteam reports/g6-promptfoo-redteam.json); fi
