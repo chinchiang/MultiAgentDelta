@@ -285,6 +285,8 @@ jobs:
           code=$?
           set -e
           echo "redteam exit=$code"
+          # 退出碼交給 g6_gate.py 判讀（100 = 有測試失敗；其他非零 = 工具錯誤或逾時 → untested）
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           if [ ! -s reports/g6-promptfoo-redteam.json ]; then
             echo "skipped=promptfoo redteam 執行失敗（exit=$code），未產生結果；見 _promptfoo-redteam.log" >> "$GITHUB_OUTPUT"
           fi
@@ -346,6 +348,7 @@ jobs:
         env:
           PF_EXIT: ${{ steps.pfeval.outputs.exit_code }}
           PF_RED_SKIPPED: ${{ steps.pfred.outputs.skipped }}
+          PF_RED_EXIT: ${{ steps.pfred.outputs.exit_code }}
           TARGET_ALLOWED: ${{ steps.target.outputs.allowed }}
           GUARD_REASON: ${{ steps.target.outputs.guard_reason }}
           VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
@@ -359,7 +362,11 @@ jobs:
                 --cost reports/g6-cost.json --observations reports/g6-observations.json --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE")
           [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
           if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
-          else args+=(--redteam reports/g6-promptfoo-redteam.json); fi
+          else
+            # 設定要求的 plugin 都要有結果（以受信任的設定比對）；退出碼異常 → untested
+            args+=(--redteam reports/g6-promptfoo-redteam.json --redteam-config _trusted/config/promptfoo/promptfooconfig.yaml)
+            [ -n "${PF_RED_EXIT:-}" ] && args+=(--redteam-exit-code "$PF_RED_EXIT")
+          fi
           python3 _trusted/scripts/g6_gate.py "${args[@]}"
 
       - name: Upload G6 SARIF

@@ -1058,8 +1058,11 @@ class IntegrationRunner(Runner):
             if fx.get("redteam_skipped"):
                 args += ["--redteam-skipped", fx["redteam_skipped"]]
             if fx.get("garak") == "pass":
-                (dp / "g6-garak.report.jsonl").write_text(json.dumps({"entry_type": "eval", "probe": "dan.Dan_11_0",
-                    "detector": "dan.DAN", "total_evaluated": 5, "fails": 0}) + "\n", encoding="utf-8")
+                # garak 0.17 報告：attempt、eval，最後一筆 completion（缺 completion = 執行未正常結束，g6_gate 記 untested）
+                (dp / "g6-garak.report.jsonl").write_text("".join(json.dumps(x) + "\n" for x in (
+                    {"entry_type": "attempt", "probe_classname": "dan.Dan_11_0", "status": 2},
+                    {"entry_type": "eval", "probe": "dan.Dan_11_0", "detector": "dan.DAN", "total_evaluated": 5, "fails": 0},
+                    {"entry_type": "completion", "run": "fixture"})), encoding="utf-8")
                 args += ["--garak-glob", str(dp / "g6-garak*.report.jsonl")]
             if fx.get("cost"):
                 (dp / "cost.json").write_text(json.dumps({"state": fx["cost"], "reason": "評測 fixture"}), encoding="utf-8")

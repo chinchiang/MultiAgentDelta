@@ -125,6 +125,10 @@ python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6
 | 未提供 `--redteam`／`--redteam-skipped` 或 `--garak-glob` | 該層 `untested`，不得默默略過 |
 | promptfoo 退出碼非零但沒有斷言失敗，或退出碼不是 0／100 | promptfoo 層 `untested`（工具錯誤或結果不完整）；已實測的斷言失敗仍記 `fail` |
 | garak 報告無法讀取或計數欄位不是數字 | 該報告／probe `untested` |
+| garak 報告缺 `completion` 紀錄（執行未正常結束），或 `--garak-log` 有 Traceback／❌ | garak 層 `untested` |
+| garak probe 有 `attempt` 但沒有 `eval`，或 `run.spec.include` 指名的 probe／家族沒有結果 | 該 probe `untested` |
+| redteam 退出碼不是 0／100，或 100 但沒有測試失敗（`--redteam-exit-code`） | redteam 層 `untested` |
+| redteam 設定（`--redteam-config`）的 plugin 沒有任何測試結果（集合型 plugin 如 `pii` 以 `pii:*` 前綴比對） | 該 plugin `untested` |
 | `gates.g6_ai_red_team.checks` 宣告的 check 沒有任何 pass／fail 結果 | 該 check `untested` |
 | 有 blocking 失敗 | 閘門 `fail`（其他未完成項目寫在 `status_reason`） |
 | 無失敗但有任何 `untested` | 閘門 `incomplete`（incomplete ≠ pass） |
