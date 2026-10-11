@@ -146,7 +146,7 @@ tier_overrides:
 
 # ----------------------------------------------------------------------------
 # exceptions：有期限、有核准人的例外；到期自動失效（harness 以 expires 比對當日）。
-# 例外只能把特定路徑的特定規則降為 advisory，不能停用閘門。
+# 例外只能把特定路徑的特定規則降為 advisory，不能停用閘門。G0（vibesec.g0.lethal-trifecta-open）的例外另須寫 agent_id。
 # ----------------------------------------------------------------------------
 exceptions:
   - rule_id: vibesec.g1.cooldown-violation
@@ -165,3 +165,15 @@ exceptions:
     reason: 靶場故意放置的假金鑰（格式有效、已標註 FAKE），用於驗證 G2 偵測能力。
     approved_by: appsec-lead@example.com
     expires: "2027-03-31"
+  # 人工決定（2026-10-11，@chinchiang，選項 C：嚴格規則＋已接受風險）：Claude Code agent（c-claude）三要素皆成立，
+  # 目前只有 HITL（.claude/settings.json ask 規則）補償、尚未切腳。到期前須切斷一隻腳（建議 egress_allowlist：
+  # 沙箱網路只允許 GitHub 與模型 API）或重新核准；到期後自動失效，validate.py 與 G0 恢復 blocking。
+  - rule_id: vibesec.g0.lethal-trifecta-open
+    path_glob: "docs/threat-model.yaml"
+    agent_id: c-claude
+    reason: >-
+      Claude Code（c-claude）同時能讀私有資料（本機金鑰、GitHub token）、讀不受信任內容（外部回應、CI log、子代理報告）
+      並對外通訊（模型 API、git push、gh）。補償控制為 .claude/settings.json 對 merge／force push／gh api 等高影響動作的 ask 規則
+      （t-hitl-bypass：bypassPermissions 或使用者按允許時不受約束）。接受此殘留風險至到期日，期間完成切腳。
+    approved_by: "@chinchiang"
+    expires: "2027-01-10"
