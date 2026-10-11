@@ -1277,5 +1277,89 @@ def regressions_vs_baseline(rows: list[dict], baseline: dict) -> list[str]:
     return out
 
 
+def selftest() -> list[str]:
+    """離線驗證判定核心（不需 semgrep／docker／網路／靶場）：evaluate 的 outcome 映射、check_gate、
+    summarize 的召回率／精確率、regressions_vs_baseline。以合成 runner 與案例直接呼叫純函式。"""
+    fails = []
+
+    class FakeDetect(Runner):
+        """偵測案例 runner：對指定 id 回傳 hits（或 err），其餘案例不處理。"""
+        name = "fake-detect"
+        def __init__(self, table): self.table = table   # id -> (hits set | None, err | None)
+        def handles(self, case): return None if case["id"] in self.table else "不處理"
+        def run(self, case): return self.table[case["id"]]
+
+    class FakeIntegration(IntegrationRunner):
+        name = "fake-integration"
+        def __init__(self, table): self.table = table   # id -> (hits, err, gate dict)
+        def handles(self, case): return None if case["id"] in self.table else "不處理"
+        def run(self, case): return self.table[case["id"]]
+
+    det = lambda rid, flag, **k: {"id": k.get("id"), "gate": "G3", "domain": "d", "held_out": False,
+                                  "input": {"kind": "code"}, "expected": {"rule_id": rid, "should_flag": flag}}
+    cases = [
+        {**det("vibesec.g3.sql-string-concat", True), "id": "tp"},    # 應命中且命中 → TP
+        {**det("vibesec.g3.sql-string-concat", True), "id": "fn"},    # 應命中但沒命中 → FN
+        {**det("vibesec.g3.sql-string-concat", False), "id": "fp"},   # 不應命中卻命中 → FP
+        {**det("vibesec.g3.sql-string-concat", False), "id": "tn"},   # 不應命中也沒命中 → TN
+        {**det("vibesec.g3.sql-string-concat", True), "id": "err"},   # 執行器錯誤 → incomplete
+        {**det("vibesec.g3.sql-string-concat", True), "id": "none"},  # 無執行器處理 → untested
+    ]
+    detect = FakeDetect({
+        "tp": ({"vibesec.g3.sql-string-concat"}, None), "fn": (set(), None),
+        "fp": ({"vibesec.g3.sql-string-concat"}, None), "tn": (set(), None),
+        "err": (None, "工具缺席"),
+    })
+    rows = evaluate(cases, [detect])
+    got = {r["id"]: r["outcome"] for r in rows}
+    want = {"tp": "TP", "fn": "FN", "fp": "FP", "tn": "TN", "err": "incomplete", "none": "untested"}
+    if got != want:
+        fails.append(f"evaluate outcome 映射錯誤：得到 {got}")
+
+    # 閘門狀態案例：只由 IntegrationRunner 驗，check_gate 比對 status／rule／coverage
+    scase = {"id": "g5ok", "gate": "G5", "domain": "d", "held_out": False, "input": {"kind": "http"},
+             "expected": {"gate_status": "incomplete", "status_reason_contains": "未送出",
+                          "coverage": {"swagger_exposed": "untested"}}}
+    gate_ok = {"status": "incomplete", "status_reason": "VIBESEC_TARGET_URL 未設定；未送出任何探針",
+               "coverage": [{"control_id": "swagger_exposed", "state": "untested"}]}
+    srows = evaluate([scase], [FakeIntegration({"g5ok": (set(), None, gate_ok)})])
+    if srows[0]["outcome"] != "STATUS_OK":
+        fails.append(f"check_gate：狀態／覆蓋相符應 STATUS_OK，得到 {srows[0]['outcome']}（{srows[0]['reason']}）")
+    gate_bad = {"status": "pass", "status_reason": "", "coverage": []}
+    srows2 = evaluate([scase], [FakeIntegration({"g5ok": (set(), None, gate_bad)})])
+    if srows2[0]["outcome"] != "STATUS_WRONG":
+        fails.append(f"check_gate：狀態不符應 STATUS_WRONG，得到 {srows2[0]['outcome']}")
+    # 直接測 check_gate：fail 狀態但缺預期規則 → 不符
+    ok, _ = check_gate({"expected": {"gate_status": "fail", "rule_id": "vibesec.g5.ssrf-metadata"}}, set(),
+                       {"status": "fail", "coverage": []})
+    if ok:
+        fails.append("check_gate：gate fail 但沒有預期規則的發現，不應通過")
+
+    # summarize：召回率／精確率只算偵測案例
+    summ = summarize(rows)["ALL"]
+    if summ["recall"] != 0.5 or summ["precision"] != 0.5:
+        fails.append(f"summarize：TP1/FN1/FP1/TN1 應 recall=0.5 precision=0.5，得到 {summ['recall']}/{summ['precision']}")
+    if summ["untested"] != 1 or summ["incomplete"] != 1:
+        fails.append(f"summarize：untested/incomplete 計數錯誤：{summ}")
+
+    # regressions_vs_baseline：FP／FN 是退步；baseline 要求實測卻 untested 也是退步
+    regs = regressions_vs_baseline(rows, {"executed": ["tp", "none", "missing-id"]})
+    joined = " ".join(regs)
+    if not any(x in joined for x in ("fp：FP", "fn：FN")):
+        fails.append(f"regressions：FP／FN 應列為退步：{regs}")
+    if "none：應實測但為 untested" not in joined or "missing-id：baseline 案例不存在" not in joined:
+        fails.append(f"regressions：baseline 要求實測卻 untested／消失應列退步：{regs}")
+    if any("tp：" in r for r in regs):
+        fails.append("regressions：TP 不應算退步")
+
+    return fails
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+        _fails = selftest()
+        print("selftest 通過" if not _fails else "selftest 失敗 {} 項".format(len(_fails)))
+        for _f in _fails:
+            print("FAIL", _f)
+        sys.exit(1 if _fails else 0)
     sys.exit(main())
