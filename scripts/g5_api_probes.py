@@ -597,13 +597,28 @@ def selftest():
         fails.append("_token_alg 應回大寫 alg，壞 token 回空字串")
     # _spki_pem：手組 DER 要能被標準函式庫解析，且與已知 modulus/exponent 一致（RFC 8017 SPKI）
     try:
-        n, e = 0xC0DE_1234_5678_90AB_CDEF, 65537
+        n, e = (0xC0DE_1234_5678_90AB_CDEF << 1024) | 0xF00D, 65537   # 最高位元為 1、超過 127 位元組（長度需兩個位元組）
         pem = _spki_pem(n, e)
         if not (pem.startswith(b"-----BEGIN PUBLIC KEY-----\n") and pem.rstrip().endswith(b"-----END PUBLIC KEY-----")):
             fails.append("_spki_pem 應輸出 PEM 封裝的 SubjectPublicKeyInfo")
         der = base64.b64decode(b"".join(pem.split(b"\n")[1:-2]))
         if der[0] != 0x30:  # 最外層 SEQUENCE
             fails.append("_spki_pem DER 最外層應為 SEQUENCE")
+        # 解回 modulus／exponent：以前只看最外層 tag，n、e 編錯（少補 0x00、長度錯）也會通過，alg confusion 探針就簽錯金鑰
+        def tlv(b, i):
+            tag, ln, i = b[i], b[i + 1], i + 2
+            if ln & 0x80:
+                k = ln & 0x7F; ln = int.from_bytes(b[i:i + k], "big"); i += k
+            return tag, b[i:i + ln], i + ln
+        _, spki, _ = tlv(der, 0)
+        _, _, j = tlv(spki, 0)                       # AlgorithmIdentifier
+        t, bits, _ = tlv(spki, j)                    # BIT STRING（首位元組為 unused bits = 0）
+        _, rsapub, _ = tlv(bits[1:], 0)
+        tn, nb, k = tlv(rsapub, 0); te, eb, _ = tlv(rsapub, k)
+        if (t, tn, te) != (0x03, 0x02, 0x02) or int.from_bytes(nb, "big") != n or int.from_bytes(eb, "big") != e:
+            fails.append("_spki_pem 的 DER 解回的 n／e 應與輸入一致")
+        if nb[0] != 0x00:                            # 最高位元為 1 的 modulus 必須補 0x00（否則被當成負數）
+            fails.append("_spki_pem 應為最高位元為 1 的 modulus 補 0x00")
     except Exception as ex:
         fails.append(f"_spki_pem 應可產生合法 DER：{ex}")
 

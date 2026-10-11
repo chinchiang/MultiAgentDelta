@@ -28,6 +28,10 @@ executed:
   - g1-slopsquat-neg-02
   - g1-slopsquat-pos-01
   - g1-slopsquat-pos-02
+  - g1-vulndep-neg-01
+  - g1-vulndep-pos-01
+  - g2-envcommitted-neg-01
+  - g2-envcommitted-pos-01
   - g2-envignore-neg-01
   - g2-envignore-pos-01
   - g2-llmkey-neg-01
@@ -66,6 +70,7 @@ executed:
   - g3-sqli-pos-02
   - g3-xss-neg-01
   - g3-xss-pos-01
+  - g3-xss-pos-02
   - g3-xss-py-neg-01
   - g3-xss-py-pos-01
   - g4-agent-tools-neg-01
@@ -116,6 +121,7 @@ executed:
   - g5-ssrf-pos-01
   - g5-stacktrace-neg-01
   - g5-stacktrace-pos-01
+  - g5-stacktrace-pos-02
   - g5-swagger-pos-01
   - g6-agency-neg-01
   - g6-agency-pos-01

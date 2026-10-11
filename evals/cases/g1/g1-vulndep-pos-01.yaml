@@ -1,0 +1,20 @@
+id: g1-vulndep-pos-01
+gate: G1
+domain: dependency
+title: 相依套件有已知漏洞（未收錄於 KEV）
+input:
+  kind: manifest
+  ecosystem: maven
+  added:
+  - org.apache.logging.log4j:log4j-core:2.17.0
+  # grype 比對結果（fixture）：CVE-2021-44832（CVSS 6.6）未收錄於 CISA KEV → vulnerable-dependency（advisory）
+  grype_matches:
+  - artifact: {name: log4j-core, version: 2.17.0, type: java-archive, locations: [{path: pom.xml}]}
+    vulnerability: {id: CVE-2021-44832, fix: {versions: [2.17.1]}}
+expected:
+  should_flag: true
+  control_id: ASVS5-V15.2
+  rule_id: vibesec.g1.vulnerable-dependency
+  policy_tier: advisory
+held_out: false
+notes: 與 g1-kev-neg-01 同一份 fixture：不在 KEV 的漏洞仍要列為 vulnerable-dependency，不能因為不是 KEV 就消失。

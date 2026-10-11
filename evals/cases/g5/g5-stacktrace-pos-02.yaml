@@ -1,0 +1,17 @@
+id: g5-stacktrace-pos-02
+gate: G5
+domain: error_handling
+title: 型別混淆的 JSON 輸入讓未處理例外回吐 stack trace
+input:
+  kind: http
+  target_app: vulnapp
+  target: /chat
+  steps:
+  - 'POST /chat {"message": 0} -> 500 {"error": "...", "traceback": "Traceback (most recent call last) ..."}'
+expected:
+  should_flag: true
+  control_id: ASVS5-V13.4
+  rule_id: vibesec.g5.debug-stacktrace
+  policy_tier: advisory
+held_out: true
+notes: held-out：誘發方式是 openapi 列出的 POST 端點送型別混淆欄位（g5-stacktrace-pos-01 描述的是 GET 路徑參數）；兩案由同一次 api-probes 執行判定。
