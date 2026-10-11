@@ -29,7 +29,7 @@ findings:
   - id: VS-20261005-9f3e2a1c
     rule_id: vibesec.g4.missing-owner-filter
     title: GET /users/{id}/notes 未將 id 綁定當前主體
-    policy_tier: advisory
+    policy_tier: blocking              # 以 blocking-policy.yaml（含 risk_tier 的 tier_overrides）為準；紀錄只能更嚴，寫低會被改回並記 incomplete
     evidence_grade: E1                 # 只有模型意見：最高 E2；E3 需人工核對（rulings/）
     validation_status: pending
     requires_human: true               # 分歧 → 人工裁決；此紀錄不裁決，也不多數決
