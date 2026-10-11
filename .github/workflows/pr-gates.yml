@@ -31,6 +31,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
       # 細節見 .github/actions/vibesec-trusted/action.yml。
@@ -226,6 +227,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
       # 細節見 .github/actions/vibesec-trusted/action.yml。
@@ -316,6 +318,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
       # 細節見 .github/actions/vibesec-trusted/action.yml。
@@ -336,7 +339,9 @@ jobs:
             git fetch origin "${BASE_REF}" 2>/dev/null || true
             BASELINE="--baseline-commit origin/${BASE_REF}"
           fi
-          semgrep ci \
+          # --disable-nosem：`# nosemgrep` 寫在一般程式碼裡、不受 CODEOWNERS 把關，PR 作者加一行就能讓發現消失；
+          # 例外只能經 blocking-policy 核准（與 scripts/g3_sast.py 對外部專案的處理一致，第一輪審查 C8）
+          semgrep ci --disable-nosem \
             --config _trusted/config/semgrep/vibesec-rules.yaml \
             --config p/owasp-top-ten \
             --config p/security-audit \
@@ -370,6 +375,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
       # 細節見 .github/actions/vibesec-trusted/action.yml。
@@ -445,6 +452,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
       # 細節見 .github/actions/vibesec-trusted/action.yml。
@@ -489,7 +497,7 @@ jobs:
                               "properties": {"policy_tier": tier}})
 
           # 1) 隱形 Unicode 掃描
-          INVISIBLE = ["​", "‌", "‍", "⁠", "﻿", "\u00ad"]  # 零寬、WJ、BOM、soft hyphen
+          INVISIBLE = ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad"]  # 零寬、WJ、BOM、soft hyphen
           INVISIBLE += [chr(c) for c in range(0x202A, 0x202F)]  # U+202A-U+202E bidi
           INVISIBLE += [chr(c) for c in range(0x2066, 0x206A)]  # U+2066-U+2069 isolates
           INVISIBLE += [chr(c) for c in range(0x2061, 0x2065)]  # U+2061-U+2064 invisible operators
@@ -776,6 +784,21 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # validate.py 與通知腳本測試也取 default branch 的版本（_trusted/）驗 PR head：只跑 PR 自己的版本時，
+      # PR 可以先削弱 validate.py 或測試再轉綠（第一輪審查 C1）。ref 的取法與 .github/actions/vibesec-trusted 相同
+      # （拿不到 default branch → 指向不存在的 ref，fail closed）；不用該 action，因為它會改寫工作區的忽略清單。
+      - name: 取出 default branch 的驗證程式（_trusted/）
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch && format('refs/heads/{0}', github.event.repository.default_branch) || 'refs/heads/vibesec-default-branch-unknown' }}
+          path: _trusted
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/scripts
 
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -786,8 +809,18 @@ jobs:
       - name: 安裝 PyYAML / jsonschema
         run: pip install pyyaml jsonschema
 
-      - name: 執行 validate.py
+      # 兩個都要過：PR 版本跑得到本 PR 新增的檢查；受信任版本確保既有檢查沒被拿掉。
+      # PR 刻意修改既有驗證規則時，受信任版本會以舊規則失敗，須由 owner 審核後合併（CODEOWNERS /scripts/）。
+      - name: 執行 validate.py（PR 版本）
         run: python3 scripts/validate.py
+
+      - name: 執行 validate.py（default branch 版本驗 PR head）
+        run: |
+          # 過渡：引入本檢查的 PR 合併前，default branch 的 validate.py 還不認 VIBESEC_PROJECT_ROOT（會去驗 _trusted/ 本身）
+          if ! grep -q VIBESEC_PROJECT_ROOT _trusted/scripts/validate.py; then
+            echo "::warning::default branch 的 validate.py 尚不支援 VIBESEC_PROJECT_ROOT，本次只跑 PR 版本"; exit 0
+          fi
+          VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/validate.py
 
       # nightly／staging 失敗通知的判定邏輯（開／留言／關 issue、靶場預期狀態）。這兩支只在 main 的排程中執行，
       # 壞掉時不會有人發現，所以在每個 PR 跑單元測試。runner 內建 Node（node:test 需 ≥ 18）；
@@ -832,6 +865,14 @@ jobs:
           node --version
           node --test .github/scripts/nightly-issue.test.js .github/scripts/staging-issue.test.js
 
+      # default branch 的測試檔對 PR 的實作再跑一次：PR 不能用削弱測試的方式讓改壞的通知邏輯通過
+      - name: 通知腳本單元測試（default branch 的測試檔）
+        run: |
+          T="$RUNNER_TEMP/trusted-node-tests"; mkdir -p "$T"
+          cp .github/scripts/nightly-issue.js .github/scripts/staging-issue.js "$T/"
+          cp _trusted/.github/scripts/nightly-issue.test.js _trusted/.github/scripts/staging-issue.test.js "$T/"
+          node --test "$T/nightly-issue.test.js" "$T/staging-issue.test.js"
+
   summary:
     name: VibeSec Summary
     needs: [g1-supply-chain, g2-secrets, g3-sast-iac, g3-iac, g4-access-control]
@@ -839,6 +880,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: 下載所有 reports artifact
         continue-on-error: true

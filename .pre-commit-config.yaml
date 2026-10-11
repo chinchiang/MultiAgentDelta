@@ -18,7 +18,7 @@ repos:
 
   # G3 SAST：Semgrep 以 vibesec 自訂規則 + OWASP Top Ten 快掃變更檔
   - repo: https://github.com/semgrep/semgrep
-    rev: v1.95.0
+    rev: v1.179.0   # 與 CI（pr-gates、nightly 的 semgrep/semgrep:1.179.0、evals 的 semgrep==1.179.0）同版
     hooks:
       - id: semgrep
         name: "G3 semgrep（vibesec 規則，SAST 快篩）"
@@ -26,6 +26,7 @@ repos:
           - "--config=config/semgrep/vibesec-rules.yaml"
           - "--config=p/owasp-top-ten"
           - "--error"
+          - "--disable-nosem"   # 與 CI 一致：`# nosemgrep` 不採信
           - "--skip-unknown-extensions"
           - "--quiet"
 
