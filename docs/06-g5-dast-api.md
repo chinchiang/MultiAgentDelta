@@ -191,7 +191,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 | OWASP ZAP（免費，Docker） | baseline + api-scan；注入、設定外溢、標頭 | `config/zap/api-scan.conf`（兩者共用） |
 | `scripts/g5_zap.py` | ZAP JSON → G5 覆蓋與 SARIF | `config/catalogs/cwe-map.yaml`、`config/policy/blocking-policy.yaml` |
 | `scripts/target_guard.py` | 探針送出前的目標授權檢查 | `config/targets.yaml` |
-| api-probes（內嵌於 `staging-blackbox.yml` 的 Python；harness 流程則由 agent 以 curl 執行，兩者覆蓋範圍不同） | 雙帳號 BOLA、JWT、SSRF、rate limit | `config/zap/two-account-context.yaml` |
+| api-probes（`scripts/g5_api_probes.py`，由 `staging-blackbox.yml` 與 `run_evals.py` 執行同一份；harness 流程則由 agent 以 curl 執行，兩者覆蓋範圍不同） | 雙帳號 BOLA、JWT、SSRF、rate limit | `config/zap/two-account-context.yaml` |
 | Burp Suite Pro（商用） | Autorize / AuthMatrix | — |
 | Nuclei | 範本掃 CVE / exposure | — |
 | Schemathesis / API Harvester | OpenAPI fuzzing、BOLA、rate limit | — |
@@ -227,7 +227,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 1. **缺 Token 行為**：移除 `VIBESEC_TOKEN_B` → G5 `incomplete`（`status_reason: "VIBESEC_TOKEN_B missing"`），絕不 pass。
 2. **靶場正例**（`examples/vulnapp`）：B 讀 A 的 todo 回 200 → `bola-cross-account`；`alg:none` 被接受；`/api/import` 讀到 `169.254.169.254` 的角色名；`/docs` 回 200。
 3. **反例**：修復後 B 讀 A 回 404、`alg:none` 回 401、SSRF 被 egress allowlist 擋 → 對應 finding `retest_result: fixed`、`validation_status: confirmed`。
-4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（CLAUDE.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 內嵌探針與 `scripts/g6_cost_probe.py` 都不送任何請求。
+4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（CLAUDE.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 探針（`scripts/g5_api_probes.py`）與 `scripts/g6_cost_probe.py` 都不送任何請求。
 4a. **ZAP 接線**：`python3 scripts/g5_zap.py selftest` 以合成報告驗證規則對應、IGNORE 過濾、來源合併與「報告缺席 → untested」。
 5. **證據留存**：每個 blocking 發現有 `evidence_grade: E3`；原始 HTTP 交換存證（`reports/g5/*.http`）尚未實作，目前證據在 SARIF 與 gate JSON。
 6. **回填白箱**：Stack Trace 洩漏的路徑在 SARIF 有對應位置；BOLA 端點能對回 G4 的 `missing-owner-filter` finding。

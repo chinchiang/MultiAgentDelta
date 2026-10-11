@@ -497,7 +497,8 @@ class G4StaticRunner(Runner):
             target = pathlib.Path(d) / _fixture_path(inp)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(snippet, encoding="utf-8")
-            env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": "", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
+            env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": "", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
+                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")}
             try:
                 subprocess.run(["bash", "-e", "-c", self.code], env=env, cwd=d, check=True,
                                capture_output=True, text=True, timeout=120)
@@ -654,7 +655,8 @@ class EnvCheckRunner(Runner):
                     t.parent.mkdir(parents=True, exist_ok=True)
                     t.write_text(str(inp.get("content", "PLACEHOLDER=1\n")), encoding="utf-8")
                 git("add", "-f", "--", *inp["files"])  # 案例描述「已提交」：-f 即使被 ignore 也追蹤
-                subprocess.run(["bash", "-c", self.code], env={**os.environ, "VIBESEC_MODE": "shadow", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")},
+                subprocess.run(["bash", "-c", self.code], env={**os.environ, "VIBESEC_MODE": "shadow", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
+                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")},
                                cwd=d, capture_output=True, text=True, timeout=60)
                 out = json.loads((pathlib.Path(d) / "reports/g2-envcheck.json").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
@@ -717,7 +719,8 @@ class VulnappRunner(Runner):
         with tempfile.TemporaryDirectory() as d:
             env = {**os.environ, "RUNNER_TEMP": d, "GITHUB_OUTPUT": f"{d}/out", "TARGET_URL": target.url,
                    "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": target.url, "VIBESEC_MODE": "shadow",
-                   "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
+                   "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
+                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")}
             try:
                 subprocess.run(["bash", "-e", "-c", tok_sh], env=env, cwd=d, check=True,
                                capture_output=True, text=True, timeout=60)
@@ -965,7 +968,8 @@ class IntegrationRunner(Runner):
             tok = pathlib.Path(d) / "tokens"; tok.mkdir()
             (tok / "a").write_text(token_a); (tok / "b").write_text("eval-token-b")
             env = {**os.environ, "VIBESEC_TARGET_URL": url, "HAS_A": "true", "HAS_B": "true",
-                   "VIBESEC_TOKEN_DIR": str(tok), "VIBESEC_MODE": "shadow", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
+                   "VIBESEC_TOKEN_DIR": str(tok), "VIBESEC_MODE": "shadow", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
+                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")}
             subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
                            capture_output=True, text=True, timeout=300)
             gate = json.loads((pathlib.Path(d) / "reports/g5-gate.json").read_text(encoding="utf-8"))
