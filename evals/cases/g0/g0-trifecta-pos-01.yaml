@@ -14,7 +14,7 @@ input:
         trifecta_leg_cut: null
 expected:
   should_flag: true
-  control_id: MAESTRO-L3
+  control_id: VS-G0-LETHAL-TRIFECTA
   rule_id: vibesec.g0.lethal-trifecta-open
   policy_tier: blocking
 held_out: false

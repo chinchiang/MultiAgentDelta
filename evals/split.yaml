@@ -7,6 +7,8 @@ held_out:
 - g1-postinstall-neg-01
 - g1-slopsquat-incomplete-01
 - g1-slopsquat-pos-01
+- g1-vulndep-neg-01
+- g2-envcommitted-pos-01
 - g2-envignore-pos-01
 - g2-secret-pos-01
 - g3-actions-prt-pos-02
@@ -20,6 +22,7 @@ held_out:
 - g3-jwt-confusion-pos-01
 - g3-sql-fstring-neg-01
 - g3-sqli-pos-01
+- g3-xss-pos-02
 - g4-agent-tools-neg-01
 - g4-bola-neg-01
 - g4-hitl-neg-02
@@ -38,12 +41,13 @@ held_out:
 - g5-jwt-pos-01
 - g5-session-neg-01
 - g5-ssrf-neg-01
+- g5-stacktrace-pos-02
 - g5-swagger-pos-01
 - g6-agency-telemetry-pos-01
 - g6-indirect-neg-01
 - g6-injection-pos-01
 - g6-noprovider-incomplete-01
-- g6-observations-malformed-incomplete-01
+- g6-obsmalformed-incomplete-01
 - g6-promptfoo-fail-not-incomplete-01
 - g6-sysprompt-pos-01
 held_in:
@@ -66,6 +70,8 @@ held_in:
 - g1-slopsquat-neg-01
 - g1-slopsquat-neg-02
 - g1-slopsquat-pos-02
+- g1-vulndep-pos-01
+- g2-envcommitted-neg-01
 - g2-envignore-neg-01
 - g2-llmkey-neg-01
 - g2-llmkey-pos-01
@@ -135,16 +141,16 @@ held_in:
 - g6-xss-pos-01
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
-  # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
-  total: 133
-  held_out_ratio: 0.35
+  # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 expected.gate_status 是 incomplete 的案例。
+  total: 139
+  held_out_ratio: 0.37
   by_gate:
     G0: 12
-    G1: 15
-    G2: 9
-    G3: 31
+    G1: 17
+    G2: 11
+    G3: 32
     G4: 29
-    G5: 20
+    G5: 21
     G6: 17
   by_domain:
     ai_agent_security: 30
@@ -154,19 +160,20 @@ distribution:
     build_supply_chain: 4
     csp: 2
     data_integrity: 2
-    dependency: 11
-    error_handling: 2
+    dependency: 13
+    error_handling: 3
     general_vulnerabilities: 13
     github_actions: 7
     input_validation: 6
-    secret_exposure: 9
-    xss: 5
+    secret_exposure: 11
+    xss: 6
   by_polarity:
-    neg: 61
-    pos: 72
+    neg: 63
+    pos: 76
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-jwksorigin-incomplete-01
   - g5-ssrf-incomplete-01
   - g6-noprovider-incomplete-01
+  - g6-obsmalformed-incomplete-01
   note: 14 審查領域皆有正例與反例；incomplete_cases 驗證 incomplete ≠ pass。

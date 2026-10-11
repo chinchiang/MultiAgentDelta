@@ -8,7 +8,7 @@ input:
   added: ["axios@1.7.2"]
 expected:
   should_flag: false
-  control_id: ASVS5-V10.1
+  control_id: VS-G1-SLOPSQUAT
   rule_id: vibesec.g1.hallucinated-package
   policy_tier: blocking
 held_out: false

@@ -1,0 +1,19 @@
+id: g1-vulndep-neg-01
+gate: G1
+domain: dependency
+title: 收錄於 KEV 的漏洞只歸 kev-hit，不重複列為 vulnerable-dependency
+input:
+  kind: manifest
+  ecosystem: maven
+  added:
+  - org.apache.logging.log4j:log4j-core:2.14.1
+  grype_matches:
+  - artifact: {name: log4j-core, version: 2.14.1, type: java-archive, locations: [{path: pom.xml}]}
+    vulnerability: {id: CVE-2021-44228, fix: {versions: [2.15.0]}}
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.2
+  rule_id: vibesec.g1.vulnerable-dependency
+  policy_tier: advisory
+held_out: true
+notes: 同一漏洞只歸一條規則（KEV 優先，scripts/g1_kev.py）；重複列會讓 blocking 與 advisory 計數失真。

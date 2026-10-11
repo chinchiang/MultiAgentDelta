@@ -373,6 +373,42 @@ if yaml is not None:
         lacking = sorted(d for d, s in polarity.items() if s != {True, False})
         if lacking:
             warn(f"evals 領域缺正例或反例：{lacking}")
+        # 每個閘門與領域都要有 held-out 案例：沒有的話，該閘門／領域的泛化能力完全沒被量測
+        for _k in ("gate", "domain"):
+            _no_ho = sorted({str(c.get(_k)) for c in cases.values()} - {str(cases[x].get(_k)) for x in ho if x in cases})
+            if _no_ho:
+                err(f"evals 沒有 held-out 案例的 {_k}：{_no_ho}")
+        # 案例的 control_id 必須是該規則在 cwe-map 的 control_ids 之一（CLAUDE.md 規則 3：ID 只能查目錄）；
+        # 以前 13 案寫成相鄰但不對應的 ID（ASVS5-V8.1 對 missing-owner-filter），報表依控制彙整時就錯位
+        _cm = (load_yaml(ROOT / "config/catalogs/cwe-map.yaml") or {}).get("rules") or {}
+        for cid, c in sorted(cases.items()):
+            _e = c.get("expected") or {}
+            _ids = (_cm.get(_e.get("rule_id")) or {}).get("control_ids")
+            if _e.get("rule_id") in _cm and _e.get("control_id") not in (_ids or []):
+                err(f"{cid}: control_id {_e.get('control_id')!r} 不在 {_e.get('rule_id')} 的 control_ids {_ids}")
+        # 每條 vibesec 規則至少 1 正例、1 反例；沒有可重現案例者須列在下方豁免清單並寫明由哪個 selftest 覆蓋
+        _EVAL_EXEMPT = {
+            "vibesec.g5.graphql-introspection": "靶場 patched 模式刻意未修；pass 判定由 g5_api_probes.py selftest 的本機假目標覆蓋",
+            "vibesec.g5.swagger-exposed": "靶場 patched 模式刻意未修（文件仍對外）；無可重現的反例",
+            "vibesec.g5.missing-rate-limit": "靶場 patched 模式刻意未修；無可重現的反例",
+            "vibesec.g1.unmaintained-dependency": "需即時查 deps.dev，無離線執行器；判定由 g1_maintenance.py selftest 覆蓋",
+            "vibesec.g1.sbom-missing-provenance": "需 GitHub attestation，無離線執行器；判定由 g1_provenance.py selftest 覆蓋",
+            "vibesec.g1.sbom-incomplete": "需 syft；判定由 g1_sbom.py selftest 覆蓋",
+            "vibesec.g5.ssrf-metadata": "本機沒有雲端 metadata 端點，靶場只能以 loopback canary 證實（ssrf-internal-fetch 有正例）",
+            "vibesec.g6.direct-prompt-injection": "靶場尚未實作 override 行為（OVERRIDE-ACCEPTED），待靶場補上後新增正例並移除此豁免",
+        }
+        _pol = {}
+        for c in cases.values():
+            _e = c.get("expected") or {}
+            if _e.get("rule_id") and _e.get("gate_status") is None:
+                _pol.setdefault(_e["rule_id"], set()).add(bool(_e.get("should_flag")))
+        for _r in sorted(r for r in _cm if r.startswith("vibesec.")):
+            _have = _pol.get(_r, set())
+            if _have == {True, False}:
+                if _r in _EVAL_EXEMPT:
+                    warn(f"{_r} 已有正反例，可自 validate.py 的 _EVAL_EXEMPT 移除")
+            elif _r not in _EVAL_EXEMPT:
+                err(f"{_r} 缺{'正例' if True not in _have else ''}{'反例' if False not in _have else ''}（evals/cases）")
         if len(cases) < 60:
             warn(f"evals 共 {len(cases)} 案例，未達目標 60")
         ok(f"evals {len(cases)} 案例、held_out {len(ho)}、{len(polarity)} 領域")
@@ -385,7 +421,8 @@ if yaml is not None:
             "by_domain": dict(sorted(_co.Counter(c.get("domain") for c in cases.values()).items())),
             "by_polarity": {"neg": sum(1 for c in cases.values() if not (c.get("expected") or {}).get("should_flag")),
                             "pos": sum(1 for c in cases.values() if (c.get("expected") or {}).get("should_flag"))},
-            "incomplete_cases": sorted(cid for cid in cases if re.fullmatch(r"g\d-[a-z0-9]+-incomplete-\d+", cid)),
+            # 依 expected.gate_status 判斷：以前用 id 正規式，名稱含連字號的 incomplete 案例（原 g6-observations-malformed-…，已改名）就漏了
+            "incomplete_cases": sorted(cid for cid, c in cases.items() if (c.get("expected") or {}).get("gate_status") == "incomplete"),
         }
         _have = split.get("distribution") or {}
         _diff = [k for k, v in _want.items() if _have.get(k) != v]
@@ -443,15 +480,12 @@ try:
             for e in _ev["errors"]: err(f"{_f.relative_to(ROOT)}: {e}")
             if not _ev["errors"]: ok(f"G4 審查紀錄 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        # 有 selftest 子命令的腳本（逐行排列，避免 gitleaks generic-api-key 對超長單行誤報）
-        _selftest_tools = [
-            "ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py",
-            "g1_kev.py", "fetch_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py",
-            "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py",
-            "g4_access.py", "g0_threat_model.py", "env_guard.py", "target_guard.py", "g5_zap.py",
-            "g5_api_probes.py", "g6_cost_probe.py", "llm_observations.py", "g6_observe.py", "g6_gate.py",
-            "prepare_comparison.py", "compare_reviews.py", "run_evals.py",
-        ]
+        # 有 selftest 的腳本：自動偵測（以前是手寫清單，新增腳本的 selftest 沒加進清單就永遠不會跑）。
+        # 本腳本所在樹（CI 為 default branch）有 selftest 的腳本，受驗樹不得刪掉該腳本或它的 selftest。
+        _has_st = lambda d: {q.name for q in d.glob("*.py") if re.search(r"^def selftest\(", q.read_text(encoding="utf-8"), re.M)}
+        _selftest_tools = sorted(_has_st(ROOT / "scripts"))
+        for _gone in sorted(_has_st(CODE) - set(_selftest_tools)):
+            err(f"scripts/{_gone} 的 selftest 在受驗樹中被移除（default branch 有）")
         for _tool in _selftest_tools:
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")

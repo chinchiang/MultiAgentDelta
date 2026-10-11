@@ -327,6 +327,7 @@ class KevRunner(Runner):
     驗證的是 scripts/g1_kev.py 的比對與判定，不含 grype 本身（nightly 以真實 grype 執行）。"""
     name = "g1-kev"
     RULE = "vibesec.g1.kev-hit"
+    VULN_RULE = "vibesec.g1.vulnerable-dependency"   # 同一份 grype 結果中未收錄於 KEV 的已知漏洞（KEV 優先，不重複列）
 
     def __init__(self, network: bool):
         self.network = network
@@ -340,7 +341,7 @@ class KevRunner(Runner):
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
-        if case.get("gate") != "G1" or exp.get("rule_id") != self.RULE:
+        if case.get("gate") != "G1" or exp.get("rule_id") not in (self.RULE, self.VULN_RULE):
             return f"{exp.get('rule_id')} 不由 KEV 檢查實作"
         if not isinstance(inp.get("grype_matches"), list):
             return "案例沒有 input.grype_matches（grype 比對結果 fixture）"
@@ -373,7 +374,7 @@ class KevRunner(Runner):
         summary, hits = self.mod.run(grype, feed)
         if summary.get("status") == "incomplete":
             return None, f"g1_kev incomplete：{summary.get('status_reason', '')[:120]}"
-        return ({self.RULE} if hits else set()), None
+        return ({self.RULE} if hits else set()) | ({self.VULN_RULE} if summary.get("vulnerable") else set()), None
 
 
 class Vulnapp:
@@ -622,6 +623,7 @@ class EnvCheckRunner(Runner):
     name = "env-check"
     STEP = "檢查 .env 是否在 .gitignore"
     RULE = "vibesec.g2.env-not-ignored"
+    COMMITTED_RULE = "vibesec.g2.env-committed"   # 同一步驟的另一個結果：已提交的 .env（不論 .gitignore 是否正確）
 
     def __init__(self):
         self.code = _workflow_step(self.STEP, "pr-gates.yml")
@@ -629,7 +631,7 @@ class EnvCheckRunner(Runner):
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
-        if exp.get("rule_id") != self.RULE:
+        if exp.get("rule_id") not in (self.RULE, self.COMMITTED_RULE):
             return f"{exp.get('rule_id')} 不由 .env 檢查步驟實作"
         if not inp.get("files"):
             return "案例沒有 input.files"
@@ -687,8 +689,30 @@ G6_ORACLES = {
 
 
 TARGET_MODES = {"vulnapp": "", "vulnapp-patched": "patched"}
+# G5 規則 → api-probes 的覆蓋項：反例（should_flag: false）要該覆蓋項實測為 pass 才算 TN。
+# 以前只看「沒有命中」：探針沒測到（untested，例如缺 token、端點不存在）也被算成正確的反例。
+G5_COVERAGE = {
+    "vibesec.g5.bola-cross-account": "bola_idor", "vibesec.g5.jwt-alg-none": "jwt_alg_none",
+    "vibesec.g5.jwt-alg-confusion": "jwt_alg_confusion", "vibesec.g5.ssrf-metadata": "ssrf_metadata",
+    "vibesec.g5.ssrf-internal-fetch": "ssrf_metadata", "vibesec.g5.swagger-exposed": "swagger_exposed",
+    "vibesec.g5.graphql-introspection": "graphql_introspection", "vibesec.g5.debug-stacktrace": "debug_stacktrace",
+    "vibesec.g5.missing-rate-limit": "rate_limit", "vibesec.g5.missing-session-check": "session_check",
+    "vibesec.g5.cors-reflect-origin": "cors_reflect_origin",
+}
 # G6 成本面（LLM10）：不是回覆內容的斷言，改跑 scripts/g6_cost_probe.py（與 staging 同一支）
 COST_RULE = "vibesec.g6.denial-of-wallet"
+
+
+def g5_negative_check(case: dict, hits, err, cov: dict):
+    """G5 反例只有在對應覆蓋項實測為 pass 時才算數；否則回報為 incomplete（不是 TN）。"""
+    if err or hits is None or case["expected"].get("should_flag") or case["expected"].get("rule_id") in hits:
+        return hits, err
+    key = G5_COVERAGE.get(case["expected"].get("rule_id"))
+    if key is None:
+        return None, f"{case['expected'].get('rule_id')} 沒有對應的 api-probes 覆蓋項，無法確認反例真的測到"
+    if cov.get(key) != "pass":
+        return None, f"{key} 覆蓋為 {cov.get(key) or '缺席'}：反例沒有真的測到，不能算 TN"
+    return hits, err
 
 
 class VulnappRunner(Runner):
@@ -696,7 +720,7 @@ class VulnappRunner(Runner):
 
     def __init__(self, targets: dict[str, Vulnapp] | None):
         self.targets = targets
-        self._g5: dict[str, tuple[set[str] | None, str | None]] = {}
+        self._g5: dict[str, tuple[set[str] | None, str | None, dict]] = {}
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -710,15 +734,15 @@ class VulnappRunner(Runner):
             return "target_app 只支援 G5 / G6"
         return None
 
-    def _run_g5(self, target: Vulnapp) -> tuple[set[str] | None, str | None]:
+    def _run_g5(self, target: Vulnapp) -> tuple[set[str] | None, str | None, dict]:
         if target.mode not in self._g5:
             self._g5[target.mode] = self._probe_g5(target)
         return self._g5[target.mode]
 
-    def _probe_g5(self, target: Vulnapp) -> tuple[set[str] | None, str | None]:
+    def _probe_g5(self, target: Vulnapp) -> tuple[set[str] | None, str | None, dict]:
         tok_sh, probe_sh = _workflow_step("取得雙帳號 token"), _workflow_step("G5 api-probes")
         if not tok_sh or not probe_sh:
-            return None, "staging workflow 中找不到 token／api-probes 步驟"
+            return None, "staging workflow 中找不到 token／api-probes 步驟", {}
         with tempfile.TemporaryDirectory() as d:
             env = {**os.environ, "RUNNER_TEMP": d, "GITHUB_OUTPUT": f"{d}/out", "TARGET_URL": target.url,
                    "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": target.url, "VIBESEC_MODE": "shadow",
@@ -733,11 +757,13 @@ class VulnappRunner(Runner):
                 subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
                                capture_output=True, text=True, timeout=300)
                 sarif = json.loads(pathlib.Path(f"{d}/reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
+                gate = json.loads(pathlib.Path(f"{d}/reports/g5-gate.json").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
-                return None, f"G5 api-probes 執行失敗：{type(e).__name__}"
+                return None, f"G5 api-probes 執行失敗：{type(e).__name__}", {}
+        cov = {c.get("control_id"): c.get("state") for c in gate.get("coverage") or []}
         # level=note 是探針的「未能實測」提示（例如缺公鑰的 alg-confusion），不算偵測到
         return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])
-                if r.get("level") != "note"}, None
+                if r.get("level") != "note"}, None, cov
 
     def run(self, case):
         target = self.targets[case["input"]["target_app"]]
@@ -745,7 +771,8 @@ class VulnappRunner(Runner):
         if err:
             return None, err
         if case["gate"] == "G5":
-            return self._run_g5(target)
+            hits, err, cov = self._run_g5(target)
+            return g5_negative_check(case, hits, err, cov)
         if case["expected"].get("rule_id") == COST_RULE:
             sys.path.insert(0, str(ROOT / "scripts"))
             import g6_cost_probe
@@ -1351,12 +1378,42 @@ def selftest() -> list[str]:
     # regressions_vs_baseline：FP／FN 是退步；baseline 要求實測卻 untested 也是退步
     regs = regressions_vs_baseline(rows, {"executed": ["tp", "none", "missing-id"]})
     joined = " ".join(regs)
-    if not any(x in joined for x in ("fp：FP", "fn：FN")):
-        fails.append(f"regressions：FP／FN 應列為退步：{regs}")
+    regs = regressions_vs_baseline(rows, {"executed": ["tp", "fp", "fn", "none", "missing-id"]})
+    joined = " ".join(regs)
+    if not all(x in joined for x in ("fp：FP", "fn：FN")):   # 以前用 any：只列出其中一種也算通過
+        fails.append(f"regressions：FP 與 FN 都應列為退步：{regs}")
     if "none：應實測但為 untested" not in joined or "missing-id：baseline 案例不存在" not in joined:
         fails.append(f"regressions：baseline 要求實測卻 untested／消失應列退步：{regs}")
     if any("tp：" in r for r in regs):
         fails.append("regressions：TP 不應算退步")
+
+    # G5 反例：對應覆蓋項實測為 pass 才算 TN；untested／缺席 → incomplete（以前沒測到也算 TN）
+    neg = {"id": "n", "gate": "G5", "expected": {"rule_id": "vibesec.g5.bola-cross-account", "should_flag": False}}
+    for cov, want_err in (({"bola_idor": "pass"}, False), ({"bola_idor": "untested"}, True), ({}, True)):
+        hits, err = g5_negative_check(neg, set(), None, cov)
+        if bool(err) != want_err or (not want_err and hits != set()):
+            fails.append(f"g5_negative_check：覆蓋 {cov} 應{'回報未測到' if want_err else '算 TN'}（得到 {hits}, {err}）")
+    pos = {"id": "p", "gate": "G5", "expected": {"rule_id": "vibesec.g5.bola-cross-account", "should_flag": True}}
+    if g5_negative_check(pos, set(), None, {"bola_idor": "untested"}) != (set(), None):
+        fails.append("g5_negative_check：正例不受覆蓋限制（沒命中就是 FN）")
+    _unknown = "vibesec.g5." + "no-such-rule"   # 拼接：不是目錄中的 ID，避免被 validate.py 的規則 ID 掃描當成引用
+    if g5_negative_check({**neg, "expected": {**neg["expected"], "rule_id": _unknown}}, set(), None, {})[1] is None:
+        fails.append("g5_negative_check：沒有對應覆蓋項的規則不能算 TN")
+    import yaml as _yaml
+    _g5rules = {r for r in (_yaml.safe_load((ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8"))["rules"])
+                if r.startswith("vibesec.g5.")}
+    if _g5rules - set(G5_COVERAGE):
+        fails.append(f"G5_COVERAGE 缺 cwe-map 的 G5 規則：{sorted(_g5rules - set(G5_COVERAGE))}")
+
+    # _fixture_path：取第一個實際路徑、拒絕絕對路徑與 ..、Dockerfile 無副檔名
+    for path, want in (("app/main.py + app/db.py", "app/main.py"), ("/etc/passwd.py", None), ("../x.py", None),
+                       ("docker/api.Dockerfile", "docker/api.Dockerfile"), (".cursorrules", ".cursorrules"), ("README", None)):
+        if _fixture_path({"path": path}) != want:
+            fails.append(f"_fixture_path({path!r}) 應為 {want!r}（得到 {_fixture_path({'path': path})!r}）")
+    # _doc_hosts：retrieved_doc 中的外連主機
+    got = _doc_hosts({"input": {"retrieved_doc": "see https://attacker.example/x?a=1 and (http://evil.test/p) not ftp://no"}})
+    if got != {"attacker.example", "evil.test"}:
+        fails.append(f"_doc_hosts 應取出 http(s) 主機（得到 {got}）")
 
     return fails
 
