@@ -42,6 +42,16 @@ def load_provider(name: str, root: pathlib.Path = ROOT) -> dict:
     return {"name": name, **(pv[name] or {})}
 
 
+# confidential／pii 只能送 rotation.sensitive_data_providers 列出的地端／內網 provider（CLAUDE.md 規則 7）。
+# 這是 allowed_data_classes 之外的第二道硬防線：就算有人誤把某雲端 provider 的 allowed_data_classes 開到 pii，
+# 這裡仍會擋下，與 prepare_comparison.py 的判定對齊（不只靠逐一維護每個 provider 的清單）。
+SENSITIVE_CLASSES = ("confidential", "pii")
+
+def load_sensitive_providers(root: pathlib.Path = ROOT) -> set:
+    data = yaml.safe_load((root / "config/providers.yaml").read_text(encoding="utf-8")) or {}
+    return set((data.get("rotation") or {}).get("sensitive_data_providers") or [])
+
+
 def load_role(role: str, root: pathlib.Path = ROOT) -> tuple[str, str | None]:
     text = (root / "config/harness/roles" / f"{role}.md").read_text(encoding="utf-8")
     m = re.search(r"^prompt_version:\s*(\S+)", text, re.M)
@@ -244,6 +254,9 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
     if data_class not in (p.get("allowed_data_classes") or []):
         return {**out, "state": "refused",
                 "note": f"no provider allowed for data_class={data_class}：{provider} 只收 {p.get('allowed_data_classes')}（未送出任何內容）"}
+    if data_class in SENSITIVE_CLASSES and provider not in load_sensitive_providers(root):
+        return {**out, "state": "refused",
+                "note": f"data_class={data_class} 只能送 rotation.sensitive_data_providers；{provider} 不在清單（未送出任何內容，CLAUDE.md 規則 7）"}
     key = env.get(p.get("api_key_env") or "", "")
     profile = ""
     if p.get("kind") == "bedrock":
@@ -364,7 +377,12 @@ def selftest() -> list[str]:
         (root / "config/providers.yaml").write_text(yaml.safe_dump({"providers": {
             "ok": mk("m"), "slow": mk("slow"), "notemp": mk("no-temp"), "pub": mk("m", allowed_data_classes=["public"]),
             "off": mk("m", enabled=False), "file": mk("m", base_url="file:///etc"),
-            "flip": mk("flip"), "needhint": mk("needhint"), "bad": mk("bad"), "nojson": mk("nojson"), "noopinions": mk("noopinions"), "badconcern": mk("badconcern"), "badverdict": mk("badverdict"), "norationale": mk("norationale"), "noev": mk("noev"), "http500": mk("http500")}}))
+            # leaky：allowed_data_classes 誤開到 pii，但不在 sensitive_data_providers → 第二道防線仍須擋下
+            "leaky": mk("m", allowed_data_classes=["public", "internal", "confidential", "pii"]),
+            # onprem：允許敏感分級且在 sensitive_data_providers 內 → 放行
+            "onprem": mk("m", allowed_data_classes=["public", "internal", "confidential", "pii"]),
+            "flip": mk("flip"), "needhint": mk("needhint"), "bad": mk("bad"), "nojson": mk("nojson"), "noopinions": mk("noopinions"), "badconcern": mk("badconcern"), "badverdict": mk("badverdict"), "norationale": mk("norationale"), "noev": mk("noev"), "http500": mk("http500")},
+            "rotation": {"sensitive_data_providers": ["onprem"]}}))
         env = {"K": "sk-secret-123"}
         pk = {"finding": {"id": "VS-20260101-00000000"}}
         r = call("ok", "architecture", "internal", pk, root, env)
@@ -379,8 +397,17 @@ def selftest() -> list[str]:
         if r["state"] != "refused" or len(seen) != n: fails.append("分級不允許 → refused 且不得送出")
         r = call("off", "architecture", "public", pk, root, env)
         if r["state"] != "refused" or len(seen) != n: fails.append("未啟用 → refused 且不得送出")
+        # 敏感分級第二道防線：allowed_data_classes 誤開到 pii 的雲端 provider 仍須被 sensitive_data_providers 擋下
+        r = call("leaky", "architecture", "pii", pk, root, env)
+        if r["state"] != "refused" or "sensitive_data_providers" not in (r["note"] or "") or len(seen) != n:
+            fails.append(f"pii + 不在 sensitive_data_providers → refused 且不得送出：{r}")
+        r = call("leaky", "architecture", "confidential", pk, root, env)
+        if r["state"] != "refused" or len(seen) != n: fails.append("confidential + 不在 sensitive 清單 → refused")
         r = call("ok", "architecture", "internal", pk, root, {})
         if r["state"] != "missing" or len(seen) != n: fails.append("缺金鑰 → missing 且不得送出")
+        # 在 sensitive_data_providers 內且 allowed_data_classes 含 pii → 放行（確認第二道防線不會誤擋合法路徑）
+        r = call("onprem", "architecture", "pii", pk, root, env)
+        if r["state"] != "ran": fails.append(f"pii + 在 sensitive_data_providers 且允許 → ran：{r}")
         r = call("slow", "architecture", "internal", pk, root, env)
         if r["state"] != "timeout": fails.append(f"逾時 → timeout：{r}")
         r = call("file", "architecture", "internal", pk, root, env)
