@@ -23,6 +23,8 @@ jobs:
         language: [python, actions]   # repo 無 JS/TS 原始碼；actions = 掃描 workflow
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
@@ -53,6 +55,8 @@ jobs:
       image: semgrep/semgrep:1.179.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # 不設 continue-on-error、不吞退出碼：未加 --error 時 semgrep 有命中也回 0，非 0 = 工具錯誤（規則載入失敗、
       # registry 下載失敗、當掉）。此時刪掉不完整的 SARIF，job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
       - name: Semgrep scan（全庫、無 diff baseline）
@@ -75,7 +79,7 @@ jobs:
           fi
           # 退出碼 0 也要確認 SARIF 真的產出且可解析、有 runs，否則同樣是 incomplete；
           # 壞掉的檔案改名保留成 artifact 供查，不上傳 Code scanning
-          python3 -c '
+          python3 -I -c '
           import json, os, sys
           p = "reports/semgrep-full.sarif"
           def bad(msg):
@@ -116,8 +120,14 @@ jobs:
       contents: read
       security-events: write
       actions: read
+    # SBOM 產生後、還沒跑任何其他第三方工具（grype、trivy-action）前記下的雜湊；g1-attest 簽章前核對，
+    # 避免簽到被後續步驟改寫過的 SBOM（第二輪審查 M6）
+    outputs:
+      sbom_sha256: ${{ steps.sbom.outputs.sbom_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Restore 富化快取（EPSS/KEV）
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -148,6 +158,7 @@ jobs:
           true
 
       - name: Syft SBOM（全庫）+ Grype（SARIF + JSON）
+        id: sbom
         continue-on-error: true
         # 與 PR 的 scripts/g1_sbom.py 相同：npm devDependencies 也列入（建置工具屬供應鏈範圍）
         env:
@@ -156,6 +167,10 @@ jobs:
           mkdir -p reports
           if command -v syft >/dev/null 2>&1; then
             syft dir:. -o cyclonedx-json=reports/sbom.cdx.json
+          fi
+          # 立刻記下雜湊（在 grype 與其他第三方 action 執行之前）
+          if [ -f reports/sbom.cdx.json ]; then
+            echo "sbom_sha256=$(sha256sum reports/sbom.cdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           fi
           if command -v grype >/dev/null 2>&1 && [ -f reports/sbom.cdx.json ]; then
             grype sbom:reports/sbom.cdx.json -o sarif --file reports/grype-full.sarif || true
@@ -183,7 +198,7 @@ jobs:
       - name: EPSS / KEV 富化（inline python, stdlib；分欄記錄、不混算）
         continue-on-error: true
         run: |
-          python3 - <<'EOF'
+          python3 -I - <<'EOF'
           # 由 Grype/Trivy 輸出收集 CVE，查 FIRST EPSS 與 CISA KEV。
           # 不可違反：EPSS 與查詢日、KEV 與日期分欄記錄；不做 CVSS × EPSS × 信心 乘法。
           import json, re, pathlib, datetime, urllib.request, urllib.error, os
@@ -337,6 +352,21 @@ jobs:
           name: vibesec-nightly-g1
           path: reports
 
+      # 簽章前核對 SBOM 與 syft 剛產出時的雜湊：不一致（被同 job 的第三方工具改寫）或拿不到雜湊 → 不簽章，
+      # 刪掉這份 SBOM，下一步驗證記為缺少證明／incomplete
+      - name: 核對 SBOM 雜湊（syft 產出當下 vs 下載的 artifact）
+        if: always() && hashFiles('reports/sbom.cdx.json') != ''
+        env:
+          EXPECTED: ${{ needs.g1-full.outputs.sbom_sha256 }}
+        run: |
+          ACTUAL=$(sha256sum reports/sbom.cdx.json | cut -d' ' -f1)
+          if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::SBOM 雜湊不符（產出時 '${EXPECTED:-無}'、簽章前 '$ACTUAL'）：不簽章"
+            rm -f reports/sbom.cdx.json
+          else
+            echo "SBOM 雜湊一致：$ACTUAL"
+          fi
+
       # SBOM 來源證明：以 Sigstore 為 reports/sbom.cdx.json 簽發 SLSA provenance，再以 gh 驗證
       # 「存在、簽章有效、簽發者是本 workflow」。簽發失敗不在這裡擋：下一步驗證會把它記為缺少證明（advisory）。
       - name: 簽發 SBOM 來源證明（SLSA provenance）
@@ -431,7 +461,7 @@ jobs:
         run: |
           python3 scripts/sarif_gate.py --gate G2 --tool gitleaks=reports/g2-history.sarif \
             --envcheck reports/g2-envcheck.json --out reports/g2-history-gate.json
-          python3 - <<'EOF'
+          python3 -I - <<'EOF'
           import json, os, sys
           g = json.load(open("reports/g2-history-gate.json", encoding="utf-8"))
           fc = g.get("findings_count") or {}
@@ -462,6 +492,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -513,6 +545,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           sparse-checkout: .github/scripts
       - name: 下載 evals 結果（可能不存在：evals job 失敗時）
         continue-on-error: true

@@ -354,6 +354,23 @@ def apply_cap(gate: dict, reason: str) -> dict:
     return gate
 
 
+def ruling_caps(findings: list[dict], changed, pr_author: str | None, approvers: list[str], load) -> list[str]:
+    """本 PR 新增或修改的人工裁決同樣不能自證：以前只檢查審查紀錄，PR 可以不動紀錄、只新增一份把發現翻成 refuted 的
+    ruling（decided_by 隨便填別人的帳號），G4 就變 pass，而那個人根本不必 approve（第二輪審查 M4）。
+    規則同 trust_cap：decided_by 必須是在目前 head 上 approve 的非作者。changed(path) 判斷是否由本 PR 引入。"""
+    out = []
+    for f in findings or []:
+        ref = f.get("ruling_ref")
+        if not ref or not changed(ref):
+            continue
+        r = load(ref) or {}
+        c = trust_cap(True, str(((r.get("decided_by") or {}) if isinstance(r, dict) else {}).get("handle") or ""),
+                      pr_author, approvers)
+        if c:
+            out.append(f"裁決 {ref}：" + c.replace("審查紀錄", "裁決").replace("recorded_by", "decided_by"))
+    return out
+
+
 def changed_since(base: str, head: str, path: str) -> bool:
     """path 在 base..head 之間有變更（本 PR 新增或修改）。git 失敗時視為有變更（fail closed）。"""
     r = _git("diff", "--name-only", f"{base}...{head}", "--", path)
@@ -366,16 +383,26 @@ def record_changed(base: str | None, head: str, path: str) -> bool:
     return (not base) or changed_since(base, head, path)
 
 
+_MD_SPECIAL = re.compile(r"([\\`*_\[\]()<>!|#~])")
+
+
+def md_safe(text) -> str:
+    """留言由 bot 身分發出：status_reason 會帶入審查紀錄的 coverage reason、檔名等受測方可控的字串，
+    跳脫 Markdown／HTML 控制字元並把 @ 換成全形，避免以 bot 名義插入連結、圖片或 @mention（第二輪審查 L4）。"""
+    t = str(text or "").replace("\r", " ").replace("\n", " ")
+    return _MD_SPECIAL.sub(r"\\\1", t).replace("@", "＠")
+
+
 def comment_markdown(gate: dict, record_ref: str | None) -> str:
     st = gate["status"]
     lines = ["<!-- vibesec-g4-llm-review -->", "### VibeSec G4 — 存取控制", "",
              "G4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware）。", "",
-             f"**G4 狀態：`{st}`**——{gate.get('status_reason') or ''}"]
+             f"**G4 狀態：`{md_safe(st)}`**——{md_safe(gate.get('status_reason'))}"]
     if record_ref:
         rows = gate.get("_llm_findings") or []
         if rows:
             lines += ["", "| 發現 | 規則 | tier | 狀態 | 需人工裁決 |", "|---|---|---|---|---|"]
-            lines += [f"| {f['id']} | `{f['rule_id']}` | {f['policy_tier']} | {f['validation_status']} | {'是' if f['requires_human'] else ''} |"
+            lines += [f"| {md_safe(f['id'])} | {md_safe(f['rule_id'])} | {md_safe(f['policy_tier'])} | {md_safe(f['validation_status'])} | {'是' if f['requires_human'] else ''} |"
                       for f in rows]
         else:
             lines += ["", "LLM 審查未產生 G4 發現。"]
@@ -594,6 +621,19 @@ def selftest() -> list[str]:
         fails.append("recorded_by 不是核准者（只填別人的帳號）→ 應不可信")
     if trust_cap(False, "", "author", ["reviewer"]) is None:
         fails.append("recorded_by.handle 空白 → 應不可信")
+    # 留言跳脫：受測方字串不得插入連結、圖片、@mention
+    _md = comment_markdown({"status": "pending", "status_reason": "x](https://evil.example) ![i](https://e/x.png) @someone <img src=x>"}, None)
+    if "@someone" in _md or "](https://evil" in _md or "<img" in _md.replace("\\<img", ""):
+        fails.append(f"comment_markdown 應跳脫受測方字串：{_md}")
+    # 本 PR 改過的裁決同樣不能自證（M4）
+    _rl = {"rulings/a.yaml": {"decided_by": {"handle": "author"}}, "rulings/b.yaml": {"decided_by": {"handle": "someone"}},
+           "rulings/c.yaml": {"decided_by": {"handle": "Reviewer"}}}
+    _fs = [{"ruling_ref": k} for k in _rl] + [{"ruling_ref": None}]
+    _rc = ruling_caps(_fs, lambda ref: True, "author", ["reviewer"], _rl.get)
+    if len(_rc) != 2 or not any("a.yaml" in x for x in _rc) or not any("b.yaml" in x for x in _rc):
+        fails.append(f"本 PR 改過的裁決：decided_by 是作者或非核准者 → 不可信；核准者 → 可信（得到 {_rc}）")
+    if ruling_caps(_fs, lambda ref: False, "author", [], _rl.get):
+        fails.append("裁決不是本 PR 引入（已在 base 上）→ 不設上限")
     if record_changed(None, "HEAD", "reviews/g4/x.yaml") is not True or record_changed("", "HEAD", "reviews/g4/x.yaml") is not True:
         fails.append("沒有 base 可比對 → 紀錄應視為本次變更引入（fail closed）")
     g4p = gate_of(r4, ev4)
@@ -715,6 +755,9 @@ def main(argv=None) -> int:
             cap = "無 base 可比對（非 pull_request 事件），無法確認紀錄不是本次變更引入；" + cap
         if cap:
             apply_cap(gate, cap)
+        for rc in ruling_caps(ev["findings"] if ev else [], lambda ref: record_changed(a.base, head, ref), a.pr_author,
+                              [x for x in a.approvers.split(",") if x], lambda ref: _yaml(PROJECT / ref)):
+            apply_cap(gate, rc)
     md = comment_markdown(gate, ref)
     gate.pop("_llm_findings", None)
     if a.out:

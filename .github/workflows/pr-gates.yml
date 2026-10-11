@@ -171,7 +171,8 @@ jobs:
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         run: |
           python3 _trusted/scripts/g1_kev.py --grype reports/grype.json --kev-feed .cache/kev.json \
-            --sarif reports/g1-kev.sarif --json reports/g1-kev.json --merge-gate reports/g1-gate.json
+            --sarif reports/g1-kev.sarif --json reports/g1-kev.json --merge-gate reports/g1-gate.json \
+            --kev-source reports/kev-source.json
 
       - name: Upload KEV SARIF
         if: always() && hashFiles('reports/g1-kev.sarif') != ''
@@ -266,36 +267,30 @@ jobs:
           VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
           mkdir -p reports
-          # 三種結果分開記（格式同 scripts/env_guard.py --json）：以前壓成同一個 env_gitignore_fail，已提交的 .env
-          # 也只記成 advisory 的 env-not-ignored（位置 .gitignore），G2 照樣 pass
-          gi_fail=0
-          if [ -f .gitignore ] && grep -Eq '(^|/)\.env' .gitignore; then
-            echo "OK: .env* 已列入 .gitignore"
-          else
-            echo "::error::.env* 未列入 .gitignore（require_env_in_gitignore: true）"; gi_fail=1
+          # 判定交給受信任的 scripts/env_guard.py --json（與 pre-commit、g2_secrets.py 同一份邏輯）：三種結果分開記
+          # （.gitignore 少規則、已提交的 .env、git 失敗 → incomplete）。以前這裡另寫一份 bash：.gitignore 只要有任一行
+          # 含 .env（.env.example、!.env 反向規則）就算通過，與腳本的 git 語意判斷不一致。
+          # CI 取 _trusted/（default branch）；run_evals.py 在暫存目錄執行時由 VIBESEC_CONFIG 找 repo 根
+          ROOT=$(dirname "${VIBESEC_CONFIG:-$PWD/_trusted/vibesec.yaml}")
+          if ! python3 -I "$ROOT/scripts/env_guard.py" --target . --json > reports/g2-envcheck.json; then
+            rm -f reports/g2-envcheck.json   # 缺檔 → summary 判 G2 incomplete（不是 pass）
+            echo "::error::env_guard.py 執行失敗：無法確認 .env 未入版控"; exit 1
           fi
-          # docs/03 §4：範本 .env.example 不算（只放佔位值、本來就該提交）；其餘 .env* 被追蹤即為 env-committed
-          # core.quotepath=false：含非 ASCII 的路徑否則會被加引號跳脫，regex 比對不到（第四次審視 S-7）
-          # git ls-files 失敗 → error（G2 incomplete）：以前管線吞掉失敗，當成「沒有已追蹤的 .env」
-          ENV_ERROR=""
-          if ! LS=$(git -c core.quotepath=false ls-files); then
-            ENV_ERROR="git ls-files 失敗：無法確認 .env 未入版控"; echo "::error::$ENV_ERROR"
-          fi
-          TRACKED=$(printf '%s\n' "$LS" | grep -E '(^|/)\.env(\..*)?$' | grep -Ev '(^|/)\.env\.example$' || true)
+          eval "$(python3 -I - reports/g2-envcheck.json <<'PY'
+          import json, shlex, sys
+          r = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(f"gi_fail={int(r['env_gitignore_fail'])}")
+          print(f"TRACKED={shlex.quote(chr(10).join(r['committed']))}")
+          print(f"ENV_ERROR={shlex.quote(r['error'] or '')}")
+          PY
+          )"
+          if [ "$gi_fail" = "1" ]; then echo "::error::.env 未被 .gitignore 忽略（require_env_in_gitignore: true）"; else echo "OK: .env 已被 .gitignore 忽略"; fi
+          if [ -n "$ENV_ERROR" ]; then echo "::error::$ENV_ERROR"; fi
           if [ -n "$TRACKED" ]; then
             echo "::error::偵測到已追蹤的 .env 檔："; echo "$TRACKED"
           elif [ -z "$ENV_ERROR" ]; then
             echo "OK: 無已追蹤的 .env 檔"
           fi
-          GI_FAIL=$gi_fail TRACKED="$TRACKED" ENV_ERROR="$ENV_ERROR" python3 -I - > reports/g2-envcheck.json <<'PY'
-          import json, os
-          print(json.dumps({"gate": "G2", "rule_id": "vibesec.g2.env-not-ignored", "env_gitignore_fail": int(os.environ["GI_FAIL"]),
-                            "committed_rule_id": "vibesec.g2.env-committed",
-                            "committed": sorted(l for l in os.environ["TRACKED"].splitlines() if l),
-                            "error": os.environ["ENV_ERROR"] or None}, ensure_ascii=False))
-          PY
-          # 是否擋 job 依 blocking-policy 的有效 tier：CI 取 _trusted/（default branch）；run_evals.py 在暫存目錄執行時由 VIBESEC_CONFIG 找 repo 根
-          ROOT=$(dirname "${VIBESEC_CONFIG:-$PWD/_trusted/vibesec.yaml}")
           TIER=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-not-ignored | awk '{print $2}')
           TIER_COMMITTED=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-committed | awk '{print $2}')
           echo "policy tier: env-not-ignored=${TIER} env-committed=${TIER_COMMITTED}"
@@ -871,9 +866,14 @@ jobs:
           ref: ${{ github.event.repository.default_branch && format('refs/heads/{0}', github.event.repository.default_branch) || 'refs/heads/vibesec-default-branch-unknown' }}
           path: _trusted
           persist-credentials: false
+          # validate.py 只從受信任樹 import 判定模組（g4_review 等以自己所在的樹讀 config／schemas），tests/ 用來核對
+          # PR 沒有刪掉或清空既有測試；cone mode 也會帶進根目錄的 vibesec.yaml
           sparse-checkout: |
             scripts
             .github/scripts
+            config
+            schemas
+            tests
 
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -913,7 +913,8 @@ jobs:
           SINGLE_MAINTAINER: ${{ vars.VIBESEC_SINGLE_MAINTAINER }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'rulings/*.yaml' > "$RUNNER_TEMP/rulings.txt"
+          # --no-renames：預設偵測改名，「rulings/A 改名成 rulings/<目標發現>.yaml 再改內容」會顯示成 R、被 AM 濾掉（第二輪審查 M4）
+          git diff --name-only --no-renames --diff-filter=ACMR "$BASE_SHA" HEAD -- 'rulings/*.yaml' > "$RUNNER_TEMP/rulings.txt"
           python3 -I - "$RUNNER_TEMP/rulings.txt" <<'PY'
           import os, sys, yaml
           author = os.environ["PR_AUTHOR"].strip().lower()
@@ -997,7 +998,7 @@ jobs:
           [ -f _artifacts/vibesec-g1-reports/g1-gate.json ] && cp _artifacts/vibesec-g1-reports/g1-gate.json reports/g1-gate.json
           [ -f _artifacts/vibesec-g4-reports/g4-gate.json ] && cp _artifacts/vibesec-g4-reports/g4-gate.json reports/g4-gate.json
           python3 -I - "$MODE" <<'EOF'
-          import json, glob, os, sys, pathlib, yaml
+          import json, glob, os, re, sys, pathlib, yaml
           MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
           # incomplete 會擋的閘門以 default branch 的 blocking-policy 為準（PR 自己的政策檔不能決定自己的結果）
           _pol = yaml.safe_load(open("_trusted/config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
@@ -1020,7 +1021,8 @@ jobs:
                   continue
               st = g.get("status", "untested")
               fc = g.get("findings_count") if isinstance(g.get("findings_count"), dict) else {}
-              reason = g.get("status_reason") or ""
+              # status_reason 可能帶受測方字串（檔名、紀錄內容）：跳脫 Markdown 控制字元與 @，避免破壞表格或插入連結
+              reason = re.sub(r"([\\`*_\[\]()<>!|#~])", r"\\\1", str(g.get("status_reason") or "").replace("\n", " ")).replace("@", "＠")
               # 狀態白名單：只有 pass／fail／not_applicable／incomplete 是判定；untested、pending、缺欄位或未知字串
               # 都代表「沒有證據顯示跑完」→ 視同 incomplete（incomplete ≠ pass）
               eff = st if st in ("pass", "fail", "not_applicable", "incomplete") else "incomplete"
