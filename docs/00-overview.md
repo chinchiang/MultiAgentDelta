@@ -134,7 +134,7 @@
 | `docs/09-multi-model-review.md` | 四角色、輪次規則、少數意見、人工裁決 | AppSec |
 | `docs/10-evidence-scoring-and-findings.md` | E0–E3、CVSS v4 / EPSS / KEV、P0–P3、finding JSON | 全部 |
 | `docs/11-tool-selection-matrix.md` | 工具比較與 L1 / L2 / L3 組合 | DevOps、採購 |
-| `docs/12-pilot-and-evaluation.md` | 四週試點、60+ 案例、驗收門檻 | 管理層 |
+| `docs/12-pilot-and-evaluation.md` | 四週試點、固定評測案例（數量見 `evals/README.md`）、驗收門檻 | 管理層 |
 | `docs/13-roadmap-governance-compliance.md` | 12 個月路線圖、跨國合規 | 管理層 |
 | `docs/templates/` | `threat-model.yaml`、`g0-report.md`、finding 與 risk register 範例 | 全部 |
 
