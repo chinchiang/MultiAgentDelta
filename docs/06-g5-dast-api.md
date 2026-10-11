@@ -4,7 +4,7 @@
 |---|---|
 | 閘門 ID | `G5` |
 | 性質 | 黑箱、由外而內；staging 階段；需要兩個不同權限帳號的 Token |
-| 設定 | `vibesec.yaml` → `gates.g5_dast_api`（`stage: staging`、`target_url_env: VIBESEC_TARGET_URL`、`tools: [zap-baseline, zap-api-scan, api-probes]`、`two_account_test: required`、`account_a_token_env: VIBESEC_TOKEN_A`、`account_b_token_env: VIBESEC_TOKEN_B`、`checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit]`、`timeout_seconds: 1800`） |
+| 設定 | `vibesec.yaml` → `gates.g5_dast_api`（`stage: staging`、`target_url_env: VIBESEC_TARGET_URL`、`tools: [zap-baseline, zap-api-scan, api-probes]`、`two_account_test: required`、`account_a_token_env: VIBESEC_TOKEN_A`、`account_b_token_env: VIBESEC_TOKEN_B`、`checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check, cors_reflect_origin]`（另有 `protected_paths`）、`timeout_seconds: 1800`） |
 | 設定檔 | `config/zap/api-scan.conf`、`config/zap/two-account-context.yaml` |
 | 負責 | Red Team |
 | 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流不接受手動輸入的目標；目標主機還必須在 `config/targets.yaml` 的允許清單（`scripts/target_guard.py`，預設只允許本機靶場），否則不送任何探針、G5／G6 `incomplete` |
@@ -53,7 +53,7 @@ curl -s "$VIBESEC_TARGET_URL/api/todos" -H "$B" | grep -q 'vibesec-bola-probe' &
 - B 取得 2xx → `vibesec.g5.bola-cross-account`（blocking，CWE-639，E3）。
 - ANON 取得 2xx → `vibesec.g5.missing-session-check`（blocking，CWE-287，E3）。
 - 自動化（`session_check`）：`staging-blackbox.yml` 對 `vibesec.yaml` 的 `gates.g5_dast_api.protected_paths` 逐一送「無 token」與「無效 token」請求；任一取得 2xx → fail；兩者皆 401/403 → pass；其餘（404、5xx、連線失敗）→ untested；未設定 `protected_paths` → untested（探針無法從外部推斷哪些端點該受保護，incomplete ≠ pass）。
-- 完整 HTTP 交換（遮罩 Token）存 `reports/g5/<resource>-<account>.http`，`evidence_refs.kind: http_exchange`。
+- 完整 HTTP 交換（遮罩 Token）存證為規格要求，**尚未實作**：目前 staging 的 api-probes 只產出 `reports/g5-api-probes.sarif` 與 `reports/g5-gate.json`，不含原始 HTTP 交換檔。
 - 功能層級（BFLA / 垂直越權）：一般使用者 Token 呼叫 `/api/admin/*` 必須 401/403。
 - 工具：curl / httpx（harness `api-probes`）、Burp Suite Pro 的 **Autorize**（自動重放改用低權 Token）與 **AuthMatrix**（角色 × 資源矩陣）、Schemathesis 自訂 hook 對 OpenAPI 每個路徑跑雙帳號。
 
@@ -191,7 +191,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 | OWASP ZAP（免費，Docker） | baseline + api-scan；注入、設定外溢、標頭 | `config/zap/api-scan.conf`（兩者共用） |
 | `scripts/g5_zap.py` | ZAP JSON → G5 覆蓋與 SARIF | `config/catalogs/cwe-map.yaml`、`config/policy/blocking-policy.yaml` |
 | `scripts/target_guard.py` | 探針送出前的目標授權檢查 | `config/targets.yaml` |
-| api-probes（harness） | 雙帳號 BOLA、JWT、SSRF、rate limit | `config/zap/two-account-context.yaml` |
+| api-probes（內嵌於 `staging-blackbox.yml` 的 Python；harness 流程則由 agent 以 curl 執行，兩者覆蓋範圍不同） | 雙帳號 BOLA、JWT、SSRF、rate limit | `config/zap/two-account-context.yaml` |
 | Burp Suite Pro（商用） | Autorize / AuthMatrix | — |
 | Nuclei | 範本掃 CVE / exposure | — |
 | Schemathesis / API Harvester | OpenAPI fuzzing、BOLA、rate limit | — |
@@ -203,6 +203,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 | `vibesec.g5.bola-cross-account`、`missing-session-check` | blocking（E3） | CWE-639 / CWE-287 |
 | `vibesec.g5.jwt-alg-none`、`jwt-alg-confusion` | blocking（E3） | CWE-347 |
 | `vibesec.g5.ssrf-metadata` | advisory（E3） | CWE-918 |
+| `vibesec.g5.ssrf-internal-fetch`（能抓到 loopback canary） | blocking（E3） | CWE-918 |
 | `vibesec.g5.cors-reflect-origin`（反射 Origin + Allow-Credentials） | blocking | CWE-942 |
 | `vibesec.g5.swagger-exposed`、`graphql-introspection`、`debug-stacktrace` | advisory | CWE-200 / CWE-209 |
 | `vibesec.g5.missing-rate-limit` | advisory | CWE-770 |
@@ -215,7 +216,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 | ASVS 5.0（節層級，自編；V7–V9、V13 為 vibesec-extension；對應舊版 V9 / V10 的身分 / 授權 / Session / Token 語意） | `ASVS5-V8.2` 物件層級授權（BOLA）、`ASVS5-V7.1` Session、`ASVS5-V9.1` JWT、`ASVS5-V1.3` / `ASVS5-V13.2` SSRF、`ASVS5-V13.4` 資訊外溢、`ASVS5-V3.3` CORS、`ASVS5-V2.4` / `ASVS5-V6.2` 反自動化 / 身分驗證節流 |
 | CWE | `CWE-639`、`CWE-287`、`CWE-347`、`CWE-918`、`CWE-200`、`CWE-209`、`CWE-770`、`CWE-942` |
 | LLM Top 10 2025 | `LLM10:2025`（rate limit 與 DoW 同源） |
-| MAESTRO | `MAESTRO-L6` Security & Compliance（前端假象、單層授權）、`MAESTRO-L4`（SSRF → 中繼資料） |
+| MAESTRO | `MAESTRO-L6` Security & Compliance（前端假象、單層授權） |
 
 （控制僅以上述 catalog ID 引用；不使用 ASVS 官方需求編號。）
 
@@ -228,5 +229,5 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 3. **反例**：修復後 B 讀 A 回 404、`alg:none` 回 401、SSRF 被 egress allowlist 擋 → 對應 finding `retest_result: fixed`、`validation_status: confirmed`。
 4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（CLAUDE.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 內嵌探針與 `scripts/g6_cost_probe.py` 都不送任何請求。
 4a. **ZAP 接線**：`python3 scripts/g5_zap.py selftest` 以合成報告驗證規則對應、IGNORE 過濾、來源合併與「報告缺席 → untested」。
-5. **證據留存**：每個 blocking 發現有 `reports/g5/*.http`（Token 已遮罩）與 `evidence_grade: E3`。
+5. **證據留存**：每個 blocking 發現有 `evidence_grade: E3`；原始 HTTP 交換存證（`reports/g5/*.http`）尚未實作，目前證據在 SARIF 與 gate JSON。
 6. **回填白箱**：Stack Trace 洩漏的路徑在 SARIF 有對應位置；BOLA 端點能對回 G4 的 `missing-owner-filter` finding。

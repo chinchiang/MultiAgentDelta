@@ -21,7 +21,7 @@
 - **每次 commit / PR**，且 `diff_aware: true`：只對 lockfile / manifest / 規則檔 diff 中「新增或變更版本」的套件做 Registry 查詢；SBOM 與漏洞比對則對整個 lockfile 跑。
 - **`order: first`**：G1 必須在任何 `npm ci` / `pip install` 之前執行，因為惡意 postinstall 會在安裝瞬間執行；CI job 在 G1 通過前只允許解析 lockfile，不允許安裝。
 - 夜間（`nightly-full.yml`）全量重跑：冷卻期是時間函數，昨天被擋的版本今天可能已滿 14 天；反之昨天安全的套件今天可能進了 KEV。
-- `timeout_seconds: 600`；Registry API 失敗 → `incomplete`，不得記 pass。
+- `timeout_seconds: 600`（設定值，程式與 workflow 目前未套用，僅每個請求 8 秒逾時）；Registry API 失敗 → `incomplete`，不得記 pass。
 
 ## 核心任務
 
@@ -33,7 +33,7 @@
 │   npm: registry.npmjs.org/<pkg>  + api.npmjs.org/downloads/point/last-week     │
 │   pypi: pypi.org/pypi/<pkg>/json + pypistats                                   │
 │   不存在 → block   週下載 < 1000 → high risk   首次發布 < 30 天 → block           │
-│   只有 1 個版本 / 維護者 30 天內變更 → high risk                                  │
+│   只有 1 個版本 / 維護者 30 天內變更 → high risk（尚未實作）                         │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 第 2 層  名稱相似度與幻覺黑名單                                                  │
 │   對 popular-npm.txt / popular-pypi.txt：編輯距離 ≤ 2（≤ 5 字元的名稱 ≤ 1）     │
@@ -44,11 +44,11 @@
 │   AGENTS.md、SKILL.md、**/*.md 內的 pip install / npm i 指令                      │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 第 3 層  安裝階段 Hook 靜態與動態檢查                                            │
-│   npm: scripts.preinstall / install / postinstall / prepare                     │
-│   python: setup.py / setup.cfg / pyproject build hooks                          │
+│   npm: scripts.preinstall / install / postinstall（prepare 尚未檢查）            │
+│   python: setup.py / pyproject build hooks（尚未實作）                           │
 │   啟發式：網路外連 + 環境變數讀取 + 憑證路徑（~/.aws ~/.npmrc ~/.claude …）         │
 │          + 呼叫本機 AI CLI（claude -p / gemini -y）+ base64 解碼後 eval            │
-│   動態（可選）：在無網路沙箱安裝並以 strace / 代理觀察外連                           │
+│   動態（規劃，尚未實作）：無網路沙箱安裝並以 strace / 代理觀察外連                  │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 第 4 層  新套件 / 新版本 7–14 天冷卻期                                           │
 │   發布時間距今 < cooldown_days（預設 14）→ CI 拒絕建置或要求安全團隊人工審查          │
@@ -64,9 +64,9 @@
 | 檢查 | 門檻（`config/slopsquat/cooldown.yaml`） | 判定 |
 |---|---|---|
 | 存在性 | `GET https://registry.npmjs.org/<pkg>` / `GET https://pypi.org/pypi/<pkg>/json` 回 404 | **block**：`vibesec.g1.hallucinated-package` |
-| 週下載 | `GET https://api.npmjs.org/downloads/point/last-week/<pkg>` → `downloads`；PyPI 用 `https://pypistats.org/api/packages/<pkg>/recent` → `data.last_week` | `< min_weekly_downloads (1000)` → advisory `vibesec.g1.low-download-package`；若同時命中第 2 層 → 升 blocking |
-| 首次發布 | npm `time.created`；PyPI 最早 `upload_time_iso_8601` | `< min_age_days (30)` → block（全新套件需人工審查） |
-| 版本數 / 維護者 | `versions` 長度、`maintainers` 變更 | `< min_versions (2)` 或 30 天內維護者變更 → high risk 標記 |
+| 週下載 | `GET https://api.npmjs.org/downloads/point/last-week/<pkg>` → `downloads`；PyPI 用 `https://pypistats.org/api/packages/<pkg>/recent` → `data.last_week` | `< min_weekly_downloads (1000)` → advisory `vibesec.g1.low-download-package`（目前永遠 advisory，升 blocking 的邏輯尚未實作） |
+| 首次發布 | npm `time.created`；PyPI 最早 `upload_time_iso_8601` | `< min_age_days (30)` → block（全新套件需人工審查）。**尚未實作**：`g1_slopcheck.py` 未讀取 `min_age_days` |
+| 版本數 / 維護者 | `versions` 長度、`maintainers` 變更 | `< min_versions (2)` 或 30 天內維護者變更 → high risk 標記。**尚未實作**：`min_versions`、`max_maintainer_change_days` 未被讀取 |
 
 可選工具：SlopCheck、DevSentinel、Socket（行為分析與幻覺套件偵測）；它們的結果以 `rule_id` 前綴保留原名。
 
@@ -106,13 +106,13 @@ def suspicious(name, popular):
 ```bash
 # npm：不執行 scripts 取得 tarball 並檢查
 npm pack <pkg>@<ver> --ignore-scripts --pack-destination /tmp/g1 && tar -xzf /tmp/g1/*.tgz -C /tmp/g1
-jq '.scripts | {preinstall, install, postinstall, prepare}' /tmp/g1/package/package.json
+jq '.scripts | {preinstall, install, postinstall}' /tmp/g1/package/package.json
 # python：只下載不建置
 pip download <pkg>==<ver> --no-deps --no-binary :all: -d /tmp/g1 && tar -xzf /tmp/g1/*.tar.gz -C /tmp/g1
 grep -nE 'urllib|requests|socket|os\.environ|\.aws|\.npmrc|\.claude' /tmp/g1/*/setup.py
 ```
 
-動態（L2 以上建議）：在無網路 egress 的容器內 `npm ci --ignore-scripts=false` 並用 `strace -f -e trace=network` 或 mitmproxy 記錄；任何外連即 block。
+動態（規劃，尚未實作；L2 以上建議）：在無網路 egress 的容器內 `npm ci --ignore-scripts=false` 並用 `strace -f -e trace=network` 或 mitmproxy 記錄；任何外連即 block。
 
 ### 第 4 層：冷卻期
 
@@ -123,7 +123,7 @@ if now - publish_time < cooldown_days(14):  → vibesec.g1.cooldown-violation (b
 
 - 允許範圍 7–14 天，預設取上限 14（`vibesec.yaml` 的 `cooldown_days: 14`）。
 - 緊急安全修補走 `allowlist.yaml`（`bypass: [cooldown]`、`expires` ≤ 14 天、`approved_by` 為 AppSec）。
-- 冷卻期對「既有套件的新版本」同樣適用；lockfile 鎖版本是前提（沒有 lockfile → G1 `fail`）。
+- 冷卻期對「既有套件的新版本」同樣適用；lockfile 鎖版本是前提（沒有 lockfile 時的 `fail` 判定尚未實作）。
 
 ### 通過後：SBOM 與漏洞加值
 
@@ -140,6 +140,7 @@ SBOM 由 `scripts/g1_sbom.py` 產生並驗證（控制 `VS-G1-SBOM`），三件�
 python3 scripts/g1_sbom.py --target . --sbom reports/sbom.cdx.json \
   --sarif reports/g1-sbom.sarif --json reports/g1-sbom.json --merge-gate reports/g1-gate.json
 grype sbom:reports/sbom.cdx.json -o sarif --file reports/grype.sarif
+# 示意；CI 實際使用 trivy-action（scan-type: fs）
 trivy sbom reports/sbom.cdx.json --format sarif --output reports/trivy.sarif --scanners vuln
 trivy fs . --scanners vuln,secret,misconfig --format sarif --output reports/trivy-fs.sarif
 # 加值（記錄查詢日；不做乘法）
@@ -154,13 +155,13 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 `.github/workflows/pr-gates.yml` 的 G1 job（摘要）：
 
 1. `actions/checkout` → **不安裝**。
-2. 計算 diff：`git diff --name-only $BASE...HEAD -- package.json package-lock.json pnpm-lock.yaml requirements*.txt pyproject.toml uv.lock .cursorrules AGENTS.md SKILL.md '**/*.md'`。
-3. 解析新增 / 變更套件 → 四層檢查（Registry 查詢快取 24h；失敗 → `incomplete`）。
-4. 全通過 → `npm ci --ignore-scripts` / `uv sync`，再對白名單內需要 build 的套件單獨允許 scripts。
-5. `scripts/g1_sbom.py`（syft，驗證後併入 `g1-gate.json`）→ grype / trivy → EPSS / KEV → 合併 SARIF（`rule_id` 前綴 `grype:` / `trivy:`）。
-6. 寫 `reports/g1.gate-result.json`（`coverage`: `ASVS5-V15.2`、`VS-G1-SLOPSQUAT`、`VS-G1-COOLDOWN`、`VS-G1-INSTALL-HOOK`、`VS-G1-SBOM`）。
+2. 計算 diff：`git diff --name-only "$BASE...HEAD"`（不加 pathspec，再由 `g1_slopcheck.py` 挑出 manifest 與規則檔）。
+3. 解析新增 / 變更套件 → 四層檢查（同一行程內同（名稱,版本）只查一次，沒有跨次快取；失敗 → `incomplete`）。
+4. （規劃，尚未實作：目前 G1 job 不做任何安裝）全通過 → `npm ci --ignore-scripts` / `uv sync`，再對白名單內需要 build 的套件單獨允許 scripts。
+5. `scripts/g1_sbom.py`（syft，驗證後併入 `g1-gate.json`）→ grype / trivy → KEV（PR 階段；EPSS 富化只在 nightly）→ SARIF 分別上傳（`rule_id` 前綴 `grype:` / `trivy:`，trivy 不併入 G1 gate）。
+6. 寫 `reports/g1-gate.json`（`coverage`：`VS-G1-SLOPSQUAT`、`VS-G1-COOLDOWN`、`VS-G1-INSTALL-HOOK`、`VS-G1-SBOM`；`ASVS5-V15.2` 由 `g1_kev.py` 併入）。
 
-本機開發者：`.pre-commit-config.yaml` 掛同一支檢查腳本（只跑第 1、2、4 層，秒級）。
+本機開發者：`.pre-commit-config.yaml` 掛同一支檢查腳本（跑 `g1_slopcheck.py --staged` 已實作的各層，秒級）。
 
 掃其他專案（被測專案在本機另一個目錄）：
 
@@ -193,12 +194,12 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 | `vibesec.g1.cooldown-violation` | blocking | CWE-1357 |
 | `vibesec.g1.postinstall-egress` | blocking | CWE-506 |
 | `vibesec.g1.rules-file-unknown-package` | blocking | CWE-1357 |
-| `vibesec.g1.low-download-package` | advisory（與相似度併發升 blocking） | CWE-1357 |
+| `vibesec.g1.low-download-package` | advisory（升 blocking 的邏輯尚未實作） | CWE-1357 |
 | `vibesec.g1.vulnerable-dependency`（`scripts/g1_kev.py` 由 grype 結果產生；KEV 以外的已知漏洞，CVSS 原樣分欄、EPSS 另記） | advisory；KEV 命中改發 `vibesec.g1.kev-hit`（blocking） | CWE-1395 |
 | `vibesec.g1.unmaintained-dependency`（nightly `scripts/g1_maintenance.py`：SBOM 套件查 deps.dev，所用版本 deprecated 或最新版發布超過 `unmaintained_days`（預設 730）天；查詢失敗或查無 → incomplete；本 repo 自身專案與 GitHub Actions 列 not_applicable） | advisory | CWE-1104 |
 | `vibesec.g1.sbom-missing-provenance`（nightly 以 `actions/attest-build-provenance` 為 SBOM 簽發 SLSA provenance，`scripts/g1_provenance.py` 以 `gh attestation verify --signer-workflow` 驗證存在、簽章有效且由本 repo 的 nightly-full 簽發；缺 SBOM／gh、權限或網路錯誤 → incomplete） | advisory | CWE-1357 |
 | `vibesec.g1.sbom-incomplete`（`scripts/g1_sbom.py`：鎖定檔釘選的套件不在 CycloneDX SBOM；一個鎖定檔一筆） | advisory | 無（MITRE CWE 沒有對應類別，見 cwe-map 的 notes） |
-| 無 lockfile / Registry API 失敗 | `fail` / `incomplete` | — |
+| 無 lockfile / Registry API 失敗 | （無 lockfile 判定尚未實作）/ `incomplete` | — |
 
 正式判定以 `config/policy/blocking-policy.yaml` 為準。
 

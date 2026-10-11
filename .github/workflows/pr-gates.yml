@@ -665,7 +665,7 @@ jobs:
           status = "fail" if blocking else "incomplete"
           status_reason = LLM_PENDING if status == "incomplete" else f"靜態檢查 {blocking} 筆 blocking；另：{LLM_PENDING}"
           def _state(*ids): return "fail" if any(r["ruleId"] in ids for r in results) else "pass"
-          gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "diff",
+          gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "full",
                   "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
                   "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
                   "tools": [{"name": "vibesec-g4-static", "version": "1.0.0", "state": "ran", "exit_code": 0,

@@ -2,6 +2,8 @@
 
 ## 一、12 個月分階段落地路線圖
 
+> **現況（2026-10）**：G0–G6 皆已有實作並在 CI 執行（PR、nightly、staging 每週），但 `vibesec.yaml` 仍為 `mode: shadow`（尚未 enforce）。尚未實作：標準化 OPA 政策（`config/policy/` 只有 `blocking-policy.yaml`，無 `.rego`）、集團風險儀表板、CVSS 計算器、`findings.json` 等報告的 CI 自動產出。
+
 | 階段 | 重點閘門 | 任務 |
 |---|---|---|
 | **第 0–3 月：止血與基線** | G1、G2 | 建立 G1 供應鏈冷卻期 / SBOM 與 G2 祕密掃描；確保無阻擋性高危缺陷（幻覺套件、硬編碼金鑰）進入主幹。台北 HQ 與捷克廠區先行。 |

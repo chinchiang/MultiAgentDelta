@@ -194,7 +194,7 @@ PY
 - `reports/findings.json`：全部發現。
 - `reports/risk_register.json`：`architecture` / `prompt` 類 + G0 open threats。
 - `reports/gates/G<N>.json`：每閘門一份。
-- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、`data_class` = 送審內容的資料分級（每個 `ran` 的 provider 都必須允許，含 sub-agent 比照 `anthropic-cloud` 只收 `public, internal`）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error；資料分級不允許、未送出記 refused）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填（空白 = 未經人確認，check 會列為缺口，CI 不採信）。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。`--target` 指向外部專案時，`commit` 填目標的 HEAD；目標自己的 `reviews/g4`、`rulings` 不採信（不得自證），由人確認後複製為**本 repo** 的 `reviews/g4/external/<commit>.yaml` 提交（裁決放本 repo 的 `rulings/`），只在目標 HEAD 仍是該 commit 且沒有未提交修改時採用。**你不得把它寫進 `reviews/`**（規則 9）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
+- `reports/g4-review.yaml`：G4 LLM 審查紀錄（`schemas/g4-review.schema.json`，範例 `docs/templates/g4-review.example.yaml`）：`commit` = 審查時的 HEAD（40 碼）、`data_class` = 送審內容的資料分級（每個 `ran` 的 provider 都必須允許，含 sub-agent 比照 `anthropic-cloud` 只收 `public, internal`）、實際呼叫的 providers 與狀態（缺席照實記 missing／timeout／error；資料分級不允許、未送出記 refused）、coverage（至少 `VS-G4-LLM-REVIEW`）、每個 G4 發現的全部意見（含 minority；分歧 → `requires_human: true`、`validation_status: pending`，不多數決）、`recorded_by.handle` 留空字串由人填（空白 = 未經人確認，check 會列為缺口，CI 不採信）。寫完跑 `python3 scripts/g4_review.py check reports/g4-review.yaml`。`--target` 指向外部專案時，`commit` 填目標的 HEAD；目標自己的 `reviews/g4`、`rulings` 不採信（不得自證），由人確認後複製為**本 repo** 的 `reviews/g4/external/<commit>.yaml` 提交（裁決放本 repo 的 `rulings/`），只在目標 HEAD 仍是該 commit 且沒有未提交修改時採用。**你不得把它寫進 `reviews/`**（見本 skill「禁止」第 9 條）：由人確認後複製為 `reviews/g4/<commit>.yaml` 提交，CI 的 G4 job 才會把 `VS-G4-LLM-REVIEW` 從 pending 推進到結論；之後若再改 `reviews/g4/`、`rulings/` 以外的檔案，紀錄即過期。
 - `reports/summary.md`：固定七節（閘門狀態矩陣 / INCOMPLETE / 致命三要素 / 發現表 / 控制覆蓋率 / 需人工裁決 / Exit code），版面見 `config/harness/harness-agent.md` §7。INCOMPLETE 節永遠存在。
 
 ## 步驟 5：exit code 與回覆
@@ -202,7 +202,7 @@ PY
 - `0`：shadow；或 enforce 且無 blocking 發現、無 blocking 閘門 incomplete。
 - `1`：enforce 且有 `policy_tier: blocking` 且 `validation_status != refuted` 的發現。
 - `2`：enforce 且 `incomplete_gate_is_blocking_in_enforce`（預設 G1、G2）內的閘門 incomplete；或主設定缺席。
-- 同時 1 與 2 → 回 1，summary 兩者都列。
+- 同時 1 與 2 → 回 1，summary 兩者都列。（harness 本機規則；CI 的實際優先序見 docs/08 §8：PR 為 2 優先於 1，staging 的 incomplete 為 1）
 
 最後回覆使用者：exit code、一行理由、INCOMPLETE 清單、blocking 發現數、`requires_human` 數、報告路徑。不要只說「完成」。
 

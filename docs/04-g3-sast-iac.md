@@ -5,7 +5,7 @@
 | 閘門 ID | `G3` |
 | 性質 | 白箱、確定性（規則 + 污點分析）；PR diff-aware < 5 分鐘；夜間全量 |
 | 設定 | `vibesec.yaml` → `gates.g3_sast_iac`（`diff_aware: true`、`tools: [semgrep, checkov, trivy-config]`、`semgrep_rules: [config/semgrep/vibesec-rules.yaml, p/owasp-top-ten, p/security-audit]`、`semgrep_taint_mode: true`、`nightly_full: [codeql]`、`timeout_seconds: 900`） |
-| 規則 / 設定 | `config/semgrep/vibesec-rules.yaml`、`config/checkov/.checkov.yaml`、`config/checkov/custom/imdsv2_required.yaml`、`config/checkov/custom/cors_wildcard.yaml` |
+| 規則 / 設定 | `config/semgrep/vibesec-rules.yaml`、`config/checkov/.checkov.yaml`、`config/checkov/custom/imdsv2_required.yaml`、`config/checkov/custom/cors_wildcard.yaml`；`.semgrepignore` 排除 `examples/vulnapp/`、`evals/`（刻意有漏洞的靶場與評測 fixture 不被 G3 掃描） |
 | 負責 | DevOps / 平台（CI 整合）、AppSec（規則） |
 
 ## 對抗成因
@@ -19,7 +19,7 @@
 | 時機 | 範圍 | 工具 | 時間目標 |
 |---|---|---|---|
 | 每次 PR（`diff_aware: true`） | 變更檔 + 其直接相依 | Semgrep（taint）、Checkov、`trivy config` | **< 5 分鐘**（超過 → 縮 ruleset，不是關閉） |
-| 夜間（`nightly_full: [codeql]`） | 全 repo | CodeQL（跨檔跨函式）、Semgrep 全量、Checkov 全規則 | 不限 |
+| 夜間（`nightly_full: [codeql]`） | 全 repo | CodeQL（跨檔跨函式）、Semgrep 全量（夜間 workflow 目前沒有獨立 Checkov job） | 不限 |
 | 手動 | 指定目錄 | 同上 | — |
 
 性質：高確定性規則（參數化 SQL、`shell=True`、`alg:none`、IMDSv2）為 blocking；需上下文判斷者（CORS、root user、缺 owner filter）為 advisory。工具缺席 / 逾時 → `incomplete`。
@@ -46,7 +46,7 @@ Semgrep 預設把「函式呼叫的汙點參數」傳播到回傳值，所以 `"
 | 速度（中型 repo diff） | 秒–分 | 分 | 10 分–小時 |
 | 授權 | LGPL 規則引擎 + 社群規則 | 商用 | GitHub 公開 repo 免費；私有需 GHAS |
 | 自訂規則難度 | 低（YAML） | 低 | 高（QL） |
-| 在 vibesec 的位置 | L1 PR 階段 | L2 / L3 PR 階段 | 全層級夜間全量 |
+| 在 vibesec 的位置 | L1 PR 階段 | L2 / L3 PR 階段 | 全層級夜間全量（目前 CI 用的是 CodeQL 與 Semgrep CE，Pro 未導入） |
 
 其他可選：SonarQube（AI Code Assurance 品質閘門）、Snyk Code（ML + 符號執行，IDE 體驗佳，商用）。工具原生規則 `rule_id` 前綴 `semgrep:` / `checkov:` / `trivy:`；vibesec 自訂規則用 `vibesec.g3.*`。
 
@@ -88,19 +88,20 @@ USER app             # ← 最後一個 USER 不得為 root
 | `vibesec.g3.sql-string-concat`（py / js） | 污點 → SQL sink | CWE-89 | blocking |
 | `vibesec.g3.sql-fstring-execute` | `execute(f"…")` / `%` / `.format` / `+`，無需來源 | CWE-89 | blocking |
 | `vibesec.g3.command-injection`（py / js） | 污點 → shell | CWE-78 | blocking |
-| `vibesec.g3.xss-innerhtml`（js）、`vibesec.g3.xss-unescaped-render-py` | 污點（含 LLM 輸出）→ HTML sink | CWE-79 | advisory |
+| `vibesec.g3.xss-innerhtml`（js）、`vibesec.g3.xss-unescaped-render-py`（gate 內歸戶為 `xss-innerhtml`） | 污點（含 LLM 輸出）→ HTML sink | CWE-79 | advisory |
 | `vibesec.g3.jwt-alg-none`（py / js） | `algorithms=["none"]`、`verify=False`、`verify_signature: False`、以 `jwt.decode()` 結果做授權 | CWE-347 | blocking |
 | `vibesec.g3.jwt-alg-confusion`（py / js） | `algorithms` 同時含 HS256 與 RS256 | CWE-347 | advisory |
 | `vibesec.g3.actions-unpinned-action` | `uses: owner/repo@ref`，ref 非 40 位 commit SHA（workflow 與 composite `action.yml`；`./` 與 `docker://` 除外） | CWE-829 | advisory |
 | `vibesec.g3.actions-pull-request-target` | `pull_request_target` 觸發卻引用 PR head／title／body／`head_ref` | CWE-94 | advisory |
 | `vibesec.g2.hardcoded-llm-key` | 同一規則檔內的 G2 第二道 | CWE-798 | blocking |
-| `vibesec.g4.*` | G4 的靜態部分（owner filter、RLS、agent tool）也由這支規則檔執行，但結果歸 G4 | — | — |
+| `vibesec.g4.*` | G4 的靜態部分（owner filter、RLS、agent tool）也由這支規則檔執行；本機版歸 G4，CI 內併入 G3 gate（G4 inline 步驟不吃 semgrep） | — | — |
 
 ## 自動化作法
 
 ```bash
 # ---- PR 階段（diff-aware）----
 # 方式 A：semgrep ci（自動取 PR base、只掃變更、產 SARIF；需 SEMGREP_APP_TOKEN 才能用 Pro 與 interfile）
+# CI 另加 --disable-nosem、--exclude _trusted，並以 `|| true` 吞退出碼（工具失敗改由 SARIF 缺席／自報失敗判 incomplete）
 semgrep ci --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit \
   --sarif --output reports/semgrep.sarif --metrics=off
 
@@ -113,13 +114,13 @@ semgrep --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --co
 checkov -d . --config-file config/checkov/.checkov.yaml          # 輸出 reports/checkov/results_sarif.sarif
 
 # Trivy misconfig（第二意見；與 Checkov 重疊處以 Checkov 為準）
-trivy config . --format sarif --output reports/trivy-config.sarif --severity HIGH,CRITICAL
+trivy config . --format sarif --output reports/trivy-config.sarif # 本機示意；CI 的 trivy config 未設 severity 過濾
 
 # ---- 夜間全量 ----
 semgrep --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit \
   --sarif -o reports/semgrep-full.sarif .
 # CodeQL（nightly-full.yml 使用 github/codeql-action；本機等價）
-codeql database create /tmp/db --language=python,javascript --source-root .
+codeql database create /tmp/db --language=python   # CI 矩陣實際為 python 與 actions（repo 無 JS/TS） --source-root .
 codeql database analyze /tmp/db codeql/python-queries:codeql-suites/python-security-extended.qls \
   codeql/javascript-queries:codeql-suites/javascript-security-extended.qls --format=sarif-latest --output=reports/codeql.sarif
 checkov -d . --config-file config/checkov/.checkov.yaml --check ''   # 清空 allow-list 跑全規則
@@ -166,7 +167,7 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 | `checkov:CKV_AWS_79`、`CKV2_VIBESEC_1`（經 cwe-map `implemented_by` 對到 `vibesec.g3.imdsv1-allowed`） | blocking |
 | 其他 `semgrep:`、`checkov:`、`trivy:` 原生規則（沒有對到 vibesec 規則者） | advisory（`default_tier`；不看工具自己的 severity） |
 | `vibesec.g3.cors-wildcard`、`dockerfile-root-user` | advisory |
-| Semgrep 逾時（`timeout_seconds: 900`）或規則載入失敗 | `incomplete` |
+| Semgrep 逾時（`timeout_seconds: 900`，僅本機 `g3_sast.py` 生效）或規則載入失敗 | `incomplete` |
 | 白箱靜態發現 → 由 G5 / G6 證實可利用 | `evidence_grade` E1/E2 → E3，priority 依政策升級 |
 
 `soft-fail: true` 只是讓 Checkov 不自行中止 job；是否擋 PR 由 `config/policy/blocking-policy.yaml` 決定。
@@ -182,7 +183,7 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 
 ## 驗證方式
 
-1. **規則語法**：`semgrep --validate --config config/semgrep/vibesec-rules.yaml`（本 repo 已驗證：18 條規則、0 錯誤）。
+1. **規則語法**：`semgrep --validate --config config/semgrep/vibesec-rules.yaml`（本 repo 已驗證：20 條規則、0 錯誤）。
 2. **正例 / 反例 fixture**（`evals/cases/g3/`，由 `scripts/run_evals.py` 以 CI 同一份 semgrep 規則與 `.checkov.yaml` 實測）：
    - `cur.execute(f"… '{owner}'")` → `sql-fstring-execute`（`g3-sql-fstring-pos-01`，不需污點來源）；`cur.execute("… = ?", (owner,))` → 無（`g3-sql-fstring-neg-01`）。
    - LLM 輸出（`choices[0].message.content`）以 f-string 進 `db.execute` → `sql-string-concat`（`g3-sqli-pos-01`，證明 LLM 來源有效）；`%s` 參數化 → 無（`g3-sqli-neg-01`）。
@@ -194,5 +195,5 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
    - Dockerfile 沒有 `USER` → `CKV_DOCKER_3` → `dockerfile-root-user`（`g3-docker-root-pos-01`）；最後切到非 root `USER` → 無（`g3-docker-root-neg-01`）。
 3. **Checkov 自訂政策載入**：`checkov --list --external-checks-dir config/checkov/custom | grep CKV2_VIBESEC` 顯示兩條。
 4. **時效**：PR 階段 wall-clock < 5 分鐘；超過時先移除 `p/security-audit` 的低信心規則而非關閉閘門。
-5. **跨檔案例**：source 在 `routers/`、sink 在 `services/` 的 fixture，CE 漏報、CodeQL / Pro 命中 → 在 summary 標記「需夜間全量」，不得因 CE 漏報記 pass。
+5. **跨檔案例**：source 在 `routers/`、sink 在 `services/` 的 fixture，CE 漏報、CodeQL / Pro 命中 → 應在 summary 標記「需夜間全量」（尚未實作），不得因 CE 漏報記 pass。
 6. **SARIF 完整性**：每筆結果有 `ruleId`、`locations[].physicalLocation`、`properties.cwe`；上傳 Code Scanning 後能在 PR 看到註解。

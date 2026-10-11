@@ -18,7 +18,7 @@
 | **硬編碼金鑰** | 啟用 AI 助手的儲存庫金鑰外洩率高 40%，6.4% 含外洩金鑰；AI 直接寫死 `sk-...`、生成 `.env` 卻不加 `.gitignore` | 範例程式碼模式複製；上下文破碎（不知道專案有祕密管理） | **G2** | `vibesec.g2.hardcoded-secret`（CWE-798）、`vibesec.g2.env-not-ignored`（CWE-538） |
 | **靜態注入漏洞** | AI 偏好字串拼接 SQL / Command / HTML；Veracode 量測 AI 對 XSS 的防禦率僅 14%；CWE-79 為 MITRE 2025 CWE Top 25 第 1 名 | 訓練資料偏差（拼接範例遠多於參數化）+ 上下文破碎（跨檔污點看不見） | **G3** | `vibesec.g3.sql-string-concat`（CWE-89）、`vibesec.g3.command-injection`（CWE-78）、`vibesec.g3.xss-innerhtml`（CWE-79） |
 | **前端防禦假象** | 授權只做在前端 UI，後端 API 缺 Session 驗證與 BOLA / IDOR 防護；Base44 案例以 `app_id` 當校驗依據，任何人可註冊進私有應用；CVE-2025-29927 Next.js 以 `x-middleware-subrequest` 繞過單層 middleware 授權（CVSS 9.1） | Agent 過度代理（只為「畫面能動」最佳化）+ 上下文破碎 | **G4**（白箱）+ **G5**（黑箱實證） | `vibesec.g4.missing-owner-filter` / `vibesec.g5.bola-cross-account`（CWE-639）、`vibesec.g4.single-middleware-authz`（CWE-287） |
-| （延伸）**Agent 過度代理** | Replit AI Agent 刪除正式資料庫並生成 4000 筆假資料掩蓋（OWASP LLM06 Excessive Agency）；Lethal Trifecta（Simon Willison）：私有資料 + 不受信任內容 + 對外通訊三者同時成立即可被用來外洩 | 設計期沒有盤點 Agent 能力 | **G0**（設計期）+ **G4** / **G6** | `VS-G0-LETHAL-TRIFECTA`、`vibesec.g4.agent-tool-overexposure`（CWE-250）、`vibesec.g6.indirect-prompt-injection`（CWE-1427） |
+| （延伸）**Agent 過度代理** | Replit AI Agent 刪除正式資料庫並生成 4000 筆假資料掩蓋（OWASP LLM06 Excessive Agency）；Lethal Trifecta（Simon Willison）：私有資料 + 不受信任內容 + 對外通訊三者同時成立即可被用來外洩 | 設計期沒有盤點 Agent 能力 | **G0**（設計期）+ **G4** / **G6** | `vibesec.g0.lethal-trifecta-open`（control：`VS-G0-LETHAL-TRIFECTA`）、`vibesec.g4.agent-tool-overexposure`（CWE-250）、`vibesec.g6.indirect-prompt-injection`（CWE-1427） |
 
 ## 3. 雙軌管線架構
 
@@ -34,7 +34,7 @@
 │ 白箱 PR 階段（每次 commit / PR；diff-aware；目標 < 5 分鐘）                      │
 │                                                                              │
 │  G1 相依性與供應鏈 ──► G2 機密與金鑰 ──► G3 SAST 與 IaC ──► G4 架構與存取控制審查   │
-│  (order: first；        (gitleaks 全歷史      (Semgrep taint /     (owner binding / RLS /  │
+│  (order: first；        (gitleaks PR commit  (Semgrep taint /     (owner binding / RLS /  │
 │   postinstall 會在       + pre-commit         Checkov / Trivy)      Agent tool allow-list / │
 │   安裝瞬間執行)          + push protection)                        LLM 輔助審查 handoff)     │
 │                                                                              │
@@ -83,7 +83,7 @@
 
 | 層 | 定義 | 例子 | 在 shadow / enforce 的行為 |
 |---|---|---|---|
-| **blocking** | 高確定性、可機器判定、修法明確 | 硬編碼金鑰、幻覺 / 冷卻期未滿 / 黑名單套件、未參數化 SQL、`alg:none`、雙帳號 BOLA 實證、KEV 命中、Agent 工具清單含 `execute_sql` | shadow：報告並標示「enforce 時會擋」；enforce：PR 檢查失敗（exit code 1） |
+| **blocking** | 高確定性、可機器判定、修法明確 | 硬編碼金鑰、幻覺 / 冷卻期未滿 / 黑名單套件、未參數化 SQL、`alg:none`、雙帳號 BOLA 實證、KEV 命中 | shadow：報告並標示「enforce 時會擋」；enforce：PR 檢查失敗（exit code 1） |
 | **advisory** | 需人工判斷的架構 / 設計建議 | 缺 owner filter（可能本就是公開資源）、單層 middleware 授權、CORS 寬鬆、缺 rate limit、缺 HITL | 兩種模式都只報告；進 risk register 由 reviewer 裁決 |
 
 政策檔：`config/policy/blocking-policy.yaml`。試點預設 `mode: shadow`；驗收後改 `enforce`。**任何人都不能為了讓檢查通過而把 blocking 降成 advisory**；要改政策只能由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。
@@ -97,7 +97,7 @@
 
 ### 5.3 差異感知（Diff-Aware）
 
-- PR 階段只掃變更（`diff_aware: true`：G1、G3、G4），目標數分鐘內完成；G2 例外（`diff_aware: false`，因為祕密可能藏在歷史）。
+- PR 階段只掃變更（`diff_aware: true`：G1、G3、G4），目標數分鐘內完成；G2 例外（`diff_aware: false`）：PR 階段只掃本 PR 新增的 commit，全 Git 歷史由夜間 `nightly-full.yml` 的 `g2-history` 掃描。另需注意：CI 內 G4 靜態檢查、Checkov、Trivy config 目前是全樹掃描，只有 Semgrep（`--baseline-commit`）與 G1 是 diff-aware。
 - 夜間 `nightly-full.yml` 跑 CodeQL 與全量掃描補齊跨檔 / 跨函式路徑。
 - 指令層：`semgrep ci`（自動取 PR base）或 `semgrep --baseline-commit <merge-base>`；G1 只對 lockfile diff 新增的套件查 Registry。
 

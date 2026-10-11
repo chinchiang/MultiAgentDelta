@@ -20,9 +20,9 @@
 
 ## 觸發時機與性質
 
-- 每次 PR 跑靜態部分（`diff_aware: true`；秒–分級）。
+- 每次 PR 跑靜態部分（設定為 `diff_aware: true`，但 CI 內 inline 靜態檢查目前實際掃整棵樹，gate JSON 的 `scope` 為 `full`；秒–分級）。
 - **重大變更**（新端點、新資料表、新 Agent / 工具、新 MCP 伺服器）與 **AI 生成模組上線前**跑完整審查（靜態 + LLM 分流 + 人工）。
-- 性質：靜態高確定性項目（RLS 停用、工具清單含 `execute_sql`、隱形 Unicode）為 blocking；架構判斷為 advisory 並進 `risk_register.json`。LLM 審查結果**永遠**只是 E0/E1 線索（VulDetectBench：定位根因 < 30%），升級需人工。
+- 性質：靜態高確定性項目（RLS 停用、工具清單含 `execute_sql`、missing-owner-filter）預設 advisory，**L3 才升為 blocking**（見 `config/policy/blocking-policy.yaml` 的 `tier_overrides`）；隱形 Unicode 任何 tier 皆為 advisory；架構判斷為 advisory 並進 `risk_register.json`。LLM 審查結果**永遠**只是 E0/E1 線索（VulDetectBench：定位根因 < 30%），升級需人工。
 
 ## 核心任務
 
@@ -77,7 +77,7 @@ create policy "todos_delete_own" on public.todos
 -- 多租戶：改比 tenant_id = (auth.jwt() ->> 'tenant_id')::uuid
 ```
 
-規則：`vibesec.g4.supabase-rls-disabled`（`disable row level security`，blocking，CWE-284）、`vibesec.g4.supabase-table-without-rls`（同一 migration 建表但無 enable，advisory）。`service_role` key 只能在伺服器端使用（G2 有專用規則）。
+規則：`vibesec.g4.supabase-rls-disabled`（`disable row level security`，advisory（L3 升 blocking），CWE-284）、`vibesec.g4.supabase-table-without-rls`（同一 migration 建表但無 enable，advisory）。`service_role` key 只能在伺服器端使用（G2 有專用規則）。
 
 ### 3. 單一 middleware 授權 → 資料層縱深防禦（`single_middleware_authz`）
 
@@ -131,7 +131,7 @@ allow if {
 }
 ```
 
-靜態規則 `vibesec.g4.agent-tool-overexposure`（py / js，blocking，CWE-250）掃 `@tool`、`@mcp.tool()`、`tools=[…]`、`server.tool("…")`、`tool({name: …})` 中的高影響名稱。
+靜態規則 `vibesec.g4.agent-tool-overexposure`（py / js，advisory，L3 升 blocking，CWE-250）掃 `@tool`、`@mcp.tool()`、`tools=[…]`、`server.tool("…")`、`tool({name: …})` 中的高影響名稱。
 
 ### 5. Human-in-the-Loop（`high_impact_actions_require_hitl: true`）
 
@@ -145,7 +145,7 @@ allow if {
 
 | 類別 | 碼位 |
 |---|---|
-| 零寬 | U+200B（ZWSP）、U+200C（ZWNJ）、U+200D（ZWJ）、U+2060（WJ）、U+FEFF（BOM / ZWNBSP，非檔首） |
+| 零寬 | U+200B（ZWSP）、U+200C（ZWNJ）、U+200D（ZWJ）、U+2060（WJ）、U+FEFF（BOM / ZWNBSP，CI 的 G4 步驟不豁免檔首 BOM，檔首 BOM 也會報；下方示範腳本的 `i == 0` 豁免為文件簡化） |
 | Bidi 控制 | U+202A–U+202E（LRE、RLE、PDF、LRO、RLO）、U+2066–U+2069（LRI、RLI、FSI、PDI） |
 | 其他 | U+00AD（soft hyphen）、U+2061–U+2064、Unicode Tag 區 U+E0000–U+E007F |
 
@@ -165,7 +165,7 @@ for p in pathlib.Path('.').rglob('*'):
 EOF
 ```
 
-規則 `vibesec.g4.rules-file-invisible-unicode`（advisory，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。G1 掃規則檔時順帶執行。
+規則 `vibesec.g4.rules-file-invisible-unicode`（advisory，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。由 `pr-gates.yml` 的 G4 inline 靜態步驟執行（G1 不做 Unicode 掃描）。
 
 ### 7. MCP 伺服器 OAuth：RFC 8707 Resource Indicators（`mcp_resource_indicator`）
 
@@ -175,7 +175,7 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 
 ## 自動化作法
 
-1. **靜態**：`semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $BASE --sarif -o reports/semgrep-g4.sarif .`（結果中 `metadata.gate == G4` 的歸 G4）+ 上述 Unicode 腳本 + `grep -rn 'disable row level security'`。
+1. **靜態**（CI 內 owner binding／RLS 的 semgrep 規則經 G3 job 併入 G3 gate，G4 inline 步驟不含 semgrep；以下為本機版）：`semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $BASE --sarif -o reports/semgrep-g4.sarif .`（結果中 `metadata.gate == G4` 的歸 G4）+ 上述 Unicode 腳本 + `grep -rn 'disable row level security'`。
 2. **LLM 輔助分流（handoff 到 reviewer）**：harness 把 diff、路由表、threat-model 的 `trust_boundaries` 與 `agents[]`、靜態結果打包，交給 `docs/09-multi-model-review.md` 定義的四角色中與 G4 相關的兩個（`roles: [architecture, identity-authz]`；`appsec` 與 `supplychain-cicd` 視變更範圍加入）。每個 reviewer 回答固定問題：
    - identity-authz：每個新 / 改端點的「主體 → 資源 → 操作」矩陣；哪裡只靠 middleware；哪裡缺 owner filter；跨租戶路徑。
    - architecture：Agent 工具清單 vs threat-model `agents[].tools`；高影響工具是否有 HITL；資料流是否新增跨邊界路徑；Lethal Trifecta 是否被重新打開。
@@ -239,9 +239,9 @@ CI（`pr-gates.yml` 的 G4 job）只跑靜態部分；LLM 審查由 `/vibesec-ha
 
 ## 驗證方式
 
-1. **靜態 fixture**：`db.query(Todo).filter(Todo.id == id)` 在路由內 → advisory；加 `Todo.owner_id == user.id` → 無。`alter table … disable row level security` → blocking。`@tool def execute_sql` → blocking。`.cursorrules` 含 U+200B → blocking。
+1. **靜態 fixture**：`db.query(Todo).filter(Todo.id == id)` 在路由內 → advisory；加 `Todo.owner_id == user.id` → 無。`alter table … disable row level security` → advisory（L3 為 blocking）。`@tool def execute_sql` → advisory（L3 為 blocking）。`.cursorrules` 含 U+200B → advisory。
 2. **審查流程**：抽樣 PR 檢查 `finding.review.opinions[]`：≥ 2 家族、round 1 無互引、分歧有 `requires_human: true`，裁決後有 `human_decision` 與 `review.ruling_ref`（指向 `rulings/<id>.yaml`，每則少數意見都有回應；格式見 docs/09 §12）。
 3. **白箱 → 黑箱**：每個 G4 advisory 的 BOLA 候選都在 G5 `two-account-context.yaml` 有對應 resource；G5 結果回填 `validation_status`。
-4. **OPA 單元測試**：`opa test config/policy/` 含「general_assistant 呼叫 execute_sql → deny」「ops_agent restart_service 無 approval → deny、有 approval → allow」。
+4. **OPA 單元測試（尚未提供：repo 內沒有 `.rego`，屬規劃項目）**：`opa test config/policy/` 含「general_assistant 呼叫 execute_sql → deny」「ops_agent restart_service 無 approval → deny、有 approval → allow」。
 5. **MCP**：以缺 `resource` 參數的授權請求測試 MCP server → 必須拒絕（401 / invalid_target）。
 6. **人工簽核**：AI 生成模組上線前，identity-authz 與 architecture 各一位人員在 g4 報告簽名；少數意見保留於 `risk_register.json`。
