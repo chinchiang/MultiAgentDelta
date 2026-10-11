@@ -34,7 +34,8 @@
 3. **CI push protection**：PR 檢查失敗，並在 enforce 模式下拒絕合併。
 4. **`.env` 檢查**（`require_env_in_gitignore: true`）：
    - 工作樹存在 `.env*`（不含 `.env.example`）但 `.gitignore` 無對應規則 → `vibesec.g2.env-not-ignored`（CWE-538，advisory；enforce 下是否擋依 blocking-policy）。
-   - `git ls-files | grep -E '^\.env($|\.)'` 有結果（`.env` 已被追蹤）→ 同一規則 + 事故 SOP。
+   - `git ls-files | grep -E '^\.env($|\.)'` 有結果（`.env` 已被追蹤）→ `vibesec.g2.env-committed`（CWE-538，每個檔一筆，位置是該檔）+ 事故 SOP。以前與上一條共用 `env-not-ignored`，已提交的 `.env` 只記成「`.gitignore` 少一條規則」；目前未列入 blocking-policy（default_tier advisory），要升 blocking 由人類在獨立 PR 修改政策。
+   - `git ls-files` 失敗（無法確認有沒有追蹤 `.env`）→ `.env` 檢查記 error，G2 `incomplete`（不是 pass）。
 5. **LLM 供應商金鑰專用規則**（gitleaks 預設沒有或較舊）：見下表。
 6. **報告只保留遮罩與指紋**（CLAUDE.md 規則 7）：`--redact`；finding 不記原值；`sha256(secret)[:12]` 指紋目前只用在審查包遮罩（`review_packet.py`），G2 finding 的指紋欄位尚未實作。
 
@@ -123,7 +124,8 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 |---|---|---|---|
 | `gitleaks:*`（任何命中）→ `vibesec.g2.hardcoded-secret` | blocking | CWE-798 | 誤報只能透過 `config/gitleaks.toml` allowlist 或 `.gitleaksignore`（需附指紋與理由）處理 |
 | `vibesec.g2.hardcoded-llm-key` | blocking | CWE-798 | — |
-| `vibesec.g2.env-not-ignored` | advisory | CWE-538 | — |
+| `vibesec.g2.env-not-ignored` | advisory | CWE-538 | `.gitignore` 未忽略 `.env` |
+| `vibesec.g2.env-committed` | advisory（未列入政策，default_tier） | CWE-538 | `.env` 已被 git 追蹤；事故 SOP |
 | 命中且為正式環境有效高權限祕密 | **P0** | — | 立即事故處理（`scoring.priority_sla_days.P0: 0`） |
 | gitleaks 缺席 / 逾時 | `incomplete` | — | 不得 pass |
 
@@ -163,7 +165,7 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 
 1. **正例**：fixture 含 `sk-ant-api03-` + 95 字元隨機 → gitleaks 與 Semgrep 皆命中；含 `[0-9a-f]{32}.[A-Za-z0-9]{16}` → GLM 規則命中。
 2. **反例**：`sk-ant-api03-EXAMPLE…`、`${OPENAI_API_KEY}`、`{{ env.OPENAI_API_KEY }}`、`sha256:<64hex>` → 不命中。
-3. **`.env` 檢查**：fixture repo 追蹤 `.env` → `vibesec.g2.env-not-ignored`；`.env` 在 `.gitignore` 且未追蹤 → pass。
+3. **`.env` 檢查**：fixture repo 的 `.gitignore` 沒有 `.env` → `vibesec.g2.env-not-ignored`；追蹤 `.env`（即使 `.gitignore` 有規則）→ `vibesec.g2.env-committed`；`.env` 在 `.gitignore` 且未追蹤 → pass；不是 git repo → incomplete（`scripts/env_guard.py`、`scripts/g2_secrets.py`、`scripts/sarif_gate.py` 的 selftest）。
 4. **歷史穿透**：在 fixture 中提交金鑰後再提交刪除，工作樹乾淨 → 全歷史掃描仍命中（證明 `diff_aware: false` 有效）。PR Gates 只掃 PR 範圍的 commit，這類舊金鑰由夜間 `g2-history` 抓到。
 5. **遮罩**：SARIF 與 findings.json 中不得出現完整金鑰（grep 檢查 `sk-[A-Za-z0-9]{32,}` 無結果）。
 6. **hook 存在**：`git config core.hooksPath` 或 `.git/hooks/pre-commit` 含 gitleaks；CI 另驗，開發者繞過本機 hook 仍會被 CI 擋。

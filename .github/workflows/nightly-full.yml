@@ -418,9 +418,8 @@ jobs:
       - name: .env 檢查（與 PR Gates 相同格式）
         shell: bash
         run: |
-          fail=0
-          python3 scripts/env_guard.py || fail=1
-          echo "{\"gate\":\"G2\",\"rule_id\":\"vibesec.g2.env-not-ignored\",\"env_gitignore_fail\":$fail}" > reports/g2-envcheck.json
+          # env_guard.py --json：.gitignore 少規則、已提交的 .env、git 失敗分開記（以前壓成同一個 env_gitignore_fail）
+          python3 scripts/env_guard.py --json > reports/g2-envcheck.json
       - name: G2 判定（scripts/sarif_gate.py）
         id: g2
         shell: bash

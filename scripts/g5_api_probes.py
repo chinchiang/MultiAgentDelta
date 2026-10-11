@@ -31,6 +31,8 @@ rules = {}        # ruleId -> rule 物件
 coverage = {}     # control_id -> state
 coverage_reasons = {}  # control_id -> reason（not_applicable 必填，untested 可選）
 JWKS_SKIPPED = []  # discovery 給的非同源 jwks_uri：不抓（規則 8），寫進 jwt_alg_confusion 的原因
+# JWT 探針（alg:none、alg confusion）嘗試的受保護端點：合法 token 須回 200 才拿來送偽造 token
+JWT_PROBE_PATHS = ("/me", "/api/me", "/profile", "/users/me", "/account")
 
 def _read(name):
     d = os.environ.get("VIBESEC_TOKEN_DIR", "")
@@ -264,7 +266,8 @@ def main():
             coverage["debug_stacktrace"] = "pass"
 
     # ---- jwt_alg_none ----
-    # 以現有 token payload 重組 alg:none，送至受保護端點
+    # 以現有 token payload 重組 alg:none，送至受保護端點：接受 → fail；明確 401/403 → pass。
+    # 找不到合法 token 回 200 的端點、或偽造請求回 5xx／逾時 → untested：以前沒測到也記 pass（incomplete ≠ pass）。
     if reachable and HAS_A and TA.count(".") == 2:
         try:
             _, payload_b64, _ = TA.split(".")
@@ -273,19 +276,25 @@ def main():
             header = {"alg": "none", "typ": "JWT"}
             forged = f"{b64url(json.dumps(header).encode())}.{b64url(json.dumps(payload).encode())}."
             # 探測一組常見受保護端點
-            accepted = None
-            for p in ["/me", "/api/me", "/profile", "/users/me", "/account"]:
+            accepted = None; rejected = False; probed = []
+            for p in JWT_PROBE_PATHS:
                 s_auth, _ = req(p, token=TA)
-                if s_auth == 200:
-                    s_forged, _ = req(p, token=forged)
-                    if s_forged == 200:
-                        accepted = p; break
+                if s_auth != 200: continue
+                s_forged, _ = req(p, token=forged)
+                probed.append(f"{p}→{s_forged}")
+                if s_forged == 200: accepted = p; break
+                if s_forged in (401, 403): rejected = True
             if accepted:
                 add("vibesec.g5.jwt-alg-none", "error",
                     f"受保護端點 {accepted} 接受 alg:none 偽造 JWT（授權繞過）")
                 coverage["jwt_alg_none"] = "fail"
-            else:
+            elif rejected:
                 coverage["jwt_alg_none"] = "pass"
+            else:
+                coverage["jwt_alg_none"] = "untested"
+                coverage_reasons["jwt_alg_none"] = (
+                    f"偽造 token 未得到明確 401/403（{'、'.join(probed)}）" if probed else
+                    f"沒有端點對合法 token 回 200（試過 {'、'.join(JWT_PROBE_PATHS)}），找不到受保護端點可測")
         except Exception:
             coverage["jwt_alg_none"] = "untested"
     else:
@@ -318,7 +327,7 @@ def main():
                 sig = base64.urlsafe_b64encode(hmac.new(pem, signing_input, hashlib.sha256).digest()).decode().rstrip("=")
                 forged = f"{new_h}.{p_b64}.{sig}"
                 accepted = None; rejected = False
-                for p in ["/me", "/api/me", "/profile", "/users/me", "/account"]:
+                for p in JWT_PROBE_PATHS:
                     s_auth, _ = req(p, token=TA)
                     if s_auth != 200: continue
                     s_forged, _ = req(p, token=forged)
@@ -577,6 +586,52 @@ def selftest():
             fails.append(f"未授權目標 → 應 incomplete 並說明授權檢查未過（得到 code={code}, gate={g}）")
         elif list(schema.iter_errors(g)):
             fails.append(f"未授權目標的 gate 不符 schema：{list(schema.iter_errors(g))[0].message}")
+
+    # jwt_alg_none：對本機假目標（127.0.0.1 在 config/targets.yaml 允許清單）實測三種情境。
+    # 以前沒有端點對合法 token 回 200 時直接記 pass；現在要明確 401/403 才 pass，否則 untested。
+    import http.server, threading
+    legit = f"{b64url(json.dumps({'alg': 'HS256', 'typ': 'JWT'}).encode())}.{b64url(json.dumps({'sub': 'a'}).encode())}.sig"
+
+    def serve(mode):
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def _reply(self):
+                auth = self.headers.get("Authorization", "")
+                if self.path == "/openapi.json":
+                    code = 200
+                elif self.path == "/me" and mode != "no-protected":
+                    if auth == f"Bearer {legit}":
+                        code = 200
+                    elif auth.endswith("."):                   # alg:none 偽造 token：簽章段為空
+                        code = 200 if mode == "accepts-none" else 401
+                    else:
+                        code = 401
+                else:
+                    code = 404
+                self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(b"{}")
+            do_GET = do_POST = do_OPTIONS = _reply
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv
+
+    for mode, want in [("no-protected", "untested"), ("rejects-none", "pass"), ("accepts-none", "fail")]:
+        srv = serve(mode)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                (pathlib.Path(d) / "a").write_text(legit)
+                env = {"VIBESEC_TARGET_URL": f"http://127.0.0.1:{srv.server_address[1]}",
+                       "VIBESEC_CONFIG": str(repo / "vibesec.yaml"), "VIBESEC_TOKEN_DIR": d, "HAS_A": "true"}
+                code, g = run_in(d, env)
+                got = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == "jwt_alg_none"), None)
+                if code != 0 or not got or got["state"] != want:
+                    fails.append(f"jwt_alg_none（{mode}）應為 {want}（得到 {got}）")
+                elif want == "untested" and not got.get("reason"):
+                    fails.append("jwt_alg_none untested 時應說明原因")
+                elif g and list(schema.iter_errors(g)):
+                    fails.append(f"jwt_alg_none（{mode}）的 gate 不符 schema：{list(schema.iter_errors(g))[0].message}")
+        finally:
+            srv.shutdown(); srv.server_close()
 
     return fails
 

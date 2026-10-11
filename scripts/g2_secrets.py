@@ -21,9 +21,7 @@ import argparse, datetime, json, os, pathlib, shutil, subprocess, sys, time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import sarif_gate  # noqa: E402  缺 PyYAML 時以 exit 2 結束（無法判定，不視為通過）
-from env_guard import check as env_check  # noqa: E402
-
-RULE_ENV = "vibesec.g2.env-not-ignored"
+from env_guard import record as env_record  # noqa: E402
 
 
 def _git(target: pathlib.Path, *args: str) -> str | None:
@@ -108,8 +106,9 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, binary: str | None, timeou
                "output_ref": str(sarif), "duration_seconds": None, "reason": problem}
     else:
         row = run_gitleaks(binary, target, sarif, external, timeout)
-        envcheck.write_text(json.dumps({"gate": "G2", "rule_id": RULE_ENV,
-                                        "env_gitignore_fail": 1 if env_check(target) else 0}), encoding="utf-8")
+        # .gitignore 少規則、已提交的 .env、git 失敗分開記（env_guard.record）；以前三種壓成 env_gitignore_fail 一個旗標，
+        # 已提交的 .env 只記成 advisory 的 env-not-ignored（位置 .gitignore），G2 照樣 pass
+        envcheck.write_text(json.dumps(env_record(target), ensure_ascii=False), encoding="utf-8")
     gate = sarif_gate.derive("G2", {"gitleaks": sarif}, envcheck, pol, started)
     reason = row.pop("reason")
     gate["tools"] = [dict(t, **row) if t["name"] == "gitleaks" else t for t in gate["tools"]]
@@ -192,6 +191,28 @@ def selftest() -> list[str]:
         g = run(repo, env={"FAKE_SARIF": sarif()})
         if g["status"] != "pass" or g["findings_count"]["advisory"] + g["findings_count"]["blocking"] != 1:
             fails.append(".gitignore 未含 .env → env-not-ignored 發現（依政策 tier）")
+        # 已提交的 .env（.gitignore 有規則，但 git add -f 強制追蹤）：以前記成「.gitignore 少規則」（env-not-ignored）
+        (repo / ".gitignore").write_text(".env*\n")
+        (repo / ".env").write_text("DB_PASSWORD=hunter2\n")
+        git(repo, "add", "-f", ".gitignore", ".env"); git(repo, "commit", "-qm", "oops")
+        g = run(repo, env={"FAKE_SARIF": sarif()})
+        rec = json.loads((out / "g2-envcheck.json").read_text(encoding="utf-8"))
+        if rec.get("committed") != [".env"] or rec.get("env_gitignore_fail") or rec.get("error"):
+            fails.append(f"已提交的 .env 應記在 committed（vibesec.g2.env-committed），不是 .gitignore 少規則（得到 {rec}）")
+        if g["findings_count"]["advisory"] + g["findings_count"]["blocking"] != 1:
+            fails.append(f"已提交的 .env → 一筆發現（得到 {g['findings_count']}）")
+        # tier 依 blocking-policy：政策把 env-committed 列為 blocking 時，同一個目標必須 fail
+        class _Blocking:
+            def __init__(self, inner): self.inner = inner
+            def tier(self, rid): return "blocking" if rid == "vibesec.g2.env-committed" else self.inner.tier(rid)
+        pol_saved = dict(pol); pol["policy"] = _Blocking(pol["policy"])
+        try:
+            g = run(repo, env={"FAKE_SARIF": sarif()})
+        finally:
+            pol.clear(); pol.update(pol_saved)
+        if g["status"] != "fail" or g["findings_count"]["blocking"] != 1:
+            fails.append(f"env-committed 為 blocking 時，已提交的 .env → fail（得到 {g['status']}）")
+        git(repo, "rm", "-q", "--cached", ".env"); git(repo, "commit", "-qm", "fix")
         sub = repo / "sub"; sub.mkdir()
         g = run(sub, env={"FAKE_SARIF": sarif()})
         if g["status"] != "incomplete" or "根目錄" not in (g["status_reason"] or ""):

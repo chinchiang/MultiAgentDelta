@@ -221,7 +221,7 @@ CLI 讀同一份 `vibesec.yaml`，實作同一個狀態機，透過 `config/prov
 4. CVSS、EPSS、KEV 分欄記錄；不做 `CVSS × EPSS × 信心` 乘法；模型信心不轉成 E 等級。
 5. `evidence_grade` 與 `validation_status` 分開；兩者都不是嚴重度。
 6. 高風險控制至少兩個 family；第一輪不交換；最多兩輪交叉；保留少數意見；不多數決；分歧 `requires_human: true`。
-7. 資料不出境：見 §12。報告中的祕密只保留遮罩（前 4 後 4）與 sha256 指紋。
+7. 資料不出境：見 §12。報告中的祕密只保留遮罩（至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）與 sha256 指紋。
 8. G5 / G6 探針只打 `VIBESEC_TARGET_URL` 指向的授權環境；harness 必須在發送任何請求前以 `scripts/target_guard.py` 確認該 URL 在 `config/targets.yaml` 的授權允許清單內（預設拒絕；`denied_host_suffixes` 目前為空）。
 
 ## 12. 資料駐留規則

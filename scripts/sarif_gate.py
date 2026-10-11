@@ -175,6 +175,20 @@ def to_findings(tool: str, results: list[dict], pol: dict) -> list[dict]:
     return out
 
 
+def env_findings(d: dict, pol: dict) -> list[dict]:
+    """g2-envcheck.json（scripts/env_guard.py record()）→ 發現。.gitignore 少規則記一筆 env-not-ignored；
+    已提交的機密檔每個檔一筆 env-committed（以前併進 env-not-ignored，位置也只寫 .gitignore）。
+    舊格式沒有 committed 欄位時照舊只看 env_gitignore_fail。"""
+    out = []
+    if d.get("env_gitignore_fail"):
+        rid = d.get("rule_id") or "vibesec.g2.env-not-ignored"
+        out.append({"rule_id": rid, "tool": "envcheck", "location": ".gitignore", "policy_tier": pol["policy"].tier(rid)})
+    for path in d.get("committed") or []:
+        rid = d.get("committed_rule_id") or "vibesec.g2.env-committed"
+        out.append({"rule_id": rid, "tool": "envcheck", "location": str(path), "policy_tier": pol["policy"].tier(rid)})
+    return out
+
+
 def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | None, pol: dict,
            started: str | None = None) -> dict:
     now = lambda: datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
@@ -205,13 +219,14 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
             d = json.loads(envcheck.read_text(encoding="utf-8"))
             if not isinstance(d, dict) or "env_gitignore_fail" not in d:
                 raise json.JSONDecodeError("缺 env_gitignore_fail 欄位", "", 0)   # 空物件不是「檢查通過」
-            ran.add("envcheck")
-            tool_rows.append({"name": "envcheck", "version": None, "state": "ran", "exit_code": None,
-                              "output_ref": str(envcheck), "duration_seconds": None})
-            if d.get("env_gitignore_fail"):
-                rid = d.get("rule_id") or "vibesec.g2.env-not-ignored"
-                findings.append({"rule_id": rid, "tool": "envcheck", "location": ".gitignore",
-                                 "policy_tier": pol["policy"].tier(rid)})
+            # error：git 無法列出追蹤檔，不知道有沒有提交 .env → 工具未完成（incomplete），不是「沒有已提交的檔」
+            if d.get("error"):
+                problems.append(f"envcheck：{d['error']}")
+            else:
+                ran.add("envcheck")
+            tool_rows.append({"name": "envcheck", "version": None, "state": "error" if d.get("error") else "ran",
+                              "exit_code": None, "output_ref": str(envcheck), "duration_seconds": None})
+            findings += env_findings(d, pol)
         except (OSError, json.JSONDecodeError) as e:
             tool_rows.append({"name": "envcheck", "version": None, "state": "missing" if isinstance(e, OSError) else "error",
                               "exit_code": None, "output_ref": str(envcheck), "duration_seconds": None})
@@ -358,6 +373,18 @@ def selftest() -> list[str]:
         g = run("G2", {"gitleaks": None}, env={"env_gitignore_fail": 1})
         if g["status"] != "incomplete" or g["findings_count"]["advisory"] != 1:
             fails.append("gitleaks 缺席 → incomplete；envcheck 失敗 → advisory 發現")
+        # 已提交的 .env：以前與「.gitignore 少規則」壓成同一個 env_gitignore_fail，只記一筆 env-not-ignored、位置寫 .gitignore
+        envd = {"env_gitignore_fail": 0, "committed": ["config/.env", ".env.production"], "error": None}
+        g2 = run("G2", {"gitleaks": sarif()}, env=envd)
+        got = sorted((f["rule_id"], f["location"]) for f in env_findings(envd, pol))
+        if got != [("vibesec.g2.env-committed", ".env.production"), ("vibesec.g2.env-committed", "config/.env")] \
+                or g2["findings_count"]["blocking"] + g2["findings_count"]["advisory"] != 2:
+            fails.append(f"已提交的 .env 應以 vibesec.g2.env-committed 逐檔記錄（得到 {got}）")
+        # git 無法列出追蹤檔：不知道有沒有提交 .env → incomplete，不是 pass
+        g = run("G2", {"gitleaks": sarif()}, env={"env_gitignore_fail": 0, "committed": [], "error": "git ls-files 失敗"})
+        if g["status"] != "incomplete" or "git ls-files 失敗" not in (g["status_reason"] or "") \
+                or next(c for c in g["coverage"] if c["control_id"] == "ASVS5-V13.3")["state"] != "untested":
+            fails.append(f"envcheck 記 error（git 失敗）→ incomplete、ASVS5-V13.3 untested（得到 {g['status']}）")
         g = run("G3", {"semgrep": sarif()})
         if g["status"] != "incomplete" or "checkov" not in (g["status_reason"] or "") or "trivy" not in (g["status_reason"] or ""):
             fails.append("只提供 semgrep → 其他負責工具缺席 → incomplete（不是 pass）")

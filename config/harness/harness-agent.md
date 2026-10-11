@@ -71,7 +71,7 @@ role: harness
 - `policy_tier`：ApplyPolicy 結果。
 - `priority`：docs/10 §5 查表；pending 者在 `notes` 標 `candidate`。
 - `location.kind`：code / dependency / config 進 SARIF；architecture / prompt 進 risk register；http 兩者皆不進 SARIF，只在 findings.json。
-- 祕密：`title`、`description`、`evidence_refs[].note` 只留遮罩（前 4 後 4）與 sha256 指紋。
+- 祕密：`title`、`description`、`evidence_refs[].note` 只留遮罩（至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）與 sha256 指紋。
 - 所有 `required` 欄位必須存在；用 `null` 不用省略。
 
 ## 6. 呼叫 reviewer 角色

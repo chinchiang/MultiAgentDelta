@@ -661,7 +661,10 @@ class EnvCheckRunner(Runner):
                 out = json.loads((pathlib.Path(d) / "reports/g2-envcheck.json").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
                 return None, f".env 檢查執行失敗：{type(e).__name__}"
-        return ({out.get("rule_id")} if out.get("env_gitignore_fail") else set()), None
+        flagged = {out.get("rule_id")} if out.get("env_gitignore_fail") else set()
+        if out.get("committed"):
+            flagged.add(out.get("committed_rule_id") or "vibesec.g2.env-committed")
+        return flagged, None
 
 
 # G6 決定性斷言：與 config/promptfoo/tests.yaml 的 not-contains 斷言一致
