@@ -8,17 +8,17 @@ version: 1
 thresholds:
   cooldown_days: 14            # 新套件或既有套件「新版本」發布未滿此天數 → 阻擋（允許範圍 7–14；預設取上限）
   min_weekly_downloads: 1000   # 週下載低於此值 → 高風險（advisory；若同時命中相似度則升為 blocking）
-  min_age_days: 30             # 套件「首次發布」未滿此天數（全新套件）→ 阻擋並要求人工審查
-  min_versions: 2              # 只有 1 個版本的套件視為歷史單薄
-  max_maintainer_change_days: 30   # 近 30 天內維護者變更 → 升高風險並標記（帳號接管常見前兆）
+  min_age_days: 30             # 尚未實作（g1_slopcheck.py 未讀取）：套件「首次發布」未滿此天數 → 阻擋
+  min_versions: 2              # 尚未實作（g1_slopcheck.py 未讀取）：只有 1 個版本視為歷史單薄
+  max_maintainer_change_days: 30   # 尚未實作（g1_slopcheck.py 未讀取）：近 N 天維護者變更 → 升高風險
 
 similarity:
   # 名稱正規化後（小寫；pypi 把 _ 與 . 視同 -；npm 去除 scope 另比）與 popular list 比對
   levenshtein_max: 2           # 距離 ≤ 2 且不相等 → 疑似 typosquat（optimal string alignment：相鄰易位算 1；≤ 5 字元的名稱只認 1）
   difflib_ratio_min: 0.85      # difflib.SequenceMatcher ratio ≥ 0.85 且不相等 → 疑似 typosquat
   min_name_length: 4           # 太短的名稱不比對（避免 ws / qs 等誤報）
-  homoglyph_check: true        # 同形字（大寫 I vs 小寫 l、數字 0 vs 字母 o）正規化後再比
-  separator_variants: true     # foo-bar / foo_bar / foobar / foo.bar 視為同一候選
+  homoglyph_check: true        # 同形字群組 {0,o}{1,i,l}{3,e}{5,s}{7,t} 折疊後與熱門套件比對（_defang）
+  separator_variants: true     # foo-bar / foo_bar / foobar / foo.bar 視為同一候選（_defang 去分隔符後比對）
   popular_lists:
     npm: config/slopsquat/popular-npm.txt
     pypi: config/slopsquat/popular-pypi.txt
@@ -26,6 +26,8 @@ similarity:
 blacklist: config/slopsquat/blacklist.yaml
 allowlist: config/slopsquat/allowlist.yaml
 
+# 說明用：實際 URL 與取值路徑以 g1_slopcheck.py 為準（下列不被程式讀取）。
+# 註：PyPI 週下載（pypistats）目前未實作，low-download-package 只對 npm 觸發。
 registries:
   npm:
     metadata_url: "https://registry.npmjs.org/<pkg>"                            # time.created / time[<version>] / maintainers / versions
@@ -34,7 +36,7 @@ registries:
     first_publish_path: "time.created"
   pypi:
     metadata_url: "https://pypi.org/pypi/<pkg>/json"                             # releases.<version>[0].upload_time_iso_8601
-    downloads_url: "https://pypistats.org/api/packages/<pkg>/recent"             # { data: { last_week: N } }
+    downloads_url: "https://pypistats.org/api/packages/<pkg>/recent"             # 尚未實作（PyPI 週下載未查詢）
     publish_time_path: "releases.<version>[0].upload_time_iso_8601"
     first_publish_path: "min(releases.*[0].upload_time_iso_8601)"
 
@@ -49,8 +51,8 @@ install_command_regex: '(?i)\b(?:(?:pip3?|pipx|uv\s+pip|python3?\s+-m\s+pip)\s+i
 
 # 安裝鉤子靜態啟發式（postinstall / preinstall / setup.py / pyproject build hooks）
 install_hooks:
-  npm_scripts: [preinstall, install, postinstall, prepare]
-  python_files: [setup.py, setup.cfg, pyproject.toml]
+  npm_scripts: [preinstall, install, postinstall, prepare]   # g1_slopcheck.py 依此名單掃描（含 prepare）
+  python_files: [setup.py, setup.cfg, pyproject.toml]        # 尚未實作：PyPI 安裝腳本靜態分析（這類套件目前記 incomplete）
   suspicious_patterns:
     network: ['(?i)\b(curl|wget|Invoke-WebRequest|fetch\(|http\.request|https\.request|axios|urllib\.request|requests\.(get|post)|socket\.connect)\b']
     env_read: ['(?i)\bprocess\.env\b', '(?i)\bos\.environ\b', '(?i)\bos\.getenv\b', '(?i)\$\{?[A-Z_]*(TOKEN|SECRET|KEY|PASSWORD)[A-Z_]*\}?']

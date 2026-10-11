@@ -44,7 +44,7 @@
 │   AGENTS.md、SKILL.md、**/*.md 內的 pip install / npm i 指令                      │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 第 3 層  安裝階段 Hook 靜態與動態檢查                                            │
-│   npm: scripts.preinstall / install / postinstall（prepare 尚未檢查）            │
+│   npm: scripts.preinstall / install / postinstall / prepare（名單取自 cooldown.yaml）│
 │   python: setup.py / pyproject build hooks（尚未實作）                           │
 │   啟發式：網路外連 + 環境變數讀取 + 憑證路徑（~/.aws ~/.npmrc ~/.claude …）         │
 │          + 呼叫本機 AI CLI（claude -p / gemini -y）+ base64 解碼後 eval            │
@@ -72,7 +72,7 @@
 
 ### 第 2 層：相似度與黑名單
 
-正規化：小寫；PyPI 把 `_`、`.` 視同 `-`（PEP 503）；npm 去 scope 另比；同形字（`I`/`l`、`0`/`o`）正規化。對 `popular_lists` 每個名稱計算：
+正規化：小寫；PyPI 把 `_`、`.` 視同 `-`（PEP 503）；npm 只轉小寫。另有同形字／分隔符加強比對（`_defang`，對應 cooldown.yaml 的 `homoglyph_check`／`separator_variants`）：把 confusable 群組 `{0,o}{1,i,l}{3,e}{5,s}{7,t}` 折疊並去分隔符後，若與熱門套件相同（但正規化後不相等），即判 typosquat（補編輯距離門檻抓不到的 `m1cr0s0ft`、`leftpad`）。對 `popular_lists` 每個名稱計算：
 
 ```python
 import difflib

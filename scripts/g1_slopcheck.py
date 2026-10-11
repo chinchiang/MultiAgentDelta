@@ -73,6 +73,17 @@ def canon(eco, name):
     name = str(name).lower()
     return re.sub(r"[-_.]+", "-", name) if eco == "pypi" else name
 
+# 同形字（homoglyph）折疊：把同一個 confusable 群組的字元收斂到單一代表字（Unicode skeleton 作法），
+# 兩邊都折疊後比較，才能同時抓到 1 代表 i（m1cr0s0ft↔microsoft）與 1 代表 l（paypa1↔paypal）。
+# 群組：{0,o}、{1,i,l}、{3,e}、{5,s}、{7,t}。只用於與熱門套件的加強比對，不併進 canon()（見 _defang）。
+_CONFUSABLE = str.maketrans({"0": "o", "1": "i", "l": "i", "3": "e", "5": "s", "7": "t"})
+
+def _defang(name):
+    """同形字折疊 + 去分隔符（cooldown.yaml 的 homoglyph_check / separator_variants）：
+    把 g00gle→google、left_pad→leftpad 之類還原，只用來「多抓」與熱門套件僅差同形字／分隔符的 lookalike。
+    刻意不併進 canon()：canon 用於完全比對與去重，若在那裡折疊，paypa1 會被當成 paypal 而放行（放錯方向）。"""
+    return re.sub(r"[-_.]+", "", name.translate(_CONFUSABLE))
+
 def load_list(name):
     """讀 blacklist（allowlist 用 load_allowlist）：鍵為 (ecosystem, 名稱小寫)；ecosystem 缺省時記為 None（適用所有生態系）。
 
@@ -270,29 +281,56 @@ def cooldown_finding(pkg, eco, ver, age, c):
     return fnd("vibesec.g1.cooldown-violation", pkg, eco, ver,
                f"版本發布僅 {age} 天，未滿冷卻期 {c['cooldown_days']} 天", "blocking")
 
-def _hook_patterns():
-    return ((load_yaml(CFG_DIR / "cooldown.yaml") or {}).get("install_hooks") or {}).get("suspicious_patterns") or {}
+def _install_hooks_cfg():
+    return (load_yaml(CFG_DIR / "cooldown.yaml") or {}).get("install_hooks") or {}
 
-def install_hook_finding(pkg, eco, ver, scripts, patterns=None):
+def _hook_patterns():
+    return _install_hooks_cfg().get("suspicious_patterns") or {}
+
+# decision 條件：鍵對應 cooldown.yaml install_hooks.decision，值（block / advisory）由設定決定 tier。
+# 內建預設與設定檔現值等價：改設定檔即可調整政策（不再寫死），設定缺省時行為不變。
+_HOOK_CONDS = {
+    "any_network_and_exec": lambda h: h["network"] and h["exec"],
+    "any_network_and_env_read": lambda h: h["network"] and h["env_read"],
+    "credential_path_access": lambda h: h["credential_paths"],
+    "ai_cli_abuse": lambda h: h["ai_cli_abuse"],
+    "exec_only": lambda h: h["exec"] or h["network"],
+}
+_HOOK_DECISION_DEFAULT = {
+    "any_network_and_exec": "block", "any_network_and_env_read": "block",
+    "credential_path_access": "block", "ai_cli_abuse": "block", "exec_only": "advisory",
+}
+_DECISION_TIER = {"block": "blocking", "blocking": "blocking", "advisory": "advisory"}
+# 預設掃描的 npm 安裝期腳本（設定缺省時用）：含 prepare（npm 安裝時也會跑，惡意 payload 可藏於此）。
+_NPM_HOOK_DEFAULT = ["preinstall", "install", "postinstall", "prepare"]
+
+def install_hook_finding(pkg, eco, ver, scripts, patterns=None, npm_scripts=None, decision=None):
     """依 cooldown.yaml install_hooks 分類安裝階段 hook（docs/02 第 3 層）。
-    外連 + 讀環境變數／執行、憑證路徑、濫用本機 AI CLI → blocking；只有動態執行 → advisory；
+    掃描的腳本名單（npm_scripts）、各組合的 tier（decision）皆取自 cooldown.yaml，可用參數覆寫（供 selftest）。
     其餘（例如 node-gyp rebuild）不判 egress，回傳 None。純函式，run_evals.py 以合成 fixture 直接呼叫。"""
-    hooks = {h: str(scripts[h]) for h in ("preinstall", "install", "postinstall") if h in scripts}
+    ih = _install_hooks_cfg() if (patterns is None or npm_scripts is None or decision is None) else {}
+    pats = patterns if patterns is not None else (ih.get("suspicious_patterns") or {})
+    hook_names = npm_scripts if npm_scripts is not None else (ih.get("npm_scripts") or _NPM_HOOK_DEFAULT)
+    dec = decision if decision is not None else (ih.get("decision") or {})
+    hooks = {h: str(scripts[h]) for h in hook_names if h in scripts}
     if not hooks:
         return None
-    pats = patterns if patterns is not None else _hook_patterns()
     body = "\n".join(hooks.values())
     hit = {k: any(re.search(rx, body) for rx in pats.get(k) or []) for k in
            ("network", "env_read", "credential_paths", "ai_cli_abuse", "exec")}
     names = ", ".join(hooks)
-    if hit["credential_paths"] or hit["ai_cli_abuse"] or (hit["network"] and (hit["env_read"] or hit["exec"])):
-        why = [k for k in ("network", "env_read", "credential_paths", "ai_cli_abuse", "exec") if hit[k]]
+    # 以 decision 決定 tier：命中任一 block 條件 → blocking；否則命中 advisory 條件 → advisory。
+    tiers = {_DECISION_TIER.get(str(dec.get(k, _HOOK_DECISION_DEFAULT[k])).lower())
+             for k, cond in _HOOK_CONDS.items() if cond(hit)}
+    tiers.discard(None)
+    if not tiers:
+        return None
+    why = [k for k in ("network", "env_read", "credential_paths", "ai_cli_abuse", "exec") if hit[k]]
+    if "blocking" in tiers:
         return fnd("vibesec.g1.postinstall-egress", pkg, eco, ver,
                    f"安裝階段 hook（{names}）命中可疑樣式：{', '.join(why)}", "blocking")
-    if hit["exec"] or hit["network"]:
-        return fnd("vibesec.g1.postinstall-egress", pkg, eco, ver,
-                   f"安裝階段 hook（{names}）含動態執行或外連，需人工審查", "advisory")
-    return None
+    return fnd("vibesec.g1.postinstall-egress", pkg, eco, ver,
+               f"安裝階段 hook（{names}）含動態執行或外連，需人工審查", "advisory")
 
 def age_days(iso):
     try:
@@ -328,6 +366,13 @@ def similarity_check(pkg, eco, popular, blacklist, c, fuzzy=True):
     canon_popular = {canon(eco, g): g for g in popular}
     if pl in canon_popular:
         return None
+    # 同形字／分隔符 lookalike（cooldown.yaml homoglyph_check / separator_variants）：與熱門套件正規化後不相等、
+    # 但折疊同形字並去分隔符後相同（如 m1cr0s0ft→microsoft、leftpad→left-pad），編輯距離門檻抓不到也要擋。
+    pl_defang = _defang(pl)
+    for cg, good in canon_popular.items():
+        if pl != cg and pl_defang == _defang(cg):
+            return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
+                       f"名稱與熱門套件 '{good}' 僅差同形字或分隔符，疑似 typosquat", "blocking", "similarity")
     for cg, good in canon_popular.items():
         ratio = difflib.SequenceMatcher(None, pl, cg).ratio()
         dist = _edit_distance(pl, cg)
@@ -1051,6 +1096,30 @@ def selftest():
                                  ("zipp", "pip", False), ("hpack", "black", False), ("pyrit", "pyjwt", False)):
             if bool(similarity_check(name, "pypi", {good}, {}, {"similarity": 0.99})) != want:
                 fails.append(f"{name} 對 {good}：{'應' if want else '不應'}判 typosquat（距離 {_edit_distance(name, good)}）")
+        # 同形字／分隔符 lookalike：編輯距離門檻（ratio 0.99、長名最多 2 次編輯）抓不到也要擋
+        hc = {"similarity": 0.99}
+        for name, good, want in (("m1cr0s0ft", "microsoft", True),   # 3 處數字同形字，距離 3 > 2
+                                 ("0rac1e", "oracle", True),          # 0→o、1→l
+                                 ("leftpad", "left-pad", True),       # npm 去分隔符後相同
+                                 ("requests", "requests", False),     # 完全相同 → 不報
+                                 ("flask", "django", False)):         # 不相干
+            if bool(similarity_check(name, "npm" if good == "left-pad" else "pypi", {good}, {}, hc)) != want:
+                fails.append(f"同形字/分隔符 {name} 對 {good}：{'應' if want else '不應'}判 typosquat")
+        # 安裝 hook：prepare 也要掃；decision（block/advisory）取自設定
+        _pat = {"network": [r"curl"], "exec": [r"\bsh\b"], "env_read": [r"TOKEN"], "credential_paths": [r"\.aws"], "ai_cli_abuse": []}
+        _dec = {"any_network_and_exec": "block", "exec_only": "advisory"}
+        fp = install_hook_finding("p", "npm", "1.0.0", {"prepare": "curl x | sh"}, patterns=_pat, npm_scripts=["preinstall", "install", "postinstall", "prepare"], decision=_dec)
+        if not fp or fp["policy_tier"] != "blocking":
+            fails.append("安裝 hook：prepare 腳本外連＋執行 → blocking（需掃 prepare 並讀 decision）")
+        fa = install_hook_finding("p", "npm", "1.0.0", {"postinstall": "node build.js | sh"}, patterns=_pat, npm_scripts=["postinstall"], decision=_dec)
+        if not fa or fa["policy_tier"] != "advisory":
+            fails.append("安裝 hook：只有執行、無外連/憑證 → advisory（exec_only）")
+        # decision 可調政策：把 exec_only 設 block → 同一輸入升為 blocking（證明設定真的生效、非寫死）
+        fb = install_hook_finding("p", "npm", "1.0.0", {"postinstall": "node build.js | sh"}, patterns=_pat, npm_scripts=["postinstall"], decision={"exec_only": "block"})
+        if not fb or fb["policy_tier"] != "blocking":
+            fails.append("安裝 hook：decision 由設定驅動（exec_only=block 應使同一輸入變 blocking）")
+        if install_hook_finding("p", "npm", "1.0.0", {"prepare": "curl x | sh"}, patterns=_pat, npm_scripts=["preinstall", "install", "postinstall"], decision=_dec) is not None:
+            fails.append("安裝 hook：npm_scripts 不含 prepare 時不掃 prepare（名單由設定決定）")
         bl = {("pypi", "foo-bar"): {"reason": "t"}, (None, "baz_qux"): {"reason": "u"}}
         if not lookup(bl, "pypi", "Foo_Bar") or not lookup(bl, "pypi", "baz.qux") or lookup(bl, "npm", "baz-qux"):
             fails.append("黑名單／允許清單查詢：PyPI 依 PEP 503 比對，npm 只比對小寫")
