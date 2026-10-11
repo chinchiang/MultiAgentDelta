@@ -39,9 +39,11 @@ held_out:
 - g5-session-neg-01
 - g5-ssrf-neg-01
 - g5-swagger-pos-01
+- g6-agency-telemetry-pos-01
 - g6-indirect-neg-01
 - g6-injection-pos-01
 - g6-noprovider-incomplete-01
+- g6-observations-malformed-incomplete-01
 - g6-promptfoo-fail-not-incomplete-01
 - g6-sysprompt-pos-01
 held_in:
@@ -123,6 +125,7 @@ held_in:
 - g5-stacktrace-pos-01
 - g6-agency-neg-01
 - g6-agency-pos-01
+- g6-agency-telemetry-neg-01
 - g6-dow-neg-01
 - g6-dow-pos-01
 - g6-indirect-pos-01
@@ -133,7 +136,7 @@ held_in:
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
   # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
-  total: 130
+  total: 133
   held_out_ratio: 0.35
   by_gate:
     G0: 12
@@ -142,9 +145,9 @@ distribution:
     G3: 31
     G4: 29
     G5: 20
-    G6: 14
+    G6: 17
   by_domain:
-    ai_agent_security: 27
+    ai_agent_security: 30
     application_architecture: 11
     authentication: 16
     authorization: 15
@@ -159,8 +162,8 @@ distribution:
     secret_exposure: 9
     xss: 5
   by_polarity:
-    neg: 60
-    pos: 70
+    neg: 61
+    pos: 72
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-jwksorigin-incomplete-01

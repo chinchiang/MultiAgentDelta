@@ -198,7 +198,7 @@ def fetch(url: str = Query(...), user: dict = Depends(current_user)):
 @app.post("/chat")
 def chat(body: dict = Body(...)):
     # G6 目標：無認證、無 rate limiting；行為由 deterministic llm_stub 決定。
-    from app.llm_stub import generate_reply
+    from app.llm_stub import generate_reply, tool_events, usage
 
     message = body.get("message", "")
     # RAG：檢索到的外部文件（網頁、PDF、email）與使用者訊息一起進入模型輸入——間接注入（LLM01）的入口。
@@ -216,9 +216,12 @@ def chat(body: dict = Body(...)):
         # 修補：長度上限（Denial of Wallet）、不洩漏 system prompt、不服從文件內指令、高影響工具要人工確認、輸出 HTML 編碼
         if len(llm_input) > 4000:
             raise HTTPException(status_code=413, detail="訊息過長")
-        return {"reply": html.escape(generate_reply(llm_input, patched=True, tools=tools))}
+        reply = generate_reply(llm_input, patched=True, tools=tools)
+        return {"reply": html.escape(reply), "tool_events": tool_events(llm_input, tools, patched=True),
+                "usage": usage(llm_input, reply)}
     reply = generate_reply(llm_input, tools=tools)
-    return {"reply": reply}
+    # 漏洞（Excessive Agency）：tool_events 回報高影響工具未經人工核准即執行（human_approved: false）
+    return {"reply": reply, "tool_events": tool_events(llm_input, tools), "usage": usage(llm_input, reply)}
 
 
 # 最小 GraphQL stub，introspection 開啟（G5 graphql_introspection 目標）

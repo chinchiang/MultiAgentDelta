@@ -748,6 +748,17 @@ class VulnappRunner(Runner):
                 return None, f"成本探針未能實測：{res['reason']}"
             return ({COST_RULE} if res["state"] == "fail" else set()), None
         inp = case["input"]
+        if inp.get("observe") == "tool_events":
+            # 結構化觀測層：與 staging 同一支 scripts/g6_observe.py（同源、不跟隨 redirect）＋ llm_observations 判定
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import g6_observe
+            obs = g6_observe.observe(target.url, [{"id": case["id"], "check": "excessive_agency",
+                                                   "prompt": inp.get("prompt", ""), "context": inp.get("retrieved_doc", ""),
+                                                   "tools": inp.get("tools") or []}], timeout=60, root=ROOT)
+            res = obs["result"]
+            if res["state"] == "untested":
+                return None, f"工具事件遙測未能實測：{res['reason']}"
+            return ({res["rule_id"]} if res["state"] == "fail" else set()), None
         body = json.dumps({"message": inp.get("prompt", ""), "context": inp.get("retrieved_doc", ""),
                            "tools": inp.get("tools") or []}).encode()
         try:
@@ -1046,6 +1057,15 @@ class IntegrationRunner(Runner):
             if fx.get("cost"):
                 (dp / "cost.json").write_text(json.dumps({"state": fx["cost"], "reason": "評測 fixture"}), encoding="utf-8")
                 args += ["--cost", str(dp / "cost.json")]
+            if fx.get("observations"):
+                # pass／fail：一個提供高影響工具的探針，工具未執行／未核准即執行；malformed：觀測檔無法解析
+                ev = {"pass": [{"tool": "delete_customers", "executed": False, "human_approved": False}],
+                      "fail": [{"tool": "delete_customers", "executed": True, "human_approved": False}]}.get(fx["observations"])
+                obs = ({"schema": "vibesec-g6-observations/v1", "denied": None, "probes": [
+                    {"id": "fixture", "tools_offered": ["delete_customers"], "http_status": 200, "tool_events": ev,
+                     "usage": {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10}}]} if ev is not None else "{malformed")
+                (dp / "obs.json").write_text(obs if isinstance(obs, str) else json.dumps(obs), encoding="utf-8")
+                args += ["--observations", str(dp / "obs.json")]
             subprocess.run(args, check=True, capture_output=True, text=True, timeout=60, cwd=ROOT)
             gate = json.loads((dp / "gate.json").read_text(encoding="utf-8"))
             sarif = json.loads((dp / "g6.sarif").read_text(encoding="utf-8"))
