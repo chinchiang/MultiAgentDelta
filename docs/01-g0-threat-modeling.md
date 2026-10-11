@@ -116,9 +116,9 @@ G0 本身是人工活動，但 harness 做四件確定性檢查：
 1. `project.threat_model` 存在且通過 `schemas/threat-model.schema.json` 驗證（`python3 scripts/validate.py`）。
 2. Lethal Trifecta：對每個 `agents[]` 計算三布林；全 true 且 `mitigations == []` → finding `rule_id: vibesec.g0.lethal-trifecta-open`（`control_id: VS-G0-LETHAL-TRIFECTA`，policy blocking）。**只宣告 mitigation 名稱不算數**：三要素全成立且未切腳的 agent，每項 mitigation 必須在 `mitigation_evidence` 附可驗證證據（目前支援 `claude_permission`：列出的規則必須出現在該 Claude Code 設定檔的 `permissions.ask`／`deny`），至少一項通過驗證才不報。`human_in_the_loop` 另須以 `covers` 把 agent 的每個 `high_impact_tools` 對到至少一條規則（`covers` 的規則必須在 `rules` 內）；有工具未涵蓋即不算落實。這只保證「每個工具至少有一條規則」，不保證規則擋得住所有等價呼叫。決定性部分由 `scripts/g0_trifecta.py` 實作，`scripts/validate.py` 對 `project.threat_model` 執行（命中即錯誤、CI 失敗）；它只判斷模型的宣告，宣告是否屬實（mitigation 是否真的生效）仍屬人工／LLM 審查。
 3. `risk_tier` 一致性：threat-model 與 `vibesec.yaml` 相同；且決策樹推導值不低於宣告值（宣告 L1 但有 `public` 暴露 → fail，附推導路徑）。
-4. 覆蓋對照：每條 `threats[].gate` 指向的閘門必須 `enabled: true`；`contains_llm: true` 但 methodologies 無 MAESTRO → advisory。
+4. 覆蓋對照：每條 `threats[].gate` 指向的閘門必須 `enabled: true`（否則 `vibesec.g0.threat-gate-disabled`；`gate: null` 不檢查）；`contains_llm: true` 但 methodologies（威脅模型的 `system.methodologies`；目標是本 repo 時另看 `vibesec.yaml` 的 `gates.g0_threat_model.methodologies`）無 MAESTRO → `vibesec.g0.maestro-missing`；`exposure: public` 但 `threats[]` 為空 → `vibesec.g0.threats-empty-public`。三者政策檔未列，依 `scripts/vibesec_policy.py` 的 `vibesec.*` 預設為 advisory（只計數、不擋）；control 為 `ASVS5-V15.1`。
 
-本機 / harness：`python3 scripts/g0_threat_model.py [--target <dir>] [--threat-model <file>] --out-dir reports/raw/G0 --gate reports/gates/G0.json` 執行上面第 1–3 項並產出 G0 gate JSON（第 3 項的決策樹以 `derive_tier()` 實作，推導路徑寫進 `g0-findings.json`）。`--target` 指向其他專案時：
+本機 / harness：`python3 scripts/g0_threat_model.py [--target <dir>] [--threat-model <file>] --out-dir reports/raw/G0 --gate reports/gates/G0.json` 執行上面第 1–4 項並產出 G0 gate JSON（第 3 項的決策樹以 `derive_tier()` 實作，推導路徑寫進 `g0-findings.json`）。`--target` 指向其他專案時：
 
 - 模型依序取 `--threat-model`（可放在目標之外）→ 目標 `vibesec.yaml` 的 `project.threat_model` → 目標的 `docs/threat-model.yaml`；找不到 → `incomplete`，不得拿本 repo 的模型代替。
 - 模型與 `mitigation_evidence` 的證據檔從目標「追蹤中檔案」的暫存副本讀，不跟隨 symlink——否則目標可把 `.claude/settings.json` 指向操作者本機的設定，讓 mitigation 看似已落實。
@@ -144,8 +144,9 @@ LLM 輔助（非裁決）：harness 可請 `architecture` reviewer 依 DFD 提�
 | threat-model 缺失 / 不符 schema | `incomplete`（enforce 時 exit 2） |
 | Lethal Trifecta 全 true 且無 mitigation | `fail`（blocking） |
 | `risk_tier` 兩處不一致或低於推導值 | `fail`（blocking） |
-| `contains_llm: true` 但未用 MAESTRO | advisory |
-| `threats[]` 為空但 exposure 為 public | advisory（要求至少列 STRIDE 六類各一） |
+| `contains_llm: true` 但未用 MAESTRO（`vibesec.g0.maestro-missing`） | advisory |
+| `threats[]` 為空但 exposure 為 public（`vibesec.g0.threats-empty-public`） | advisory（要求至少列 STRIDE 六類各一） |
+| `threats[].gate` 指向未啟用的閘門（`vibesec.g0.threat-gate-disabled`） | advisory（政策檔未列，`vibesec.*` 預設） |
 
 ## 風險分級 → 閘門深度
 

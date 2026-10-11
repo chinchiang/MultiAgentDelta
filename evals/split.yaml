@@ -1,4 +1,6 @@
 held_out:
+- g0-maestro-neg-01
+- g0-threatsempty-pos-01
 - g0-trifecta-pos-02
 - g1-cooldown-pos-01
 - g1-postinstall-neg-01
@@ -34,6 +36,10 @@ held_out:
 - g6-promptfoo-fail-not-incomplete-01
 - g6-sysprompt-pos-01
 held_in:
+- g0-gatedisabled-neg-01
+- g0-gatedisabled-pos-01
+- g0-maestro-pos-01
+- g0-threatsempty-neg-01
 - g0-trifecta-neg-01
 - g0-trifecta-neg-02
 - g0-trifecta-pos-01
@@ -103,10 +109,10 @@ held_in:
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
   # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 id 形如 g<N>-<名稱>-incomplete-<NN> 的案例。
-  total: 100
+  total: 106
   held_out_ratio: 0.34
   by_gate:
-    G0: 4
+    G0: 10
     G1: 13
     G2: 9
     G3: 21
@@ -114,8 +120,8 @@ distribution:
     G5: 16
     G6: 14
   by_domain:
-    ai_agent_security: 24
-    application_architecture: 3
+    ai_agent_security: 26
+    application_architecture: 7
     authentication: 8
     authorization: 13
     build_supply_chain: 4
@@ -129,8 +135,8 @@ distribution:
     secret_exposure: 9
     xss: 3
   by_polarity:
-    neg: 48
-    pos: 52
+    neg: 51
+    pos: 55
   incomplete_cases:
   - g1-slopsquat-incomplete-01
   - g5-ssrf-incomplete-01

@@ -31,7 +31,7 @@ notes: 靶場 examples/vulnapp 可重現。
 
 - 每個適用領域**至少一正例與一反例**。
 - 至少 **1/3** 案例 `held_out: true`；清單集中於 `evals/split.yaml`。
-- 總數目標 **≥ 60**（目前 100）。
+- 總數目標 **≥ 60**（目前 106）。
 - `domain` 使用 14 審查領域的固定代碼：`application_architecture`、`general_vulnerabilities`、`xss`、`csp`、`authentication`、`authorization`、`dependency`、`build_supply_chain`、`github_actions`、`secret_exposure`、`input_validation`、`error_handling`、`data_integrity`、`ai_agent_security`。
 - `gate_status` 案例驗證閘門在工具／環境失敗時回報的狀態：例如「incomplete ≠ pass」（工具或環境無法完成時，閘門必須回報 incomplete，而非 pass），或「已實測的失敗不得因其他層缺金鑰而被改寫成 incomplete」（`gate_status: fail`）。以 `input.integration` 指定整合層情境；`expected.coverage`（控制 → 狀態）與 `expected.status_reason_contains` 可進一步要求某個覆蓋項的狀態與 status_reason 的內容。
 - 含隱形字元或假金鑰的 fixture 以 YAML 跳脫或佔位值表示，避免觸發本 repo 自身的 G2／G4 掃描。
@@ -57,6 +57,7 @@ python3 scripts/run_evals.py --no-network                                       
   - `slopcheck`：G1 manifest 案例，且只用 `ecosystem` / `added`（含 `published_hours_ago` 等合成 fixture 的案例記 untested）。
   - `g1-fixture`：G1 manifest 案例帶合成欄位 `published_hours_ago`（`vibesec.g1.cooldown-violation`）或 `package_json.scripts`（`vibesec.g1.postinstall-egress`）。直接呼叫 `scripts/g1_slopcheck.py` 的判定函式 `cooldown_finding`／`install_hook_finding`（與 registry 查詢後走的是同一段邏輯與同一份 `cooldown.yaml` 樣式）；registry 查詢本身不在此驗證。
   - `g0-trifecta`：G0 `vibesec.g0.lethal-trifecta-open` 案例，`input.threat_model` 為 `schemas/threat-model.schema.json` 的 `agents[]` 結構。呼叫 `scripts/g0_trifecta.py` 的 `trifecta_findings`（`validate.py` 對本 repo 威脅模型用同一個函式）。
+  - `g0-coverage`：G0 覆蓋對照案例（`vibesec.g0.threat-gate-disabled`、`vibesec.g0.maestro-missing`、`vibesec.g0.threats-empty-public`），`input.threat_model` 只需 `system`／`threats` 片段。呼叫 `scripts/g0_threat_model.py` 的 `coverage_findings`（G0 閘門用同一個函式），以本 repo `vibesec.yaml` 為準；`input.contains_llm`、`input.disabled_gates`（例如 `[g6_ai_red_team]`）、`input.g0_methodologies` 可覆寫對應設定。
   - `g4-static`：G4 的 `kind: code|iac` 案例，且 `rule_id` 由 `pr-gates.yml` 的 G4 靜態檢查實作。執行器把 snippet 寫回 `input.path` 的原路徑（保留目錄，例如 `.github/copilot-instructions.md`），再執行 workflow 中**同一份**程式碼；所有 SARIF 等級都算偵測。
   - `gitleaks`／`checkov`：預期規則在 `config/catalogs/cwe-map.yaml` 有 `implemented_by`（例如 `checkov:CKV2_VIBESEC_1`）。執行器以 CI **同一份**設定檔（`config/gitleaks.toml`、`config/checkov/.checkov.yaml` 含 check allow-list 與自訂政策）掃 fixture，再依 `implemented_by` 對回 vibesec 規則；allow-list 外的檢查不算偵測。本機沒有 gitleaks 時可設 `VIBESEC_GITLEAKS=<路徑>`；nightly 會下載固定版本並驗證 SHA-256。
   - `env-check`：`vibesec.g2.env-not-ignored`。在暫存 git repo 依 `input.files`／`input.gitignore` 建立並追蹤檔案，再執行 `pr-gates.yml` 中**同一份** `.env` 檢查步驟。
