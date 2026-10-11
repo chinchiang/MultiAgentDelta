@@ -408,7 +408,16 @@ try:
             for e in _ev["errors"]: err(f"{_f.relative_to(ROOT)}: {e}")
             if not _ev["errors"]: ok(f"G4 審查紀錄 ok: {_f.relative_to(ROOT)}")
         import subprocess
-        for _tool in ("ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py", "g1_kev.py", "fetch_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py", "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py", "g4_access.py", "g0_threat_model.py", "env_guard.py", "target_guard.py", "g5_zap.py", "g6_cost_probe.py", "llm_observations.py", "g6_observe.py", "g6_gate.py", "prepare_comparison.py", "compare_reviews.py"):
+        # 有 selftest 子命令的腳本（逐行排列，避免 gitleaks generic-api-key 對超長單行誤報）
+        _selftest_tools = [
+            "ruling.py", "g4_review.py", "sarif_gate.py", "g0_trifecta.py", "vibesec_policy.py",
+            "g1_kev.py", "fetch_kev.py", "g1_sbom.py", "g1_maintenance.py", "g1_provenance.py",
+            "review_provider.py", "review_packet.py", "g1_slopcheck.py", "g2_secrets.py", "g3_sast.py",
+            "g4_access.py", "g0_threat_model.py", "env_guard.py", "target_guard.py", "g5_zap.py",
+            "g5_api_probes.py", "g6_cost_probe.py", "llm_observations.py", "g6_observe.py", "g6_gate.py",
+            "prepare_comparison.py", "compare_reviews.py", "run_evals.py",
+        ]
+        for _tool in _selftest_tools:
             _r = subprocess.run([sys.executable, str(ROOT / "scripts" / _tool), "selftest"], capture_output=True, text=True)
             if _r.returncode == 0: ok(f"{_tool} selftest")
             else: err(f"{_tool} selftest 失敗：" + (_r.stdout + _r.stderr).strip()[:300])
