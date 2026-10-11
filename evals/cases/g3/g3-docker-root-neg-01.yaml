@@ -1,0 +1,22 @@
+id: g3-docker-root-neg-01
+gate: G3
+domain: application_architecture
+title: Dockerfile 建立並切換到非 root 使用者
+input:
+  kind: iac
+  path: Dockerfile
+  snippet: |
+    FROM python:3.12-slim
+    WORKDIR /app
+    COPY . /app
+    RUN pip install --no-cache-dir -r requirements.txt && useradd --uid 10001 --no-create-home app
+    USER app
+    HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
+    CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+expected:
+  should_flag: false
+  control_id: ASVS5-V13.2
+  rule_id: vibesec.g3.dockerfile-root-user
+  policy_tier: advisory
+held_out: true
+notes: 與 g3-docker-root-pos-01 成對；最後一個 USER 不是 root，CKV_DOCKER_3／CKV_DOCKER_8 都不應命中。

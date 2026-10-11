@@ -1,0 +1,18 @@
+id: g3-jwt-confusion-pos-01
+gate: G3
+domain: authentication
+title: JWT decode 同時接受 HS256 與 RS256（演算法混淆）
+input:
+  kind: code
+  path: app/auth.py
+  snippet: |
+    import jwt
+
+    def current_user(token: str, public_key: str) -> dict:
+        return jwt.decode(token, public_key, algorithms=["RS256", "HS256"])
+expected:
+  should_flag: true
+  control_id: ASVS5-V9.1
+  rule_id: vibesec.g3.jwt-alg-confusion
+  policy_tier: advisory
+held_out: true

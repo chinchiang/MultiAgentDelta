@@ -10,8 +10,12 @@ metadata:
   category: "NETWORKING"
   severity: "MEDIUM"
   guideline: "docs/04-g3-sast-iac.md#cors"
+# 三個條件各自只適用一種 resource_type。checkov 對「不適用此資源型別」的條件判為不成立，
+# 因此必須用 or：用 and 時任何 API Gateway／S3 CORS／Lambda URL 都會因另外兩個條件而 FAILED，
+# 即使 origins 是明確白名單（evals/cases/g3/g3-cors-neg-01 實測）。改用 or 後，每個資源只由自己型別的條件判定，
+# 含 "*" 者仍 FAILED（g3-cors-pos-01）。
 definition:
-  and:
+  or:
     - cond_type: "attribute"
       resource_types:
         - "aws_apigatewayv2_api"

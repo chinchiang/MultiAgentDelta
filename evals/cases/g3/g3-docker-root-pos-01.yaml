@@ -1,0 +1,21 @@
+id: g3-docker-root-pos-01
+gate: G3
+domain: application_architecture
+title: Dockerfile 沒有宣告非 root USER
+input:
+  kind: iac
+  path: Dockerfile
+  snippet: |
+    FROM python:3.12-slim
+    WORKDIR /app
+    COPY . /app
+    RUN pip install --no-cache-dir -r requirements.txt
+    HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
+    CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+expected:
+  should_flag: true
+  control_id: ASVS5-V13.2
+  rule_id: vibesec.g3.dockerfile-root-user
+  policy_tier: advisory
+held_out: false
+notes: 由 checkov:CKV_DOCKER_3 實作（cwe-map implemented_by）；容器以 root 執行。

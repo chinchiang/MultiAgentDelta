@@ -1,0 +1,19 @@
+id: g3-jwt-confusion-neg-01
+gate: G3
+domain: authentication
+title: JWT decode 只允許單一非對稱演算法
+input:
+  kind: code
+  path: app/auth.py
+  snippet: |
+    import jwt
+
+    def current_user(token: str, public_key: str) -> dict:
+        return jwt.decode(token, public_key, algorithms=["RS256"])
+expected:
+  should_flag: false
+  control_id: ASVS5-V9.1
+  rule_id: vibesec.g3.jwt-alg-confusion
+  policy_tier: advisory
+held_out: false
+notes: 與 g3-jwt-confusion-pos-01 成對，只差 algorithms 清單。
