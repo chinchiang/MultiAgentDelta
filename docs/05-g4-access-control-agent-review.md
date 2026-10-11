@@ -171,6 +171,8 @@ EOF
 
 MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canonical URI>`；MCP server 驗證 `aud` 等於自己，拒絕為其他資源簽發的 Token（防 token passthrough / confused deputy）。檢查：授權請求與 token 請求含 `resource` 參數；server 端驗 `aud`；不把上游 Token 原樣轉給下游 API。缺失 → `vibesec.g4.mcp-missing-resource-indicator`（advisory，CWE-863，`ASVS5-V10.1`）。
 
+靜態規則（啟發式，目前只在本機／harness 版 `scripts/g4_access.py`；`pr-gates.yml` 的 G4 inline 步驟尚未包含，CI 的 G4 gate JSON 不含此控制）：py / ts / js / json / yaml / toml，略過 `.github/`、`evals/cases/`、`node_modules/`；檔案是 MCP 程式碼或設定（`from mcp…`／`import mcp`／`fastmcp`、`"@modelcontextprotocol/…"`、`mcpServers` 鍵），同檔案有 OAuth／Token 驗證脈絡（oauth、`grant_type`、`token_endpoint`、`jwt.decode`、`TokenVerifier`、`AuthSettings`、`Bearer`…），且看不到 `resource=`／`resource:`／`resource_server_url`／`audience`／`aud` 綁定，或明確關掉 `verify_aud` → 回報。coverage `VS-G4-MCP-RESOURCE-INDICATOR`：沒有 MCP 程式碼或設定、或 MCP 未見 OAuth 流程（例如 stdio server）→ `not_applicable`（附理由）；有命中 → `fail`；MCP OAuth 檔案皆見綁定 → `pass`（啟發式；token passthrough 與驗證順序仍由 LLM 審查確認）。只看單一檔案：綁定做在共用 auth 模組時會誤報。
+
 ## 自動化作法
 
 1. **靜態**：`semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $BASE --sarif -o reports/semgrep-g4.sarif .`（結果中 `metadata.gate == G4` 的歸 G4）+ 上述 Unicode 腳本 + `grep -rn 'disable row level security'`。

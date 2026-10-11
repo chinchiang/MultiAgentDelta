@@ -1,0 +1,26 @@
+id: g4-mcp-resource-neg-02
+gate: G4
+domain: authentication
+title: MCP client 交換 Token 時帶 resource 參數
+input:
+  kind: code
+  language: typescript
+  path: src/mcp/client.ts
+  snippet: |
+    import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
+    export async function exchangeCode(code: string, verifier: string) {
+      const body = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        resource: "https://mcp.example.com",
+      });
+      return fetch(TOKEN_ENDPOINT, { method: "POST", body });
+    }
+expected:
+  should_flag: false
+  control_id: VS-G4-MCP-RESOURCE-INDICATOR
+  rule_id: vibesec.g4.mcp-missing-resource-indicator
+  policy_tier: advisory
+held_out: true
