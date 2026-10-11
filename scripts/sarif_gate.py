@@ -67,6 +67,14 @@ def load_policy() -> dict:
             "exceptions": exceptions, "ignored_exceptions": ignored, "semgrep_aliases": load_semgrep_aliases()}
 
 
+_TIMEOUT_RE = re.compile(r"\btime(?:d)?\s?out\b", re.I)
+
+
+def _note_text(n: dict) -> str:
+    m = n.get("message")
+    return (m.get("text") or "") if isinstance(m, dict) else ""
+
+
 def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
     """回傳 (results, 錯誤)。檔案缺席或無法解析 → (None, 原因)。
     工具自報執行失敗（invocations[].executionSuccessful == false 或 toolExecutionNotifications 有 level error）
@@ -81,6 +89,9 @@ def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
     runs = data.get("runs") if isinstance(data, dict) else None
     if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
         return None, f"{path.name} 沒有 runs 或 runs 內容不是物件（不是有效的 SARIF）"
+    if not runs:
+        # 空的 runs 代表工具沒有產出任何分析（與「有跑、沒發現」不同）；不能當成 pass（incomplete ≠ pass）
+        return None, f"{path.name} 的 runs 為空（工具沒有產出分析結果）"
     out, failed = [], []
     for run in runs:
         for inv in run.get("invocations") or []:
@@ -88,14 +99,22 @@ def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
                 continue
             if inv.get("executionSuccessful") is False:
                 failed.append("executionSuccessful=false")
-            errs = [n for n in inv.get("toolExecutionNotifications") or [] if isinstance(n, dict) and n.get("level") == "error"]
+            # error 等級一律算未完成；semgrep 1.179 的規則逾時只發 warning（實測 "Timeout when running <rule> on <file>"），
+            # 該檔該規則沒有被分析，同樣不能當成 pass
+            errs = [n for n in inv.get("toolExecutionNotifications") or [] if isinstance(n, dict)
+                    and (n.get("level") == "error" or _TIMEOUT_RE.search(_note_text(n)))]
             if errs:
                 msg = ((errs[0].get("message") or {}).get("text") or "") if isinstance(errs[0].get("message"), dict) else ""
-                failed.append(f"{len(errs)} 個 error 等級的 toolExecutionNotifications" + (f"（{msg[:120]}）" if msg else ""))
+                failed.append(f"{len(errs)} 個 error 等級或逾時的 toolExecutionNotifications" + (f"（{msg[:120]}）" if msg else ""))
         rules = ((run.get("tool") or {}).get("driver") or {}).get("rules") if isinstance(run.get("tool"), dict) else None
         rules = [x for x in rules or [] if isinstance(x, dict)] if isinstance(rules, list) else []
         by_id = {x.get("id"): x for x in rules if x.get("id")}
-        results = run.get("results") or []
+        # SARIF 2.1.0 §3.14.23：results 缺席或為 null 代表分析沒有完成；空陣列才代表「沒有發現」。
+        # 實測 semgrep／checkov／gitleaks／trivy 乾淨掃描都輸出 "results": []。
+        if run.get("results") is None:
+            failed.append("run 缺 results（分析未完成）")
+            continue
+        results = run["results"]
         if not isinstance(results, list):
             return None, f"{path.name} 的 results 不是陣列（不是有效的 SARIF）"
         for r in results:
@@ -336,6 +355,21 @@ def selftest() -> list[str]:
             {"level": "warning", "message": {"text": "x"}}]}), "checkov": sarif(), "trivy": sarif()})
         if g["status"] != "pass":
             fails.append(f"只有 warning 等級的通知 → 仍可 pass（得到 {g['status']}）")
+        g = run("G3", {"semgrep": bad_run({"executionSuccessful": True, "toolExecutionNotifications": [
+            {"level": "warning", "message": {"text": "Timeout when running vibesec.g3.command-injection on big.py"}}]}),
+            "checkov": sarif(), "trivy": sarif()})
+        if g["status"] != "incomplete" or "Timeout" not in (g["status_reason"] or ""):
+            fails.append(f"semgrep 規則逾時（warning 等級）→ 該檔未分析 → incomplete（得到 {g['status']}）")
+        # 空 runs、run 缺 results、results 為 null：SARIF 規範上代表分析未完成，不是「沒有發現」（以前三者都判 pass）
+        for why, doc in (("runs 為空", {"version": "2.1.0", "runs": []}),
+                         ("run 缺 results", {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}}]}),
+                         ("results 為 null", {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": None}]})):
+            g = run("G3", {"semgrep": doc, "checkov": sarif(), "trivy": sarif()})
+            if g["status"] != "incomplete" or next(c for c in g["coverage"] if c["control_id"] == "ASVS5-V1.2")["state"] != "untested":
+                fails.append(f"{why} → incomplete、負責控制 untested（得到 {g['status']}）")
+        g = run("G2", {"gitleaks": {"version": "2.1.0", "runs": []}}, env={"env_gitignore_fail": 0})
+        if g["status"] != "incomplete":
+            fails.append(f"G2 gitleaks runs 為空 → incomplete（得到 {g['status']}）")
         g = run("G3", {"semgrep": {"version": "2.1.0", "runs": ["oops"]}, "checkov": sarif(), "trivy": sarif()})
         if g["status"] != "incomplete":
             fails.append("runs 內含非物件 → 無效 SARIF → incomplete（不得丟出例外）")
