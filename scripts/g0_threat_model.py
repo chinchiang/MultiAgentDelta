@@ -134,7 +134,12 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
         except Exception as e:
             reasons.append(f"{shown} 無法解析（{type(e).__name__}）")
             return done("incomplete")
-        from jsonschema import Draft202012Validator
+        try:
+            from jsonschema import Draft202012Validator
+        except ImportError:   # 工具缺席 → incomplete（不讓 ImportError 以 exit 1 被當成 fail）
+            gate["tools"][0]["state"] = "missing"
+            reasons.append("工具缺席：jsonschema，無法驗證威脅模型是否符合 schema（incomplete ≠ pass）")
+            return done("incomplete")
         schema = json.loads((ROOT / "schemas/threat-model.schema.json").read_text(encoding="utf-8"))
         errs = sorted(Draft202012Validator(schema).iter_errors(tm), key=str)
         if errs:
@@ -233,6 +238,16 @@ def selftest() -> list[str]:
         rt = next(c for c in g["coverage"] if c["control_id"] == "VS-G0-RISK-TIER")
         if g["status"] != "fail" or rt["state"] != "fail" or "推導值 L2" not in (g["status_reason"] or ""):
             fails.append("宣告 L1 但決策樹推導 L2 → fail（附推導路徑）")
+        saved = sys.modules.get("jsonschema")
+        sys.modules["jsonschema"] = None          # 模擬 jsonschema 未安裝（import 會拋 ImportError）
+        try:
+            g = check(repo, out)
+        except Exception as e:
+            g = {"status": f"例外 {type(e).__name__}", "tools": [{}], "status_reason": None}
+        finally:
+            sys.modules["jsonschema"] = saved
+        if g["status"] != "incomplete" or g["tools"][0].get("state") != "missing" or "jsonschema" not in (g["status_reason"] or ""):
+            fails.append(f"缺 jsonschema → incomplete（tools state missing），不是例外或 fail（得到 {g['status']}）")
         commit_model({"system": {"name": "proj"}})
         g = run(repo, out)
         if g["status"] != "incomplete" or "schema" not in (g["status_reason"] or ""):

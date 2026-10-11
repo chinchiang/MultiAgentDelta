@@ -235,6 +235,7 @@ def merge_gate(gate: dict, summary: dict, found: list[dict], sarif_ref: str | No
 
 
 def run(target: pathlib.Path, commit: str, out: pathlib.Path, syft=run_syft) -> dict:
+    out.unlink(missing_ok=True)   # 不讓上一次的 SBOM 被 grype／維護狀態／provenance 當成這次的結果
     with tempfile.TemporaryDirectory(prefix="vibesec-sbom-tree-") as d:
         tree = pathlib.Path(d) / "src"
         tree.mkdir()
@@ -306,8 +307,11 @@ def selftest() -> list[str]:
             if s["status"] != "incomplete":
                 fails.append(f"格式不符（{why}）應為 incomplete：{s}")
         def boom(tree, out, binary): raise SbomError("syft 失敗（exit 1）")
+        out.write_text(json.dumps(full))              # 上一次留下的 SBOM
         if run(repo, "HEAD", out, boom)["status"] != "incomplete":
             fails.append("syft 失敗應為 incomplete")
+        if out.exists():
+            fails.append("SbomError 時應刪除上一次的 --sbom 輸出，不讓下游用到舊 SBOM")
         if run(pathlib.Path(d) / "not-a-repo", "HEAD", out, fake([full, full]))["status"] != "incomplete":
             fails.append("無法匯出 commit 應為 incomplete")
         (repo / "yarn.lock").write_text("# yarn\n"); git("add", "-A"); git("commit", "-qm", "yarn")

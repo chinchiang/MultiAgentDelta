@@ -121,6 +121,16 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, binary: str | None, timeou
     return gate
 
 
+def configured_timeout(path: pathlib.Path = ROOT / "vibesec.yaml", default: int = 300) -> int:
+    """vibesec.yaml gates.g2_secrets.timeout_seconds；讀不到、YAMLError 或結構不符 → 預設值（只影響逾時，不影響結論）。"""
+    import yaml
+    try:
+        return int((((yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+                     .get("gates") or {}).get("g2_secrets") or {}).get("timeout_seconds") or default)
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        return default
+
+
 # ------------------------------------------------------------------ selftest
 def selftest() -> list[str]:
     import tempfile
@@ -191,6 +201,17 @@ def selftest() -> list[str]:
             fails.append("目標不是 git repo → incomplete")
         if any(p.is_relative_to(repo) for p in out.iterdir()):
             fails.append("輸出不得寫進被測專案")
+        # vibesec.yaml 壞掉（YAMLError、結構不符）→ 用預設逾時，不得讓 main 以例外結束
+        vb = D / "vibesec.yaml"
+        for label, body, want in [("壞 YAML", "gates: [\n", 300), ("gates 是清單", "gates: [1]\n", 300),
+                                  ("有設定", "gates:\n  g2_secrets:\n    timeout_seconds: 42\n", 42)]:
+            vb.write_text(body)
+            try:
+                got = configured_timeout(vb)
+            except Exception as e:
+                got = f"例外 {type(e).__name__}"
+            if got != want:
+                fails.append(f"vibesec.yaml {label} → 逾時 {want}（得到 {got}）")
     return fails
 
 
@@ -208,12 +229,7 @@ def main(argv=None) -> int:
     ap.add_argument("--gate", default="reports/gates/G2.json", help="G2 gate JSON 輸出路徑")
     a = ap.parse_args(argv)
     target = pathlib.Path(a.target).expanduser()
-    try:
-        import yaml
-        timeout = int((((yaml.safe_load((ROOT / "vibesec.yaml").read_text(encoding="utf-8")) or {})
-                        .get("gates") or {}).get("g2_secrets") or {}).get("timeout_seconds") or 300)
-    except (OSError, ValueError):
-        timeout = 300
+    timeout = configured_timeout()
     binary = os.environ.get("VIBESEC_GITLEAKS") or shutil.which("gitleaks")
     g = scan(target, pathlib.Path(a.out_dir), binary, timeout)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)

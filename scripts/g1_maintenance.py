@@ -151,10 +151,20 @@ def _date(s: str | None) -> datetime.datetime | None:
         return None
 
 
+class Undecidable(Exception):
+    """deps.dev 有這個套件，但資料不足以判定兩個訊號（所用版本不在 versions、沒有預設版本或其發布日）。"""
+
+
 def assess(pkg: dict, data: dict, days: int, now: datetime.datetime) -> dict | None:
     versions = data.get("versions") or []
     used = next((v for v in versions if (v.get("versionKey") or {}).get("version") == pkg["version"]), None)
     default = next((v for v in versions if v.get("isDefault")), None)
+    # 任一訊號無法評估就不算「已檢查」：否則兩個訊號都被跳過，套件被當成維護中（incomplete ≠ pass）
+    missing = ([f"所用版本 {pkg['version']} 不在 deps.dev versions"] if used is None else []) + \
+              (["沒有標記 isDefault 的版本"] if default is None else
+               ["預設版本缺 publishedAt"] if _date(default.get("publishedAt")) is None else [])
+    if missing:
+        raise Undecidable("、".join(missing))
     signals = []
     if used and used.get("isDeprecated"):
         signals.append({"signal": "deprecated", "detail": used.get("deprecatedReason") or None})
@@ -176,10 +186,16 @@ def run(sbom_path: pathlib.Path, fetch=fetch_deps_dev, days: int | None = None,
     if not sbom_path.is_file():
         return {**base, "status": "incomplete", "status_reason": f"缺 SBOM：{sbom_path}"}, []
     try:
-        todo, na = parse_sbom(json.loads(sbom_path.read_text(encoding="utf-8")),
-                              first_party() if own is None else own)
-    except (ValueError, TypeError) as e:
+        sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+        if not isinstance(sbom, dict):
+            raise TypeError(f"SBOM 頂層應為物件，得到 {type(sbom).__name__}")
+        todo, na = parse_sbom(sbom, first_party() if own is None else own)
+    except (ValueError, TypeError, AttributeError) as e:
         return {**base, "status": "incomplete", "status_reason": f"SBOM 無法解析：{type(e).__name__}: {e}"}, []
+    if not todo and not na:
+        # {} 或 components: [] 不是「沒有命中」：SBOM 沒有可檢查的套件（產生失敗或格式不符），查 0 個不能算 pass
+        return {**base, "status": "incomplete", "status_reason": "SBOM 沒有任何帶 purl 的元件：沒有套件被檢查（incomplete ≠ pass）",
+                "packages_checked": 0, "not_applicable": [], "unresolved": [], "hits": []}, []
     hits, unresolved, cache = [], [], {}
     for pkg in todo:
         key = (pkg["system"], pkg["name"])
@@ -197,7 +213,11 @@ def run(sbom_path: pathlib.Path, fetch=fetch_deps_dev, days: int | None = None,
         if data is None:
             unresolved.append({"purl": pkg["purl"], "reason": "deps.dev 查無此套件"})
             continue
-        h = assess(pkg, data, days, now)
+        try:
+            h = assess(pkg, data, days, now)
+        except Undecidable as e:
+            unresolved.append({"purl": pkg["purl"], "reason": f"deps.dev 資料不足以判定：{e}"})
+            continue
         if h:
             hits.append(h)
     summary = {**base, "packages_checked": len(todo) - len(unresolved), "not_applicable": na,
@@ -316,6 +336,23 @@ def selftest() -> list[str]:
         sp.write_text("{bad")
         if run(sp, fetch=fake, now=now)[0]["status"] != "incomplete":
             fails.append("壞 SBOM 應為 incomplete")
+        # 沒有元件的 SBOM（{}、components: []）與非物件 SBOM（list）→ incomplete，不是「查 0 個、pass」
+        for label, body in [("{}", {}), ("components: []", {"components": []}), ("list", [{"purl": "pkg:pypi/fresh@1.0"}])]:
+            sp.write_text(json.dumps(body))
+            try:
+                st = run(sp, fetch=fake, now=now, own=set())[0]
+            except Exception as e:
+                fails.append(f"SBOM 為 {label} 不應拋出例外：{type(e).__name__}"); continue
+            if st["status"] != "incomplete":
+                fails.append(f"SBOM 為 {label} 應為 incomplete：{st}")
+        # 所用版本不在 versions、沒有預設版本 → 無法判定，不算已檢查
+        DB[("pypi", "nover")] = {"versions": [ver("2.0", "2026-01-01T00:00:00Z", default=True)]}
+        DB[("pypi", "nodefault")] = {"versions": [ver("1.0", "2026-01-01T00:00:00Z")]}
+        for label, purl in [("所用版本不在 versions", "pkg:pypi/nover@1.0"), ("沒有預設版本", "pkg:pypi/nodefault@1.0")]:
+            sp.write_text(json.dumps({"components": [{"purl": purl}]}))
+            st = run(sp, fetch=fake, days=730, now=now, own=set())[0]
+            if st["status"] != "incomplete" or st["packages_checked"] != 0 or len(st["unresolved"]) != 1:
+                fails.append(f"{label} 應為 incomplete、不計入 packages_checked：{st}")
     return fails
 
 
