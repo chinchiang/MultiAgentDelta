@@ -22,6 +22,17 @@
 
 # Claude Code 權限設定：威脅模型 c-claude 的 HITL 證據（g0_trifecta.py 驗證）
 /.claude/settings.json             @chinchiang
+# Claude Code 的 reviewer agents 與 harness skill：決定審查角色與閘門的執行方式
+/.claude/                          @chinchiang
+# AI 協作者的規則：放寬它等於放寬所有 agent 的行為約束
+/CLAUDE.md                         @chinchiang
+
+# 根目錄的 Python 檔：CI 的 heredoc Python 在 PR head 目錄執行，同名檔可蓋掉標準函式庫（已改 python3 -I，此為第二道）
+/*.py                              @chinchiang
+# G0 威脅模型：validate.py 讀 PR head 的版本，G0 例外的 path_glob 也指向它
+/docs/threat-model.yaml            @chinchiang
+# 靶場：eval 與 staging 的判定基準，也是 cooldown 例外（examples/vulnapp/**）的範圍
+/examples/                         @chinchiang
 
 # CI 執行的閘門腳本：pull_request 事件跑 PR head 的版本，改腳本即可改判定（第三次 harness 審查 N3）
 /scripts/                          @chinchiang
