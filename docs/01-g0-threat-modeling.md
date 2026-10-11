@@ -103,6 +103,8 @@ Simon Willison 定義的三要素，對應 `agents[]` 三個布林欄位：
 | 不受信任內容 | `no_untrusted_input` | 不讓外部文件 / 網頁進入同一個上下文；或先經結構化擷取 |
 | （補償） | `human_in_the_loop` | 高影響動作需人工確認；**不算切腳**，只能與上列之一並用 |
 
+暫時無法切腳時，只能由人類在獨立 PR 於 `config/policy/blocking-policy.yaml` 加上**有到期日**的例外（已接受風險）：G0 例外必須寫明 `agent_id`（只寫 `path_glob` 不套用，避免連同之後新增的 agent 一起放行），只對本 repo 的威脅模型生效；命中時發現降為 advisory 但保留，`validate.py` 每次以警告列出，到期後自動恢復 blocking。
+
 控制 ID：`VS-G0-LETHAL-TRIFECTA`；由 G4（靜態確認 allow-list / HITL）與 G6（間接注入是否真的觸發外連）驗證。
 
 ### 6. 文件化安全決策

@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import sys
 from pathlib import Path
@@ -104,12 +105,36 @@ def load_threat_model(path: Path) -> tuple[dict | None, str | None]:
     return tm, None
 
 
-def trifecta_findings(threat_model: dict, root: Path | None = None) -> list[dict]:
+def policy_exception(agent_id, tm_rel: str | None, today=None) -> tuple[dict | None, list[str]]:
+    """本 repo blocking-policy 中適用這個 agent 的未過期例外（只降為 advisory，發現保留；與 sarif_gate 相同）。
+    G0 的例外必須寫明 agent_id：只寫 path_glob 會連同同一份威脅模型裡之後新增的 agent 一起放行。
+    回傳 (例外或 None, 被忽略的例外說明)。讀取失敗 → 不套用任何例外（fail closed）。"""
+    if not tm_rel:
+        return None, []
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from g1_slopcheck import load_exceptions   # 同一份例外規則：欄位完整且未過期
+        valid, ignored = load_exceptions(today)
+    except Exception as e:
+        return None, [f"blocking-policy 例外無法讀取（{type(e).__name__}），未套用"]
+    notes = [x for x in ignored if x.startswith(RULE)]
+    for ex in valid:
+        if ex["rule_id"] != RULE or not fnmatch.fnmatchcase(tm_rel, ex["path_glob"]):
+            continue
+        if not ex.get("agent_id"):
+            notes.append(f"{RULE} @ {ex['path_glob']}：G0 例外缺 agent_id，未套用")
+        elif ex["agent_id"] == agent_id:
+            return ex, notes
+    return None, notes
+
+
+def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str | None = None, today=None) -> list[dict]:
     """三要素皆成立，且沒有任何「切腳」mitigation 有可驗證證據 → 發現。
     只宣告 mitigation 名稱不算數（第二次 harness 審查發現 A：宣告與落實不符時 fail-open）；同理：
       - human_in_the_loop 不算切腳（docs/01 §5），只有它通過驗證仍報；
       - trifecta_leg_cut 只是宣告，宣告了也要有切該腳的 mitigation 附可驗證證據（否則改一個欄位就能跳過檢查）。
-    root：mitigation_evidence 的 ref 相對的專案根目錄（被檢查的專案）；tier 一律取自本 repo 的政策。"""
+    root：mitigation_evidence 的 ref 相對的專案根目錄（被檢查的專案）；tier 一律取自本 repo 的政策。
+    tm_rel：本 repo 威脅模型的相對路徑；有給才套用 blocking-policy 例外（外部專案不給：例外只核准給本 repo）。"""
     root = root or ROOT
     out = []
     for a in (threat_model or {}).get("agents") or []:
@@ -129,9 +154,16 @@ def trifecta_findings(threat_model: dict, root: Path | None = None) -> list[dict
             why.append(f"宣告 trifecta_leg_cut: {leg}，但 mitigations 沒有切這隻腳的項目（{'、'.join(cutters) or '無'}）")
         head = (f"宣告切斷 {leg}，但沒有切該腳且可驗證的 mitigation" if leg is not None
                 else "未切斷任何一腳，且沒有可驗證的切腳 mitigation")
-        out.append({"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": _tier(),
-                    "agent": a.get("id"),
-                    "reason": f"agent {a.get('id')!r} 三要素皆成立、{head}（{'；'.join(why)}）"})
+        f = {"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": _tier(),
+             "agent": a.get("id"), "reason": f"agent {a.get('id')!r} 三要素皆成立、{head}（{'；'.join(why)}）"}
+        ex, notes = policy_exception(a.get("id"), tm_rel, today)
+        if ex is not None:   # 已接受風險：降為 advisory，發現與理由照實保留
+            f["policy_tier"] = "advisory"
+            f["exception"] = {k: ex.get(k) for k in ("path_glob", "agent_id", "approved_by", "expires")}
+            f["reason"] += f"；依 blocking-policy 例外降為 advisory（核准：{ex['approved_by']}，到期：{ex['expires']}）"
+        elif notes:
+            f["reason"] += "；" + "；".join(notes)
+        out.append(f)
     return out
 
 
@@ -210,6 +242,34 @@ def selftest() -> list[str]:
             rc = main(["g0_trifecta.py", str(ROOT / "docs/templates/threat-model.yaml")])
         if rc == 2:
             fails.append("符合 schema 的威脅模型不應為 incomplete")
+    # blocking-policy 例外：只對本 repo 威脅模型、須寫 agent_id；降為 advisory、發現保留；過期或缺欄位不套用
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import g1_slopcheck as _gs
+    real = _gs.load_exceptions
+    ex = {"rule_id": RULE, "path_glob": "docs/threat-model.yaml", "agent_id": "a", "reason": "t", "approved_by": "o", "expires": "2099-01-01"}
+    tm_open = agent(mitigations=[])
+    try:
+        _gs.load_exceptions = lambda today=None: ([ex], [])
+        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")
+        if [(f["policy_tier"], bool(f.get("exception"))) for f in got] != [("advisory", True)] or "到期：2099-01-01" not in got[0]["reason"]:
+            fails.append(f"符合的例外 → advisory、發現保留並註明到期日：{got}")
+        if [f["policy_tier"] for f in trifecta_findings(tm_open)] != [_tier()]:
+            fails.append("沒給 tm_rel（外部專案、評測）→ 不套用例外")
+        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="other/tm.yaml")] != [_tier()]:
+            fails.append("path_glob 不符 → 不套用例外")
+        _gs.load_exceptions = lambda today=None: ([dict(ex, agent_id="b")], [])
+        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")] != [_tier()]:
+            fails.append("agent_id 不同 → 不套用例外")
+        _gs.load_exceptions = lambda today=None: ([{k: v for k, v in ex.items() if k != "agent_id"}], [])
+        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")
+        if got[0]["policy_tier"] != _tier() or "缺 agent_id" not in got[0]["reason"]:
+            fails.append(f"G0 例外缺 agent_id → 不套用並註明：{got}")
+        _gs.load_exceptions = real
+        expired = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", today=__import__("datetime").date(2999, 1, 1))
+        if any(f["policy_tier"] == "advisory" and f.get("exception") for f in expired):
+            fails.append("例外過期 → 不套用")
+    finally:
+        _gs.load_exceptions = real
     return fails
 
 
