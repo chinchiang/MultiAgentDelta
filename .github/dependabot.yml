@@ -20,3 +20,24 @@ updates:
     commit-message:
       prefix: "deps(actions)"
     open-pull-requests-limit: 5
+
+  # CI 的 Python 雜湊鎖定檔（requirements-*.in → requirements-*.txt，--require-hashes 安裝）。
+  # 鎖定檔由 uv pip compile 產生；Dependabot 無法正確重算時（例如遞移相依或雜湊未更新），依各 .in 檔頭的指令
+  # 手動重新產生。升級 PR 一樣跑 pr-gates，且 validate.py 會比對 garak／torch／semgrep 與 workflow 中的版本。
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Taipei
+    cooldown:
+      default-days: 14
+    ignore:
+      # torch 的 +cpu 版只在 PyTorch CPU index，Dependabot 只查 PyPI，會提出錯誤的（含 CUDA 的）升級；手動升版
+      - dependency-name: torch
+    groups:
+      python-ci:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(pip)"
+    open-pull-requests-limit: 5

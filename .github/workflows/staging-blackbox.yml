@@ -35,6 +35,9 @@ jobs:
     # 執行期才從 registry 抓的工具一律釘版（與 actions 釘 SHA 同理）：浮動的 @latest／未釘版 pip 會讓上游被入侵的版本
     # 直接在持有 LLM 金鑰的步驟裡執行（vibesec-harness G0 發現：供應鏈層致命三要素）。版本須已發布滿
     # vibesec.yaml cooldown_days（14）天；Dependabot 不管這兩個，升版請手動確認發布日。
+    # garak／torch（含遞移相依）另鎖在 requirements-garak.txt（SHA-256）；下面兩個版本須與鎖定檔一致（validate.py 比對）。
+    # promptfoo 以 npx 執行，不在 pip 鎖定範圍：只釘頂層版本，npm 依 registry 的 integrity 驗證，但遞移相依未鎖定
+    # （沒有 package-lock）；要鎖須另建 package.json＋lockfile 改用 npm ci，留待後續處理。
     env:
       PROMPTFOO_VERSION: "0.123.1"   # npm，2026-09-18 發布；npm 依 registry 的 integrity（sha512）驗證套件
       GARAK_VERSION: "0.17.0"        # PyPI，2026-09-09 發布
@@ -55,8 +58,11 @@ jobs:
         uses: ./.github/actions/vibesec-trusted
 
       # G5 探針與 scripts/g6_gate.py 都經 vibesec_policy 讀政策（PyYAML）；缺 PyYAML 會讓閘門檔缺席
-      - name: 安裝 PyYAML
-        run: pip install pyyaml
+      # 從雜湊鎖定檔安裝（default branch 的 requirements-ci.txt），見 .github/actions/vibesec-pip-install
+      - name: 安裝 PyYAML（雜湊鎖定）
+        uses: ./.github/actions/vibesec-pip-install
+        with:
+          requirements: requirements-ci.txt
 
       - name: Install uv
         continue-on-error: true
@@ -301,10 +307,18 @@ jobs:
           mkdir -p reports
           # 先從 PyTorch CPU index 安裝 CPU 版 torch，再裝 garak：PyPI 的 torch 會連帶裝 CUDA 函式庫（整個環境約 9.6 GB，
           # 安裝約 3 分鐘），runner 磁碟吃緊時會在安裝中途失敗；CPU 版約 2 GB、約 70 秒。這個 job 沒有 GPU，用不到 CUDA。
-          # 只有 torch 本體（及其少數相依）取自 PyTorch index；garak 與其餘相依仍由 PyPI 安裝。
+          # torch、garak 與全部遞移相依鎖在 requirements-garak.txt（含 SHA-256；版本須等於上方 env 的
+          # GARAK_VERSION／TORCH_VERSION，validate.py 比對）。兩個 index 並列不會造成相依混淆：每個檔案都須符合鎖定的雜湊。
+          # 這一步持有 LLM 金鑰，鎖定檔優先取 default branch 的版本（_trusted/），理由同 .github/actions/vibesec-pip-install。
+          REQ=_trusted/requirements-garak.txt
+          if [ ! -f "$REQ" ]; then
+            echo "::warning::default branch（_trusted/）沒有 requirements-garak.txt，改用工作區的版本（仍強制 SHA-256）"
+            REQ=requirements-garak.txt
+          fi
           install_ok=1
-          { pip install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" \
-              && pip install "garak==${GARAK_VERSION}"; } >reports/_garak-install.log 2>&1 || install_ok=0
+          pip install --disable-pip-version-check --require-hashes -r "$REQ" \
+            --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            >reports/_garak-install.log 2>&1 || install_ok=0
           if [ "$install_ok" != 1 ]; then
             # 安裝記錄以前只留在 artifact；失敗原因（磁碟不足、下載中斷、相依衝突）要在 Actions log 就看得到
             echo "::warning::garak 安裝失敗（記為 untested）"

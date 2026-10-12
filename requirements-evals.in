@@ -1,0 +1,14 @@
+# nightly-full.yml evals job 的掃描工具（run_evals.py 實際執行 semgrep／checkov）。
+# semgrep 版本與 pr-gates.yml、nightly-full.yml 的 semgrep 容器（semgrep/semgrep:1.179.0）一致；升版須同時改。
+# 鎖定檔 requirements-evals.txt（含遞移相依與 SHA-256），CI 以 pip install --require-hashes 安裝。重新產生：
+#   uv pip compile requirements-evals.in --python-version 3.11 --generate-hashes \
+#     --exclude-newer <UTC 時間，今天減 14 天以上，例如 2026-09-27T00:00:00Z> \
+#     --exclude-newer-package semgrep=<發布時間之後的 UTC 時間> --exclude-newer-package checkov=<發布時間之後的 UTC 時間> \
+#     --exclude-newer-package bc-detect-secrets=<發布時間之後的 UTC 時間> -o requirements-evals.txt
+# exclude-newer-package 只放寬「已在 workflow 釘版的工具」與 checkov 以 == 綁定的相依；遞移相依仍受冷卻期限制。
+# 注意：semgrep 1.179.0（2026-10-02）、checkov 3.3.22 在產生鎖定檔時尚未滿 14 天，是沿用既有釘版，不是本檔放寬。
+# 冷卻期對齊 vibesec.yaml cooldown_days（14）：pr-gates 的 G1 會對本鎖定檔做冷卻期檢查。--exclude-newer 請用帶 Z 的
+# UTC 時間（只寫日期時 uv 依本機時區解讀，可能多放進半天內發布的版本）。
+-r requirements-ci.in
+semgrep==1.179.0
+checkov==3.3.22

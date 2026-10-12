@@ -44,9 +44,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安裝 PyYAML（供 blacklist/allowlist 解析，best-effort）
+      # 從雜湊鎖定檔安裝（default branch 的 requirements-ci.txt），見 .github/actions/vibesec-pip-install
+      - name: 安裝 PyYAML（供 blacklist/allowlist 解析，best-effort；雜湊鎖定）
         continue-on-error: true
-        run: pip install pyyaml
+        uses: ./.github/actions/vibesec-pip-install
+        with:
+          requirements: requirements-ci.txt
 
       - name: 偵測變更的 manifest 檔
         id: diff
@@ -780,9 +783,11 @@ jobs:
       # LLM 審查不在 CI 跑：/vibesec-harness 產出 reports/g4-review.yaml，由人複製為 reviews/g4/<commit>.yaml 提交。
       # 這一步只讀該紀錄（schema、provider／family 一致性、對 PR head 是否過期），把 VS-G4-LLM-REVIEW 從 pending 推進到
       # pass／pending／fail；無有效紀錄維持 incomplete（incomplete ≠ pass）。規則見 docs/05「阻擋政策」與 scripts/g4_review.py。
-      - name: 安裝 PyYAML / jsonschema（審查紀錄驗證）
+      - name: 安裝 PyYAML / jsonschema（審查紀錄驗證；雜湊鎖定）
         if: always()
-        run: pip install pyyaml jsonschema
+        uses: ./.github/actions/vibesec-pip-install
+        with:
+          requirements: requirements-ci.txt
 
       # 職責分離（CLAUDE.md 規則 6）：本 PR 新增／修改的 reviews/g4 紀錄不能自證。取得「在目前 head SHA 上
       # approve、且不是 PR 作者」的帳號（每人只看最後一次 review；之後的 CHANGES_REQUESTED／DISMISSED 會取消）。
@@ -903,8 +908,11 @@ jobs:
           python-version: "3.11"
 
       # 缺 PyYAML／jsonschema 時 validate.py 只會警告並略過檢查，等於沒驗證（incomplete ≠ pass），所以必須安裝成功。
-      - name: 安裝 PyYAML / jsonschema
-        run: pip install pyyaml jsonschema
+      # 鎖定檔取自上面的 _trusted/（sparse checkout 的 cone mode 一律包含根目錄檔案），見 .github/actions/vibesec-pip-install
+      - name: 安裝 PyYAML / jsonschema（雜湊鎖定）
+        uses: ./.github/actions/vibesec-pip-install
+        with:
+          requirements: requirements-ci.txt
 
       # 兩個都要過：PR 版本跑得到本 PR 新增的檢查；受信任版本確保既有檢查沒被拿掉。
       # PR 刻意修改既有驗證規則時，受信任版本會以舊規則失敗，須由 owner 審核後合併（CODEOWNERS /scripts/）。
@@ -987,14 +995,23 @@ jobs:
         with:
           path: _artifacts
 
-      - name: 安裝 PyYAML / jsonschema
-        run: pip install pyyaml jsonschema
-
       # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
       # 細節見 .github/actions/vibesec-trusted/action.yml。
       - name: 取出受信任的判定程式與設定（default branch → _trusted/）
         id: trusted
         uses: ./.github/actions/vibesec-trusted
+
+      # 與其他 job 相同用 Python 3.11：鎖定檔以 --python-version 3.11 產生（環境標記依此解析）
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      # 放在取出 _trusted/ 之後：鎖定檔優先用 default branch 的版本，見 .github/actions/vibesec-pip-install
+      - name: 安裝 PyYAML / jsonschema（雜湊鎖定）
+        uses: ./.github/actions/vibesec-pip-install
+        with:
+          requirements: requirements-ci.txt
 
       # G2、G3 的工具是第三方 action，本身不寫 gate JSON；由此從各 job 上傳的 SARIF 推導。
       # artifact 或 SARIF 缺席 → 該閘門 incomplete（incomplete ≠ pass），不再顯示為 untested。
