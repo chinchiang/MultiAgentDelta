@@ -197,7 +197,7 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 | 本機 / harness 閘門 | `scripts/g4_access.py`（CI 同一段靜態檢查 + 審查紀錄；`--target` 掃其他專案） |
 | 工具白名單 | 目前由 `scripts/g4_access.py` 的靜態檢查（`vibesec.g4.agent-tool-overexposure`、`vibesec.g4.missing-hitl`）把關；OPA／Rego 政策為規劃項目（docs/13），尚未提供 |
 | 審查角色提示 | `config/harness/`、`.claude/agents/`（architecture、identity） |
-| 控制對照 | `config/catalogs/cwe-map.yaml`、`asvs-5.0-controls.yaml`、`llm-top10-2025.yaml`、`maestro-layers.yaml` |
+| 控制對照 | `config/catalogs/cwe-map.yaml`、`asvs-5.0-controls.yaml`、`llm-top10-2025.yaml`、`maestro-layers.yaml`；文件引用的 CVE 見 `config/catalogs/cve-references.yaml` |
 
 ## 阻擋政策
 

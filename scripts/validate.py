@@ -229,6 +229,24 @@ if yaml is not None:
     if not _bad_ids: ok(f"文件／設定中的 CWE、rule_id、控制 ID 皆在目錄（{len(_docs) + len(_cfg)} 檔）")
     if not _bad_paths: ok("文件以反引號引用的 repo 路徑皆存在")
 
+    # CVE 也只能來自目錄（CLAUDE.md 規則 3）：以前 catalogs 沒有 CVE 目錄、這裡也不檢查，
+    # CVE-2026-33634 等引用從未查證（第五次審查 #5）。判定在 scripts/cve_catalog.py（有 selftest）
+    import cve_catalog
+    _cve_cat = ROOT / cve_catalog.CATALOG
+    _cves = ((load_yaml(_cve_cat) or {}).get("cves") or {}) if _cve_cat.exists() else None
+    if _cves is None:
+        err(f"缺 {cve_catalog.CATALOG}：無法核對文件與設定引用的 CVE（CLAUDE.md 規則 3）")
+    else:
+        _p = cve_catalog.catalog_problems(_cves)
+        for m in _p: err(m)
+        if not _p: ok(f"cve-references.yaml：{len(_cves)} 筆 CVE 欄位完整")
+        # 掃描範圍：文件、config/、evals/、docs/*.yaml、.github/（workflow 註解也會引用 CVE）；scripts/ 的 selftest 刻意用虛構 ID，不掃
+        _cve_files = sorted(set(_docs + _cfg) | {*glob.glob(str(ROOT / "docs/**/*.yaml"), recursive=True),
+                                                  *glob.glob(str(ROOT / ".github/**/*.yml"), recursive=True)})
+        _p = cve_catalog.reference_problems(_cves, _cve_files, ROOT)
+        for m in _p: err(m)
+        if not _p: ok(f"文件／設定／workflow 引用的 CVE 皆在 cve-references.yaml（{len(_cve_files)} 檔）")
+
     # 範例 finding 的 control_id/cwe 一致性
     ex = ROOT / "docs/templates/finding.example.json"
     if ex.exists() and known_controls:
