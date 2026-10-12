@@ -1,0 +1,10 @@
+{
+  "$comment": "評測 fixture（g0-trifecta-neg-02、g0-trifecta-pos-05）：模擬以 permissions.deny 落實出向 allow-list 的 Claude Code 設定。g0_trifecta 的切腳 mitigation 只採信 deny；ask 是 human_in_the_loop、不算切腳。",
+  "permissions": {
+    "deny": [
+      "WebFetch",
+      "Bash(curl *)",
+      "Bash(wget *)"
+    ]
+  }
+}
