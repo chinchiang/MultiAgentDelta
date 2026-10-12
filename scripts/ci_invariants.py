@@ -6,6 +6,7 @@
   precommit_semgrep_drift(pc, rules)      pre-commit 的 semgrep --config 與 vibesec.yaml g3 semgrep_rules 一致
   untrusted_script_runs(text)             workflow 不得執行本分支的 scripts/（判定程式只採用 _trusted/）
   sed_target_substitution(text)           不得以 sed 把受測目標 URL 代入設定（URL 含 # 或 & 會壞）
+  sarif_jobs_without_permission(wf)       有 upload-sarif 的 job，有效權限須含 security-events: write
 
   python3 scripts/ci_invariants.py selftest
 """
@@ -57,6 +58,22 @@ def sed_target_substitution(text: str) -> list[int]:
             if not ln.lstrip().startswith("#") and re.search(r"\bsed\b", ln) and "VIBESEC_TARGET_URL" in ln]
 
 
+def sarif_jobs_without_permission(wf: dict) -> list[str]:
+    """有 upload-sarif 步驟、但有效權限（job 層級，未宣告則取 workflow 層級）沒有 security-events: write 的 job。
+    寫入權限從 workflow 層級移到 job 層級後，新增上傳 SARIF 的 job 忘了宣告就會上傳失敗——而這些步驟多半
+    continue-on-error，失敗不會被注意到。"""
+    top = wf.get("permissions")
+    out = []
+    for name, job in (wf.get("jobs") or {}).items():
+        steps = (job or {}).get("steps") or []
+        if not any("github/codeql-action/upload-sarif" in str(st.get("uses", "")) for st in steps):
+            continue
+        eff = job.get("permissions", top)
+        if eff != "write-all" and not (isinstance(eff, dict) and eff.get("security-events") == "write"):
+            out.append(name)
+    return out
+
+
 def selftest() -> list[str]:
     fails: list[str] = []
     wf_ok = "on: push\npermissions:\n  contents: read\n\njobs:\n  a:\n    permissions:\n      security-events: write\n"
@@ -79,6 +96,16 @@ def selftest() -> list[str]:
     ]:
         if got != want:
             fails.append(f"{label}：預期 {want}，得到 {got}")
+    up = {"uses": "github/codeql-action/upload-sarif@abc"}
+    for label, wf, want in [
+        ("job 層級有權限", {"permissions": {"contents": "read"},
+                           "jobs": {"a": {"permissions": {"security-events": "write"}, "steps": [up]}}}, []),
+        ("job 沒宣告、workflow 層級唯讀", {"permissions": {"contents": "read"}, "jobs": {"a": {"steps": [up]}}}, ["a"]),
+        ("job 宣告了但沒有 security-events", {"jobs": {"a": {"permissions": {"contents": "read"}, "steps": [up]}}}, ["a"]),
+        ("沒有上傳 SARIF 的 job 不檢查", {"permissions": {"contents": "read"}, "jobs": {"a": {"steps": [{"run": "x"}]}}}, []),
+    ]:
+        if sarif_jobs_without_permission(wf) != want:
+            fails.append(f"sarif_jobs_without_permission「{label}」：預期 {want}，得到 {sarif_jobs_without_permission(wf)}")
     pc = ('        args:\n          - "--config=config/semgrep/vibesec-rules.yaml"\n'
           '          - "--config=p/owasp-top-ten"\n          - "--config=p/security-audit"   # 與 CI 一致\n          - "--error"\n')
     rules = ["config/semgrep/vibesec-rules.yaml", "p/owasp-top-ten", "p/security-audit"]
