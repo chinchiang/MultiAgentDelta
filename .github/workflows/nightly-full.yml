@@ -10,15 +10,19 @@ on:
     - cron: "0 18 * * *"   # 18:00 UTC = 02:00 Asia/Taipei
   workflow_dispatch:
 
+# workflow 層級只給唯讀；寫入權限按 job 宣告（上傳 SARIF 的 job 才有 security-events: write），
+# 不讓 evals 這類不上傳 SARIF、卻會執行 semgrep／checkov 與評測 fixture 的 job 繼承寫入權。
 permissions:
   contents: read
-  security-events: write
-  actions: read
 
 jobs:
   semgrep-full:
     name: Semgrep 全量（無 baseline）
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
+      actions: read            # upload-sarif 查詢 workflow run
     container:
       # 釘選版本（與 evals 的 semgrep==1.179.0 一致）。tag 仍可被發布者移動；查不到 digest 時先釘 tag，之後再補 @sha256
       image: semgrep/semgrep:1.179.0
@@ -382,6 +386,10 @@ jobs:
     name: G2 全歷史祕密掃描（gitleaks git）
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
+      actions: read            # upload-sarif 查詢 workflow run
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

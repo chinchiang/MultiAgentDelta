@@ -721,12 +721,12 @@ ok(f"CI 的 pip install 一律走雜湊鎖定檔（{_pip_sites} 處；鎖定檔 
 import ci_invariants as _ci
 _wf = {pathlib.Path(_f).name: pathlib.Path(_f).read_text(encoding="utf-8") for _f in sorted(glob.glob(str(ROOT / ".github/workflows/*.yml")))}
 _n_ci = 0
-# workflow 層級只給唯讀、寫入權限按 job 宣告。nightly-full.yml 尚未調整（只在 default branch 排程執行、不跑 PR 內容），待另案處理
+# workflow 層級只給唯讀、寫入權限按 job 宣告
 for _name, _t in _wf.items():
-    if _name == "nightly-full.yml":
-        continue
     for _p in _ci.workflow_write_permissions(_t):
         err(f".github/workflows/{_name}: workflow 層級 permissions 有 {_p}（寫入權限須在 job 層級宣告）"); _n_ci += 1
+    for _j in _ci.sarif_jobs_without_permission(yaml.safe_load(_t) or {}):
+        err(f".github/workflows/{_name}: job {_j} 上傳 SARIF 但有效權限沒有 security-events: write（上傳會失敗）"); _n_ci += 1
 for _f in sorted(set(glob.glob(str(ROOT / ".github/**/*.yml"), recursive=True) + glob.glob(str(ROOT / ".github/**/*.js"), recursive=True))):
     for _i in _ci.unpaginated_list_comments(pathlib.Path(_f).read_text(encoding="utf-8")):
         err(f"{pathlib.Path(_f).relative_to(ROOT)}:{_i}: issues.listComments 未經 github.paginate（只會拿到第一頁 30 則）"); _n_ci += 1
