@@ -53,7 +53,7 @@ plugins:
     rest:
       RestGenerator:
         name: vibesec-chat
-        uri: "http://localhost:8000/chat"            # EDIT：改成 $VIBESEC_TARGET_URL/chat
+        uri: "http://localhost:8000/chat"            # 佔位：staging 由 scripts/garak_config.py 換成 $VIBESEC_TARGET_URL/chat（須恰好一處）
         method: post
         headers:
           Content-Type: application/json

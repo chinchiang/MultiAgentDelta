@@ -14,17 +14,20 @@ on:
   schedule:
     - cron: "0 20 * * 0"   # 每週日 20:00 UTC
 
+# workflow 層級只給唯讀；寫入權限按 job 宣告（blackbox 上傳 SARIF、notify 開 issue），不讓每個 job 都繼承寫入權。
 permissions:
   contents: read
-  security-events: write
-  # upload-sarif 要查詢 workflow run（get-a-workflow-run）；沒有 actions: read 會得到
-  # 「Resource not accessible by integration」，SARIF 上傳失敗（nightly-full.yml 已有）。
-  actions: read
 
 jobs:
   blackbox:
     name: G5 DAST/API + G6 AI 紅隊
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload-sarif
+      # upload-sarif 要查詢 workflow run（get-a-workflow-run）；沒有 actions: read 會得到
+      # 「Resource not accessible by integration」，SARIF 上傳失敗（nightly-full.yml 已有）。
+      actions: read
     # 給 notify job 判斷用：目標種類與 G5／G6 閘門結論（只含狀態與計數，不含 token 或回應內容）
     outputs:
       is_vulnapp: ${{ steps.target.outputs.is_vulnapp }}
@@ -204,12 +207,13 @@ jobs:
           VIBESEC_CONFIG: _trusted/vibesec.yaml
         run: |
           # 探針程式在 scripts/g5_api_probes.py（判定程式取自 default branch，與其他閘門相同）。
-          # 過渡：搬移本身的 PR 合併前 default branch 還沒有這支檔案 → 明確警告並改用本分支的版本（staging 只能手動觸發）。
+          # 不退回本分支的版本：workflow_dispatch 可在任何分支觸發，而這一步持有帳號 token，改跑本分支的程式
+          # 等於讓分支決定探針怎麼送、結果怎麼判。缺檔 → 不寫 g5-gate.json，判定步驟記為缺閘門結果（incomplete ≠ pass）。
           # VIBESEC_G5_PROBES 只供 scripts/run_evals.py 指定本機副本（評測的工作目錄沒有 _trusted/）。
           S="${VIBESEC_G5_PROBES:-_trusted/scripts/g5_api_probes.py}"
           if [ ! -f "$S" ]; then
-            echo "::warning::$S 不存在（default branch 尚未包含 g5_api_probes.py），改用本分支的 scripts/g5_api_probes.py"
-            S=scripts/g5_api_probes.py
+            echo "::error::$S 不存在：判定程式只採用 default branch（_trusted/）的版本，不改跑本分支 → G5 無結果"
+            exit 1
           fi
           python3 "$S"
 
@@ -325,9 +329,19 @@ jobs:
             echo "--- reports/_garak-install.log（最後 40 行）---"; tail -n 40 reports/_garak-install.log
             echo "--- 磁碟 ---"; df -h "$RUNNER_TEMP" | tail -n 1
           fi
+          # 以實際受測目標取代設定中的佔位 uri（不修改 repo 內設定檔）。以前用 sed：URL 含 # 時 sed 直接失敗、
+          # 含 & 時被換成整段佔位字串，佔位字串被改掉時 sed 也不報錯、garak 照打 localhost:8000。
+          # scripts/garak_config.py 以字串替換並檢查佔位字串恰好一次；無法產生設定 → 不跑 garak（記為 untested）
+          config_ok=0
           if [ "$install_ok" = 1 ] && command -v garak >/dev/null 2>&1; then
-            # 以實際靶場位址取代設定中的佔位 uri（不修改 repo 內設定檔）
-            sed "s#http://localhost:8000/chat#${VIBESEC_TARGET_URL}/chat#" _trusted/config/garak/vibesec.probes.yaml > "$RUNNER_TEMP/garak.yaml"
+            if python3 _trusted/scripts/garak_config.py --template _trusted/config/garak/vibesec.probes.yaml \
+                 --target "$VIBESEC_TARGET_URL" --out "$RUNNER_TEMP/garak.yaml"; then
+              config_ok=1
+            else
+              echo "::warning::garak 設定無法產生（記為 untested）"
+            fi
+          fi
+          if [ "$config_ok" = 1 ]; then
             garak --config "$RUNNER_TEMP/garak.yaml" --report_prefix g6-garak >reports/_garak.log 2>&1 || \
               echo "::warning::garak 回傳非零 → 依報告內容判定"
             # garak 預設把報告寫在 ~/.local/share/garak/garak_runs/。只從這裡收：以前也搜工作區（.），
