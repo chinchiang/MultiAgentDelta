@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """G4 架構與存取控制（本機／harness 版）— 靜態檢查 + LLM 審查紀錄；可用 --target 掃其他專案。
 
-靜態檢查（隱形 Unicode、Supabase RLS、Agent 工具 allow-list、高影響工具 HITL、單層 middleware）直接執行
+靜態檢查（隱形 Unicode、Supabase RLS、Agent 工具 allow-list、高影響工具 HITL、單層 middleware、MCP resource indicator）直接執行
 .github/workflows/pr-gates.yml「G4 靜態檢查」步驟的同一段程式碼（scripts/run_evals.py 的 G4 評測也這樣做），
 不另寫一份；tier 由該程式碼以本 repo 的 blocking-policy 計算（VIBESEC_CONFIG 指向本 repo）。
 該程式碼會走訪工作目錄並寫出 reports/，所以在目標「追蹤中檔案」的暫存副本上執行（同 G3：不跟隨 symlink），
 不寫進被測專案。結果檔損毀或缺欄位 → incomplete。
-本機版另跑 mcp_resource_indicator（VS-G4-MCP-RESOURCE-INDICATOR，docs/05 §7；CI inline 步驟尚未包含），結果併進同一份
-gate JSON 與 SARIF：沒有 MCP 程式碼／設定 → not_applicable；MCP OAuth 缺 resource／audience 綁定 → fail（advisory 發現）。
+mcp_resource_indicator（VS-G4-MCP-RESOURCE-INDICATOR，docs/05 §7）也在同一段步驟內（判定在 scripts/g4_mcp.py），
+本機版與 CI 的 gate JSON 都含此控制：沒有 MCP 程式碼／設定 → not_applicable；MCP OAuth 缺 resource／audience 綁定 → fail（advisory 發現）。
 
 VS-G4-LLM-REVIEW（LLM 審查紀錄）：
 - 目標是本 repo：與 CI 相同，以 scripts/g4_review.py 從 reviews/g4/ 找對 HEAD 有效的紀錄並推導狀態
@@ -55,84 +55,8 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
-# ------------------------------------------------------------------ 本機版額外的靜態檢查（CI inline 步驟尚未包含）
-# mcp_resource_indicator（docs/05 §7）：MCP client 要 Token 時帶 resource=<MCP server URI>（RFC 8707），server 驗 aud 等於自己。
-# 啟發式、只看單一檔案：檔案是 MCP 程式碼或設定（mcp SDK import、mcpServers），同檔案有 OAuth／Token 驗證脈絡，
-# 但看不到 resource／audience 綁定，或明確關掉 aud 驗證 → vibesec.g4.mcp-missing-resource-indicator（tier 取自 blocking-policy）。
-# 綁定做在其他檔案（共用 auth 模組、gateway）時會誤報；同檔案有 resource 字樣也不代表 server 真的驗 aud、沒有 token passthrough——
-# 這兩者交 LLM 審查（VS-G4-LLM-REVIEW）。樣式刻意只認 import 行與設定鍵這類結構：本檔的 regex 原文不會讓本 repo 命中自己。
-MCP_RULE, MCP_CONTROL = "vibesec.g4.mcp-missing-resource-indicator", "VS-G4-MCP-RESOURCE-INDICATOR"
-MCP_EXTS = (".py", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".json", ".yaml", ".yml", ".toml")
-MCP_SKIP = (".git/", "node_modules/", ".github/", "evals/cases/", "_trusted/", "reports/")
-MCP_CTX = re.compile(r'^\s*(?:from|import)\s+(?:fast)?mcp\b|["\']@modelcontextprotocol/|["\']mcpServers["\']\s*:|^\s*mcpServers\s*:', re.M)
-OAUTH_CTX = re.compile(r'oauth|authorization_endpoint|token_endpoint|grant_type|client_credentials|authorization_code|'
-                       r'\bTokenVerifier\b|\bAuthSettings\b|\bverify_token\b|jwt\.(?:decode|verify)\b|\bjwtVerify\b|access_token|\bBearer\b', re.I)
-AUD_BIND = re.compile(r'\bresource\s*=\s*["\'\w]|["\']resource["\']\s*:|\bresource\s*:\s*(?![\s{\[])|\bresource_(?:server_)?url\b|'
-                      r'\bresource(?:Server)?Url\b|\baudience\s*[=:]|["\']aud(?:ience)?["\']|\.aud\b|\bexpected_aud\w*')
-AUD_OFF = re.compile(r'["\']?verify_aud["\']?\s*[:=]\s*(?:False|false|0)\b|\bignoreAudience\s*:\s*true')
-
-
-def mcp_resource_check(root: pathlib.Path) -> tuple[list[tuple[str, int, str]], dict]:
-    """掃 root 下的 MCP 程式碼／設定。回傳 ([(路徑, 行號, 訊息)], VS-G4-MCP-RESOURCE-INDICATOR 的 coverage)。"""
-    hits, mcp_files, oauth_files = [], 0, 0
-    for f in sorted(root.rglob("*")):
-        rel = f.relative_to(root).as_posix()
-        if f.is_symlink() or not f.is_file() or not rel.endswith(MCP_EXTS) or rel.startswith(MCP_SKIP) or "/node_modules/" in rel:
-            continue
-        try:
-            body = f.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if not MCP_CTX.search(body):
-            continue
-        mcp_files += 1
-        m = OAUTH_CTX.search(body)
-        if not m:
-            continue
-        oauth_files += 1
-        off = AUD_OFF.search(body)
-        if off:
-            hits.append((rel, body.count("\n", 0, off.start()) + 1,
-                         f"{rel}：MCP 的 Token 驗證明確關閉 aud 檢查，會接受為其他資源簽發的 Token（confused deputy／token passthrough）"))
-        elif not AUD_BIND.search(body):
-            hits.append((rel, body.count("\n", 0, m.start()) + 1,
-                         f"{rel}：MCP 程式碼有 OAuth／Token 流程，同檔案未見 RFC 8707 resource 參數或 aud／audience 驗證；"
-                         "client 要 Token 時須帶 resource=<MCP server URI>，server 須驗 aud 等於自己（若綁定做在其他檔案，於 LLM 審查說明）"))
-    if hits:
-        cov = {"control_id": MCP_CONTROL, "state": "fail", "reason": f"{len(hits)} 個 MCP 檔案缺 resource／audience 綁定"}
-    elif not mcp_files:
-        cov = {"control_id": MCP_CONTROL, "state": "not_applicable", "reason": "未發現 MCP 程式碼或設定（mcp SDK import、mcpServers）"}
-    elif not oauth_files:
-        cov = {"control_id": MCP_CONTROL, "state": "not_applicable",
-               "reason": f"{mcp_files} 個 MCP 檔案未見 OAuth／Token 流程（stdio 或未授權的 server 不適用 RFC 8707；是否該有授權交 LLM 審查）"}
-    else:
-        cov = {"control_id": MCP_CONTROL, "state": "pass",
-               "reason": f"啟發式：{oauth_files} 個 MCP OAuth 檔案皆見 resource／audience 綁定；token passthrough 與驗證順序交 LLM 審查"}
-    return hits, cov
-
-
-def merge_local_checks(static: dict, sarif: dict, root: pathlib.Path) -> None:
-    """把本機版額外檢查的結果併進 CI 靜態步驟的 gate JSON 與 SARIF（同樣以本 repo 的 blocking-policy 取 tier）。"""
-    from vibesec_policy import Policy
-    hits, cov = mcp_resource_check(root)
-    static["coverage"] = [c for c in static.get("coverage") or [] if c.get("control_id") != MCP_CONTROL] + [cov]
-    if not hits:
-        return
-    tier = Policy(ROOT).tier(MCP_RULE)
-    run = sarif["runs"][0]
-    rules = run.setdefault("tool", {}).setdefault("driver", {}).setdefault("rules", [])
-    if not any(r.get("id") == MCP_RULE for r in rules):
-        rules.append({"id": MCP_RULE, "name": MCP_RULE, "shortDescription": {"text": MCP_RULE},
-                      "defaultConfiguration": {"level": "warning"}, "properties": {"policy_tier": tier}})
-    for uri, line, msg in hits:
-        run["results"].append({"ruleId": MCP_RULE, "level": "warning", "message": {"text": msg},
-                               "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}, "region": {"startLine": line}}}],
-                               "properties": {"policy_tier": tier}})
-    fc, key = static["findings_count"], "blocking" if tier == "blocking" else "advisory"
-    fc[key] = int(fc.get(key) or 0) + len(hits)
-    if fc["blocking"] and static.get("status") != "fail":   # 與 CI 步驟相同：有 blocking 即 fail
-        static.update(status="fail", status_reason="；另：".join(x for x in (f"靜態檢查 {fc['blocking']} 筆 blocking",
-                                                                          static.get("status_reason")) if x))
+# mcp_resource_indicator（docs/05 §7）已併入 pr-gates.yml 的 G4 靜態步驟（判定在 scripts/g4_mcp.py）；這裡只重新匯出名稱
+from g4_mcp import MCP_CONTROL, MCP_RULE, mcp_resource_check  # noqa: E402,F401
 
 
 def run_static(target: pathlib.Path, out_dir: pathlib.Path, code: str | None, commit: str | None, mode: str,
@@ -171,7 +95,6 @@ def run_static(target: pathlib.Path, out_dir: pathlib.Path, code: str | None, co
             return None, f"G4 靜態檢查的結果無法解析（{type(e).__name__}：{str(e)[:120]}）", notes
         if p.returncode == 1 and not static_blocking:
             return None, f"G4 靜態檢查 exit 1 但沒有 blocking 發現：{(p.stderr or p.stdout).strip()[-200:]}", notes
-        merge_local_checks(static, sarif, copy)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "g4-static.sarif").write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
     for t in static.get("tools") or []:
@@ -474,30 +397,8 @@ def selftest() -> list[str]:
                     fails.append(f"g4-gate.json {label} → incomplete 並寫明理由（得到 {g['status']}：{g['status_reason']}）")
         finally:
             g4_review.PROJECT, g4_review.REVIEWS_DIR = saved
-    # mcp_resource_indicator（docs/05 §7）：只看 MCP 程式碼／設定；樣式在執行期組出，避免本檔原文命中自己的檢查
+    # mcp_resource_indicator：判定案例在 scripts/g4_mcp.py selftest；這裡驗證經 CI 同一段靜態步驟併進 gate JSON 與 SARIF
     imp, srv = "from " + "mcp.server.fastmcp import FastMCP\n", "mcp = Fast" + "MCP('notes')\n"
-    mcp_cases = {
-        "無 MCP": ({"app.py": "import requests\ntoken = requests.post(url, data={'grant_type': 'client_credentials'})\n"},
-                   "not_applicable", 0),
-        "MCP 無 OAuth": ({"server.py": imp + srv}, "not_applicable", 0),
-        "MCP OAuth 缺綁定": ({"server.py": imp + srv + "claims = jwt.decode(tok, key, algorithms=['RS256'])\n"}, "fail", 1),
-        "MCP OAuth 關掉 aud": ({"server.py": imp + srv + "claims = jwt.decode(tok, key, audience=URI, options={'verify_aud': False})\n"},
-                               "fail", 1),
-        "MCP OAuth 驗 aud": ({"server.py": imp + srv + "claims = jwt.decode(tok, key, algorithms=['RS256'], audience=SERVER_URI)\n"},
-                             "pass", 0),
-        "TS client 帶 resource": ({"client.ts": "import { Client } from \"@" + "modelcontextprotocol/sdk/client/index.js\";\n"
-                                                "const body = new URLSearchParams({ grant_type: 'authorization_code', code, "
-                                                "resource: 'https://mcp.example.com' });\n"}, "pass", 0),
-        "MCP fixture 在 evals/cases": ({"evals/cases/g4/x.py": imp + "jwt.decode(t, k)\n"}, "not_applicable", 0),
-    }
-    for label, (files, state, n) in mcp_cases.items():
-        with tempfile.TemporaryDirectory() as d:
-            for rel, body in files.items():
-                (pathlib.Path(d) / rel).parent.mkdir(parents=True, exist_ok=True)
-                (pathlib.Path(d) / rel).write_text(body, encoding="utf-8")
-            hits, cov = mcp_resource_check(pathlib.Path(d))
-            if cov["state"] != state or len(hits) != n or (state == "not_applicable" and not cov["reason"]):
-                fails.append(f"mcp_resource_indicator「{label}」→ {state}、{n} 筆（得到 {cov['state']}、{len(hits)} 筆：{cov['reason']}）")
     with tempfile.TemporaryDirectory() as d:   # 經 scan：發現進 SARIF 與 findings_count，coverage 有 VS-G4-MCP-RESOURCE-INDICATOR
         repo, out = pathlib.Path(d) / "proj", pathlib.Path(d) / "out"
         repo.mkdir()
@@ -510,6 +411,34 @@ def selftest() -> list[str]:
         if len(hits) != 1 or hits[0]["properties"]["policy_tier"] != "advisory" or cov.get("state") != "fail" \
                 or g["findings_count"]["advisory"] < 1 or g["status"] == "pass":
             fails.append(f"MCP 缺綁定經 scan → SARIF 一筆 advisory、coverage fail（得到 {len(hits)} 筆、{cov}、{g['findings_count']}）")
+    # CI 靜態步驟本身（不經 g4_access 的後處理）：gate JSON 一定含 VS-G4-MCP-RESOURCE-INDICATOR；
+    # 受信任樹（VIBESEC_CONFIG 所在）沒有 scripts/g4_mcp.py → 該控制 untested 並寫進 status_reason，步驟不崩潰、不記 pass
+    def run_step(cwd: pathlib.Path, config: pathlib.Path):
+        env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": "", "VIBESEC_CONFIG": str(config)}
+        p = subprocess.run(["bash", "-e", "-c", code], env=env, cwd=cwd, capture_output=True, text=True, timeout=120)
+        gp = cwd / "reports/g4-gate.json"
+        return p.returncode, (json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else None)
+    with tempfile.TemporaryDirectory() as d:
+        D = pathlib.Path(d)
+        proj, trusted = D / "proj", D / "trusted"
+        proj.mkdir(); (trusted / "scripts").mkdir(parents=True); (trusted / "config/policy").mkdir(parents=True)
+        (proj / "app.py").write_text("print('no mcp here')\n", encoding="utf-8")
+        rc, g = run_step(proj, ROOT / "vibesec.yaml")
+        cov = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == MCP_CONTROL), None)
+        if rc != 0 or not g or not cov or cov["state"] != "not_applicable" or not cov.get("reason"):
+            fails.append(f"CI 靜態步驟：沒有 MCP → coverage 應含 {MCP_CONTROL} not_applicable 並附理由（exit {rc}，{cov}）")
+        elif g:
+            check(g, "CI 靜態步驟（無 MCP）")
+        for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py"):
+            (trusted / rel).write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+        rc, g = run_step(proj, trusted / "vibesec.yaml")   # 受信任樹缺 g4_mcp.py（例如 default branch 尚未合併本模組）
+        cov = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == MCP_CONTROL), None)
+        if rc != 0 or not g or not cov or cov["state"] != "untested" or "g4_mcp" not in (g.get("status_reason") or ""):
+            fails.append(f"CI 靜態步驟：缺 scripts/g4_mcp.py → {MCP_CONTROL} untested 並寫進 status_reason（exit {rc}，{cov}）")
+        elif g["status"] == "pass":
+            fails.append("CI 靜態步驟：MCP 檢查無法執行時 G4 不得記 pass")
+        else:
+            check(g, "CI 靜態步驟（缺 g4_mcp）")
     # 目標是本 repo：與 CI 相同，從 reviews/g4 找紀錄（本 repo 目前沒有 → 標準的 pending 理由）
     with tempfile.TemporaryDirectory() as d:
         g = check(scan(ROOT, pathlib.Path(d), code), "本 repo")
