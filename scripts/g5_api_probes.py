@@ -170,6 +170,29 @@ def _write_gate(gstatus, status_reason, blocking, advisory, cov, zap_tools, star
     return gate
 
 
+def _gate_status(blocking, incomplete_reason, has_a, has_b, coverage):
+    """G5 整體狀態與 status_reason。有 blocking 發現 → fail 優先（比照 g6_gate.build）：
+    以前先判缺 token／無法連線再判 blocking，缺一個帳號就把 blocking 的 fail 蓋成 incomplete，
+    staging 判定只擋 fail，enforce 下 SSRF、CORS 等 blocking 發現因此放行。未完成項目仍寫進 status_reason。"""
+    reasons = []
+    if incomplete_reason:
+        reasons.append(incomplete_reason)
+    if not (has_a and has_b):
+        reasons.append(f"雙帳號測試需兩個 token（has_a={has_a}, has_b={has_b}）；缺 token 的 BOLA/JWT 檢查記為 untested")
+    untested = [k for k, v in coverage.items() if v == "untested"]
+    if blocking > 0:
+        # 是否擋由「黑箱彙整與判定」依 mode 與政策決定
+        if untested:
+            reasons.append("未能實測：" + "、".join(untested))
+        return "fail", ("另有未完成項目：" + "；".join(reasons)) if reasons else None
+    if reasons:
+        return "incomplete", "；".join(reasons)
+    if untested:
+        # incomplete ≠ pass（CLAUDE.md #2）：任何檢查未能實測，整體就不能報 pass
+        return "incomplete", "未能實測：" + "、".join(untested)
+    return "pass", None
+
+
 def main():
     """執行所有探針並寫出 reports/g5-api-probes.sarif 與 reports/g5-gate.json。缺必填環境變數 → incomplete（不 traceback）。"""
     global URL, TA, TB, HAS_A, HAS_B, POLICY, ROOT, REPORTS
@@ -549,21 +572,7 @@ def main():
     blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
     advisory = sum(1 for r in results if r["properties"]["policy_tier"] == "advisory")
 
-    # 缺帳號或無法連線 → incomplete
-    status_reason = None
-    if incomplete_reason:
-        gstatus = "incomplete"; status_reason = incomplete_reason
-    elif not (HAS_A and HAS_B):
-        gstatus = "incomplete"
-        status_reason = f"雙帳號測試需兩個 token（has_a={HAS_A}, has_b={HAS_B}）；缺 token 的 BOLA/JWT 檢查記為 untested"
-    elif blocking > 0:
-        gstatus = "fail"  # 是否擋由「黑箱彙整與判定」依 mode 與政策決定
-    elif any(v == "untested" for v in coverage.values()):
-        # incomplete ≠ pass（CLAUDE.md #2）：任何檢查未能實測，整體就不能報 pass
-        gstatus = "incomplete"
-        status_reason = "未能實測：" + "、".join(k for k, v in coverage.items() if v == "untested")
-    else:
-        gstatus = "pass"
+    gstatus, status_reason = _gate_status(blocking, incomplete_reason, HAS_A, HAS_B, coverage)
 
     def _cov_reason(k, v):
         if k in coverage_reasons: return coverage_reasons[k]
@@ -768,6 +777,39 @@ def selftest():
             fails.append(f"{control}（{name}）應為 {want}（得到 {got}）")
         elif want == "untested" and not got.get("reason"):
             fails.append(f"{control}（{name}）untested 時應說明原因")
+
+    # 整體狀態：blocking 發現優先記 fail，不被缺 token／未實測蓋成 incomplete（staging 判定只擋 fail）
+    for args, want in [
+        ((1, None, True, False, {"bola_idor": "untested"}), "fail"),
+        ((2, None, False, False, {}), "fail"),
+        ((1, "目標 x 無法連線", True, True, {}), "fail"),
+        ((0, None, True, False, {}), "incomplete"),
+        ((0, "目標 x 無法連線", True, True, {}), "incomplete"),
+        ((0, None, True, True, {"rate_limit": "untested"}), "incomplete"),
+        ((0, None, True, True, {"rate_limit": "pass"}), "pass"),
+        ((1, None, True, True, {"rate_limit": "pass"}), "fail"),
+    ]:
+        st, why = _gate_status(*args)
+        if st != want:
+            fails.append(f"_gate_status{args} 應為 {want}（得到 {st}）")
+        elif st == "incomplete" and not why:
+            fails.append(f"_gate_status{args} incomplete 時應說明原因")
+        elif st == "fail" and (not args[2] or not args[3] or args[1]) and "另有未完成項目" not in (why or ""):
+            fails.append(f"_gate_status{args} fail 且有未完成項目時應寫進 status_reason")
+    # 端到端：沒有任何 token，但 /me 反射 Origin（blocking）→ gate 應為 fail，不是 incomplete
+    srv = serve_routes(lambda m, p, h: base(m, p, h, lambda m, p, full, h: (200, reflect(h), "{}") if p == "/me" else None))
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            env = {"VIBESEC_TARGET_URL": f"http://127.0.0.1:{srv.server_address[1]}", "VIBESEC_CONFIG": str(repo / "vibesec.yaml")}
+            _, g = run_in(d, env)
+            if not g or g["status"] != "fail" or g["findings_count"]["blocking"] < 1:
+                fails.append(f"缺 token 但有 blocking 發現 → gate 應為 fail（得到 {g and (g['status'], g['findings_count'])}）")
+            elif "另有未完成項目" not in (g.get("status_reason") or ""):
+                fails.append("缺 token 且 fail 時，status_reason 應列出未完成項目")
+            elif list(schema.iter_errors(g)):
+                fails.append(f"缺 token 且 fail 的 gate 不符 schema：{list(schema.iter_errors(g))[0].message}")
+    finally:
+        srv.shutdown(); srv.server_close()
 
     return fails
 

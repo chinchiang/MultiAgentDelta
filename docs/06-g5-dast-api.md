@@ -19,7 +19,7 @@
 ## 觸發時機與性質
 
 - 部署到 staging 後、上線前；定期複測。
-- 需要 `VIBESEC_TARGET_URL`、`VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B`。**缺任一 → G5 `incomplete`**（`two_account_test: required`），不得記 pass（CLAUDE.md 規則 2）。
+- 需要 `VIBESEC_TARGET_URL`、`VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B`。**缺任一 → G5 `incomplete`**（`two_account_test: required`），不得記 pass（CLAUDE.md 規則 2）；但已實測到 blocking 發現時記 `fail`（blocking 優先，比照 G6），未完成項目寫進 `status_reason`，避免缺一個帳號就讓 blocking 發現在 enforce 下放行。
 - 性質：實證型發現（雙帳號 BOLA 成功、`alg:none` 被接受、SSRF 讀到中繼資料）為 blocking 且 `evidence_grade: E3`；資訊外溢多為 advisory。
 
 ## 核心任務
@@ -182,7 +182,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 
 1. 以 `.github/actions/vibesec-trusted` 取出 default branch 的判定程式、政策與 `mode`（`_trusted/`）。
 2. 決定目標（`vars.VIBESEC_TARGET_URL`，未設定則啟動本機靶場），以 `scripts/target_guard.py` 比對 `config/targets.yaml`；被拒 → 之後打目標的步驟全部略過，G5／G6 `incomplete`。
-3. 取得雙帳號 token（缺 → `incomplete`）。
+3. 取得雙帳號 token（缺 → `incomplete`；已有 blocking 發現則 `fail`）。
 4. 依序：ZAP api-scan → ZAP baseline（各自把 `report_json.json` 搬到 `reports/zap-*.json`）→ `scripts/g5_zap.py` → `api-probes`（雙帳號 BOLA、JWT、SSRF、設定外溢、rate limit；腳本內再查一次授權，並合併 `reports/g5-zap.json`）。
 5. 產出 `reports/g5-gate.json` 與 `reports/g5-api-probes.sarif`。
 6. 「黑箱彙整與判定」：shadow 或目標是靶場 → 只報告；enforce 且外部目標 → G5／G6 有 blocking 發現（或政策列為 enforce 下 incomplete 也擋的閘門 incomplete）就讓 job 失敗。
@@ -211,7 +211,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 | `vibesec.g5.cors-reflect-origin`（反射 Origin + Allow-Credentials） | blocking | CWE-942 |
 | `vibesec.g5.swagger-exposed`、`graphql-introspection`、`debug-stacktrace` | advisory | CWE-200 / CWE-209 |
 | `vibesec.g5.missing-rate-limit` | advisory | CWE-770 |
-| 缺 Token / Target / staging 未啟動 / 目標不在 `config/targets.yaml` / ZAP 報告缺席 | `incomplete` | — |
+| 缺 Token / Target / staging 未啟動 / 目標不在 `config/targets.yaml` / ZAP 報告缺席 | `incomplete`（已有 blocking 發現時為 `fail`，`status_reason` 列出未完成項目） | — |
 
 ## 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）
 
@@ -228,7 +228,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 
 - **失敗通知**：`staging-blackbox.yml` 的 notify job（僅 main）依 `.github/scripts/staging-issue.js` 判定：靶場上 G5／G6 應為 `fail` 且有 blocking，否則視為偵測退步；外部目標 G5／G6 非 `pass`（fail 或 incomplete）；job 失敗或缺閘門結果 → 開／更新追蹤 issue，恢復後自動關閉。
 
-1. **缺 Token 行為**：移除 `VIBESEC_TOKEN_B` → G5 `incomplete`（`status_reason: "VIBESEC_TOKEN_B missing"`），絕不 pass。
+1. **缺 Token 行為**：移除 `VIBESEC_TOKEN_B` → 沒有 blocking 發現時 G5 `incomplete`（`status_reason` 說明 `has_b=False`），絕不 pass；已有 blocking 發現時 G5 `fail`，`status_reason` 以「另有未完成項目」列出缺 token（`scripts/g5_api_probes.py selftest` 驗證）。
 2. **靶場正例**（`examples/vulnapp`）：bob 的 token 讀 alice 的 `/users/1/notes` 回 200 → `bola-cross-account`（修補版回 403）；`alg:none` 被接受；`/fetch?url=` 抓到 loopback canary → `ssrf-internal-fetch`（本機沒有雲端 metadata，`ssrf-metadata` 只在雲端環境可能命中；修補版在應用層回 400）；`/docs` 回 200。
 3. **反例**：修復後 B 讀 A 回 404、`alg:none` 回 401、SSRF 被 egress allowlist 擋 → 對應 finding `retest_result: fixed`、`validation_status: confirmed`。
 4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（CLAUDE.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 探針（`scripts/g5_api_probes.py`）與 `scripts/g6_cost_probe.py` 都不送任何請求。
