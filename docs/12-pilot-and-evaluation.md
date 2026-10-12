@@ -47,7 +47,7 @@ python3 scripts/compare_reviews.py --dir reports/comparison/run-01 [--rulings ru
 
 `prepare_comparison.py` 的設計：
 
-- **只用 held-out**：`evals/split.yaml` 的 held_in 用於調整 prompt，量測只用 held_out，避免調整與量測用同一批案例。另排除 `gate_status` 狀態驗證案例、需要執行中靶場的 `target_app` 案例（去標籤後 vulnapp 與 vulnapp-patched 的輸入相同，靜態審查無從區分），以及去標籤後仍含案例 ID／rule_id、或輸入相同但答案不同的案例。目前 45 個 held-out 案例中 32 個可盲測（正例 18、反例 14）。
+- **只用 held-out**：`evals/split.yaml` 的 held_in 用於調整 prompt，量測只用 held_out，避免調整與量測用同一批案例。另排除 `gate_status` 狀態驗證案例、需要執行中靶場的 `target_app` 案例（去標籤後 vulnapp 與 vulnapp-patched 的輸入相同，靜態審查無從區分），以及去標籤後仍含案例 ID／rule_id、或輸入相同但答案不同的案例。目前（2026-10-12）52 個 held-out 案例中 35 個可盲測（正例 20、反例 15），排除 17 個；數字以 `prepare_comparison.py prepare` 的輸出為準，案例增減後會變動。
 - **盲測**：審查包只含案例 `input`（遞迴去除 `title`、`notes`、`expected`、`target_app` 等欄位），`packet_id` 以 HMAC-SHA256（salt、案例 ID）產生，同一 salt 可重現；salt 與對照只寫在 `answer-key.json`，不得送給模型。審查包宣告 `data_class`，`review_provider.py` 取審查包與 `--data-class` 中較嚴格者。
 - **計畫驗證**（規則 6、7）：provider 須 `enabled`、`allowed_data_classes` 含審查包分級，confidential／pii 只能用 `sensitive_data_providers`；A 恰 1 個 agent，B ≥2 個 agent 且只有 1 個 family，C ≥2 個 agent 且 ≥2 個 family。不符就不產生任何檔案。
 - **角色**：`auto` 依案例 domain 取 docs/09 §8 的主責角色，三組同一規則；角色本身會透露領域，但每個領域都有正反例，不透露答案。預設 B 與 C 都是「同一角色、兩個獨立 agent」，兩組只差在 family，呼叫數相同（預算一致）；A1、B1、C1 是同一 provider:role 的獨立呼叫。
@@ -60,9 +60,9 @@ python3 scripts/compare_reviews.py --dir reports/comparison/run-01 [--rulings ru
 
 注意事項：
 
-- **成本**：預設 32 個審查包 × (1 + 2 + 2) = **160 次 call**；`rotation.budget.max_calls_per_run`（400）以一次 harness 執行為單位，此實驗應另行核准預算。費用與人工確認時間不在模型輸出中，需人工另行記錄，不得補造。
+- **成本**：預設 35 個審查包 × (1 + 2 + 2) = **175 次 call**（A=35／B=70／C=70）；`rotation.budget.max_calls_per_run`（400）以一次 harness 執行為單位，此實驗應另行核准預算。費用與人工確認時間不在模型輸出中，需人工另行記錄，不得補造。
 - **資料分級**：評測案例是本 repo 的合成 fixture，預設 `internal`；境外雲端 `glm-cloud`、`deepseek-cloud` 只收 public，放進 internal 計畫會被拒絕。改用 confidential／pii 時三組都只能用地端／內網 provider（iec-glm、iec-deepseek、lmstudio-local、onprem_vllm）。
-- **可比較性**：`anthropic-bedrock` 不接受 temperature，同一 prompt 的輸出可能不同；內網端點連不到會是 error。只有三組都 complete 且分母相同時才比較召回率；32 案的區間很寬，不能當作普遍結論。
+- **可比較性**：`anthropic-bedrock` 不接受 temperature，同一 prompt 的輸出可能不同；內網端點連不到會是 error。只有三組都 complete 且分母相同時才比較召回率；35 案的區間很寬，不能當作普遍結論。
 
 ## 四、驗收門檻
 
