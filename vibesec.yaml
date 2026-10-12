@@ -62,7 +62,9 @@ gates:
     tools: [semgrep, checkov, trivy-config]
     semgrep_rules: [config/semgrep/vibesec-rules.yaml, p/owasp-top-ten, p/security-audit]
     semgrep_taint_mode: true
-    nightly_full: [codeql]
+    # CodeQL（跨檔跨函式）不在 nightly-full.yml：由 repo 的 Code scanning default setup 執行
+    # （PR、push 到 main、每週排程；語言 python、actions；query suite default）。以前這裡的 nightly_full: [codeql]
+    # 沒有任何程式讀取，#117 刪掉 nightly 的 CodeQL job 後也不再符合事實。結果是 Code Scanning 證據，目前未接進閘門裁決。
   g4_access_control_review:
     enabled: true
     timeout_seconds: 900

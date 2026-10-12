@@ -4,7 +4,7 @@
 |---|---|
 | 閘門 ID | `G3` |
 | 性質 | 白箱、確定性（規則 + 污點分析）；PR diff-aware < 5 分鐘；夜間全量 |
-| 設定 | `vibesec.yaml` → `gates.g3_sast_iac`（`diff_aware: true`、`tools: [semgrep, checkov, trivy-config]`、`semgrep_rules: [config/semgrep/vibesec-rules.yaml, p/owasp-top-ten, p/security-audit]`、`semgrep_taint_mode: true`、`nightly_full: [codeql]`、`timeout_seconds: 900`） |
+| 設定 | `vibesec.yaml` → `gates.g3_sast_iac`（`diff_aware: true`、`tools: [semgrep, checkov, trivy-config]`、`semgrep_rules: [config/semgrep/vibesec-rules.yaml, p/owasp-top-ten, p/security-audit]`、`semgrep_taint_mode: true`、`timeout_seconds: 900`）；CodeQL 不在此設定，由 repo 的 Code scanning default setup 執行 |
 | 規則 / 設定 | `config/semgrep/vibesec-rules.yaml`、`config/checkov/.checkov.yaml`、`config/checkov/custom/imdsv2_required.yaml`、`config/checkov/custom/cors_wildcard.yaml`；`.semgrepignore` 排除 `examples/vulnapp/`、`evals/`（刻意有漏洞的靶場與評測 fixture 不被 G3 掃描） |
 | 負責 | DevOps / 平台（CI 整合）、AppSec（規則） |
 
@@ -19,7 +19,8 @@
 | 時機 | 範圍 | 工具 | 時間目標 |
 |---|---|---|---|
 | 每次 PR（`diff_aware: true`） | 變更檔 + 其直接相依 | Semgrep（taint）、Checkov、`trivy config` | **< 5 分鐘**（超過 → 縮 ruleset，不是關閉） |
-| 夜間（`nightly_full: [codeql]`） | 全 repo | CodeQL（跨檔跨函式；由 GitHub Code scanning default setup 於 PR、push 到 main 與每週排程執行，不在 `nightly-full.yml`）、Semgrep 全量（夜間 workflow 目前沒有獨立 Checkov job） | 不限 |
+| 夜間（`nightly-full.yml`） | 全 repo | Semgrep 全量（夜間 workflow 目前沒有獨立 Checkov job） | 不限 |
+| PR、push 到 main、每週排程（Code scanning default setup） | 全 repo | CodeQL（跨檔跨函式；語言 python、actions，query suite default；repo 設定，不在任何 workflow 檔） | 不限 |
 | 手動 | 指定目錄 | 同上 | — |
 
 性質：高確定性規則（參數化 SQL、`shell=True`、`alg:none`、IMDSv2）為 blocking；需上下文判斷者（CORS、root user、缺 owner filter）為 advisory。工具缺席 / 逾時 → `incomplete`。
@@ -119,10 +120,14 @@ trivy config . --format sarif --output reports/trivy-config.sarif # 本機示意
 # ---- 夜間全量 ----
 semgrep --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit \
   --sarif -o reports/semgrep-full.sarif .
-# CodeQL（CI 由 GitHub Code scanning default setup 執行；以下為本機等價）
-codeql database create /tmp/db --language=python   # default setup 分析的語言為 python 與 actions（repo 無 JS/TS） --source-root .
-codeql database analyze /tmp/db codeql/python-queries:codeql-suites/python-security-extended.qls \
-  codeql/javascript-queries:codeql-suites/javascript-security-extended.qls --format=sarif-latest --output=reports/codeql.sarif
+# CodeQL：CI 由 GitHub Code scanning default setup 執行（語言 python、actions；query suite default）。以下為本機等價。
+# .github/scripts/*.js 目前不在 default setup 的分析語言內；要掃 JS 另建 --language=javascript-typescript 的 database。
+codeql database create /tmp/codeql-python --language=python --source-root .
+codeql database analyze /tmp/codeql-python codeql/python-queries:codeql-suites/python-code-scanning.qls \
+  --format=sarif-latest --output=reports/codeql-python.sarif
+codeql database create /tmp/codeql-actions --language=actions --source-root .
+codeql database analyze /tmp/codeql-actions codeql/actions-queries:codeql-suites/actions-code-scanning.qls \
+  --format=sarif-latest --output=reports/codeql-actions.sarif
 checkov -d . --config-file config/checkov/.checkov.yaml --check ''   # 清空 allow-list 跑全規則
 ```
 
@@ -195,5 +200,5 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
    - Dockerfile 沒有 `USER` → `CKV_DOCKER_3` → `dockerfile-root-user`（`g3-docker-root-pos-01`）；最後切到非 root `USER` → 無（`g3-docker-root-neg-01`）。
 3. **Checkov 自訂政策載入**：`checkov --list --external-checks-dir config/checkov/custom | grep CKV2_VIBESEC` 顯示兩條。
 4. **時效**：PR 階段 wall-clock < 5 分鐘；超過時先移除 `p/security-audit` 的低信心規則而非關閉閘門。
-5. **跨檔案例**：source 在 `routers/`、sink 在 `services/` 的 fixture，CE 漏報、CodeQL / Pro 命中 → 應在 summary 標記「需夜間全量」（尚未實作），不得因 CE 漏報記 pass。
+5. **跨檔案例**：source 在 `routers/`、sink 在 `services/` 的 fixture，CE 漏報、CodeQL / Pro 命中 → 應在 summary 標記「需全庫跨檔分析（CodeQL default setup 結果）」（尚未實作），不得因 CE 漏報記 pass。
 6. **SARIF 完整性**：每筆結果有 `ruleId`、`locations[].physicalLocation`、`properties.cwe`；上傳 Code Scanning 後能在 PR 看到註解。
