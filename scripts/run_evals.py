@@ -56,6 +56,20 @@ def load_yaml(p: pathlib.Path):
     return yaml.safe_load(p.read_text(encoding="utf-8"))
 
 
+def slopcheck_incomplete(out: dict, case: dict) -> str | None:
+    """slopcheck 的 stdout 是否讓本案例無法判定（回傳原因；可判定回 None）。
+    檢查本身失敗（incomplete_checks：registry 失敗、鎖定檔未解析）→ 無法判定；只有與本案例規則無關的控制未實測
+    （untested_controls，例如 PyPI 安裝腳本尚無檢查的 VS-G1-INSTALL-HOOK）→ 照常判定，否則每個 PyPI 案例都變 incomplete。"""
+    if out.get("status") != "incomplete":
+        return None
+    reason = f"slopcheck incomplete：{out.get('status_reason', '')[:120]}"
+    if out.get("incomplete_checks") or "untested_controls" not in out:
+        return reason
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from g1_slopcheck import CONTROL_OF
+    return reason if CONTROL_OF.get((case.get("expected") or {}).get("rule_id")) in out["untested_controls"] else None
+
+
 def semgrep_rule_ids() -> set[str]:
     try:
         rules = (load_yaml(SEMGREP_RULES) or {}).get("rules") or []
@@ -192,8 +206,9 @@ class SlopcheckRunner(Runner):
                 out = json.loads(p.stdout)
             except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 return None, f"slopcheck 執行失敗：{type(e).__name__}"
-            if out.get("status") == "incomplete":
-                return None, f"slopcheck incomplete：{out.get('status_reason', '')[:120]}"
+            why = slopcheck_incomplete(out, case)
+            if why:
+                return None, why
             return {f.get("rule_id") for f in out.get("findings", [])}, None
 
 
@@ -317,8 +332,9 @@ class RulesFileRunner(Runner):
                 out = json.loads(p.stdout)
             except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 return None, f"slopcheck 執行失敗：{type(e).__name__}"
-            if out.get("status") == "incomplete":
-                return None, f"slopcheck incomplete：{out.get('status_reason', '')[:120]}"
+            why = slopcheck_incomplete(out, case)
+            if why:
+                return None, why
             return {f.get("rule_id") for f in out.get("findings", [])}, None
 
 
@@ -1414,6 +1430,19 @@ def selftest() -> list[str]:
     got = _doc_hosts({"input": {"retrieved_doc": "see https://attacker.example/x?a=1 and (http://evil.test/p) not ftp://no"}})
     if got != {"attacker.example", "evil.test"}:
         fails.append(f"_doc_hosts 應取出 http(s) 主機（得到 {got}）")
+    # slopcheck_incomplete：檢查失敗 → 無法判定；只有無關控制未實測 → 照常判定；本案例的控制未實測 → 無法判定
+    slop = {"expected": {"rule_id": "vibesec.g1.hallucinated-package"}}
+    hook = {"expected": {"rule_id": "vibesec.g1.postinstall-egress"}}
+    inc = {"status": "incomplete", "status_reason": "x"}
+    for name, out, case, want in [
+        ("沒有 incomplete", {"findings": []}, slop, False),
+        ("registry 失敗", {**inc, "incomplete_checks": ["npm 逾時"], "untested_controls": ["VS-G1-SLOPSQUAT"]}, slop, True),
+        ("舊版輸出（沒有分欄）", inc, slop, True),
+        ("只有安裝腳本未實測", {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]}, slop, False),
+        ("本案例的控制未實測", {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]}, hook, True),
+    ]:
+        if bool(slopcheck_incomplete(out, case)) != want:
+            fails.append(f"slopcheck_incomplete（{name}）應為 {'無法判定' if want else '可判定'}")
 
     return fails
 
