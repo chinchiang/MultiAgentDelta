@@ -127,6 +127,8 @@ executed:
   - g6-agency-pos-01
   - g6-agency-telemetry-neg-01
   - g6-agency-telemetry-pos-01
+  - g6-direct-neg-01
+  - g6-direct-pos-01
   - g6-dow-neg-01
   - g6-dow-pos-01
   - g6-indirect-neg-01

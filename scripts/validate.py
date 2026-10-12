@@ -395,7 +395,6 @@ if yaml is not None:
             "vibesec.g1.sbom-missing-provenance": "需 GitHub attestation，無離線執行器；判定由 g1_provenance.py selftest 覆蓋",
             "vibesec.g1.sbom-incomplete": "需 syft；判定由 g1_sbom.py selftest 覆蓋",
             "vibesec.g5.ssrf-metadata": "本機沒有雲端 metadata 端點，靶場只能以 loopback canary 證實（ssrf-internal-fetch 有正例）",
-            "vibesec.g6.direct-prompt-injection": "靶場尚未實作 override 行為（OVERRIDE-ACCEPTED），待靶場補上後新增正例並移除此豁免",
         }
         _pol = {}
         for c in cases.values():

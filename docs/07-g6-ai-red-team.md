@@ -235,11 +235,11 @@ G6 不是孤立的一道，許多 LLM 風險的根因其實在白箱：
 ## 驗證方式
 
 1. **promptfoo 設定有效**：`promptfoo validate -c config/promptfoo/tests.yaml` 與 `-c config/promptfoo/promptfooconfig.yaml`。
-   **失敗不得被報成 incomplete**：對靶場跑 `tests.yaml` 應得退出碼 100、2 項失敗（`<script>` 原樣輸出、canary 外洩），`g6_gate.py` 產出 `status: fail`（eval 案例 `g6-promptfoo-fail-not-incomplete-01`）。
-2. **靶場正例**（`examples/vulnapp`）：`/chat` 會回覆含 `VIBESEC-SYSPROMPT-CANARY`、會原樣吐 `<script>`、對超長輸入無節流 → 三項檢查命中。
+   **失敗不得被報成 incomplete**：對靶場跑 `tests.yaml` 應得退出碼 100，且有斷言失敗（`<script>` 原樣輸出、canary 外洩、角色覆寫 `OVERRIDE-ACCEPTED`、文件夾帶指令的外連意圖、`TOOL-CALL:` 等），`g6_gate.py` 產出 `status: fail`（eval 案例 `g6-promptfoo-fail-not-incomplete-01`）。
+2. **靶場正例**（`examples/vulnapp`）：`/chat` 會回覆含 `VIBESEC-SYSPROMPT-CANARY`、服從角色覆寫回覆 `OVERRIDE-ACCEPTED`、會原樣吐 `<script>`（靶場不儲存回覆，實為反射型）、對超長輸入無節流 → 對應檢查命中。
 3. **反例**：加上輸出編碼、system prompt 不外洩、長度限制 + token 配額後重跑 → 命中消失、`retest_result: fixed`。
 3a. **成本面可實測**：`python3 scripts/g6_cost_probe.py selftest` 與 `python3 scripts/g6_gate.py selftest`（由 `scripts/validate.py` 執行）；評測案例 `g6-dow-pos-01`（靶場照單全收 → fail）與 `g6-dow-neg-01`（修補模式回 413 → pass）列在 `evals/baseline.yaml`，nightly 必須實測且判定正確。
 3b. **工具事件遙測可實測**：`python3 scripts/g6_observe.py selftest`、`python3 scripts/llm_observations.py selftest`（由 `scripts/validate.py` 執行；含未授權目標不送請求、非同源與 redirect 不跟隨、回覆內容不落地）；評測案例 `g6-agency-telemetry-pos-01`（靶場未核准即執行 → fail）、`g6-agency-telemetry-neg-01`（修補模式未執行 → pass）、`g6-obsmalformed-incomplete-01`（觀測檔損毀 → incomplete）列在 `evals/baseline.yaml`。
-4. **間接注入外連**：靶場故意對 `attacker.example` 發請求，egress 日誌出現該網域 → E3（日誌檢查尚未實作）；加 egress allowlist 後消失。
+4. **間接注入外連**：靶場**不會**真的發出請求，只以 `EGRESS-INTENT: …` 文字回報外連意圖（promptfoo 斷言據此判定，屬 E2）；要達 E3 需真實目標的 egress 日誌出現 `attacker.example`（日誌檢查尚未實作），加 egress allowlist 後消失。
 5. **資料不出境 / 授權目標**：確認 redteam provider 在 `config/providers.yaml` 允許清單；target 僅限授權 staging。
 6. **對映正確**：抽查 finding，`rule_id` 能在 `cwe-map.yaml` 或 `external_prefixes` 查到 cwe 與 control_ids，無猜測（CLAUDE.md 規則 3）。
