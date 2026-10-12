@@ -27,6 +27,8 @@
 
 ## 3. 每件發現必須記錄的項目
 
+**CVE 的來源**（CLAUDE.md 規則 3）：文件、設定、workflow 與評測中手寫引用的 CVE，必須先查證（GHSA、CISA KEV）並列入 `config/catalogs/cve-references.yaml`，`scripts/validate.py` 會擋下不在目錄的引用。finding 的 `cve` 欄位：掃描工具（grype、trivy）回報的 CVE 是工具輸出，照原值記錄並以 `sources.tool` 標明來源；模型提出的 CVE 必須在目錄中，或經工具／人工查證後才能填入，否則填 `null` 並在 `notes` 說明，不得由模型猜測。
+
 | 項目 | 對應欄位 |
 |---|---|
 | 原始來源（工具 / 公告 / 模型 / 人工） | `sources.tool`、`evidence_refs[].kind` |

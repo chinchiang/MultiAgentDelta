@@ -41,7 +41,7 @@ flowchart TB
     direction LR
     CFG["vibesec.yaml<br/>mode: shadow · risk_tier: L3<br/>G0–G6 皆 enabled"]
     POL["config/policy/blocking-policy.yaml<br/>→ scripts/vibesec_policy.py（tier 唯一來源）"]
-    CAT["config/catalogs/<br/>ASVS · CWE · LLM Top 10 · MAESTRO"]
+    CAT["config/catalogs/<br/>ASVS · CWE · LLM Top 10 · MAESTRO · CVE"]
     PRV["config/providers.yaml<br/>family · allowed_data_classes"]
     SCH["schemas/*.schema.json"]
     TM["docs/threat-model.yaml（G0 輸入）"]
@@ -175,7 +175,7 @@ MultiAgentDelta/
 │       ├── staging-blackbox.yml   # 每週：G5 DAST/API + G6 AI 紅隊、notify
 │       └── review-record-trust.yml# 外部 G4 紀錄須由非作者 approve
 ├── config/
-│   ├── catalogs/                  # ID 唯一來源：ASVS 5.0、CWE 對應、LLM Top 10 2025、MAESTRO
+│   ├── catalogs/                  # ID 唯一來源：ASVS 5.0、CWE 對應、LLM Top 10 2025、MAESTRO、CVE 參考（cve-references.yaml）
 │   ├── policy/blocking-policy.yaml# blocking 清單、tier_overrides、exceptions（人類獨立 PR 才能改）
 │   ├── providers.yaml             # 模型 provider：family、allowed_data_classes、金鑰環境變數
 │   ├── targets.yaml               # G5/G6 授權目標允許清單（預設只允許本機靶場；CLAUDE.md 規則 8）
