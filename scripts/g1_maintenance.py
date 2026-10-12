@@ -151,13 +151,34 @@ def _date(s: str | None) -> datetime.datetime | None:
         return None
 
 
+def _same_version(system: str, a, b) -> bool:
+    """版本是否相同。deps.dev 把 PyPI 版本正規化成三段（PyPI 的 3.20 在 deps.dev 是 3.20.0），
+    直接比字串會把正在用的版本當成「不在 versions」→ 無法判定（nightly run 38189498571：idna 3.20、pycparser 3.0、
+    websockets 17.2）。PyPI 依 PEP 440 去掉發行段尾端的 0 再比；其他生態系維持原字串比對。"""
+    a, b = str(a or "").strip(), str(b or "").strip()
+    if a == b:
+        return True
+    if str(system).lower() != "pypi":
+        return False
+    def key(v):
+        m = re.match(r"^v?(\d+(?:\.\d+)*)(.*)$", v.lower())
+        if not m:
+            return v.lower()
+        parts = [int(x) for x in m.group(1).split(".")]
+        while len(parts) > 1 and parts[-1] == 0:
+            parts.pop()
+        return (tuple(parts), m.group(2))
+    return key(a) == key(b)
+
+
 class Undecidable(Exception):
     """deps.dev 有這個套件，但資料不足以判定兩個訊號（所用版本不在 versions、沒有預設版本或其發布日）。"""
 
 
 def assess(pkg: dict, data: dict, days: int, now: datetime.datetime) -> dict | None:
     versions = data.get("versions") or []
-    used = next((v for v in versions if (v.get("versionKey") or {}).get("version") == pkg["version"]), None)
+    used = next((v for v in versions
+                 if _same_version(pkg.get("system", ""), (v.get("versionKey") or {}).get("version"), pkg["version"])), None)
     default = next((v for v in versions if v.get("isDefault")), None)
     # 任一訊號無法評估就不算「已檢查」：否則兩個訊號都被跳過，套件被當成維護中（incomplete ≠ pass）
     missing = ([f"所用版本 {pkg['version']} 不在 deps.dev versions"] if used is None else []) + \
@@ -345,6 +366,13 @@ def selftest() -> list[str]:
                 fails.append(f"SBOM 為 {label} 不應拋出例外：{type(e).__name__}"); continue
             if st["status"] != "incomplete":
                 fails.append(f"SBOM 為 {label} 應為 incomplete：{st}")
+        # PyPI 版本正規化：deps.dev 的 3.20.0 就是 PyPI 的 3.20（以前判成「不在 versions」→ 無法判定）
+        for a, b, want in (("3.20", "3.20.0", True), ("3.0", "3.0.0", True), ("17.2", "17.2.0", True),
+                           ("1.0rc1", "1.0.0rc1", True), ("3.2", "3.20.0", False), ("1.0", "1.0.1", False)):
+            if _same_version("pypi", a, b) != want:
+                fails.append(f"PyPI 版本 {a} 與 {b} 應{'視為相同' if want else '視為不同'}")
+        if _same_version("npm", "1.0", "1.0.0"):
+            fails.append("非 PyPI 生態系維持原字串比對")
         # 所用版本不在 versions、沒有預設版本 → 無法判定，不算已檢查
         DB[("pypi", "nover")] = {"versions": [ver("2.0", "2026-01-01T00:00:00Z", default=True)]}
         DB[("pypi", "nodefault")] = {"versions": [ver("1.0", "2026-01-01T00:00:00Z")]}

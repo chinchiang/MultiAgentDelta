@@ -5,7 +5,9 @@ title: AI 推薦了不存在的幻覺套件（typosquat）
 input:
   kind: manifest
   ecosystem: npm
-  added: ["axois@1.0.0"]          # axios 的幻覺/搶註名
+  # axios 的幻覺／搶註名。1.0.0 已被 npm 以安全理由下架（registry 只剩 0.0.1-security 佔位版）：
+  # 指定已下架的版本，slopcheck 查不到發布紀錄 → 正確地記 incomplete，案例就測不到名稱判定。改用 registry 現存的版本。
+  added: ["axois@0.0.1-security"]
 expected:
   should_flag: true
   control_id: VS-G1-SLOPSQUAT
