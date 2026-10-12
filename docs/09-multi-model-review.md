@@ -106,7 +106,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 硬規則（來自 CLAUDE.md 第 6 條與 `vibesec.yaml review.*`）：
 
 1. **第一輪不交換**（`round1_independent: true`）：審查包不含任何模型意見、也不含工具以外的「初步結論」。確保共同盲點可被量測。
-2. **最多兩輪交叉**（`max_cross_rounds: 2`），`round` 欄位 1–3。
+2. **最多兩輪交叉**（`max_cross_rounds: 2`），`round` 欄位 1–3。`scripts/g4_review.py` 檢查輪次結構，不符即紀錄不採用：每個出現在意見中的（角色, provider）都必須有第 1 輪獨立意見；第 N 輪（N ≥ 2）之前必須有第 N−1 輪（不能跳輪）；同一（角色, provider）同一輪只能有一筆。第 1 輪之後缺席（逾時、錯誤）是允許的，該 provider 以第 1 輪意見計（見第 3 點）。第一輪是否真的獨立（審查包沒有夾帶他人意見）無法從紀錄驗證，仍靠第 1 點的流程保證。
 3. **保留少數意見**（`keep_minority_opinions: true`）：最終輪與多數不同者 `minority: true`，不刪除、不覆寫；`summary.md` 的 requires_human 區塊列出。`scripts/g4_review.py` 判斷分歧時取**每個（角色, provider）自己最後一輪**的意見，不是全域最後一輪：第 1 輪 refute、之後缺席（逾時、錯誤）者的 refute 仍算數，仍須 `requires_human: true`。輪次超過 `1 + review.max_cross_rounds` 的紀錄不採用。
 4. **不多數決**（`majority_vote: false`）：三個 confirm 一個 refute，finding 仍是 `pending` + `requires_human: true`。多數決會讓同質模型的共同錯誤變成「共識」。
 5. **一致也不等於確認**：全員 `confirm` 只能把 finding 從 E1 升到 E2（有直接支持）；要到 E3 需可重現測試或人工核對（docs/10 §1）。

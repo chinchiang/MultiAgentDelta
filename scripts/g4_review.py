@@ -166,6 +166,22 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
                 latest[k] = o
             if o["round"] > cfg["max_round"]:
                 errors.append(f"{fid}: 第 {o['round']} 輪超過上限（第 1 輪獨立 + 最多 {cfg['max_round'] - 1} 輪交叉，vibesec.yaml review.max_cross_rounds）")
+        # 輪次結構（規則 6：第一輪獨立、之後最多兩輪交叉）：以前只檢查 round ≤ 上限，一份只有第 3 輪意見的紀錄也能通過，
+        # 等於沒有獨立的第一輪。每個（角色, provider）都要有第 1 輪；第 N 輪（N ≥ 2）之前必須有第 N−1 輪（不能跳輪）；
+        # 同一（角色, provider）同一輪只能有一筆（否則「自己最後一輪」不明確）
+        by_key: dict[tuple[str, str], list[int]] = {}
+        for o in f["opinions"]:
+            by_key.setdefault((o["role"], o["provider"]), []).append(o["round"])
+        for (role, prov), rounds in sorted(by_key.items()):
+            if 1 not in rounds:
+                errors.append(f"{fid}: {role}／{prov} 沒有第 1 輪獨立意見（第 {min(rounds)} 輪起才出現；規則 6：第一輪須獨立審查）")
+            dup = sorted({r for r in rounds if rounds.count(r) > 1})
+            if dup:
+                errors.append(f"{fid}: {role}／{prov} 在第 {'、'.join(map(str, dup))} 輪有多筆意見（每輪只能一筆）")
+        present = {o["round"] for o in f["opinions"]}
+        for r in sorted(present):
+            if r > 1 and r - 1 not in present:
+                errors.append(f"{fid}: 有第 {r} 輪意見但沒有第 {r - 1} 輪（交叉輪須依序進行，不能跳輪）")
         verdicts = {o["verdict"] for o in latest.values()}
         op_families = {o["family"] for o in f["opinions"]}
         divergent = len(verdicts) > 1 or "uncertain" in verdicts
@@ -590,8 +606,29 @@ def selftest() -> list[str]:
     bad("第 1 輪 refute 後缺席，少數意見不得消失", minority_vanishes, "requires_human 必須為 true")
     bad("資料分級超出 provider 允許範圍", lambda r: r.update(data_class="confidential"), "不得外傳")
     bad("缺 data_class", lambda r: r.pop("data_class"), "data_class")
+    # 輪次結構：範例 findings[0] 的意見為 [claude r1, openai r1, claude r2, openai r2]
+    def only_round2(r):        # 拿掉所有第 1 輪：只剩交叉輪，沒有獨立的第一輪
+        f = r["findings"][0]; f["opinions"] = [o for o in f["opinions"] if o["round"] != 1]
+    def one_key_no_round1(r):  # openai 只有第 2 輪
+        f = r["findings"][0]; f["opinions"] = [o for o in f["opinions"] if not (o["provider"] == "openai-cloud" and o["round"] == 1)]
+    def skip_round2(r):        # 第 1 輪之後直接跳到第 3 輪
+        for o in r["findings"][0]["opinions"]:
+            if o["round"] == 2: o["round"] = 3
+    def duplicate_round1(r):   # 同一（角色, provider）第 1 輪兩筆
+        f = r["findings"][0]; f["opinions"].append(dict(f["opinions"][0], verdict="refute"))
+    bad("只有交叉輪、沒有第 1 輪獨立意見", only_round2, "沒有第 1 輪獨立意見")
+    bad("某個（角色, provider）缺第 1 輪", one_key_no_round1, "openai-cloud 沒有第 1 輪獨立意見")
+    bad("跳過第 2 輪直接第 3 輪", skip_round2, "沒有第 2 輪")
+    bad("同一（角色, provider）同一輪多筆意見", duplicate_round1, "每輪只能一筆")
+    r_ok = copy.deepcopy(rec)   # 第 1 輪之後缺席（例如逾時）是允許的：只要第 1 輪在、沒有跳輪
+    r_ok["findings"][0]["opinions"] = [o for o in r_ok["findings"][0]["opinions"]
+                                       if not (o["provider"] == "openai-cloud" and o["round"] == 2)]
+    _round_errs = [e for e in evaluate(r_ok, cfg, controls, None)["errors"] if "輪" in e]
+    if _round_errs:
+        fails.append(f"第 1 輪之後缺席不應觸發輪次錯誤（得到 {_round_errs}）")
     r_rounds = copy.deepcopy(rec)
-    if not any("輪超過上限" in e for e in evaluate(r_rounds, {**cfg, "max_round": 2}, controls, None)["errors"]):
+    # 範例紀錄最多到第 2 輪：上限設為 1（不允許交叉輪）時第 2 輪必須被拒絕
+    if not any("輪超過上限" in e for e in evaluate(r_rounds, {**cfg, "max_round": 1}, controls, None)["errors"]):
         fails.append("超過 max_cross_rounds 的輪次必須拒絕")
     # 一個 family 且無發現 → incomplete（不是 pass）
     r5 = copy.deepcopy(r4); r5["providers"][1]["state"] = "missing"
