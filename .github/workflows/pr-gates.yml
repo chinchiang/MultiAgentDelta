@@ -502,7 +502,7 @@ jobs:
         id: trusted
         uses: ./.github/actions/vibesec-trusted
 
-      - name: G4 靜態檢查（Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware）
+      - name: G4 靜態檢查（Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware / MCP resource indicator）
         id: g4static
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         env:
@@ -710,6 +710,18 @@ jobs:
                       f"FastAPI {p} 第 {line} 行的 middleware 含授權判斷，但沒有任何路由或 router 以 Depends／Security 檢查授權："
                       "middleware 被繞過或路由掛到其他 app 時沒有第二道檢查；路由或服務層需獨立 authz，資料層再加 owner filter", p, line)
 
+          # 5) MCP OAuth 的 RFC 8707 resource indicator（vibesec.yaml static_checks 的 mcp_resource_indicator；docs/05 §7）— advisory。
+          #    判定在受信任的 scripts/g4_mcp.py（與本機版 g4_access.py、run_evals.py 共用，只用標準函式庫）。
+          #    無法載入或執行（例如 default branch 還沒有這支模組）→ 控制記 untested 並寫進 status_reason，不讓整步崩潰。
+          try:
+              from g4_mcp import mcp_resource_check, MCP_RULE
+              mcp_hits, MCP_COV = mcp_resource_check(pathlib.Path("."))
+          except Exception as e:
+              mcp_hits, MCP_COV = [], {"control_id": "VS-G4-MCP-RESOURCE-INDICATOR", "state": "untested",
+                                       "reason": f"MCP resource indicator 檢查無法執行（scripts/g4_mcp.py：{type(e).__name__}）"}
+          for uri, line, msg in mcp_hits:
+              add(MCP_RULE, "warning", msg, uri, line)
+
           sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
                    "version": "2.1.0",
                    "runs": [{"tool": {"driver": {"name": "vibesec-g4-static", "version": "1.0.0",
@@ -728,6 +740,8 @@ jobs:
           status_reason = LLM_PENDING if status == "incomplete" else f"靜態檢查 {blocking} 筆 blocking；另：{LLM_PENDING}"
           if READ_ERR:
               status_reason += "；部分檔案無法讀取，對應控制記 untested：" + "；".join(f"{k}：{'、'.join(v[:3])}" for k, v in READ_ERR.items())
+          if MCP_COV["state"] == "untested":
+              status_reason += "；" + MCP_COV["reason"]
           def _state(*ids, ctl=None):
               if any(r["ruleId"] in ids for r in results): return "fail"
               return "untested" if ctl in READ_ERR else "pass"
@@ -747,6 +761,7 @@ jobs:
                       {"control_id": "ASVS5-V8.3", "state": _state("vibesec.g4.single-middleware-authz", ctl="ASVS5-V8.3"), "reason": _why("ASVS5-V8.3")},
                       {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure", ctl="VS-G4-AGENT-TOOL-ALLOWLIST"), "reason": _why("VS-G4-AGENT-TOOL-ALLOWLIST")},
                       {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl", ctl="ASVS5-V2.3"), "reason": _why("ASVS5-V2.3")},
+                      MCP_COV,
                       {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
                   ]}
           (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -832,7 +847,7 @@ jobs:
             // 留言內容由 scripts/g4_review.py gate 產生（含審查紀錄與發現表）；檔案缺席時退回固定提醒
             let body;
             try { body = fs.readFileSync('reports/g4-comment.md', 'utf8'); } catch (e) {
-              body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware）。\n\n**G4 狀態：\`incomplete\`**——LLM 審查（VS-G4-LLM-REVIEW）尚未執行，需由 \`/vibesec-harness\` 完成並提交 \`reviews/g4/<commit>.yaml\`（跨檔授權推理、BOLA/IDOR 綁定、跨檔的 HITL 確認無法由靜態規則涵蓋）。目前政策下 G4 incomplete 不擋 merge。`;
+              body = `${marker}\n### VibeSec G4 — 存取控制\n\nG4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware / MCP resource indicator）。\n\n**G4 狀態：\`incomplete\`**——LLM 審查（VS-G4-LLM-REVIEW）尚未執行，需由 \`/vibesec-harness\` 完成並提交 \`reviews/g4/<commit>.yaml\`（跨檔授權推理、BOLA/IDOR 綁定、跨檔的 HITL 確認無法由靜態規則涵蓋）。目前政策下 G4 incomplete 不擋 merge。`;
             }
             if (!body.includes(marker)) body = `${marker}\n${body}`;
             const {owner, repo} = context.repo;

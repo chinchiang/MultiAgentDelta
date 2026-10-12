@@ -396,7 +396,7 @@ def md_safe(text) -> str:
 def comment_markdown(gate: dict, record_ref: str | None) -> str:
     st = gate["status"]
     lines = ["<!-- vibesec-g4-llm-review -->", "### VibeSec G4 — 存取控制", "",
-             "G4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware）。", "",
+             "G4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware / MCP resource indicator）。", "",
              f"**G4 狀態：`{md_safe(st)}`**——{md_safe(gate.get('status_reason'))}"]
     if record_ref:
         rows = gate.get("_llm_findings") or []

@@ -460,20 +460,19 @@ def _fixture_path(inp: dict) -> str | None:
 
 
 class G4StaticRunner(Runner):
-    """執行 pr-gates.yml 中同一份 G4 靜態檢查程式碼：把 fixture 寫到暫存 repo 的原路徑，再跑該步驟；
-    再加上 scripts/g4_access.py 本機版額外的檢查（目前是 mcp_resource_indicator，CI inline 步驟尚未包含），
-    與 g4_access.py scan 併入結果的方式相同。所有 SARIF 等級都算偵測（G4 的 single-middleware 本來就以 note 等級回報 advisory）。"""
+    """執行 pr-gates.yml 中同一份 G4 靜態檢查程式碼：把 fixture 寫到暫存 repo 的原路徑，再跑該步驟
+    （含步驟呼叫 scripts/g4_mcp.py 的 mcp_resource_indicator）。所有 SARIF 等級都算偵測（G4 的 single-middleware 本來就以 note 等級回報 advisory）。"""
     name = "g4-static"
     STEP = "G4 靜態檢查"
 
     def __init__(self):
         self.code = _workflow_step(self.STEP, "pr-gates.yml")
         self.rules = set(re.findall(r'add\("(vibesec\.g4\.[a-z0-9-]+)"', self.code or ""))
-        sys.path.insert(0, str(ROOT / "scripts"))
-        import g4_access
-        self.local = g4_access.mcp_resource_check
-        self.local_rule = g4_access.MCP_RULE
-        self.rules.add(self.local_rule)
+        # MCP resource indicator 由步驟呼叫 scripts/g4_mcp.py 實作（規則 ID 不是字面字串）：步驟有呼叫才算實作
+        if "from g4_mcp import" in (self.code or ""):
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import g4_mcp
+            self.rules.add(g4_mcp.MCP_RULE)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -506,9 +505,7 @@ class G4StaticRunner(Runner):
                 sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
                 return None, f"G4 靜態檢查執行失敗：{type(e).__name__}"
-            local, _ = self.local(pathlib.Path(d))
-        return ({r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}
-                | ({self.local_rule} if local else set())), None
+        return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}, None
 
 
 def _implemented_by(tool: str) -> dict[str, set[str]]:
