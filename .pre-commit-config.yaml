@@ -25,6 +25,7 @@ repos:
         args:
           - "--config=config/semgrep/vibesec-rules.yaml"
           - "--config=p/owasp-top-ten"
+          - "--config=p/security-audit"   # 與 CI 的 semgrep 規則集一致（vibesec.yaml g3_sast_iac.semgrep_rules）
           - "--error"
           - "--disable-nosem"   # 與 CI 一致：`# nosemgrep` 不採信
           - "--skip-unknown-extensions"

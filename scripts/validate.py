@@ -717,6 +717,34 @@ if "requirements-evals.txt" in _locks:
                     f"{_locks['requirements-evals.txt'].get('semgrep')} 不一致（評測與閘門會用不同版本）")
 ok(f"CI 的 pip install 一律走雜湊鎖定檔（{_pip_sites} 處；鎖定檔 {len(_locks)} 份）")
 
+# --- CI 設定的不變式（判定在 scripts/ci_invariants.py，有 selftest）：防止已修過的弱點被改回去 ---
+import ci_invariants as _ci
+_wf = {pathlib.Path(_f).name: pathlib.Path(_f).read_text(encoding="utf-8") for _f in sorted(glob.glob(str(ROOT / ".github/workflows/*.yml")))}
+_n_ci = 0
+# workflow 層級只給唯讀、寫入權限按 job 宣告。nightly-full.yml 尚未調整（只在 default branch 排程執行、不跑 PR 內容），待另案處理
+for _name, _t in _wf.items():
+    if _name == "nightly-full.yml":
+        continue
+    for _p in _ci.workflow_write_permissions(_t):
+        err(f".github/workflows/{_name}: workflow 層級 permissions 有 {_p}（寫入權限須在 job 層級宣告）"); _n_ci += 1
+for _f in sorted(set(glob.glob(str(ROOT / ".github/**/*.yml"), recursive=True) + glob.glob(str(ROOT / ".github/**/*.js"), recursive=True))):
+    for _i in _ci.unpaginated_list_comments(pathlib.Path(_f).read_text(encoding="utf-8")):
+        err(f"{pathlib.Path(_f).relative_to(ROOT)}:{_i}: issues.listComments 未經 github.paginate（只會拿到第一頁 30 則）"); _n_ci += 1
+_pc = ROOT / ".pre-commit-config.yaml"
+_rules = (((load_yaml(ROOT / "vibesec.yaml") or {}).get("gates") or {}).get("g3_sast_iac") or {}).get("semgrep_rules") or []
+if _pc.is_file() and _rules:
+    _miss, _extra = _ci.precommit_semgrep_drift(_pc.read_text(encoding="utf-8"), _rules)
+    if _miss or _extra:
+        err(f".pre-commit-config.yaml 的 semgrep 規則集與 vibesec.yaml g3_sast_iac.semgrep_rules 不一致（少：{_miss or '無'}；多：{_extra or '無'}）"); _n_ci += 1
+# staging 可由 workflow_dispatch 在任何分支觸發、步驟持有帳號 token：判定程式只能取自 _trusted/，目標 URL 不得經 sed 代入
+if "staging-blackbox.yml" in _wf:
+    for _i in _ci.untrusted_script_runs(_wf["staging-blackbox.yml"]):
+        err(f".github/workflows/staging-blackbox.yml:{_i}: 執行本分支的 scripts/（判定程式只能取自 _trusted/）"); _n_ci += 1
+    for _i in _ci.sed_target_substitution(_wf["staging-blackbox.yml"]):
+        err(f".github/workflows/staging-blackbox.yml:{_i}: 以 sed 代入 VIBESEC_TARGET_URL（URL 含 # 或 & 會壞；改用 scripts/garak_config.py）"); _n_ci += 1
+if not _n_ci:
+    ok("CI 設定不變式：workflow 層級唯讀、listComments 分頁、pre-commit semgrep 與 CI 一致、staging 只跑 _trusted/ 且不以 sed 代入目標")
+
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
 for w in warns: print(f"  WARN {w}")
