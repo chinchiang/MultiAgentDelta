@@ -56,7 +56,7 @@ findings:
         family: anthropic
         model: claude-sonnet-5-5
         prompt_version: identity-authz@2026-10-03.1
-        round: 3
+        round: 2
         verdict: confirm
         rationale: "維持：gateway 只驗 token 有效性，app/main.py:142 仍無 owner 比對"
       - role: identity-authz
@@ -64,7 +64,7 @@ findings:
         family: openai
         model: gpt-5
         prompt_version: identity-authz@2026-10-03.1
-        round: 3
+        round: 2
         verdict: refute
         rationale: "維持：gateway 已綁定 owner"
         minority: true
