@@ -14,7 +14,8 @@ Claude Code 的 reviewer sub-agent 能自己讀 repo，scripts/review_provider.p
 內容一律取自 commit（git show），不讀工作目錄。
 
 不可違反（CLAUDE.md 規則 7）：
-  - 送出前以 gitleaks（本 repo 的 config/gitleaks.toml）掃描要附上的內容，命中的字串一律換成遮罩加 sha256 指紋
+  - 送出前以 gitleaks（本 repo 的 config/gitleaks-packet.toml：與 config/gitleaks.toml 同一套規則，但沒有任何 allowlist）
+    掃描要附上的內容，命中的字串一律換成遮罩加 sha256 指紋
     （至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）。被測程式碼的 `gitleaks:allow` 註解不採信
     （--ignore-gitleaks-allow）：那是被測專案自己寫的，不能決定祕密要不要送出去。
     gitleaks 缺席或失敗 → 無法確認祕密已遮罩，不產生審查包（exit 2）。審查包的資料分級沿用 --base（必須宣告，否則不產生），不在這裡判定；--base 內容一併掃描遮罩。
@@ -29,6 +30,10 @@ CONTEXT = 40
 REF = re.compile(r"([A-Za-z0-9_./-]+\.[A-Za-z0-9]+):\d+")
 DATA_CLASSES = ("public", "internal", "confidential", "pii")
 BASE_SCAN_NAME = ".vibesec-packet-base.json"   # 掃描用的暫存檔名（不會出現在 git 追蹤的路徑）
+# 遮罩專用設定：G2 的 config/gitleaks.toml 有全域 allowlist（lock 檔路徑、sample／canary 等 stopwords、${VAR} 樣式）
+# 與規則層 allowlist（example、synthetic…），套在遮罩上，外部專案這類位置或字樣的真祕密就不遮、明文送雲端（規則 7）
+MASK_CONFIG = ROOT / "config/gitleaks-packet.toml"
+G2_CONFIG = ROOT / "config/gitleaks.toml"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
 
 
@@ -117,18 +122,19 @@ def gitleaks_binary() -> str:
     return str(pathlib.Path(found).resolve())
 
 
-def gitleaks_scan(texts: dict[str, str]) -> list[str]:
+def gitleaks_scan(texts: dict[str, str], config: pathlib.Path = MASK_CONFIG) -> list[str]:
     """回傳命中的祕密字串。gitleaks 缺席或失敗 → PacketError（不產生審查包）。"""
     binary = gitleaks_binary()
     with tempfile.TemporaryDirectory(prefix="vibesec-packet-") as d:
         src = pathlib.Path(d) / "src"
-        for name, text in texts.items():
-            p = src / name
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text, encoding="utf-8")
+        # 以中性檔名（序號＋原副檔名）寫出：gitleaks 內建預設設定（useDefault）自帶的全域路徑 allowlist
+        # （package-lock.json、go.sum…）無法在設定檔移除，原路徑照寫，那些檔裡的祕密就不遮。遮罩只需要命中字串、不需要路徑。
+        src.mkdir(parents=True)
+        for i, (name, text) in enumerate(texts.items()):
+            (src / f"{i:04d}{pathlib.PurePosixPath(name).suffix}").write_text(text, encoding="utf-8")
         report = pathlib.Path(d) / "report.json"
         # --ignore-gitleaks-allow：受測程式碼寫 `# gitleaks:allow` 就能讓金鑰不被遮罩、明文送雲端（同 g2_secrets 掃外部目標）
-        r = subprocess.run([binary, "dir", str(src), "--config", str(ROOT / "config/gitleaks.toml"), "--no-banner",
+        r = subprocess.run([binary, "dir", str(src), "--config", str(config), "--no-banner",
                             "--report-format", "json", "--report-path", str(report), "--exit-code", "0",
                             "--ignore-gitleaks-allow", "--log-level", "error"], capture_output=True, text=True, timeout=300)
         if r.returncode != 0 or not report.is_file():
@@ -315,6 +321,64 @@ def selftest() -> list[str]:
             os.environ["PATH"] = path
             if old is not None:
                 os.environ["VIBESEC_GITLEAKS"] = old
+        # 遮罩用的 gitleaks 呼叫：設定是 gitleaks-packet.toml（不是 G2 的 gitleaks.toml），暫存檔以中性檔名寫出
+        # （原路徑會被內建預設的路徑 allowlist 排除，例如 package-lock.json）。假 gitleaks 記下參數與掃描目錄的檔名。
+        log = pathlib.Path(d) / "fake-gitleaks.log"
+        spy = pathlib.Path(d) / "spy-gitleaks"
+        spy.write_text("#!/bin/sh\n"
+                       "report=; prev=; src=; cfg=\n"
+                       "for a in \"$@\"; do [ \"$prev\" = --report-path ] && report=$a; [ \"$prev\" = --config ] && cfg=$a; "
+                       "[ \"$prev\" = dir ] && src=$a; prev=$a; done\n"
+                       f"echo \"config=$cfg\" > '{log}'; (cd \"$src\" && find . -type f) >> '{log}'\n"
+                       "echo '[]' > \"$report\"\n")
+        spy.chmod(0o755)
+        old = os.environ.get("VIBESEC_GITLEAKS")
+        os.environ["VIBESEC_GITLEAKS"] = str(spy)
+        try:
+            gitleaks_scan({"web/package-lock.json": "x", "docs/a.md": "y", BASE_SCAN_NAME: "{}"})
+            seen = log.read_text().split("\n")
+            if seen[0] != f"config={MASK_CONFIG}":
+                fails.append(f"遮罩須用 {MASK_CONFIG.name}，不得用 G2 有 allowlist 的設定（得到 {seen[0]}）")
+            names = sorted(n for n in seen[1:] if n)
+            if names != ["./0000.json", "./0001.md", "./0002.json"]:
+                fails.append(f"暫存檔應以序號＋副檔名命名，不保留原路徑（得到 {names}）")
+        finally:
+            os.environ.pop("VIBESEC_GITLEAKS", None)
+            if old is not None:
+                os.environ["VIBESEC_GITLEAKS"] = old
+
+    # 遮罩設定：沒有任何 allowlist，偵測規則與 G2 的 config/gitleaks.toml 一致（改規則時兩檔要一起改）
+    import tomllib
+    mask_cfg = tomllib.loads(MASK_CONFIG.read_text(encoding="utf-8"))
+    g2_cfg = tomllib.loads(G2_CONFIG.read_text(encoding="utf-8"))
+    if {"allowlist", "allowlists"} & set(mask_cfg) or any("allowlist" in r or "allowlists" in r for r in mask_cfg.get("rules", [])):
+        fails.append(f"{MASK_CONFIG.name} 不得有全域或規則層 allowlist")
+    strip = lambda r: {k: v for k, v in r.items() if k not in ("allowlist", "allowlists")}
+    if mask_cfg.get("rules") != [strip(r) for r in g2_cfg.get("rules", [])] or mask_cfg.get("extend") != g2_cfg.get("extend"):
+        fails.append(f"{MASK_CONFIG.name} 的規則與 [extend] 須與 {G2_CONFIG.name} 一致（去掉 allowlist 後）")
+
+    # 真 gitleaks（VIBESEC_GITLEAKS 或 PATH 上有才跑）：G2 allowlist 會放過的位置與字樣，遮罩時都要命中
+    try:
+        gitleaks_binary()
+    except PacketError:
+        print("（略過真 gitleaks 遮罩測試：找不到 gitleaks；設定與呼叫方式已由上方離線測試驗證）", file=sys.stderr)
+    else:
+        key = "sk-" + "Q7wLm2Xr9Tz4Kb8Np3Vd6Hs1Jf5Gc0Ya"
+        pw = "Xk9mQ2vL7pR4tW8zN3bF6hJ1"
+        for name, text, secret in [
+            ("uv.lock", f"OPENAI_API_KEY = '{key}'\n", key),                       # G2 全域 paths
+            ("web/package-lock.json", f'{{"token": "{key}"}}\n', key),            # gitleaks 內建預設的路徑 allowlist
+            ("app/a.py", f"api_key = 'sample{key[3:]}'\n", "sample" + key[3:]),   # G2 全域 stopwords
+            ("app/d.py", f"password = 'canary{pw}'\n", "canary" + pw),
+            ("app/g.py", f"JWT_SECRET = 'example{pw}'\n", "example" + pw),        # G2 規則層 allowlist
+        ]:
+            try:
+                got = gitleaks_scan({name: text})
+            except PacketError as e:
+                fails.append(f"真 gitleaks 掃描失敗（{name}）：{e}")
+                continue
+            if secret not in got:   # 只報檔名：失敗訊息不印祕密（規則 7）
+                fails.append(f"G2 allowlist 會放過的祕密（{name}）遮罩時必須命中")
     return fails
 
 

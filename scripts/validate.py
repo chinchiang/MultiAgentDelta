@@ -63,15 +63,17 @@ if yaml is not None:
             err(f"YAML 解析失敗 {rel}: {e}")
 
 # --- TOML 語法 ---
-try:
-    import tomllib
-    gl = ROOT / "config/gitleaks.toml"
-    if gl.exists():
-        tomllib.loads(gl.read_text()); ok("TOML ok: config/gitleaks.toml")
-    else:
-        warn("缺 config/gitleaks.toml")
-except Exception as e:
-    err(f"TOML 解析失敗 config/gitleaks.toml: {e}")
+import tomllib
+# gitleaks-packet.toml：審查包遮罩專用（scripts/review_packet.py），缺席時審查包無法產生
+for _toml in ("config/gitleaks.toml", "config/gitleaks-packet.toml"):
+    try:
+        gl = ROOT / _toml
+        if gl.exists():
+            tomllib.loads(gl.read_text()); ok(f"TOML ok: {_toml}")
+        else:
+            warn(f"缺 {_toml}")
+    except Exception as e:
+        err(f"TOML 解析失敗 {_toml}: {e}")
 
 # --- JSON 語法（schemas + 範例 + reports 範例）---
 for f in sorted(glob.glob(str(ROOT / "schemas/*.json"))) + \

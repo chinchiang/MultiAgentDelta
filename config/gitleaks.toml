@@ -5,6 +5,7 @@
 #   CI push：      gitleaks detect --source . --config config/gitleaks.toml --log-opts="$BASE_SHA..$HEAD_SHA" --redact
 # 本檔「延伸」gitleaks 內建預設規則（AWS、GCP、GitHub、Slack、私鑰…），再加上 Vibe Coding 常見的 LLM 供應商金鑰。
 # 命中後 finding.rule_id 以 `gitleaks:<rule id>` 記錄；報告只保留遮罩與指紋（--redact），不得貼出原始值。
+# 審查包遮罩（scripts/review_packet.py）用 config/gitleaks-packet.toml：同一套 [[rules]] 但沒有任何 allowlist；改規則時兩檔要一起改（selftest 核對）。
 
 title = "VibeSec gitleaks config (extends default)"
 

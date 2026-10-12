@@ -128,7 +128,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 - 角色 → 偏好 family 在 `providers.yaml rotation.roles` 定義（例如 `appsec: [anthropic, openai]`、`supplychain-cicd: [openai, deepseek]`）。第一個可用且資料分級允許者為主、第二個為第二 family。
 - **資料外傳雙重防線**（`scripts/review_provider.py`）：送出前除了檢查 provider 的 `allowed_data_classes` 是否涵蓋該分級，`confidential`／`pii` 另要求 provider 必須列於 `rotation.sensitive_data_providers`，否則 `state=refused`、不送出任何內容。即使有人誤把某雲端 provider 的 `allowed_data_classes` 開到 `pii`，這道防線仍會擋下（CLAUDE.md 規則 7）。
 - 每個發現的審查呼叫上限：`角色數 × 2 family × 3 round`。超過預算（設定於 `config/providers.yaml` 的 `rotation.budget`，**目前只是設定，沒有程式強制執行**）→ 剩餘發現 `pending`，`notes` 記 `review budget exhausted`，**不得**為省錢改用單 family 放行高風險控制。
-- 審查包只送 diff 周邊 ±40 行與被引用的檔案，不送整個 repo；G4 架構審查送威脅模型與元件清單。由 `scripts/review_packet.py` 從受測 commit 產生：full 範圍附威脅模型全文與其以 `path:line` 引用的檔案，diff 範圍附每個變更 hunk 前後 40 行；內容先經 gitleaks 掃描並遮罩命中字串，gitleaks 缺席或超過大小上限就不產生（不截斷）。
+- 審查包只送 diff 周邊 ±40 行與被引用的檔案，不送整個 repo；G4 架構審查送威脅模型與元件清單。由 `scripts/review_packet.py` 從受測 commit 產生：full 範圍附威脅模型全文與其以 `path:line` 引用的檔案，diff 範圍附每個變更 hunk 前後 40 行；內容先經 gitleaks 掃描並遮罩命中字串，gitleaks 缺席或超過大小上限就不產生（不截斷）。遮罩用 `config/gitleaks-packet.toml`：與 G2 的 `config/gitleaks.toml` 同一套規則，但沒有任何 allowlist（G2 的 lock 檔路徑、stopwords、`example`／`synthetic` 標記是給掃本 repo 用的，套在遮罩上會讓外部專案的真祕密明文送出），掃描時暫存檔也改用中性檔名，避開 gitleaks 內建預設的路徑 allowlist；內建規則自帶的 allowlist 無法移除，屬已知殘留。
 - （規劃，尚未實作）同一 `rule_id + path` 在 30 天內已有 E3 人工裁決 → 不重送，沿用舊裁決並標 `retest_result`。
 - 地端 provider 不計 token 成本但計時間；`timeout_seconds` 到期即 error。
 
