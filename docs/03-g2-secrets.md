@@ -37,7 +37,7 @@
    - `git ls-files | grep -E '^\.env($|\.)'` 有結果（`.env` 已被追蹤）→ `vibesec.g2.env-committed`（CWE-538，每個檔一筆，位置是該檔）+ 事故 SOP。以前與上一條共用 `env-not-ignored`，已提交的 `.env` 只記成「`.gitignore` 少一條規則」；目前未列入 blocking-policy（default_tier advisory），要升 blocking 由人類在獨立 PR 修改政策。
    - `git ls-files` 失敗（無法確認有沒有追蹤 `.env`）→ `.env` 檢查記 error，G2 `incomplete`（不是 pass）。
 5. **LLM 供應商金鑰專用規則**（gitleaks 預設沒有或較舊）：見下表。
-6. **報告只保留遮罩與指紋**（CLAUDE.md 規則 7）：`--redact`；finding 不記原值；`sha256(secret)[:12]` 指紋目前只用在審查包遮罩（`review_packet.py`），G2 finding 的指紋欄位尚未實作。
+6. **報告只保留遮罩與指紋**（CLAUDE.md 規則 7）：`--redact`；finding 不記原值；`sha256(secret)[:12]` 指紋目前只用在審查包遮罩（`review_packet.py`，用沒有 allowlist 的 `config/gitleaks-packet.toml`，見 docs/09 §6），G2 finding 的指紋欄位尚未實作。
 
 ### 金鑰樣式（`config/gitleaks.toml`）
 
@@ -55,7 +55,7 @@
 | `vibesec-generic-high-entropy` | `api_key|access_token|client_secret|password|private_key = "…24+"` | 熵 ≥ 4.0 |
 | 預設規則（`useDefault = true`） | AWS、GCP、Azure、GitHub、GitLab、Slack、Stripe、Twilio、私鑰 PEM… | gitleaks 內建 |
 
-允許清單（`config/gitleaks.toml`）：整個 `examples/vulnapp/`、`evals/` 的 fixtures 與案例 yaml/json、`config/gitleaks.toml` 與 `config/semgrep/vibesec-rules.yaml` 本身、`docs/*.md`、lockfile，以及 `VIBESEC-…CANARY/FAKE/EXAMPLE` 標記。此外靶場外新增的假金鑰仍須使用這些標記，否則會被擋。
+允許清單（`config/gitleaks.toml`）：整個 `examples/vulnapp/`、`evals/` 的 fixtures 與案例 yaml/json、`config/gitleaks.toml` 與 `config/semgrep/vibesec-rules.yaml` 本身、`docs/*.md`、lockfile，以及 `VIBESEC-…CANARY/FAKE/EXAMPLE` 標記。此外靶場外新增的假金鑰仍須使用這些標記，否則會被擋。這份允許清單只用於 G2；送外部模型前的審查包遮罩改用沒有 allowlist 的 `config/gitleaks-packet.toml`（兩檔的規則由 `review_packet.py selftest` 核對一致）。
 
 ## 自動化作法
 
