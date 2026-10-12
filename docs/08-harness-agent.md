@@ -66,7 +66,7 @@ stateDiagram-v2
 | RunTools | 每個工具一個子程序，`timeout_seconds` 為閘門總預算；逐一記錄 `name / version / state / exit_code / output_ref / duration_seconds` | 見 §7 |
 | ParseNative | SARIF 2.1.0 取 `runs[].results[]` 與 `tool.driver.rules[]`；JSON（grype、trivy、gitleaks、zap、promptfoo、garak）各自的 adapter | 解析失敗 → 該工具 `state: error`，閘門 `incomplete` |
 | Normalise | 產生 `id`（`VS-YYYYMMDD-<8 hex>`，hex 取 `sha256(rule_id + path + line + commit)` 前 8 碼）、`rule_id` 前綴、`location`、`evidence_refs`、`sources` | 欄位缺失以 `null` 補，不得省略 |
-| ApplyPolicy | 查 `blocking:` / `advisory:` / `tier_overrides.<tier>` / `exceptions:` 決定 `policy_tier` | 規則不在任何清單 → `default_tier` |
+| ApplyPolicy | 查 `blocking:` / `advisory:` / `tier_overrides.<tier>` / `exceptions:` 決定 `policy_tier`；`tier_overrides.<tier>.applies_only_to_gates`（例如 L1 只跑 G1、G2）以外閘門的規則有效 tier 為 advisory（發現保留、不阻擋；規則所屬閘門取自 `vibesec.g<N>.` 或工具前綴，分不出閘門者如 `trivy:` 不降級），實作見 `scripts/vibesec_policy.py` | 規則不在任何清單 → `default_tier`；`risk_tier` 不是 L1／L2／L3（例如打錯成 `l3`）→ 政策無法載入、拋出例外（fail closed），不得靜默取不到 override |
 | Review | 僅對 `llm_review: true` 的閘門（G4）與 E1 / E2 且 policy_tier 為 blocking 或 P0 / P1 候選的發現送審 | provider 失敗 → 意見缺席，見 docs/09 §11 |
 | Score | 依 docs/10：CVSS v4.0 向量（工具提供或 reviewer 提議、人工確認後才填）、EPSS / KEV 查詢、E 等級、P 優先序 | 查詢 API 失敗 → `epss: null`、`kev: null`，`notes` 記原因；不影響閘門狀態 |
 | GateResult | 寫 `reports/gates/G<N>.json`（符合 `schemas/gate-result.schema.json`） | — |
