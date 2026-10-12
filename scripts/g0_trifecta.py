@@ -25,19 +25,22 @@ LEGS = ("accesses_private_data", "exposed_to_untrusted_content", "can_communicat
 HITL = "human_in_the_loop"   # 補償：不算切腳，只能與 LEG_CUTS 之一並用（docs/01 §5）
 LEG_CUTS = {"external_comms": ("sandbox", "egress_allowlist", "tool_allowlist"),   # docs/01 §5「切哪隻腳」表格
             "private_data": ("read_only_data",), "untrusted_content": ("no_untrusted_input",)}
+ALL_CUTS = frozenset(m for ms in LEG_CUTS.values() for m in ms)
 
 
-def _permission_rules(path: Path) -> set[str] | None:
-    """Claude Code 設定檔中 permissions.ask ∪ permissions.deny；檔案缺席或無法解析 → None。"""
+def _permission_rules(path: Path, kinds: tuple[str, ...] = ("ask", "deny")) -> set[str] | None:
+    """Claude Code 設定檔中 kinds 指定的 permissions 清單聯集；檔案缺席或無法解析 → None。"""
     try:
         perms = (json.loads(path.read_text(encoding="utf-8")) or {}).get("permissions") or {}
     except (OSError, ValueError):
         return None
-    return {str(r) for k in ("ask", "deny") for r in perms.get(k) or []}
+    return {str(r) for k in kinds for r in perms.get(k) or []}
 
 
 def verify_mitigation(name: str, evidence: list[dict], root: Path, high_impact: list[str] | tuple = ()) -> tuple[bool, str]:
     """mitigation 是否有可驗證的落實：至少一筆證據，且每筆證據列出的規則都在對應設定檔的 ask／deny 中。
+    切腳的 mitigation（ALL_CUTS）只採信 deny：ask 是「執行前問人」，本質上就是 human_in_the_loop（補償、不算切腳，
+    docs/01 §5）；以前 ask 也算，一條無關的 ask 規則冠上 egress_allowlist 的名字就能讓 blocking 發現消失。
     有 high_impact_tools 時，任何以 claude_permission 為證據的 mitigation 都須涵蓋每個工具：證據的 covers 把工具對到規則（第四次 harness 審查 N1）。
     只驗證「每個工具至少有一條規則」，不驗證規則能擋住該工具的所有等價呼叫（前綴比對的限制見 t-hitl-bypass）。"""
     if not evidence:
@@ -48,12 +51,14 @@ def verify_mitigation(name: str, evidence: list[dict], root: Path, high_impact: 
         rel = Path(str(ev.get("ref") or ""))
         if rel.is_absolute() or ".." in rel.parts:
             return False, f"{name}：證據路徑不安全 {ev.get('ref')!r}"
-        have = _permission_rules(root / rel)
+        kinds = ("deny",) if name in ALL_CUTS else ("ask", "deny")
+        have = _permission_rules(root / rel, kinds)
         if have is None:
             return False, f"{name}：{rel} 不存在或無法解析"
         missing = [r for r in ev.get("rules") or [] if r not in have]
         if not ev.get("rules") or missing:
-            return False, f"{name}：{rel} 的 ask／deny 缺 " + ("、".join(missing) if missing else "（未列規則）")
+            where = "deny（切腳只採信 deny；ask 是 human_in_the_loop、不算切腳）" if name in ALL_CUTS else "ask／deny"
+            return False, f"{name}：{rel} 的 {where} 缺 " + ("、".join(missing) if missing else "（未列規則）")
         stray = [r for rs in (ev.get("covers") or {}).values() for r in rs or [] if r not in (ev.get("rules") or [])]
         if stray:
             return False, f"{name}：covers 引用了 rules 以外的規則 " + "、".join(stray)
@@ -141,7 +146,7 @@ def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str 
         if not all(a.get(k) is True for k in LEGS):
             continue
         leg = a.get("trifecta_leg_cut")
-        cutters = LEG_CUTS.get(leg, ()) if leg is not None else tuple(m for ms in LEG_CUTS.values() for m in ms)
+        cutters = LEG_CUTS.get(leg, ()) if leg is not None else tuple(ALL_CUTS)
         evid = a.get("mitigation_evidence") or {}
         results = {m: verify_mitigation(m, evid.get(m) or [], root, a.get("high_impact_tools") or [])
                    for m in a.get("mitigations") or []}
@@ -177,7 +182,8 @@ def selftest() -> list[str]:
                                                              "rules": rules, "covers": covers}]}
     with tempfile.TemporaryDirectory() as d:
         root = Path(d); (root / ".claude").mkdir()
-        (root / ".claude/settings.json").write_text(json.dumps({"permissions": {"ask": ["mcp__x__merge"], "deny": ["Bash(rm *)"]}}))
+        (root / ".claude/settings.json").write_text(json.dumps({"permissions": {"ask": ["mcp__x__merge", "Bash(echo hi)"],
+                                                                             "deny": ["Bash(rm *)", "mcp__x__block"]}}))
         TA = "tool_allowlist"
         cases = [
             ("無 mitigation", agent(mitigations=[]), True),
@@ -185,7 +191,14 @@ def selftest() -> list[str]:
             ("證據規則不在設定檔", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__other"], m=TA)), True),
             ("證據檔不存在", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__merge"], "nope.json", m=TA)), True),
             ("證據路徑跳出 repo", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__merge"], "../x.json", m=TA)), True),
-            ("ask＋deny 皆涵蓋", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__merge", "Bash(rm *)"], m=TA)), False),
+            ("切腳以 deny 落實", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__block", "Bash(rm *)"], m=TA)), False),
+            # ask 是 human_in_the_loop、不算切腳：切腳的 mitigation 只採信 deny（以前一條無關的 ask 改名就能消掉發現）
+            ("切腳只有 ask 規則", agent(mitigations=[TA], mitigation_evidence=ev(["Bash(echo hi)"], m=TA)), True),
+            ("切腳混用 ask 與 deny", agent(mitigations=[TA], mitigation_evidence=ev(["mcp__x__merge", "Bash(rm *)"], m=TA)), True),
+            ("每種切腳都只採信 deny", agent(mitigations=sorted(ALL_CUTS),
+                mitigation_evidence={m: ev(["mcp__x__merge"], m=m)[m] for m in ALL_CUTS}), True),
+            ("宣告切腳、切該腳的 mitigation 只有 ask", agent(mitigations=["egress_allowlist"], trifecta_leg_cut="external_comms",
+                mitigation_evidence=ev(["Bash(echo hi)"], m="egress_allowlist")), True),
             # docs/01 §5：human_in_the_loop 不算切腳——證據再完整，只有它仍報
             ("只有 HITL（證據完整）", agent(mitigations=["human_in_the_loop"], mitigation_evidence=ev(["mcp__x__merge", "Bash(rm *)"])), True),
             ("只有 HITL（high_impact_tools 全涵蓋）", agent(mitigations=["human_in_the_loop"], high_impact_tools=["merge", "rm"],
@@ -200,10 +213,10 @@ def selftest() -> list[str]:
             ("宣告切腳、證據屬於切別腳的 mitigation", agent(mitigations=[TA], trifecta_leg_cut="private_data",
                 mitigation_evidence=ev(["mcp__x__merge"], m=TA)), True),
             ("宣告切腳、切該腳的 mitigation 可驗證", agent(mitigations=[TA], trifecta_leg_cut="external_comms",
-                mitigation_evidence=ev(["mcp__x__merge"], m=TA)), False),
-            ("一項可驗證即可", agent(mitigations=["egress_allowlist", TA], mitigation_evidence=ev(["mcp__x__merge"], m=TA)), False),
+                mitigation_evidence=ev(["mcp__x__block"], m=TA)), False),
+            ("一項可驗證即可", agent(mitigations=["egress_allowlist", TA], mitigation_evidence=ev(["mcp__x__block"], m=TA)), False),
             ("high_impact_tools 全涵蓋", agent(mitigations=[TA], high_impact_tools=["merge", "rm"],
-                mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"], "rm": ["Bash(rm *)"]}, m=TA)), False),
+                mitigation_evidence=cov(["mcp__x__block", "Bash(rm *)"], {"merge": ["mcp__x__block"], "rm": ["Bash(rm *)"]}, m=TA)), False),
             ("high_impact_tools 有未涵蓋者", agent(mitigations=[TA], high_impact_tools=["merge", "rm"],
                 mitigation_evidence=cov(["mcp__x__merge", "Bash(rm *)"], {"merge": ["mcp__x__merge"]}, m=TA)), True),
             ("high_impact_tools 但沒有 covers", agent(mitigations=[TA], high_impact_tools=["merge"],
@@ -216,6 +229,13 @@ def selftest() -> list[str]:
         for label, tm, expect in cases:
             if bool(trifecta_findings(tm, root)) != expect:
                 fails.append(f"{label}：預期 {'有' if expect else '無'}發現")
+        got = trifecta_findings(agent(mitigations=[TA], mitigation_evidence=ev(["Bash(echo hi)"], m=TA)), root)
+        if not got or "切腳只採信 deny" not in got[0]["reason"]:
+            fails.append(f"切腳只有 ask 規則時，reason 應說明只採信 deny：{got}")
+        # human_in_the_loop 仍採信 ask（ask 就是執行前問人）：只有 ask 的 HITL 證據通過驗證
+        ok, msg = verify_mitigation(HITL, ev(["Bash(echo hi)"])[HITL], root)
+        if not ok:
+            fails.append(f"human_in_the_loop 應採信 ask 規則：{msg}")
         (root / "config/policy").mkdir(parents=True)
         (root / "config/policy/blocking-policy.yaml").write_text(
             "version: 1\ndefault_tier: advisory\nblocking: []\nadvisory: [{rule_id: %s}]\n" % RULE)

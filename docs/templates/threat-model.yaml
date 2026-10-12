@@ -48,7 +48,7 @@ agents:
     high_impact_tools: []                # 若含 delete_*/execute_sql 必須列入並要求 HITL
     mitigations: [egress_allowlist, read_only_data]
     trifecta_leg_cut: external_comms     # 本例以出向 allow-list 切斷「對外通訊」腳（read_only_data 為縱深防禦）
-    mitigation_evidence:                 # 目前只支援 claude_permission：rules 必須出現在 ref 的 permissions.ask／deny
+    mitigation_evidence:                 # 目前只支援 claude_permission：rules 必須出現在 ref 的 permissions.deny（切腳只採信 deny；human_in_the_loop 可用 ask）
       egress_allowlist:
         - kind: claude_permission
           ref: .claude/settings.json

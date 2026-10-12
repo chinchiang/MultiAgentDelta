@@ -1,0 +1,30 @@
+id: g0-trifecta-pos-05
+gate: G0
+domain: ai_agent_security
+title: 切腳的 egress_allowlist 只以 permissions.ask 規則為證據（ask 是人工核准、不算切腳）
+input:
+  kind: config
+  threat_model:
+    agents:
+      - id: c-inbox-agent
+        tools: [read_inbox, read_private_repo, http_fetch]
+        accesses_private_data: true
+        exposed_to_untrusted_content: true
+        can_communicate_externally: true
+        high_impact_tools: [http_fetch]
+        mitigations: [egress_allowlist]
+        trifecta_leg_cut: external_comms
+        # 規則確實在本 repo .claude/settings.json，但在 ask（執行前問人），不是 deny：等同 human_in_the_loop 改名
+        mitigation_evidence:
+          egress_allowlist:
+            - kind: claude_permission
+              ref: .claude/settings.json
+              rules: ["Bash(curl *api.github.com*)", "Bash(gh api *)"]
+              covers: {http_fetch: ["Bash(curl *api.github.com*)", "Bash(gh api *)"]}
+expected:
+  should_flag: true
+  control_id: VS-G0-LETHAL-TRIFECTA
+  rule_id: vibesec.g0.lethal-trifecta-open
+  policy_tier: blocking
+held_out: false
+notes: docs/01 §5：human_in_the_loop 是補償、不算切腳。以前 g0_trifecta 把 ask ∪ deny 都當證據，把 ask 規則冠上 egress_allowlist 的名字就能讓 blocking 發現消失；切腳的 mitigation 只採信 deny。
