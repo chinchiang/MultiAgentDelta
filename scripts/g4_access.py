@@ -301,6 +301,41 @@ def selftest() -> list[str]:
             fails.append(f"{why}：gate JSON 不符 schema（{errs[0].message}）")
         return g
 
+    # agent-tool-overexposure：只認「註冊給 Agent 的工具名稱」。以前檔案出現 tool 字樣且任一處提到高危名稱就報，
+    # scripts/llm_observations.py 判定高影響工具的正則（HIGH_IMPACT）因此被判 blocking（L3）。
+    # 高危名稱在執行期組出：本檔原文若含「tools=[…, 高危名稱]」會讓本 repo 命中自己的檢查。
+    bad = "execute" + "_sql"
+    def overexposed(files: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as d:
+            for rel, body in files.items():
+                (pathlib.Path(d) / rel).parent.mkdir(parents=True, exist_ok=True)
+                (pathlib.Path(d) / rel).write_text(body, encoding="utf-8")
+            env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": "", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
+            subprocess.run(["bash", "-e", "-c", code], env=env, cwd=d, capture_output=True, text=True, timeout=120, check=True)
+            sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
+        return [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in sarif["runs"][0]["results"]
+                if r["ruleId"] == "vibesec.g4.agent-tool-overexposure"]
+    tool_cases = [
+        ("@tool 註冊", {"agent.py": "from agent_sdk import Agent, tool\n\n@" + "tool\ndef " + bad + "(q):\n    return db.execute(q)\n"}, True),
+        ("tools=[…] 清單", {"agent.py": "agent = Agent(" + "tools=[search, " + bad + "])\n"}, True),
+        ("register_tool", {"agent.py": "server.register_tool(\"" + bad + "\", fn)\n"}, True),
+        ("Vercel AI SDK 物件鍵", {"agent.ts": "const r = await generateText({ tools: {\n  " + bad + ": tool({ description: 'x' }),\n} });\n"}, True),
+        ("LangChain Tool(name=)", {"agent.py": "tools = [Tool(name=\"" + bad + "\", func=f, description=\"d\")]\n"}, True),
+        ("判定高影響工具的正則（scripts/llm_observations.py 原文）",
+         {"llm_observations.py": (ROOT / "scripts/llm_observations.py").read_text(encoding="utf-8")}, False),
+        ("註解與字串提到高危名稱、註冊的是低風險工具",
+         {"agent.py": f"# 不要註冊 {bad}\nWARN = '{bad} 屬高危'\nagent = Agent(" + "tools=[search_docs, get_ticket])\n"}, False),
+        ("測試資料的 tools 參數", {"t.py": "def probe(events, " + "tools=(\"" + bad + "\",)):\n    return events\n"}, False),
+    ]
+    for label, files, want in tool_cases:
+        try:
+            got = overexposed(files)
+        except (subprocess.CalledProcessError, OSError, ValueError) as e:
+            fails.append(f"agent-tool-overexposure「{label}」：G4 靜態步驟執行失敗（{type(e).__name__}）")
+            continue
+        if bool(got) != want:
+            fails.append(f"agent-tool-overexposure「{label}」：預期{'命中' if want else '不命中'}（得到 {got}）")
+
     with tempfile.TemporaryDirectory() as d:
         D = pathlib.Path(d)
         repo, out, outside = D / "proj", D / "out", D / "outside"

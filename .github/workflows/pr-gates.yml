@@ -601,31 +601,12 @@ jobs:
                       add("vibesec.g4.supabase-table-without-rls", "warning",
                           f"{p}：資料表 {tbl} 未見 enable row level security", p, 1)
 
-          # 3) Agent 工具 allow-list lint（高危工具暴露）
-          DANGEROUS = r'(delete_user|execute_sql|drop_table)'
-          for p in _files(".py", ".ts", ".js"):
-              if _skip(p): continue
-              body = _read(p, "VS-G4-AGENT-TOOL-ALLOWLIST")
-              if body is None: continue
-              if re.search(r'(tool|register_tool|tools\s*=|@tool)', body) and re.search(DANGEROUS, body, re.I):
-                  for i, ln in enumerate(body.splitlines(), 1):
-                      if re.search(DANGEROUS, ln, re.I):
-                          add("vibesec.g4.agent-tool-overexposure", "warning",
-                              f"{p} 第 {i} 行疑似向 Agent 註冊高危工具（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i)
-                          break
-
-          # 3b) 高影響工具缺 Human-in-the-Loop（vibesec.g4.missing-hitl，advisory）— 啟發式，只看單一檔案：
-          #     檔案有 Agent 工具註冊脈絡、註冊的工具名稱有高影響動作（金流、刪除、部署、對外送信、改權限），
-          #     且同檔案看不到任何人工核准訊號（confirm／approval／HITL／interrupt…）→ 回報。
-          #     核准若做在其他檔案（框架設定、gateway）會誤報，所以是 advisory；跨檔確認交 LLM 審查（VS-G4-LLM-REVIEW）。
-          HI_TOOL = re.compile(r'(refund|transfer|payout|payment|charge|withdraw|wire|delete|drop|truncate|wipe|purge|destroy|'
-                               r'deploy|release|publish|send_(?:email|mail|sms|message)|grant|revoke|set_role)', re.I)
-          HITL_SIGNAL = re.compile(r'confirm|approv|human[_ -]?in[_ -]?the[_ -]?loop|\bhitl\b|interrupt\(|ask_user|'
-                                   r'require_?(?:human|review)|needs_?review|permission_mode|人工(?:確認|核准)', re.I)
+          # Agent 工具註冊脈絡與工具名稱（3) allow-list lint 與 3b) HITL 共用）
           TOOL_CTX = re.compile(r'@(?:\w+\.)?tool\b|register_tool|\btools\s*[=:]|\.tool\(|\btool\(\s*\{', re.I)
           def _tool_names(body):
               """(名稱, 行號)：@tool／@mcp.tool 下一個 def、tools=[…]／tools: […] 清單、YAML tools: 區塊條目、
-              register_tool("x")／server.tool("x")、tool({name: "x"})。"""
+              register_tool("x")／server.tool("x")、tool({name: "x"})、tools: { x: tool({…}) }（Vercel AI SDK）、
+              Tool(name="x")／StructuredTool.from_function(name="x")（LangChain）。"""
               out = []
               lines = body.splitlines()
               for i, ln in enumerate(lines, 1):
@@ -639,12 +620,38 @@ jobs:
                       out.append((m.group(1), i))
                   for m in re.finditer(r'\bname\s*:\s*["\']([\w-]+)["\']', ln):
                       out.append((m.group(1), i))
+                  for m in re.finditer(r'\b([A-Za-z_]\w*)\s*:\s*tool\(', ln):
+                      out.append((m.group(1), i))
+                  for m in re.finditer(r'(?:\bTool|from_function)\([^)]*?\bname\s*=\s*["\']([\w-]+)', ln):
+                      out.append((m.group(1), i))
                   if re.match(r'\s*tools\s*:\s*$', ln):          # YAML 區塊清單：tools:\n  - refund_payment
                       for j in range(i, len(lines)):
                           m = re.match(r'\s*-\s*(?:name\s*:\s*)?["\']?([A-Za-z_][\w-]*)', lines[j])
                           if not m: break
                           out.append((m.group(1), j + 1))
               return out
+          # 3) Agent 工具 allow-list lint（高危工具暴露）：只看「註冊給 Agent 的工具名稱」（_tool_names）。
+          #    以前只要檔案出現 tool 字樣、且任一處提到 delete_user／execute_sql／drop_table 就報：分類工具名稱的正則、
+          #    文件字串、測試資料都會誤報（例如 scripts/llm_observations.py 第 23 行判定高影響工具用的 HIGH_IMPACT，L3 下為 blocking）。
+          DANGEROUS = re.compile(r'(delete_user|execute_sql|drop_table)', re.I)
+          for p in _files(".py", ".ts", ".js"):
+              if _skip(p): continue
+              body = _read(p, "VS-G4-AGENT-TOOL-ALLOWLIST")
+              if body is None or not TOOL_CTX.search(body): continue
+              risky = [(n, i) for n, i in _tool_names(body) if DANGEROUS.search(n)]
+              if risky:
+                  n, i = risky[0]
+                  add("vibesec.g4.agent-tool-overexposure", "warning",
+                      f"{p} 第 {i} 行向 Agent 註冊高危工具 {n}（delete_user/execute_sql/drop_table）；應限制 allow-list + HITL", p, i)
+
+          # 3b) 高影響工具缺 Human-in-the-Loop（vibesec.g4.missing-hitl，advisory）— 啟發式，只看單一檔案：
+          #     檔案有 Agent 工具註冊脈絡、註冊的工具名稱有高影響動作（金流、刪除、部署、對外送信、改權限），
+          #     且同檔案看不到任何人工核准訊號（confirm／approval／HITL／interrupt…）→ 回報。
+          #     核准若做在其他檔案（框架設定、gateway）會誤報，所以是 advisory；跨檔確認交 LLM 審查（VS-G4-LLM-REVIEW）。
+          HI_TOOL = re.compile(r'(refund|transfer|payout|payment|charge|withdraw|wire|delete|drop|truncate|wipe|purge|destroy|'
+                               r'deploy|release|publish|send_(?:email|mail|sms|message)|grant|revoke|set_role)', re.I)
+          HITL_SIGNAL = re.compile(r'confirm|approv|human[_ -]?in[_ -]?the[_ -]?loop|\bhitl\b|interrupt\(|ask_user|'
+                                   r'require_?(?:human|review)|needs_?review|permission_mode|人工(?:確認|核准)', re.I)
           HITL_FILES = (_files(".py", ".ts", ".js")
                         + [f for f in _files(".yml", ".yaml", ".json")
                            if not f.startswith(".github/")])   # workflow 的 deploy／release job 不是 Agent 工具

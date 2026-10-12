@@ -131,7 +131,7 @@ allow if {
 }
 ```
 
-靜態規則 `vibesec.g4.agent-tool-overexposure`（py / js，advisory，L3 升 blocking，CWE-250）掃 `@tool`、`@mcp.tool()`、`tools=[…]`、`server.tool("…")`、`tool({name: …})` 中的高影響名稱。
+靜態規則 `vibesec.g4.agent-tool-overexposure`（py / ts / js，advisory，L3 升 blocking，CWE-250）只看**註冊給 Agent 的工具名稱**：`@tool`／`@mcp.tool()` 下的 `def`、`tools=[…]`、`register_tool("…")`／`server.tool("…")`、`tool({name: …})`、Vercel AI SDK 的 `tools: { x: tool({…}) }`、LangChain 的 `Tool(name="…")`／`StructuredTool.from_function(name="…")`，名稱含 `delete_user`／`execute_sql`／`drop_table` 即回報（與 `vibesec.g4.missing-hitl` 共用同一份名稱擷取）。註解、字串、判定用的正則或測試資料只是「提到」這些名稱，不算註冊、不回報。
 
 ### 5. Human-in-the-Loop（`high_impact_actions_require_hitl: true`）
 
