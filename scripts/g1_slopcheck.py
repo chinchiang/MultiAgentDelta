@@ -427,6 +427,53 @@ def _pep508(req):
     m = REQ_RE.match(req)
     return (m.group(1), m.group(2)) if m else None
 
+# requirements 檔的選項行：以前 _pep508 對所有 - 開頭的行回傳 None，-r base.in 引入的套件從頭到尾沒查，
+# --index-url／--extra-index-url 指向私有 index 也照樣以公開 PyPI 的結果判定（第五次審查 G1-3）。
+REQ_PYPI_INDEXES = {"https://pypi.org/simple", "https://pypi.python.org/simple"}
+REQ_INCLUDE = re.compile(r'^(?:-r|--requirement)(?:\s*=\s*|\s+|(?=[^\s-]))(\S+)')
+REQ_SOURCE = re.compile(r'^(-i|--index-url|--extra-index-url|-f|--find-links|--no-index)\b(?:\s*=\s*|\s+)?(\S*)')
+
+def _requirements(path, boundary, seen=None):
+    """requirements 檔（含 -r 遞迴引入）→ ([(名稱, 版本)], [無法驗證的條目])。
+    -r 的檔案相對於引入它的檔案；不存在、超出 boundary（目標專案根目錄）或循環引入 → 記入無法驗證。
+    套件來源不是公開 PyPI（私有／額外 index、find-links、--no-index）→ 記入無法驗證：registry 檢查查的是 PyPI。
+    -c／--constraint 只限制版本、不安裝套件，與其他選項（--hash、--pre…）一樣略過。"""
+    path = Path(path)
+    seen = set() if seen is None else seen
+    real = path.resolve()
+    if real in seen:
+        return [], [f"{path.name}: -r 循環引入，略過重複的檔案"]
+    seen.add(real)
+    out, bad = [], []
+    for raw in path.read_text(errors="ignore").splitlines():
+        line = raw.split(" #", 1)[0].strip().rstrip("\\").strip()
+        m = REQ_INCLUDE.match(line)
+        if m:
+            ref = m.group(1)
+            inc = (path.parent / ref).resolve()
+            if "$" in ref:
+                bad.append(f"{path.name}: -r {ref[:60]}（含環境變數，無法確定引入的檔案）")
+            elif boundary not in inc.parents:
+                bad.append(f"{path.name}: -r {ref[:60]}（超出目標專案，未檢查）")
+            elif not inc.is_file():
+                bad.append(f"{path.name}: -r {ref[:60]}（檔案不存在，其中的套件未檢查）")
+            else:
+                e, b = _requirements(inc, boundary, seen)
+                out += e; bad += b
+            continue
+        m = REQ_SOURCE.match(line)
+        if m:
+            opt, url = m.group(1), m.group(2).rstrip("/")
+            if not (opt in ("-i", "--index-url") and url in REQ_PYPI_INDEXES):
+                bad.append(f"{path.name}: {line[:80]}（套件來源不是公開 PyPI，registry 檢查不代表實際安裝的套件）")
+            continue
+        x = _pep508(line)
+        if x:
+            out.append(x)
+        elif x is False:
+            bad.append(f"{path.name}: {line[:60]}")
+    return out, bad
+
 def _toml(path):
     try:
         import tomllib
@@ -619,12 +666,10 @@ def parse_manifest(paths):
             out += [("pypi", n, v) for n, v in e]
             bad += [f"{p.name}: {x}" for x in b]
         elif REQUIREMENTS_RE.search(p.as_posix()):
-            for line in text.splitlines():
-                x = _pep508(line.split(" #", 1)[0])
-                if x:
-                    out.append(("pypi", x[0], x[1]))
-                elif x is False:
-                    bad.append(f"{p.name}: {line.strip()[:60]}")
+            root = TARGET.resolve()
+            e, b = _requirements(p, root if root in p.resolve().parents else p.resolve().parent)
+            out += [("pypi", n, v) for n, v in e]
+            bad += b
         else:
             # 被當成 manifest 卻沒有對應的解析器：套件一個都沒查，不能當成「沒有相依」（incomplete ≠ pass）
             bad.append(f"{p.name}: 沒有對應的解析器，其中的套件未檢查")
@@ -1436,8 +1481,32 @@ def selftest():
             fails.append("壞 JSON 應回報無法解析，不是 0 個套件")
         (D / "requirements.txt").write_text("requests==2.31.0\nevil @ https://attacker.example/evil.whl\n-e git+https://x/y.git#egg=z\n-r base.txt\n")
         ents, bad = parse_manifest([D / "requirements.txt"])
-        if [n for _, n, _ in ents] != ["requests"] or len(bad) != 2:
-            fails.append(f"requirements：URL／VCS 需求應回報無法驗證（得到 {ents} / {bad}）")
+        # -r 引入的檔案不存在：裡面的套件一個都沒查，也要回報（以前靜默略過，第五次審查 G1-3）
+        if [n for _, n, _ in ents] != ["requests"] or len(bad) != 3 or not any("-r base.txt" in b for b in bad):
+            fails.append(f"requirements：URL／VCS 需求與不存在的 -r 檔都應回報無法驗證（得到 {ents} / {bad}）")
+        # -r／--requirement 遞迴引入：引入檔的套件要查到（含 .in、子目錄、= 與緊貼寫法），循環與超出目標專案要回報
+        (D / "reqs").mkdir(exist_ok=True)
+        (D / "reqs/base.in").write_text("evilpkgxyz==1.0.0\n-r ../requirements-dev.txt\n")
+        (D / "requirements-dev.txt").write_text("pytest==8.0.0\n--requirement=reqs/extra.txt\n-rreqs/base.in\n")
+        (D / "reqs/extra.txt").write_text("httpx==0.27.0 \\\n    --hash=sha256:00\n-c constraints.txt\n--pre\n")
+        (D / "requirements.txt").write_text("requests==2.31.0\n-r reqs/base.in  # 共用\n-r ../../outside.txt\n")
+        ents, bad = parse_manifest([D / "requirements.txt"])
+        names = sorted(n for _, n, _ in ents)
+        if names != ["evilpkgxyz", "httpx", "pytest", "requests"]:
+            fails.append(f"requirements：-r／--requirement= 引入的套件都要查（得到 {names}）")
+        if not any("循環引入" in b for b in bad) or not any("超出目標專案" in b for b in bad) or len(bad) != 2:
+            fails.append(f"requirements：-r 循環引入與超出目標專案要回報，-c／--pre／--hash 照常略過（得到 {bad}）")
+        # 套件來源不是公開 PyPI → 無法驗證；明確指定公開 PyPI 不算
+        for line, want in [("--index-url https://pypi.org/simple/", 0), ("-i https://pypi.python.org/simple", 0),
+                           ("--index-url https://pypi.internal.example/simple", 1), ("-i https://evil.example/simple", 1),
+                           ("--extra-index-url https://pypi.internal.example/simple", 1),
+                           ("--extra-index-url https://pypi.org/simple", 1),   # 額外 index 一律回報：相依混淆的典型入口
+                           ("--index-url=https://priv.example/simple", 1), ("-f ./wheels", 1), ("--find-links=https://x/", 1),
+                           ("--no-index", 1), ("--trusted-host pypi.internal.example", 0)]:
+            (D / "requirements.txt").write_text(f"{line}\nrequests==2.31.0\n")
+            ents, bad = parse_manifest([D / "requirements.txt"])
+            if [n for _, n, _ in ents] != ["requests"] or len(bad) != want:
+                fails.append(f"requirements：「{line}」應回報 {want} 筆無法驗證（得到 {bad}）")
         (D / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi", "evil @ git+https://x/y.git"]\n')
         ents, bad = parse_manifest([D / "pyproject.toml"])
         if [n for _, n, _ in ents] != ["fastapi"] or len(bad) != 1:
