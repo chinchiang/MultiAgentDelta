@@ -19,7 +19,7 @@
 | 時機 | 範圍 | 工具 | 時間目標 |
 |---|---|---|---|
 | 每次 PR（`diff_aware: true`） | 變更檔 + 其直接相依 | Semgrep（taint）、Checkov、`trivy config` | **< 5 分鐘**（超過 → 縮 ruleset，不是關閉） |
-| 夜間（`nightly_full: [codeql]`） | 全 repo | CodeQL（跨檔跨函式）、Semgrep 全量（夜間 workflow 目前沒有獨立 Checkov job） | 不限 |
+| 夜間（`nightly_full: [codeql]`） | 全 repo | CodeQL（跨檔跨函式；由 GitHub Code scanning default setup 於 PR、push 到 main 與每週排程執行，不在 `nightly-full.yml`）、Semgrep 全量（夜間 workflow 目前沒有獨立 Checkov job） | 不限 |
 | 手動 | 指定目錄 | 同上 | — |
 
 性質：高確定性規則（參數化 SQL、`shell=True`、`alg:none`、IMDSv2）為 blocking；需上下文判斷者（CORS、root user、缺 owner filter）為 advisory。工具缺席 / 逾時 → `incomplete`。
@@ -46,7 +46,7 @@ Semgrep 預設把「函式呼叫的汙點參數」傳播到回傳值，所以 `"
 | 速度（中型 repo diff） | 秒–分 | 分 | 10 分–小時 |
 | 授權 | LGPL 規則引擎 + 社群規則 | 商用 | GitHub 公開 repo 免費；私有需 GHAS |
 | 自訂規則難度 | 低（YAML） | 低 | 高（QL） |
-| 在 vibesec 的位置 | L1 PR 階段 | L2 / L3 PR 階段 | 全層級夜間全量（目前 CI 用的是 CodeQL 與 Semgrep CE，Pro 未導入） |
+| 在 vibesec 的位置 | L1 PR 階段 | L2 / L3 PR 階段 | 全層級全庫掃描（目前 CI 用的是 CodeQL default setup 與 Semgrep CE，Pro 未導入） |
 
 其他可選：SonarQube（AI Code Assurance 品質閘門）、Snyk Code（ML + 符號執行，IDE 體驗佳，商用）。工具原生規則 `rule_id` 前綴 `semgrep:` / `checkov:` / `trivy:`；vibesec 自訂規則用 `vibesec.g3.*`。
 
@@ -119,8 +119,8 @@ trivy config . --format sarif --output reports/trivy-config.sarif # 本機示意
 # ---- 夜間全量 ----
 semgrep --config config/semgrep/vibesec-rules.yaml --config p/owasp-top-ten --config p/security-audit \
   --sarif -o reports/semgrep-full.sarif .
-# CodeQL（nightly-full.yml 使用 github/codeql-action；本機等價）
-codeql database create /tmp/db --language=python   # CI 矩陣實際為 python 與 actions（repo 無 JS/TS） --source-root .
+# CodeQL（CI 由 GitHub Code scanning default setup 執行；以下為本機等價）
+codeql database create /tmp/db --language=python   # default setup 分析的語言為 python 與 actions（repo 無 JS/TS） --source-root .
 codeql database analyze /tmp/db codeql/python-queries:codeql-suites/python-security-extended.qls \
   codeql/javascript-queries:codeql-suites/javascript-security-extended.qls --format=sarif-latest --output=reports/codeql.sarif
 checkov -d . --config-file config/checkov/.checkov.yaml --check ''   # 清空 allow-list 跑全規則
@@ -142,14 +142,14 @@ python3 scripts/g3_sast.py --target ../MultiAgentBeta [--base <ref>] --out-dir r
 
 外部專案也不套用本 repo blocking-policy 的 `exceptions`；`checkov:skip=`、`trivy:ignore` 行內註解工具一定會採信 → 列進 `status_reason`。`config/checkov/.checkov.yaml` 的 `skip-path`（含本 repo 靶場路徑）對所有目標相同。
 
-工作流對應：`pr-gates.yml`（方式 A 或 B + Checkov + Trivy）、`nightly-full.yml`（CodeQL + 全量）。所有 SARIF 由 harness 合併進 `reports/vibesec.sarif`，`rule_id` 對 `config/catalogs/cwe-map.yaml` 補 CWE / control_id。
+工作流對應：`pr-gates.yml`（方式 A 或 B + Checkov + Trivy）、`nightly-full.yml`（全量）；CodeQL 由 Code scanning default setup 執行。所有 SARIF 由 harness 合併進 `reports/vibesec.sarif`，`rule_id` 對 `config/catalogs/cwe-map.yaml` 補 CWE / control_id。
 
 ## 工具與設定檔
 
 | 工具 | 用途 | 設定 |
 |---|---|---|
 | Semgrep CE / Pro（semgrep.dev） | 污點分析、自訂規則、PR 首選 | `config/semgrep/vibesec-rules.yaml` + `p/owasp-top-ten` + `p/security-audit` |
-| CodeQL | 夜間跨檔跨函式（SARIF 上傳 GitHub Code Scanning 作為證據，目前未接進任何閘門裁決，屬 advisory／證據型） | `nightly-full.yml` |
+| CodeQL | 跨檔跨函式（結果在 GitHub Code Scanning 作為證據，目前未接進任何閘門裁決，屬 advisory／證據型） | GitHub Code scanning default setup（repo 設定；不在 `nightly-full.yml`，以免與 default setup 衝突） |
 | Checkov | Terraform / Dockerfile / K8s / GHA / secrets | `config/checkov/.checkov.yaml`、`config/checkov/custom/*.yaml` |
 | Trivy（`trivy config`） | IaC 第二意見 | — |
 | `scripts/g3_sast.py` | 本機／harness：三個工具 → G3 gate JSON；`--target` 掃其他專案 | 同上三份設定 |

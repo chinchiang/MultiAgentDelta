@@ -59,7 +59,7 @@ flowchart TB
   subgraph GHA["GitHub Actions"]
     PRG["pr-gates.yml（每個 PR，diff-aware）<br/>G1 → G2 → G3 SAST ∥ G3 IaC；G4 接在 G3 SAST 之後<br/>＋ repo-validate（validate.py）＋ summary 彙整"]
     RRT["review-record-trust.yml<br/>外部 G4 紀錄不得自證"]
-    NF["nightly-full.yml（每日）<br/>CodeQL · Semgrep 全量 · G2 全 Git 歷史（gitleaks）<br/>G1 全量：SBOM/Grype/Trivy/KEV/維護度/provenance<br/>evals（run_evals.py vs baseline）"]
+    NF["nightly-full.yml（每日）<br/>Semgrep 全量 · G2 全 Git 歷史（gitleaks）<br/>G1 全量：SBOM/Grype/Trivy/KEV/維護度/provenance<br/>evals（run_evals.py vs baseline）"]
     SB["staging-blackbox.yml（每週）<br/>G5：ZAP + api-probes（雙帳號 BOLA、JWT、SSRF…）<br/>G6：promptfoo eval/redteam + garak + 成本探針 → g6_gate"]
   end
 
@@ -140,7 +140,7 @@ flowchart LR
 | `config/` | 各工具可直接使用的設定：Semgrep 規則、gitleaks、Checkov、slopsquat 清單、ZAP、promptfoo、garak、blocking 政策、catalogs、providers、harness 角色提示 |
 | `.claude/skills/vibesec-harness/` | `/vibesec-harness` skill：harness agent 的操作流程 |
 | `.claude/agents/` | 四個 reviewer sub-agent：architecture、appsec、identity、supplychain |
-| `.github/workflows/` | `pr-gates.yml`（G1–G4 diff-aware）、`nightly-full.yml`（CodeQL + 全量 + evals）、`staging-blackbox.yml`（G5 + G6，打已授權目標；未設定則打內建靶場）、`review-record-trust.yml`（外部 G4 紀錄不得自證） |
+| `.github/workflows/` | `pr-gates.yml`（G1–G4 diff-aware）、`nightly-full.yml`（全量 + evals；CodeQL 由 Code scanning default setup 執行）、`staging-blackbox.yml`（G5 + G6，打已授權目標；未設定則打內建靶場）、`review-record-trust.yml`（外部 G4 紀錄不得自證） |
 | `examples/vulnapp/` | 刻意有漏洞的 FastAPI 靶場（BOLA、JWT alg:none、SSRF、Prompt Injection、Stored XSS、Denial of Wallet） |
 | `evals/` | 評測案例格式與種子案例（正例 / 反例、held_out） |
 | `scripts/` | 各閘門的判定程式（`g0_*`–`g6_*`）、多模型審查（`review_packet.py`、`review_provider.py`）、人工裁決（`ruling.py`）、評測（`run_evals.py`）、政策查詢（`vibesec_policy.py`）、KEV 取得（`fetch_kev.py`）、目標與環境把關（`target_guard.py`、`env_guard.py`）、SARIF 判定（`sarif_gate.py`）與自我驗證（`validate.py`） |
@@ -171,7 +171,7 @@ MultiAgentDelta/
 │   ├── scripts/                   # 失敗通知開 issue（nightly-issue.js、staging-issue.js + 測試）
 │   └── workflows/
 │       ├── pr-gates.yml           # PR：G1 → G2 → G3（SAST ∥ IaC）；G4 接 SAST 後；repo-validate、summary
-│       ├── nightly-full.yml       # 每日：CodeQL、Semgrep 全量、G1 全量／attest、G2 全歷史、evals、notify
+│       ├── nightly-full.yml       # 每日：Semgrep 全量、G1 全量／attest、G2 全歷史、evals、notify
 │       ├── staging-blackbox.yml   # 每週：G5 DAST/API + G6 AI 紅隊、notify
 │       └── review-record-trust.yml# 外部 G4 紀錄須由非作者 approve
 ├── config/

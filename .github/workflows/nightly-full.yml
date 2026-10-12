@@ -1,6 +1,8 @@
 # VibeSec 夜間全量掃描 — 補齊 diff-aware 未覆蓋的全庫檢查
-# 02:00 Asia/Taipei（= 18:00 UTC）。CodeQL 深度 SAST + 全量 Semgrep + 全量 G1（Syft/Grype/Trivy）+ EPSS/KEV 富化
+# 02:00 Asia/Taipei（= 18:00 UTC）。全量 Semgrep + 全量 G1（Syft/Grype/Trivy）+ EPSS/KEV 富化
 # + G2 全 Git 歷史祕密掃描（gitleaks git）。
+# CodeQL 不在這裡跑：repo 已改用 GitHub Code scanning default setup（PR、push 到 main、每週排程），
+# 這裡若再以 advanced 設定上傳 CodeQL 會與 default setup 衝突、上傳失敗（nightly 因此長期紅燈）。
 name: VibeSec Nightly Full Scan
 
 on:
@@ -14,39 +16,6 @@ permissions:
   actions: read
 
 jobs:
-  codeql:
-    name: CodeQL 深度 SAST（全量）
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [python, actions]   # repo 無 JS/TS 原始碼；actions = 掃描 workflow
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          languages: ${{ matrix.language }}
-          queries: security-extended
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-      # 分析結果另存到 reports/codeql/ 並保存成 artifact：repo 尚未開啟 Code scanning 時（#68）上傳會失敗、
-      # job 維持紅燈（不設 continue-on-error），但已分析出的 SARIF 仍留有證據可查。
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          category: vibesec-nightly-codeql-${{ matrix.language }}
-          output: reports/codeql
-      - name: Upload CodeQL SARIF artifact
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: vibesec-nightly-codeql-${{ matrix.language }}
-          path: reports/codeql/
-          if-no-files-found: warn
-
   semgrep-full:
     name: Semgrep 全量（無 baseline）
     runs-on: ubuntu-latest
@@ -534,7 +503,7 @@ jobs:
   # 只在 main 執行，避免分支上手動觸發的試跑開 issue。邏輯與單元測試在 .github/scripts/nightly-issue{,.test}.js。
   notify:
     name: 失敗通知（追蹤 issue）
-    needs: [codeql, semgrep-full, g1-full, g1-attest, g2-history, evals]
+    needs: [semgrep-full, g1-full, g1-attest, g2-history, evals]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
