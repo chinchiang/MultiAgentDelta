@@ -1013,15 +1013,8 @@ CONTROL_OF = {
     "vibesec.g1.postinstall-egress": "VS-G1-INSTALL-HOOK",
 }
 
-def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0):
-    vb = read_vibesec() or {}
-    mode = vb.get("mode", "shadow"); tier = vb.get("risk_tier", "L2")
-    blocking = sum(f["policy_tier"] == "blocking" for f in findings)
-    advisory = sum(f["policy_tier"] == "advisory" for f in findings)
-    if incomplete:
-        status, reason = "incomplete", "；".join(list(incomplete) + list(notes))
-    else:
-        status, reason = ("fail" if blocking else "pass"), ("；".join(notes) or None)
+def gate_coverage(findings, incomplete, pypi_checked=0):
+    """G1 快篩三個控制的 coverage（VS-G1-SBOM 由 g1_sbom.py 併入，不在此列）。"""
     coverage = []
     for ctl in ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK"):
         hit = [f for f in findings if CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
@@ -1035,6 +1028,31 @@ def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, note
         else:
             state, why = "pass", None
         coverage.append({"control_id": ctl, "state": state, "reason": why})
+    return coverage
+
+def gate_status(findings, incomplete, coverage, notes=()):
+    """整體狀態與 status_reason。coverage 有 untested 時不得記 pass（incomplete ≠ pass，CLAUDE.md #2）：
+    以前只看 incomplete 清單，PyPI 安裝腳本未檢查（VS-G1-INSTALL-HOOK untested）仍記 pass、印「快篩通過」。
+    有 blocking 發現 → fail（untested 寫進 status_reason，與 g1_kev／g1_sbom 併入時 fail 優先一致）。"""
+    blocking = sum(f["policy_tier"] == "blocking" for f in findings)
+    if incomplete:
+        return "incomplete", "；".join(list(incomplete) + list(notes))
+    untested = [f"{c['control_id']} 未實測（{c['reason']}）" if c.get("reason") else f"{c['control_id']} 未實測"
+                for c in coverage if c["state"] == "untested"]
+    if blocking:
+        reasons = list(notes) + (["另有未完成項目：" + "；".join(untested)] if untested else [])
+        return "fail", "；".join(reasons) or None
+    if untested:
+        return "incomplete", "；".join(untested + list(notes))
+    return "pass", ("；".join(notes) or None)
+
+def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0):
+    vb = read_vibesec() or {}
+    mode = vb.get("mode", "shadow"); tier = vb.get("risk_tier", "L2")
+    blocking = sum(f["policy_tier"] == "blocking" for f in findings)
+    advisory = sum(f["policy_tier"] == "advisory" for f in findings)
+    coverage = gate_coverage(findings, incomplete, pypi_checked)
+    status, reason = gate_status(findings, incomplete, coverage, notes)
     coverage.append({"control_id": "VS-G1-SBOM", "state": "pending", "reason": None})
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=TARGET).stdout.strip() or None
@@ -1318,8 +1336,25 @@ def selftest():
             code, out = run("--target", str(D), "--manifest", "deploy/python-requirements.txt")
             allow.clear()
             fa = [f for f in out.get("findings", []) if f["package"] == "fastapi"]
-            if calls != [("fastapi", "0.1.0")] or [f["policy_tier"] for f in fa] != ["advisory"] or code != 0:
+            # 只剩 advisory，但 PyPI 安裝腳本未檢查（VS-G1-INSTALL-HOOK untested）→ incomplete、exit 2，不得記 pass
+            if calls != [("fastapi", "0.1.0")] or [f["policy_tier"] for f in fa] != ["advisory"] or code != 2:
                 fails.append(f"allowlist 內的套件仍要查 registry，放行的發現降為 advisory（查詢 {calls}，發現 {fa}，exit {code}）")
+            elif out.get("status") != "incomplete" or "VS-G1-INSTALL-HOOK" not in (out.get("status_reason") or ""):
+                fails.append(f"PyPI 安裝腳本未檢查 → stdout 應為 incomplete 並列出 VS-G1-INSTALL-HOOK（得到 {out.get('status')}：{out.get('status_reason')}）")
+            # 同一情境寫出的 gate JSON：VS-G1-INSTALL-HOOK untested → 整體 incomplete（以前記 pass），且符合 schema
+            allow[:] = [{"package": "fastapi", "ecosystem": "pypi", "spec": parse_version_spec("0.1.0"), "bypass": {"cooldown"},
+                         "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest"}]
+            gate = D.parent / f"{D.name}-hook-gate.json"
+            code, _ = run("--target", str(D), "--manifest", "deploy/python-requirements.txt", "--gate", str(gate))
+            allow.clear()
+            g = json.loads(gate.read_text(encoding="utf-8"))
+            gate.unlink()
+            hook = next((c for c in g.get("coverage", []) if c["control_id"] == "VS-G1-INSTALL-HOOK"), {})
+            if code != 2 or g.get("status") != "incomplete" or hook.get("state") != "untested" \
+                    or "VS-G1-INSTALL-HOOK" not in (g.get("status_reason") or ""):
+                fails.append(f"coverage 有 untested → gate 應為 incomplete 並說明（exit {code}，{g.get('status')}，{g.get('status_reason')}）")
+            elif list(schema.iter_errors(g)):
+                fails.append(f"untested 的 gate JSON 不符 schema：{list(schema.iter_errors(g))[0].message}")
             # requirements 鎖定檔：由同檔其他套件宣告為相依者是間接相依，不做名稱相似度；沒有人需要的仍要比對
             (D / "py").mkdir()
             (D / "py/requirements.lock.txt").write_text("openai==2.0.0 \\\n    --hash=sha256:00\nhttpx2==2.13.1\n"
@@ -1520,6 +1555,26 @@ def selftest():
         if code != 0 or "用法" not in out.getvalue() or '"findings"' in out.getvalue():
             fails.append(f"{flag} 應印用法並 exit 0（exit {code}）")
 
+    # gate_status：coverage 有 untested 不得記 pass；blocking 仍記 fail 並列出未完成項目；incomplete 清單行為不變
+    blk = [{"rule_id": "vibesec.g1.cooldown-violation", "policy_tier": "blocking"}]
+    adv = [{"rule_id": "vibesec.g1.low-download-package", "policy_tier": "advisory"}]
+    for name, fs, inc, pypi, want in [
+        ("PyPI 未檢查安裝腳本、沒有發現", [], [], 3, "incomplete"),
+        ("PyPI 未檢查安裝腳本、只有 advisory", adv, [], 1, "incomplete"),
+        ("PyPI 未檢查安裝腳本、有 blocking", blk, [], 1, "fail"),
+        ("只有 npm、沒有發現", [], [], 0, "pass"),
+        ("只有 npm、有 blocking", blk, [], 0, "fail"),
+        ("registry 失敗", blk, ["registry 逾時"], 0, "incomplete"),
+    ]:
+        cov = gate_coverage(fs, inc, pypi)
+        st, why = gate_status(fs, inc, cov, ("註記",))
+        if st != want:
+            fails.append(f"gate_status（{name}）應為 {want}（得到 {st}）")
+        elif pypi and "VS-G1-INSTALL-HOOK" not in (why or ""):
+            fails.append(f"gate_status（{name}）應在 status_reason 說明 VS-G1-INSTALL-HOOK 未實測（得到 {why}）")
+        elif "註記" not in (why or ""):
+            fails.append(f"gate_status（{name}）status_reason 應保留 notes（得到 {why}）")
+
     return fails
 
 def main(argv):
@@ -1680,6 +1735,8 @@ def main(argv):
     pypi_checked = sum(1 for e, _, _ in jobs if e == "pypi")
 
     incomplete = list(dict.fromkeys(incomplete))
+    coverage = gate_coverage(findings, incomplete, pypi_checked)
+    status, status_reason = gate_status(findings, incomplete, coverage)
     out = {"gate": "G1", "findings": findings}
     if external_target():
         out["target"] = str(TARGET)
@@ -1688,9 +1745,12 @@ def main(argv):
         out["ignored_exceptions"] = ignored_exceptions
     if ignored_allowlist:
         out["ignored_allowlist"] = ignored_allowlist
-    if incomplete:
+    if status == "incomplete":
         out["status"] = "incomplete"
-        out["status_reason"] = "；".join(incomplete)
+        out["status_reason"] = status_reason
+        # 分開記：檢查本身失敗 vs. 有控制未實測（run_evals 據此判斷案例能否判定）
+        out["incomplete_checks"] = incomplete
+        out["untested_controls"] = [c["control_id"] for c in coverage if c["state"] == "untested"]
     print(json.dumps(out, ensure_ascii=False, indent=2))
     if sarif_out:
         write_sarif(sarif_out, findings)
@@ -1703,6 +1763,9 @@ def main(argv):
         return 1
     if incomplete:
         print("\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。", file=sys.stderr)
+        return 2
+    if status == "incomplete":
+        print(f"\n⚠️ G1 有控制未實測 → incomplete，絕不視為通過：{status_reason}", file=sys.stderr)
         return 2
     print("\n✅ G1 快篩通過。", file=sys.stderr)
     return 0

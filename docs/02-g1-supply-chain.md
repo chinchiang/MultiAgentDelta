@@ -159,9 +159,9 @@ curl -s https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabi
 3. 解析新增 / 變更套件 → 四層檢查（同一行程內同（名稱,版本）只查一次，沒有跨次快取；失敗 → `incomplete`）。
 4. （規劃，尚未實作：目前 G1 job 不做任何安裝）全通過 → `npm ci --ignore-scripts` / `uv sync`，再對白名單內需要 build 的套件單獨允許 scripts。
 5. `scripts/g1_sbom.py`（syft，驗證後併入 `g1-gate.json`）→ grype / trivy → KEV（PR 階段；EPSS 富化只在 nightly）→ SARIF 分別上傳（`rule_id` 前綴 `grype:` / `trivy:`，trivy 不併入 G1 gate）。
-6. 寫 `reports/g1-gate.json`（`coverage`：`VS-G1-SLOPSQUAT`、`VS-G1-COOLDOWN`、`VS-G1-INSTALL-HOOK`、`VS-G1-SBOM`；`ASVS5-V15.2` 由 `g1_kev.py` 併入）。
+6. 寫 `reports/g1-gate.json`（`coverage`：`VS-G1-SLOPSQUAT`、`VS-G1-COOLDOWN`、`VS-G1-INSTALL-HOOK`、`VS-G1-SBOM`；`ASVS5-V15.2` 由 `g1_kev.py` 併入）。整體狀態：coverage 有任何 `untested` 就不得記 `pass`——目前 PyPI 的安裝腳本（setup.py／build hooks）尚無檢查，只要查到 PyPI 套件，`VS-G1-INSTALL-HOOK` 就記 `untested`，G1 為 `incomplete`（exit 2，`status_reason` 列出未實測的控制）；有 blocking 發現時仍記 `fail`（exit 1），未實測項目寫進 `status_reason`。
 
-本機開發者：`.pre-commit-config.yaml` 掛同一支檢查腳本（跑 `g1_slopcheck.py --staged` 已實作的各層，秒級）。
+本機開發者：`.pre-commit-config.yaml` 掛同一支檢查腳本（跑 `g1_slopcheck.py --staged` 已實作的各層，秒級）。暫存區含 PyPI manifest 時，因 `VS-G1-INSTALL-HOOK` 未實測會回 exit 2（incomplete），commit 會被擋下（與 registry 失敗時相同，incomplete ≠ pass）。
 
 掃其他專案（被測專案在本機另一個目錄）：
 
