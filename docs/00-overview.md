@@ -38,7 +38,7 @@
 │   postinstall 會在       + pre-commit         Checkov / Trivy)      Agent tool allow-list / │
 │   安裝瞬間執行)          + push protection)                        LLM 輔助審查 handoff)     │
 │                                                                              │
-│  工作流：.github/workflows/pr-gates.yml；夜間全量：nightly-full.yml（CodeQL）      │
+│  工作流：.github/workflows/pr-gates.yml；夜間全量：nightly-full.yml（全量）        │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    │ 部署到 staging（VIBESEC_TARGET_URL）
                                    ▼
@@ -98,7 +98,7 @@
 ### 5.3 差異感知（Diff-Aware）
 
 - PR 階段只掃變更（`diff_aware: true`：G1、G3、G4），目標數分鐘內完成；G2 例外（`diff_aware: false`）：PR 階段只掃本 PR 新增的 commit，全 Git 歷史由夜間 `nightly-full.yml` 的 `g2-history` 掃描。另需注意：CI 內 G4 靜態檢查、Checkov、Trivy config 目前是全樹掃描，只有 Semgrep（`--baseline-commit`）與 G1 是 diff-aware。
-- 夜間 `nightly-full.yml` 跑 CodeQL 與全量掃描補齊跨檔 / 跨函式路徑。
+- 夜間 `nightly-full.yml` 跑全量掃描；跨檔 / 跨函式路徑由 CodeQL 補齊（repo 的 Code scanning default setup，於 PR、push 到 main 與每週排程執行）。
 - 指令層：`semgrep ci`（自動取 PR base）或 `semgrep --baseline-commit <merge-base>`；G1 只對 lockfile diff 新增的套件查 Registry。
 
 ## 6. 風險分級與閘門深度（摘要；細節見 docs/01）

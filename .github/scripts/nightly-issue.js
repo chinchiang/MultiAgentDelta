@@ -11,7 +11,6 @@ const MARKER = '<!-- vibesec-nightly-failure -->';
 const MAX_REGRESSIONS = 40;
 
 const JOB_LABELS = {
-  codeql: 'CodeQL 深度 SAST',
   'semgrep-full': 'Semgrep 全量',
   'g1-full': 'G1 全量供應鏈',
   'g1-attest': 'G1 SBOM 來源證明（簽發 + 驗證）',

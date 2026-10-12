@@ -9,11 +9,11 @@ Vibe Coding 產生的程式碼有兩個傳統工具難以覆蓋的面向：AI �
 | 工具 | 檢測機制 | 速度 | 跨檔跨函式污點分析 | 定位 |
 |---|---|---|---|---|
 | **Semgrep** | Pattern / AST / Taint | 極快 | ⚠️ CE 版單檔單函式；Pro 版支援 | PR 階段首選，CI 整合佳（見 `config/semgrep/vibesec-rules.yaml`） |
-| **CodeQL** | 語意化資料流查詢 | 較慢 | 強（深度追蹤） | 夜間全量（`nightly-full.yml`），GitHub 原生整合 |
+| **CodeQL** | 語意化資料流查詢 | 較慢 | 強（深度追蹤） | GitHub Code scanning default setup（PR、push 到 main、每週排程），GitHub 原生整合 |
 | **SonarQube** | 規則 + AI Code Assurance | 中等 | 中等 | 品質閘門控管，專為 AI 程式碼設計的閘門 |
 | **Snyk Code** | ML + 符號分析 | 快 | 支援 | 開發者體驗佳、IDE 整合、自動修補建議（商用） |
 
-選型：PR 階段 Semgrep <5 分鐘快速攔截；夜間 CodeQL 全量深度掃描。
+選型：PR 階段 Semgrep <5 分鐘快速攔截；CodeQL（default setup）做全庫深度掃描。
 
 ## 二、SCA（軟體成分與幻覺套件）
 

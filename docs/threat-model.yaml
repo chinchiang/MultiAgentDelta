@@ -26,7 +26,7 @@ components:
   - { id: c-pr-author,   name: PR 作者（含 fork 與 Dependabot）,                  kind: external_service, zone: z-internet }
   - { id: c-github,      name: GitHub（repo、PR、Issues、Code Scanning、Actions 變數與 secrets）, kind: external_service, zone: z-github }
   - { id: c-ci-pr,       name: pr-gates（G1–G4、repo-validate；pull_request 觸發）,  kind: ci,               zone: z-runner }
-  - { id: c-ci-nightly,  name: nightly-full（CodeQL、全量 G1、g1-attest SBOM 簽章、g2-history 全歷史祕密掃描、評測、notify）, kind: ci, zone: z-runner }
+  - { id: c-ci-nightly,  name: nightly-full（Semgrep 全量、全量 G1、g1-attest SBOM 簽章、g2-history 全歷史祕密掃描、評測、notify）, kind: ci, zone: z-runner }
   - { id: c-ci-staging,  name: staging-blackbox（目標授權檢查、G5 ZAP＋探針、G6 promptfoo／garak／成本探針、notify）, kind: ci, zone: z-runner }
   - { id: c-lab,         name: 靶場 examples/vulnapp（runner 內 0.0.0.0:8000）,      kind: api,              zone: z-runner }
   - { id: c-target,      name: 外部授權目標（vars.VIBESEC_TARGET_URL，僅 admin 可設）, kind: external_service, zone: z-internet }
