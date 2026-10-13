@@ -1648,10 +1648,12 @@ def selftest():
             _RULE_CFG = saved_rc
     # 本 repo 的 G1 文件本身也是被掃描的 markdown：範例若寫成可執行的安裝指令，就會被當成真的去查 registry。
     # 以前 docs/02 寫了 `pip install foo`，而 PyPI 上真的有 foo（唯一的版本 .1 沒有任何發布檔、沒有上傳時間）→
-    # 冷卻期查不到 → 任何改到 docs/02 的 PR 都讓 G1 incomplete（enforce 下 exit 2 擋下）
-    doc_mentions = rule_file_mentions(ROOT / "docs/02-g1-supply-chain.md")
-    if doc_mentions:
-        fails.append(f"docs/02 的範例不得寫成可執行的安裝指令（會被 G1 規則檔掃描當真去查 registry）：{doc_mentions}")
+    # 冷卻期查不到 → 任何改到 docs/02 的 PR 都讓 G1 incomplete（enforce 下 exit 2 擋下）。
+    # docs/03 的事故 SOP 寫了 `pip install git-filter-repo`：PyPI 套件的安裝腳本尚無檢查 → VS-G1-INSTALL-HOOK 未實測 → 同樣 incomplete
+    for doc in ("docs/02-g1-supply-chain.md", "docs/03-g2-secrets.md"):
+        doc_mentions = rule_file_mentions(ROOT / doc)
+        if doc_mentions:
+            fails.append(f"{doc} 的範例不得寫成可執行的安裝指令（會被 G1 規則檔掃描當真去查 registry）：{doc_mentions}")
     # cfg()：讀 cooldown.yaml 真正的鍵（similarity.difflib_ratio_min 等），不是不存在的頂層 similarity_ratio
     cy = load_yaml(CFG_DIR / "cooldown.yaml") or {}
     c = cfg()

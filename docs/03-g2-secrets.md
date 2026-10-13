@@ -138,8 +138,8 @@ CI 的閘門狀態由 `pr-gates.yml` summary job 以 `scripts/sarif_gate.py` 從
 3. **稽核**：查服務商用量 / 稽核日誌，確認撤銷前是否被濫用；Supabase service_role 外洩時另查資料庫存取日誌（可能的 RLS 繞過）。
 4. **清歷史**：
    ```bash
-   # 方式 A：git filter-repo（建議）
-   pip install git-filter-repo
+   # 方式 A：git filter-repo（建議）。先以 pip 安裝 PyPI 上的 git-filter-repo 套件；這裡刻意不寫成可執行指令：
+   # 本檔也在 G1 規則檔掃描範圍（**/*.md），寫成指令會被當真去查 registry
    git filter-repo --invert-paths --path .env                     # 移除檔案
    printf 'sk-ant-api03-REDACTED==>***REMOVED***\n' > /tmp/replacements.txt
    git filter-repo --replace-text /tmp/replacements.txt           # 置換字串
