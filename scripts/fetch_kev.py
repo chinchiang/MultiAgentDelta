@@ -174,13 +174,15 @@ def selftest() -> list[str]:
         fetch(out, fake({cisa: b"{", mirror: b"{"}), now=_now_fixed)
         if out.read_bytes() != old or out.with_name(out.name + ".download").exists():
             fails.append("下載失敗不得覆蓋快取或留下暫存檔")
-        # 8. 下游 g1_kev.load_kev 能讀取 fetch 寫出的 feed
-        fetch(out, fake({cisa: good}))
+        # 8. 下游 g1_kev.load_kev 能讀取 fetch 寫出的 feed。load_kev 以真實時鐘檢查 feed 年齡，
+        #    所以這裡的 dateReleased 以現在往回推（寫死日期的 good 過幾天就會被判過期）
+        released_now = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).replace(microsecond=0).isoformat()
+        fetch(out, fake({cisa: json.dumps({**json.loads(good), "dateReleased": released_now}).encode()}))
         try:
             sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
             from g1_kev import load_kev
             kev, released = load_kev(out)
-            if kev != {"CVE-2021-44228": "2021-12-10"} or released != "2026-10-10T12:00:00Z":
+            if kev != {"CVE-2021-44228": "2021-12-10"} or released != released_now:
                 fails.append(f"g1_kev.load_kev 讀回結果不符：{kev} {released}")
         except Exception as e:
             fails.append(f"g1_kev.load_kev 無法讀取 fetch 結果：{e}")

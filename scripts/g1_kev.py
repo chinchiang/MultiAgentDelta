@@ -31,11 +31,20 @@ FALLBACK_URI = ".github/workflows/nightly-full.yml"
 
 
 def load_kev(path: pathlib.Path) -> tuple[dict[str, str | None], str | None]:
-    """回傳 ({CVE: dateAdded}, feed 發布時間)。發布時間寫進摘要，讓「下載失敗、改用舊快取」看得出來。"""
+    """回傳 ({CVE: dateAdded}, feed 發布時間)。發布時間寫進摘要，讓「下載失敗、改用舊快取」看得出來。
+    dateReleased 缺席、無法解析或超過 fetch_kev.MAX_CACHE_AGE_DAYS → ValueError（run() 記 incomplete）：
+    過期的清單比對不到之後才收錄的 CVE。不能只靠 fetch_kev.py——鏡像下載成功時它不檢查年齡，
+    步驟失敗時 Actions cache 還原的舊檔也會留著。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from fetch_kev import MAX_CACHE_AGE_DAYS, _age_days
     data = json.loads(path.read_text(encoding="utf-8"))
     vulns = data.get("vulnerabilities")
     if not isinstance(vulns, list) or not vulns:
         raise ValueError("KEV feed 沒有 vulnerabilities 清單")
+    age = _age_days(data.get("dateReleased")) if data.get("dateReleased") else None
+    if age is None or age > MAX_CACHE_AGE_DAYS:
+        raise ValueError(f"KEV feed 過舊或發布時間無法判定（dateReleased {data.get('dateReleased')!r}，"
+                         f"上限 {MAX_CACHE_AGE_DAYS:g} 天）")
     return ({v["cveID"]: v.get("dateAdded") for v in vulns if isinstance(v, dict) and v.get("cveID")},
             data.get("dateReleased"))
 
@@ -194,7 +203,8 @@ def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | Non
 def selftest() -> list[str]:
     import tempfile
     fails: list[str] = []
-    kev_feed = {"vulnerabilities": [{"cveID": "CVE-2021-44228", "dateAdded": "2021-12-10"}]}
+    ago = lambda days: (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat()
+    kev_feed = {"dateReleased": ago(1), "vulnerabilities": [{"cveID": "CVE-2021-44228", "dateAdded": "2021-12-10"}]}
     grype = {"matches": [
         {"vulnerability": {"id": "CVE-2021-44228", "fix": {"versions": ["2.15.0"]}},
          "artifact": {"name": "log4j-core", "version": "2.14.1", "type": "java-archive", "locations": [{"path": "/pom.xml"}]}},
@@ -250,6 +260,20 @@ def selftest() -> list[str]:
             st = run(gp, kp)[0]
             if st["status"] != "incomplete" or not st.get("status_reason"):
                 fails.append(f"{label} 應為 incomplete 並附原因：{st}")
+        # feed 年齡：比對的是過期的 KEV 清單時，之後才收錄的 CVE 都比對不到，卻照樣記 pass（fail-open）。
+        # 不能只靠 fetch_kev.py：它只在改用快取時檢查年齡，鏡像下載成功不檢查，步驟失敗時 Actions cache 還原的舊檔也會留著
+        g.write_text(json.dumps({"matches": [grype["matches"][3]]}))
+        for label, released, want in [
+            ("6 天前發布（上限內）", ago(6), "pass"),
+            ("8 天前發布（超過 7 天上限）", ago(8), "incomplete"),
+            ("缺 dateReleased", None, "incomplete"),
+            ("dateReleased 無法解析", "上週二", "incomplete"),
+        ]:
+            feed = {**kev_feed, "dateReleased": released} if released else {"vulnerabilities": kev_feed["vulnerabilities"]}
+            k.write_text(json.dumps(feed))
+            st = run(g, k)[0]
+            if st["status"] != want or (want == "incomplete" and "dateReleased" not in (st.get("status_reason") or "")):
+                fails.append(f"KEV feed {label} → {want}（得到 {st['status']}：{st.get('status_reason')}）")
     # merge_gate：只升不降、incomplete ≠ pass
     base = {"gate": "G1", "status": "pass", "status_reason": None, "findings_count": {"blocking": 0, "advisory": 2},
             "tools": [], "coverage": []}
