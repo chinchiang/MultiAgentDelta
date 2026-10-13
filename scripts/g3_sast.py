@@ -147,7 +147,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
         notes.append(problem)
     else:
         if external:
-            pol.update(exceptions=[], ignored_exceptions=[])
+            pol.update(exceptions=pol["policy"].exceptions_for(target))   # 外部專案 → 不套用任何例外
             notes.append(f"目標專案 {target.name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用；"
                          "# nosemgrep 不採信；checkov 掃描已去除目標的 .checkov.yaml")
             if (target / ".semgrepignore").exists():
@@ -231,10 +231,11 @@ def selftest() -> list[str]:
     from jsonschema import Draft202012Validator
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
+    from vibesec_policy import Exceptions
     # 合成例外（不依賴政策檔現有例外與其到期日）：外部目標必須忽略它
-    pol = dict(sarif_gate.load_policy(), exceptions=[
+    pol = dict(sarif_gate.load_policy(), exceptions=Exceptions([
         {"rule_id": "vibesec.g3.command-injection", "path_glob": "app/**", "reason": "selftest",
-         "approved_by": "selftest", "expires": "2099-12-31"}])
+         "approved_by": "selftest", "expires": "2099-12-31"}], []))
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True)
     with tempfile.TemporaryDirectory() as d:

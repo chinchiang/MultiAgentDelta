@@ -16,7 +16,7 @@
   blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用（fail closed）。
 """
 from __future__ import annotations
-import sys, os, ssl, json, re, difflib, fnmatch, itertools, time, http.client, urllib.parse, urllib.request, urllib.error, subprocess
+import sys, os, ssl, json, re, difflib, itertools, time, http.client, urllib.parse, urllib.request, urllib.error, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -29,7 +29,7 @@ RETRIES, BACKOFF = 2, 1.0                          # 暫時性網路錯誤重試
 TARGET = ROOT                                      # 被掃描的專案根目錄；--target 改寫
 
 def external_target():
-    """目標不是本 repo → 本 repo 的 blocking-policy exceptions 不適用。"""
+    """目標不是本 repo（例外是否套用另由 Policy.exceptions_for 判斷，條件相同）。"""
     return TARGET.resolve() != ROOT.resolve()
 
 VIBESEC_FILE = ROOT / "vibesec.yaml"
@@ -729,35 +729,6 @@ def self_install_hooks(path):
         return None
     return install_hook_finding(f"{j.get('name') or p.name}（本專案 scripts）", "npm", str(j.get("version") or ""), scripts)
 
-POLICY_FILE = ROOT / "config" / "policy" / "blocking-policy.yaml"
-
-def load_exceptions(today=None):
-    """讀 blocking-policy.yaml 的 exceptions，只保留欄位完整且未過期者（fail closed）。
-
-    回傳 (有效例外清單, 被忽略的例外說明清單)。
-    """
-    today = today or date.today()
-    data = load_yaml(POLICY_FILE) or {}
-    valid, ignored = [], []
-    for ex in data.get("exceptions") or []:
-        if not isinstance(ex, dict):
-            continue
-        missing = [k for k in ("rule_id", "path_glob", "reason", "approved_by", "expires") if not ex.get(k)]
-        if missing:
-            ignored.append(f"{ex.get('rule_id', '?')}：缺少欄位 {', '.join(missing)}")
-            continue
-        exp = ex["expires"]
-        try:
-            exp = exp if isinstance(exp, date) else date.fromisoformat(str(exp))
-        except ValueError:
-            ignored.append(f"{ex['rule_id']}：expires 格式無效（{ex['expires']}）")
-            continue
-        if exp < today:
-            ignored.append(f"{ex['rule_id']} @ {ex['path_glob']}：已於 {exp} 過期")
-            continue
-        valid.append(dict(ex, expires=str(exp)))
-    return valid, ignored
-
 def rel_path(path):
     """manifest 路徑轉成相對目標專案根目錄的 POSIX 路徑；目標外的檔案保持原樣。"""
     p = Path(path).resolve()
@@ -774,13 +745,13 @@ def resolve(path):
     return TARGET / p
 
 def apply_exceptions(finding, exceptions):
-    """命中 rule_id 與 path_glob 的例外時把 blocking 降為 advisory；例外不刪除發現。"""
-    for ex in exceptions:
-        if finding["rule_id"] == ex["rule_id"] and fnmatch.fnmatchcase(finding.get("manifest") or "", ex["path_glob"]):
-            if finding["policy_tier"] == "blocking":
-                finding["policy_tier"] = "advisory"
-            finding["exception"] = {k: ex[k] for k in ("path_glob", "reason", "approved_by", "expires")}
-            break
+    """命中 rule_id 與 path_glob 的例外（exceptions：Policy.exceptions_for 的結果）時把 blocking 降為 advisory；
+    例外不刪除發現。"""
+    ex = exceptions.match(finding["rule_id"], finding.get("manifest") or "")
+    if ex:
+        if finding["policy_tier"] == "blocking":
+            finding["policy_tier"] = "advisory"
+        finding["exception"] = {k: ex[k] for k in ("path_glob", "reason", "approved_by", "expires")}
     return finding
 
 # allowlist.yaml 的 bypass 只能放行這些檢查（檔頭規則 3：slopsquat／cooldown／low-download）；
@@ -1144,13 +1115,13 @@ def _opt(args, name):
 
 def selftest():
     """離線自我測試 --target：registry 查詢以替身取代，只驗證路徑、全量探索、鎖定檔與例外範圍。"""
-    import contextlib, io, tempfile
+    import contextlib, io, shutil, tempfile
     from jsonschema import Draft202012Validator
-    global TARGET, npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist, _https_only_opener, BACKOFF, _RULE_CFG, http_json
+    global TARGET, npm_check, pypi_check, pypi_requires, load_allowlist, _https_only_opener, BACKOFF, _RULE_CFG, http_json, _POLICY
     global CFG_DIR, VIBESEC_FILE
     fails = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    real = (npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist)
+    real = (npm_check, pypi_check, pypi_requires, load_allowlist, _policy())
     real_allowlist = load_allowlist
     allow = []                                  # 整合測試用的合成 allowlist（不依賴政策檔現有條目與到期日）
     load_allowlist = lambda path=None, today=None: (list(allow), [])
@@ -1161,9 +1132,22 @@ def selftest():
     npm_check = pypi_check = stub
     requires_of = {}                            # 合成的 PyPI requires_dist（名稱小寫 → 相依名稱）
     pypi_requires = lambda pkg, ver: set(requires_of.get(pkg.lower(), ()))
-    # 合成例外（不依賴政策檔現有例外與其到期日）
-    load_exceptions = lambda today=None: ([{"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "examples/vulnapp/**",
-                                            "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"}], [])
+    # 合成例外（不依賴政策檔現有例外與其到期日）：暫存 root 放本 repo 政策的副本，只換掉 exceptions；
+    # G1 經 Policy(暫存 root) 讀例外，暫存 root 就是「本 repo」（例外照常套用），其他目標都是外部專案
+    import yaml
+    from vibesec_policy import Policy
+    PR = Path(tempfile.mkdtemp())
+    (PR / "config/policy").mkdir(parents=True)
+    pol = yaml.safe_load((ROOT / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
+    pol["exceptions"] = [{"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "examples/vulnapp/**",
+                          "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"},
+                         {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "nowhere/**",
+                          "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"}]
+    (PR / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump(pol, allow_unicode=True), encoding="utf-8")
+    shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
+    (PR / "examples/vulnapp").mkdir(parents=True)
+    shutil.copy(ROOT / "examples/vulnapp/pyproject.toml", PR / "examples/vulnapp/pyproject.toml")
+    _POLICY = Policy(PR)
 
     def run(*argv):
         global TARGET
@@ -1447,9 +1431,12 @@ def selftest():
             code, out = run("--target", str(D), "--manifest", "examples/vulnapp/requirements.txt")
             if [f["package"] for f in out.get("findings", [])] != ["requests"] or code != 1:
                 fails.append("--target 搭配 --manifest：相對路徑以目標專案為準，只掃指定的檔")
-        code, out = run("--target", str(ROOT), "--manifest", "examples/vulnapp/pyproject.toml")
-        if not out.get("findings") or any(f["policy_tier"] != "advisory" or "exception" not in f for f in out["findings"]):
-            fails.append("目標是本 repo 時照常套用 blocking-policy 例外")
+        code, out = run("--target", str(PR), "--manifest", "examples/vulnapp/pyproject.toml")
+        want_ex = {"path_glob": "examples/vulnapp/**", "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"}
+        if not out.get("findings") or any(f["policy_tier"] != "advisory" or f.get("exception") != want_ex for f in out["findings"]):
+            fails.append(f"目標是本 repo 時照常套用 blocking-policy 例外（降為 advisory、附核准資訊）：{out.get('findings')}")
+        if out.get("ignored_exceptions") != ["vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期"]:
+            fails.append(f"過期的例外列在 ignored_exceptions：{out.get('ignored_exceptions')}")
         code, _ = run("--target", str(ROOT / "no-such-dir"))
         if code != 2:
             fails.append("--target 不是目錄 → exit 2（incomplete）")
@@ -1533,8 +1520,9 @@ def selftest():
                     fails.append(f"設定檔：{label} → incomplete 並在 incomplete_checks 列出 {broken}"
                                  f"（exit {code}，{out.get('status')}，{out.get('incomplete_checks')}）")
     finally:
-        npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist = real
+        npm_check, pypi_check, pypi_requires, load_allowlist, _POLICY = real
         TARGET = ROOT
+        shutil.rmtree(PR, ignore_errors=True)
     # 解析器（第四次審視 S-1／S-2／S-10）：四個相依區段、npm: 別名、非 registry 來源、壞 JSON、URL 需求、多套件 install
     with tempfile.TemporaryDirectory() as d:
         D = Path(d)
@@ -1792,8 +1780,9 @@ def main(argv):
         pre_incomplete.append(f"變更清單中的檔案不存在，且不在 base {base}：{', '.join(unknown)}")
     manifests = [resolve(m) for m in dict.fromkeys(manifests) if resolve(m).exists()]
     rule_files = [resolve(r) for r in dict.fromkeys(rule_files) if resolve(r).exists()]
-    if external_target():
-        notes.append(f"目標專案 {TARGET.name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用")
+    exceptions = _policy().exceptions_for(TARGET)      # 外部專案 → 不套用，note 說明
+    if exceptions.note:
+        notes.append(exceptions.note)
 
     if not manifests and not rule_files:
         out = {"gate": "G1", "findings": []}
@@ -1819,7 +1808,6 @@ def main(argv):
     allowlist, ignored_allowlist = load_allowlist()
     if ignored_allowlist:
         notes.append("忽略的 allowlist 條目：" + "；".join(ignored_allowlist))
-    exceptions, ignored_exceptions = load_exceptions() if not external_target() else ([], [])
 
     targets = [(m, added_packages(m, base), False) for m in manifests]
     targets += [(r, rule_file_mentions(r), True) for r in rule_files]
@@ -1883,8 +1871,8 @@ def main(argv):
     if external_target():
         out["target"] = str(TARGET)
         out["notes"] = notes
-    if ignored_exceptions:
-        out["ignored_exceptions"] = ignored_exceptions
+    if exceptions.ignored:
+        out["ignored_exceptions"] = exceptions.ignored
     if ignored_allowlist:
         out["ignored_allowlist"] = ignored_allowlist
     if status != "pass":

@@ -37,7 +37,7 @@ role: harness
    b. 依 `tools[]` 順序執行，每個工具一個子程序，總預算 `timeout_seconds`。原生輸出存 `reports/raw/G<N>/<tool>.<ext>`。逐一記 `tools[]`：`name / version / state(ran|missing|timeout|error) / exit_code / output_ref / duration_seconds`。
    c. **G1 通過前不得執行任何安裝指令**（`npm install`、`pip install`、`uv sync`、`poetry install`）。
    d. 解析原生輸出（SARIF：`runs[].results[]` + `tool.driver.rules[]`；JSON：各工具 adapter）→ 正規化為 Finding（§5）。
-   e. ApplyPolicy：`exceptions`（未過期且 path 符合）→ `tier_overrides.<tier>` → `blocking` → `advisory` → `default_tier`。
+   e. ApplyPolicy：`exceptions`（欄位完整、未過期且 `rule_id` 相等、path 以 fnmatch 符合；G0 另須 `agent_id` 相同；外部專案不套用；讀取與比對一律經 `scripts/vibesec_policy.py` 的 `Policy.exceptions_for`）→ `tier_overrides.<tier>` → `blocking` → `advisory` → `default_tier`。
    f. 決定資料分級（docs/08 §12），把需要審查的發現（G4 全部；其他閘門中 E1/E2 且 blocking 或 P0/P1 候選者）送 reviewer（§6）。
    g. Score：CVSS v4.0 向量（工具提供或 reviewer 提議；reviewer 提議者 `notes` 標 `cvss proposed by reviewer, pending human confirmation`）、EPSS / KEV 查詢（失敗填 `null` + `notes`）、E 等級、validation_status、P 查表、`due_date`。
    h. 寫 `coverage[]`：本閘門適用控制逐一 `pass / fail / pending / untested / not_applicable(+reason)`。

@@ -92,7 +92,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, binary: str | None, timeou
     pol = dict(pol or sarif_gate.load_policy())
     notes = []
     if external:
-        pol.update(exceptions=[], ignored_exceptions=[])
+        pol.update(exceptions=pol["policy"].exceptions_for(target))   # 外部專案 → 不套用任何例外
         notes.append(f"目標專案 {target.name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用；"
                      "目標專案的 gitleaks:allow 註解不採信")
         if (target / ".gitleaksignore").exists():
@@ -136,10 +136,11 @@ def selftest() -> list[str]:
     from jsonschema import Draft202012Validator
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
+    from vibesec_policy import Exceptions
     # 合成例外（不依賴政策檔現有例外與其到期日）：外部目標必須忽略它
-    pol = dict(sarif_gate.load_policy(), exceptions=[
+    pol = dict(sarif_gate.load_policy(), exceptions=Exceptions([
         {"rule_id": r, "path_glob": "examples/vulnapp/app/main.py", "reason": "selftest", "approved_by": "selftest",
-         "expires": "2099-12-31"} for r in ("vibesec.g2.hardcoded-secret", "vibesec.g2.hardcoded-llm-key")])
+         "expires": "2099-12-31"} for r in ("vibesec.g2.hardcoded-secret", "vibesec.g2.hardcoded-llm-key")], []))
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True)
     with tempfile.TemporaryDirectory() as d:
@@ -205,6 +206,7 @@ def selftest() -> list[str]:
         class _Blocking:
             def __init__(self, inner): self.inner = inner
             def tier(self, rid): return "blocking" if rid == "vibesec.g2.env-committed" else self.inner.tier(rid)
+            def __getattr__(self, name): return getattr(self.inner, name)   # 其餘（exceptions_for 等）照實際政策
         pol_saved = dict(pol); pol["policy"] = _Blocking(pol["policy"])
         try:
             g = run(repo, env={"FAKE_SARIF": sarif()})
