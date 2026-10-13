@@ -457,7 +457,8 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/vibesec-tokens"
 
   # 失敗通知：靶場上偵測退步、外部目標 fail／incomplete、job 失敗或缺閘門結果 → 開／更新追蹤 issue；恢復 → 自動關閉。
-  # 判定邏輯與單元測試：.github/scripts/staging-issue.js、staging-issue.test.js。
+  # 判定在 blackbox job 的 verdict 步驟（scripts/gate_verdict.py blackbox → blackbox_problems）；缺席也算問題。
+  # issue 開／留言／關閉：.github/scripts/staging-issue.js，單元測試 staging-issue.test.js。
   notify:
     name: 失敗通知（追蹤 issue）
     needs: [blackbox]

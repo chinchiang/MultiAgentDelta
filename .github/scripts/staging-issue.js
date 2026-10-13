@@ -1,50 +1,35 @@
 // VibeSec staging 黑箱通知：由 staging-blackbox.yml 的 notify job 經 actions/github-script 呼叫。
 //
-// 何時算「有問題」（evaluate）：
-//   - blackbox job 失敗或取消，或 G5 / G6 沒有產出閘門結果 → 有問題（incomplete ≠ pass）。
-//   - 目標是靶場（examples/vulnapp，刻意有漏洞）：G5、G6 都「應該」是 fail 且 blocking > 0。
-//     不是的話代表偵測能力退步（探針壞了、規則失效），要通知；fail 本身不通知。
-//   - 目標是外部已授權環境（vars.VIBESEC_TARGET_URL）：G5 / G6 不是 pass（fail 或 incomplete）就通知。
+// 何時算「有問題」（evaluate）：判定不在這裡做。blackbox job 的 verdict 步驟以受信任的
+// scripts/gate_verdict.py blackbox 算出問題清單（CONTEXT.md「黑箱健康」：靶場看靶場驗收、外部目標看是否乾淨），
+// 寫入 job output blackbox_problems（JSON 字串陣列，空陣列＝健康）；這裡照用，另加 job 失敗或取消。
+// blackbox_problems 缺席、空字串或無法解析 → 有問題（incomplete ≠ pass）。
 // 有問題 → 找「未關閉、帶 MARKER 的追蹤 issue」：沒有就開、有就留言；恢復 → 留言並關閉；一直正常 → 不寫入。
 // 輸入只來自本 workflow 的 job 結果與輸出，不讀任何外部使用者可控內容。
 // 單元測試：.github/scripts/staging-issue.test.js（node --test）。
 
 const MARKER = '<!-- vibesec-staging-failure -->';
-const GATES = ['g5', 'g6'];
 
-// blackbox：needs.blackbox，{ result, outputs: { is_vulnapp, blackbox_problems?, g5_status, g5_blocking, g6_status, g6_blocking } }
-// blackbox_problems（JSON 字串陣列）由受信任的 scripts/gate_verdict.py blackbox 計算（CONTEXT.md「黑箱健康」）：
-// 有就照用，這裡不再自行判定；沒有（尚未改用的 workflow）才走下方舊判定。舊判定會在改用完成後移除。
+// blackbox：needs.blackbox，{ result, outputs: { is_vulnapp, blackbox_problems, g5_status, g5_blocking, g6_status, g6_blocking } }
+// g5_*／g6_* 只供 job summary 顯示，不參與判定。
 function evaluate(blackbox) {
   const problems = [];
   const result = blackbox && blackbox.result;
   const out = (blackbox && blackbox.outputs) || {};
   if (result !== 'success') problems.push(`blackbox job 結果為 \`${result || 'unknown'}\``);
   const lab = out.is_vulnapp === 'true';
-  if (out.blackbox_problems !== undefined && out.blackbox_problems !== '') {
-    let parsed;
-    try { parsed = JSON.parse(out.blackbox_problems); } catch (e) { parsed = undefined; }
-    if (!Array.isArray(parsed) || !parsed.every((p) => typeof p === 'string')) {
-      // 無法判讀的判定結果不能當成「沒有問題」（incomplete ≠ pass）
-      problems.push('blackbox_problems 無法解析（gate_verdict 的輸出格式不符），無法確認黑箱閘門狀態');
-    } else {
-      for (const p of parsed) if (!problems.includes(p)) problems.push(p);
-    }
+  if (out.blackbox_problems === undefined || out.blackbox_problems === '') {
+    // verdict 步驟沒有跑到或沒寫出結果：不知道黑箱閘門狀態，不能當成「沒有問題」
+    problems.push('blackbox_problems 缺席（verdict 步驟未執行或未寫出 gate_verdict 的結果），無法確認黑箱閘門狀態');
     return { lab, problems };
   }
-  for (const g of GATES) {
-    const name = g.toUpperCase();
-    const status = out[`${g}_status`] || '';
-    const blocking = Number.parseInt(out[`${g}_blocking`] || '', 10);
-    if (!status || status === 'missing') {
-      problems.push(`${name} 沒有產出閘門結果（incomplete ≠ pass）`);
-    } else if (lab) {
-      if (status !== 'fail' || !(blocking > 0)) {
-        problems.push(`${name} 在靶場上預期 \`fail\` 且有 blocking，實際為 \`${status}\`（blocking ${Number.isNaN(blocking) ? '?' : blocking}）：偵測能力可能退步`);
-      }
-    } else if (status !== 'pass') {
-      problems.push(`${name} 為 \`${status}\`（blocking ${Number.isNaN(blocking) ? '?' : blocking}）`);
-    }
+  let parsed;
+  try { parsed = JSON.parse(out.blackbox_problems); } catch (e) { parsed = undefined; }
+  if (!Array.isArray(parsed) || !parsed.every((p) => typeof p === 'string')) {
+    // 無法判讀的判定結果不能當成「沒有問題」（incomplete ≠ pass）
+    problems.push('blackbox_problems 無法解析（gate_verdict 的輸出格式不符），無法確認黑箱閘門狀態');
+  } else {
+    for (const p of parsed) if (!problems.includes(p)) problems.push(p);
   }
   return { lab, problems };
 }
