@@ -98,6 +98,26 @@ def verdict_wiring(pr_gates: dict, staging: dict) -> list[str]:
     return out
 
 
+G4_STATIC_STEP = "G4 靜態檢查"
+G4_STATIC_CALL = "python3 -I _trusted/scripts/g4_static.py"
+
+
+def g4_static_wiring(pr_gates: dict) -> list[str]:
+    """G4 靜態檢查必須以隔離模式執行受信任樹的 scripts/g4_static.py（#151／#152）：以前是 workflow 內約 270 行的
+    inline heredoc，run_evals 與 g4_access 從 workflow 文字取出同一段來跑。改回 inline、改呼叫 PR head 的
+    scripts/、或拿掉 -I（PYTHON* 環境變數與使用者 site-packages 可改寫判定程式 import 的模組）→ 回報。"""
+    steps = [st for job in (pr_gates.get("jobs") or {}).values() for st in (job or {}).get("steps") or []
+             if str(st.get("name", "")).startswith(G4_STATIC_STEP)]
+    if len(steps) != 1:
+        return [f"pr-gates.yml 應恰有一個「{G4_STATIC_STEP}」步驟（得到 {len(steps)} 個）"]
+    run, out = str(steps[0].get("run") or ""), []
+    if G4_STATIC_CALL not in run:
+        out.append(f"「{G4_STATIC_STEP}」步驟沒有以 `{G4_STATIC_CALL}` 執行")
+    if "<<" in run or re.search(r"\bpython3?\s+(-\S+\s+)*-\s*(<|$)", run, re.M):
+        out.append(f"「{G4_STATIC_STEP}」步驟含 inline 程式碼（heredoc／stdin），判定程式必須在受信任的腳本內")
+    return out
+
+
 def selftest() -> list[str]:
     fails: list[str] = []
     wf_ok = "on: push\npermissions:\n  contents: read\n\njobs:\n  a:\n    permissions:\n      security-events: write\n"
@@ -143,6 +163,19 @@ def selftest() -> list[str]:
         fails.append(f"verdict_wiring：inline summary、staging 缺 blackbox 與 outputs 應各回報一項（得到 {verdict_wiring(inline, st_bad)}）")
     if len(verdict_wiring({}, {})) != 4:
         fails.append("verdict_wiring：找不到步驟也要回報")
+    st = lambda run: {"jobs": {"g4": {"steps": [{"name": "G4 靜態檢查（Unicode / RLS）", "run": run}]}}}
+    ok_run = ("python3 -I _trusted/scripts/g4_static.py --target . --out reports \\\n"
+              "  --mode \"$VIBESEC_MODE\" --commit \"$COMMIT_SHA\"\n")
+    for label, wf, want in [
+        ("以受信任腳本執行", st(ok_run), 0),
+        ("inline heredoc（舊版）", st("python3 -I - <<'EOF'\nimport json\nEOF\n"), 2),
+        ("執行 PR head 的 scripts/", st("python3 -I scripts/g4_static.py --target . --out reports --mode shadow\n"), 1),
+        ("拿掉 -I", st("python3 _trusted/scripts/g4_static.py --target . --out reports --mode shadow\n"), 1),
+        ("步驟缺席", {"jobs": {"g4": {"steps": [{"name": "別的步驟", "run": ok_run}]}}}, 1),
+        ("步驟重複", {"jobs": {"a": st(ok_run)["jobs"]["g4"], "b": st(ok_run)["jobs"]["g4"]}}, 1),
+    ]:
+        if len(g4_static_wiring(wf)) != want:
+            fails.append(f"g4_static_wiring「{label}」應回報 {want} 項（得到 {g4_static_wiring(wf)}）")
     pc = ('        args:\n          - "--config=config/semgrep/vibesec-rules.yaml"\n'
           '          - "--config=p/owasp-top-ten"\n          - "--config=p/security-audit"   # 與 CI 一致\n          - "--error"\n')
     rules = ["config/semgrep/vibesec-rules.yaml", "p/owasp-top-ten", "p/security-audit"]
