@@ -72,10 +72,13 @@ VIBESEC_VULNAPP_MODE=patched uv run --project examples/vulnapp uvicorn app.main:
 | AI 輸出 XSS | 回覆經 HTML 編碼 |
 | Denial of Wallet | `/chat` 的 `message`＋`context` 超過 4000 字元回 413 |
 | Excessive Agency | 高影響工具回 `executed: false`、`human_approved: false`（等待人工核准，未執行） |
+| Swagger／OpenAPI 對外 | 關閉 `/docs`、`/redoc`（404）；`/openapi.json` 需登入（匿名 401）。G5 的 debug_stacktrace 探針取 spec 時帶 token，仍列得出 POST 端點 |
+| GraphQL introspection | 含 `__schema`／`__type` 的查詢回 400 與 GraphQL 格式的 `{"errors": [...]}` |
+| 缺 rate limit | 同一帳號 60 秒內登入失敗 5 次後回 429（`Retry-After: 60`），直到時間窗過去 |
 
 JWKS 端點：`GET /.well-known/jwks.json` 公開 RS256 公鑰（n/e）；RSA 金鑰每次啟動在記憶體產生，不落地。
 
-**刻意未修補**：Swagger/OpenAPI 對外、GraphQL introspection、缺 rate limit。這些在 patched 模式下仍會被回報，因此 G5 的 advisory 不為零；但在 patched 模式下所有 blocking 檢查（含 `jwt_alg_confusion`）都應為 `pass`；整體 G5 狀態要 ZAP 也有結果才會是 `pass`（ZAP 沒跑 → `zap_*` 為 `untested`，G5 `incomplete`）。
+patched 模式下 G5 api-probes 的各項檢查（含 `jwt_alg_confusion`、`swagger_exposed`、`graphql_introspection`、`rate_limit`）都應為 `pass`；整體 G5 狀態要 ZAP 也有結果才會是 `pass`（ZAP 沒跑 → `zap_*` 為 `untested`，G5 `incomplete`）。patched 模式的 `/openapi.json` 需登入，所以判斷靶場是否就緒要用 `/`（`scripts/run_evals.py` 即如此）。
 
 ## 安全界線（對應 CLAUDE.md #8）
 

@@ -13,6 +13,8 @@ import html
 import json
 import os
 import pathlib
+import threading
+import time
 import traceback
 import urllib.request
 
@@ -42,7 +44,11 @@ app = FastAPI(
     title="VibeSec VulnApp (DELIBERATELY VULNERABLE — do not deploy)",
     description="刻意有漏洞的測試靶場。僅供 VibeSec G5/G6 閘門演練。",
     version="0.1.0",
-    # 開發便利設定外溢：Swagger /docs、/redoc、/openapi.json 全部對外（G5 swagger_exposed）
+    # 開發便利設定外溢：Swagger /docs、/redoc、/openapi.json 全部對外（G5 swagger_exposed）。
+    # 修補版關閉 /docs、/redoc，/openapi.json 改為需登入（見下方 openapi_for_users）
+    docs_url=None if PATCHED else "/docs",
+    redoc_url=None if PATCHED else "/redoc",
+    openapi_url=None if PATCHED else "/openapi.json",
 )
 
 
@@ -119,22 +125,47 @@ def current_user(authorization: str = Header(default="")) -> dict:
     return user
 
 
+if PATCHED:
+    @app.get("/openapi.json", include_in_schema=False)
+    def openapi_for_users(user: dict = Depends(current_user)):
+        """修補版：API 文件只給登入者（匿名 401），不對外暴露 schema。"""
+        return app.openapi()
+
+
 @app.get("/")
 def root():
     return {
         "app": "VibeSec VulnApp",
         "warning": "DELIBERATELY VULNERABLE — local/staging target only. DO NOT DEPLOY.",
-        "docs": "/docs",
+        "docs": None if PATCHED else "/docs",
     }
+
+
+# 修補版的登入 rate limiting：同一帳號在 LOGIN_WINDOW 秒內失敗 LOGIN_MAX_FAILURES 次後回 429（直到時間窗過去）
+LOGIN_MAX_FAILURES, LOGIN_WINDOW = 5, 60
+_login_failures: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
 
 
 @app.post("/login")
 def login(body: dict = Body(...)):
     username = body.get("username")
     password = body.get("password")
+    key = str(username)
+    if PATCHED:
+        with _login_lock:
+            now = time.monotonic()
+            recent = [t for t in _login_failures.get(key, []) if now - t < LOGIN_WINDOW]
+            _login_failures[key] = recent
+            if len(recent) >= LOGIN_MAX_FAILURES:
+                raise HTTPException(status_code=429, detail="登入失敗次數過多，請稍後再試",
+                                    headers={"Retry-After": str(LOGIN_WINDOW)})
     user = USERS_BY_NAME.get(username)
     if not user or user["password"] != password:
-        # 漏洞：無 rate limiting / 無 captcha（G5 rate_limit、G6 DoW 的相鄰面）
+        # 漏洞：無 rate limiting / 無 captcha（G5 rate_limit、G6 DoW 的相鄰面）；修補版計入失敗次數
+        if PATCHED:
+            with _login_lock:
+                _login_failures.setdefault(key, []).append(time.monotonic())
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
     token = jwt.encode({"sub": user["username"], "uid": user["id"]}, _PRIVATE_KEY, algorithm=JWT_ALG,
                        headers={"kid": JWT_KID})
@@ -224,10 +255,12 @@ def chat(body: dict = Body(...)):
     return {"reply": reply, "tool_events": tool_events(llm_input, tools), "usage": usage(llm_input, reply)}
 
 
-# 最小 GraphQL stub，introspection 開啟（G5 graphql_introspection 目標）
+# 最小 GraphQL stub，introspection 開啟（G5 graphql_introspection 目標）；修補版以 GraphQL 格式的錯誤拒絕 introspection
 @app.post("/graphql")
 def graphql(body: dict = Body(...)):
     query = (body or {}).get("query", "")
+    if PATCHED and ("__schema" in query or "__type" in query):
+        return JSONResponse(status_code=400, content={"errors": [{"message": "GraphQL introspection is disabled"}]})
     if "__schema" in query:
         return {
             "data": {

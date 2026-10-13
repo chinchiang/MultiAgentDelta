@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g5.graphql-introspection
   policy_tier: advisory
 held_out: false
-notes: 靶場 /graphql stub 開啟 introspection。vulnapp-patched 沒有關閉 introspection，現有執行器無法表達反例。
+notes: 靶場 /graphql stub 開啟 introspection。反例見 g5-graphql-neg-01（vulnapp-patched 回 GraphQL 格式的拒絕）。
