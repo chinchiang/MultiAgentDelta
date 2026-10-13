@@ -464,7 +464,7 @@ def selftest() -> list[str]:
             fails.append(f"CI 靜態步驟：沒有 MCP → coverage 應含 {MCP_CONTROL} not_applicable 並附理由（exit {rc}，{cov}）")
         elif g:
             check(g, "CI 靜態步驟（無 MCP）")
-        for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py"):
+        for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py", "scripts/gate_verdict.py"):
             (trusted / rel).write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
         rc, g = run_step(proj, trusted / "vibesec.yaml")   # 受信任樹缺 g4_mcp.py（例如 default branch 尚未合併本模組）
         cov = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == MCP_CONTROL), None)

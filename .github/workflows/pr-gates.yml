@@ -746,34 +746,33 @@ jobs:
           # 不報 pass（incomplete ≠ pass，CLAUDE.md #2；docs/05「reviewer 缺席 → incomplete 或 pending；不得 pass」）。
           # G4 不在 blocking-policy 的 incomplete_gate_is_blocking_in_enforce，所以 incomplete 不擋 merge；要擋須人類另開 PR 改政策。
           LLM_PENDING = "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 或人工完成"
-          status = "fail" if blocking else "incomplete"
-          status_reason = LLM_PENDING if status == "incomplete" else f"靜態檢查 {blocking} 筆 blocking；另：{LLM_PENDING}"
-          if READ_ERR:
-              status_reason += "；部分檔案無法讀取，對應控制記 untested：" + "；".join(f"{k}：{'、'.join(v[:3])}" for k, v in READ_ERR.items())
-          if MCP_COV["state"] == "untested":
-              status_reason += "；" + MCP_COV["reason"]
           def _state(*ids, ctl=None):
               if any(r["ruleId"] in ids for r in results): return "fail"
               return "untested" if ctl in READ_ERR else "pass"
           def _why(ctl):
               return ("無法讀取：" + "、".join(READ_ERR[ctl][:5])) if ctl in READ_ERR else None
+          coverage = [
+              {"control_id": "VS-G4-RULES-FILE-UNICODE", "state": _state("vibesec.g4.rules-file-invisible-unicode"), "reason": None},
+              ({"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls", ctl="ASVS5-V8.2"), "reason": _why("ASVS5-V8.2")}
+               if SQL_MIGRATIONS else
+               {"control_id": "ASVS5-V8.2", "state": "not_applicable", "reason": "沒有 supabase／migrations 的 .sql 檔，RLS 靜態檢查無對象"}),
+              {"control_id": "ASVS5-V8.3", "state": _state("vibesec.g4.single-middleware-authz", ctl="ASVS5-V8.3"), "reason": _why("ASVS5-V8.3")},
+              {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure", ctl="VS-G4-AGENT-TOOL-ALLOWLIST"), "reason": _why("VS-G4-AGENT-TOOL-ALLOWLIST")},
+              {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl", ctl="ASVS5-V2.3"), "reason": _why("ASVS5-V2.3")},
+              MCP_COV,
+              {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
+          ]
+          # 狀態由受信任的 gate_verdict.verdict 判定：blocking → fail；否則 LLM 審查未完成 → incomplete（無法讀取的檔案、
+          # MCP 檢查無法執行等 untested 控制一併寫進 status_reason）。下一步 g4_review.py 依審查紀錄重新判定。
+          from gate_verdict import verdict
+          status, status_reason = verdict(blocking=blocking, coverage=coverage, problems=[LLM_PENDING])
           gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "full",
                   "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
                   "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
                   "tools": [{"name": "vibesec-g4-static", "version": "1.0.0", "state": "ran", "exit_code": 0,
                              "output_ref": "reports/g4-static.sarif", "duration_seconds": None}],
                   "findings_count": {"blocking": blocking, "advisory": advisory},
-                  "coverage": [
-                      {"control_id": "VS-G4-RULES-FILE-UNICODE", "state": _state("vibesec.g4.rules-file-invisible-unicode"), "reason": None},
-                      ({"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls", ctl="ASVS5-V8.2"), "reason": _why("ASVS5-V8.2")}
-                       if SQL_MIGRATIONS else
-                       {"control_id": "ASVS5-V8.2", "state": "not_applicable", "reason": "沒有 supabase／migrations 的 .sql 檔，RLS 靜態檢查無對象"}),
-                      {"control_id": "ASVS5-V8.3", "state": _state("vibesec.g4.single-middleware-authz", ctl="ASVS5-V8.3"), "reason": _why("ASVS5-V8.3")},
-                      {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure", ctl="VS-G4-AGENT-TOOL-ALLOWLIST"), "reason": _why("VS-G4-AGENT-TOOL-ALLOWLIST")},
-                      {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl", ctl="ASVS5-V2.3"), "reason": _why("ASVS5-V2.3")},
-                      MCP_COV,
-                      {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
-                  ]}
+                  "coverage": coverage}
           (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
           print(f"G4 static: blocking={blocking} advisory={advisory}")
           if MODE == "enforce" and blocking:
@@ -1027,72 +1026,29 @@ jobs:
             --tool checkov=$A/vibesec-g3-iac-reports/results_sarif.sarif \
             --tool trivy=$A/vibesec-g3-iac-reports/trivy-config.sarif --out reports/g3-gate.json
 
+      # 判定一律由受信任的 scripts/gate_verdict.py 執行（CONTEXT.md「阻擋判定」、docs/10 §9.1）：PR head 只提供 gate JSON，
+      # 先以受信任的 schema 驗證，缺席／無法解析／不符 schema → incomplete；mode 與 blocking-policy 取自 _trusted/。
+      # enforce 下：政策列為 incomplete 也擋的閘門未完成，或 mode／政策讀不到 → exit 2（優先）；有 blocking 或狀態為 fail → exit 1。
       - name: 彙整 gate-status 矩陣
         shell: bash
-        env:
-          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
-          MODE="$VIBESEC_MODE"
           mkdir -p reports
           # 只取各 job 自己上傳的 gate 檔：以前用 find 混抓所有 artifact 裡的同名檔，PR head 的 G1 程式可寫一份假的 g4-gate.json 蓋掉受信任的那份
           [ -f _artifacts/vibesec-g1-reports/g1-gate.json ] && cp _artifacts/vibesec-g1-reports/g1-gate.json reports/g1-gate.json
           [ -f _artifacts/vibesec-g4-reports/g4-gate.json ] && cp _artifacts/vibesec-g4-reports/g4-gate.json reports/g4-gate.json
-          python3 -I - "$MODE" <<'EOF'
-          import json, glob, os, re, sys, pathlib, yaml
-          MODE = sys.argv[1] if len(sys.argv) > 1 else "shadow"
-          # incomplete 會擋的閘門以 default branch 的 blocking-policy 為準（PR 自己的政策檔不能決定自己的結果）
-          _pol = yaml.safe_load(open("_trusted/config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
-          BLOCKING_GATES = set(_pol.get("incomplete_gate_is_blocking_in_enforce") or [])
-          rows = []; fail = False; incomplete_block = False
-          seen = {}
-          for p in sorted(glob.glob("reports/*-gate.json")):
-              try: g = json.load(open(p, encoding="utf-8"))
-              except Exception: continue
-              seen[g.get("gate")] = g
-          out = ["# VibeSec 閘門狀態", "", f"模式：`{MODE}`", "",
-                 "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
-          for gid in ["G1", "G2", "G3", "G4"]:
-              g = seen.get(gid)
-              if not g:
-                  # 沒有 gate 結果 = 沒有證據顯示該閘門跑完；對 incomplete 會擋的閘門，enforce 下視同 incomplete
-                  out.append(f"| {gid} | `incomplete` | - | - | 未產生 gate 結果（job 失敗或 artifact 缺席） |")
-                  if MODE == "enforce" and gid in BLOCKING_GATES:
-                      incomplete_block = True
-                  continue
-              st = g.get("status", "untested")
-              fc = g.get("findings_count") if isinstance(g.get("findings_count"), dict) else {}
-              # status_reason 可能帶受測方字串（檔名、紀錄內容）：跳脫 Markdown 控制字元與 @，避免破壞表格或插入連結
-              reason = re.sub(r"([\\`*_\[\]()<>!|#~])", r"\\\1", str(g.get("status_reason") or "").replace("\n", " ")).replace("@", "＠")
-              # 狀態白名單：只有 pass／fail／not_applicable／incomplete 是判定；untested、pending、缺欄位或未知字串
-              # 都代表「沒有證據顯示跑完」→ 視同 incomplete（incomplete ≠ pass）
-              eff = st if st in ("pass", "fail", "not_applicable", "incomplete") else "incomplete"
-              # G1：slopcheck 先寫 gate，SBOM 與 KEV 再併入；併入失敗（例如缺 PyYAML、腳本提早結束）時 gate 會停在
-              # slopcheck 的 pass，但 VS-G1-SBOM 仍是 pending、也沒有 KEV 控制 → 不能當成 pass
-              if gid == "G1" and eff == "pass":
-                  cov = {c.get("control_id"): c.get("state") for c in (g.get("coverage") or []) if isinstance(c, dict)}
-                  miss = [c for c in ("VS-G1-SBOM", "ASVS5-V15.2") if cov.get(c) in (None, "pending")]
-                  if miss:
-                      eff = "incomplete"
-                      reason = (reason + "；" if reason else "") + "SBOM／KEV 結果未併入（" + "、".join(miss) + " 缺席或 pending）"
-              shown = st if st == eff else f"{st} → {eff}"
-              out.append(f"| {gid} | `{shown}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {reason} |")
-              if MODE == "enforce":
-                  if eff == "fail" or (fc.get("blocking", 0) or 0) > 0:
-                      fail = True
-                  if eff == "incomplete" and gid in BLOCKING_GATES:
-                      incomplete_block = True
-          out += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。"]
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          text = "\n".join(out)
-          if summary_path:
-              open(summary_path, "a", encoding="utf-8").write(text + "\n")
-          print(text)
-          pathlib.Path("reports/gate-status.md").write_text(text + "\n", encoding="utf-8")
-          if MODE == "enforce" and incomplete_block:
-              print("::error::enforce 模式下 blocking 閘門 incomplete → exit 2"); sys.exit(2)
-          if MODE == "enforce" and fail:
-              print("::error::enforce 模式下存在 blocking 發現 → exit 1"); sys.exit(1)
-          EOF
+          rc=0
+          python3 _trusted/scripts/gate_verdict.py enforce --trusted-root _trusted \
+            --gate G1=reports/g1-gate.json --gate G2=reports/g2-gate.json \
+            --gate G3=reports/g3-gate.json --gate G4=reports/g4-gate.json \
+            --markdown-out reports/gate-status.md || rc=$?
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f reports/gate-status.md ]; then cat reports/gate-status.md >> "$GITHUB_STEP_SUMMARY"; fi
+          case "$rc" in
+            0) ;;
+            1) echo "::error::enforce 模式下存在 blocking 發現 → exit 1" ;;
+            2) echo "::error::enforce 模式下 blocking 閘門 incomplete，或 mode／政策讀不到 → exit 2" ;;
+            *) echo "::error::gate_verdict 執行失敗（exit $rc），無法判定 → exit 2"; rc=2 ;;
+          esac
+          exit "$rc"
 
       - name: Upload 彙整 reports
         if: always()

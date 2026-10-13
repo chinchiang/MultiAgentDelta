@@ -35,6 +35,8 @@ jobs:
       g5_blocking: ${{ steps.verdict.outputs.g5_blocking }}
       g6_status: ${{ steps.verdict.outputs.g6_status }}
       g6_blocking: ${{ steps.verdict.outputs.g6_blocking }}
+      # JSON 字串陣列：受信任的 gate_verdict.py blackbox 算出的黑箱健康問題（空陣列＝健康），notify 照用不再自行判定
+      blackbox_problems: ${{ steps.verdict.outputs.blackbox_problems }}
     # 執行期才從 registry 抓的工具一律釘版（與 actions 釘 SHA 同理）：浮動的 @latest／未釘版 pip 會讓上游被入侵的版本
     # 直接在持有 LLM 金鑰的步驟裡執行（vibesec-harness G0 發現：供應鏈層致命三要素）。版本須已發布滿
     # vibesec.yaml cooldown_days（14）天；Dependabot 不管這兩個，升版請手動確認發布日。
@@ -413,73 +415,38 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
-      # 唯一會讓 job 因閘門結果變紅的步驟（不加 continue-on-error）：
-      #   shadow，或目標是靶場（本來就應該 fail，退步由 notify 判斷）→ 只報告；
-      #   enforce 且外部目標 → 任一閘門 fail 且 blocking > 0，或閘門 incomplete／缺席且列在
-      #   blocking-policy 的 incomplete_gate_is_blocking_in_enforce → exit 1；政策檔讀不到 → exit 2（不知道也要擋）。
+      # 唯一會讓 job 因閘門結果變紅的步驟（不加 continue-on-error）。判定一律由受信任的 scripts/gate_verdict.py 執行：
+      #   blackbox → 黑箱健康問題清單（靶場看靶場驗收、外部目標看是否乾淨），寫入 blackbox_problems 交給 notify；
+      #   enforce  → shadow，或目標是靶場（本來就應該 fail，退步由 notify 判斷；--report-only）→ 只報告；
+      #              enforce 且外部目標 → 有 blocking 或狀態為 fail → exit 1；閘門 incomplete／缺席且列在
+      #              blocking-policy 的 incomplete_gate_is_blocking_in_enforce，或 mode／政策讀不到 → exit 2（不知道也要擋）。
       - name: 黑箱彙整與判定（shadow 僅報告；enforce 對外部目標阻擋）
         id: verdict
         if: always()
         shell: bash
         env:
-          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
           IS_VULNAPP: ${{ steps.target.outputs.is_vulnapp }}
         run: |
-          python3 -I - <<'EOF'
-          import json, os, sys
-          mode = os.environ.get("VIBESEC_MODE") or "missing"
-          lab = os.environ.get("IS_VULNAPP") == "true"
-          rows = [f"# VibeSec 黑箱閘門狀態（G5 / G6；mode：`{mode}`；目標：{'靶場' if lab else '外部'}）", "",
-                  "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
-          states = {}
-          for gid in ("g5", "g6"):
-              try:
-                  g = json.load(open(f"reports/{gid}-gate.json", encoding="utf-8"))
-                  fc = g.get("findings_count") or {}
-                  st, bl = g.get("status") or "missing", fc.get("blocking", "")
-                  rows.append(f"| {g.get('gate')} | `{st}` | {fc.get('blocking','-')} | {fc.get('advisory','-')} | {g.get('status_reason') or ''} |")
-              except Exception:
-                  st, bl = "missing", ""
-                  rows.append(f"| {gid.upper()} | `missing` | - | - | 沒有產出閘門結果（incomplete ≠ pass） |")
-              states[gid.upper()] = (st, bl)
-          rows += ["", "> 攻擊性探針僅對 config/targets.yaml 允許的目標執行；缺 token／目標限制的檢查記為 untested，incomplete ≠ pass。"]
-          # 供 notify job 使用；缺 gate 檔記為 missing（incomplete ≠ pass）
-          go = os.environ.get("GITHUB_OUTPUT")
-          if go:
-              with open(go, "a", encoding="utf-8") as fh:
-                  for gid, (st, bl) in states.items():
-                      fh.write(f"{gid.lower()}_status={st}\n{gid.lower()}_blocking={bl}\n")
-          block, code, notes = [], 0, []
-          if mode not in ("shadow", "enforce"):
-              block.append(f"mode 無法取得（{mode}）"); code = 2
-          elif mode == "enforce" and not lab:
-              try:
-                  import yaml
-                  pol = yaml.safe_load(open("_trusted/config/policy/blocking-policy.yaml", encoding="utf-8")) or {}
-                  inc_block = set(pol.get("incomplete_gate_is_blocking_in_enforce") or [])
-              except Exception as e:
-                  block.append(f"blocking-policy 無法讀取（{type(e).__name__}）"); code = 2
-                  inc_block = set()
-              for gid, (st, bl) in states.items():
-                  # 狀態白名單：untested／pending／未知字串都代表沒有證據顯示跑完 → 視同 incomplete
-                  if st not in ("pass", "fail", "not_applicable", "incomplete", "missing"):
-                      st = "incomplete"
-                  if st == "fail" and isinstance(bl, int) and bl > 0:
-                      block.append(f"{gid} fail（blocking {bl}）"); code = code or 1
-                  elif st in ("incomplete", "missing") and gid in inc_block:
-                      block.append(f"{gid} {st}（政策：enforce 下 incomplete 也擋）"); code = code or 1
-                  elif st in ("incomplete", "missing"):
-                      notes.append(f"{gid} {st} 依政策只報告（不在 incomplete_gate_is_blocking_in_enforce），追蹤 issue 會列出")
-          rows.append("")
-          rows.append("**判定：阻擋** — " + "；".join(block) if block else
-                      f"**判定：不阻擋**（{'shadow 只報告' if mode == 'shadow' else '靶場只報告' if lab else '沒有 blocking 發現'}）"
-                      + ("；" + "；".join(notes) if notes else ""))
-          text = "\n".join(rows)
-          sp = os.environ.get("GITHUB_STEP_SUMMARY")
-          if sp: open(sp, "a", encoding="utf-8").write(text + "\n")
-          print(text)
-          sys.exit(code)
-          EOF
+          gates=(--gate G5=reports/g5-gate.json --gate G6=reports/g6-gate.json)
+          lab=(); report=(); where="外部"
+          if [ "${IS_VULNAPP:-}" = "true" ]; then lab=(--lab); report=(--report-only "靶場只報告"); where="靶場"; fi
+          # 先寫出 blackbox_problems：enforce 擋下時 notify 仍拿得到。CLI 本身失敗 → 寫入一個問題（不能讓缺席被當成健康）
+          if ! python3 _trusted/scripts/gate_verdict.py blackbox --trusted-root _trusted "${gates[@]}" "${lab[@]}" \
+              --github-output "$GITHUB_OUTPUT"; then
+            echo "::error::gate_verdict blackbox 執行失敗"
+            echo 'blackbox_problems=["gate_verdict blackbox 執行失敗，無法確認黑箱閘門狀態"]' >> "$GITHUB_OUTPUT"
+          fi
+          rc=0
+          python3 _trusted/scripts/gate_verdict.py enforce --trusted-root _trusted "${gates[@]}" "${report[@]}" \
+            --title "VibeSec 黑箱閘門狀態（G5 / G6；目標：${where}）" --markdown-out reports/blackbox-status.md \
+            --github-output "$GITHUB_OUTPUT" || rc=$?
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f reports/blackbox-status.md ]; then
+            { cat reports/blackbox-status.md; echo
+              echo "> 攻擊性探針僅對 config/targets.yaml 允許的目標執行；缺 token／目標限制的檢查記為 untested，incomplete ≠ pass。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          case "$rc" in 0|1|2) ;; *) echo "::error::gate_verdict 執行失敗（exit $rc），無法判定 → exit 2"; rc=2 ;; esac
+          exit "$rc"
 
       - name: 清除 token 暫存檔
         if: always()

@@ -444,13 +444,15 @@ jobs:
             --envcheck reports/g2-envcheck.json --out reports/g2-history-gate.json
           python3 -I - <<'EOF'
           import json, os, sys
-          g = json.load(open("reports/g2-history-gate.json", encoding="utf-8"))
+          sys.path.insert(0, "scripts")
+          from gate_verdict import finalize, is_clean   # 乾淨＝最終判定為 pass 或 not_applicable（CONTEXT.md「乾淨」）
+          g = finalize(json.load(open("reports/g2-history-gate.json", encoding="utf-8")))
           fc = g.get("findings_count") or {}
           line = f"G2 全歷史：`{g['status']}`（blocking {fc.get('blocking')}，advisory {fc.get('advisory')}）{g.get('status_reason') or ''}"
           sp = os.environ.get("GITHUB_STEP_SUMMARY")
           if sp: open(sp, "a", encoding="utf-8").write("## " + line + "\n")
           print(line)
-          sys.exit(0 if g["status"] == "pass" else 1)
+          sys.exit(0 if is_clean(g) else 1)
           EOF
       - name: Upload 全歷史 SARIF
         if: always() && hashFiles('reports/g2-history.sarif') != ''

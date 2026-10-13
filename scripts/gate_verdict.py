@@ -12,7 +12,8 @@
       把子結果（例如 G1 的 SBOM、KEV）併入閘門結果：子結果狀態由 verdict 計算，與原狀態依
       fail > incomplete > pending > pass > not_applicable 取較嚴者；coverage 依 control_id 取代。
   finalize(gate) -> gate
-      最終判定：仍待併入（coverage pending）的控制視同未實測；schema 的舊狀態 untested 視為 incomplete。
+      最終判定：仍待併入（coverage pending）或必須併入卻缺席（REQUIRED_CONTROLS）的控制視同未實測；
+      schema 的舊狀態 untested 視為 incomplete。
   is_clean(gate) -> bool
       finalize 後為 pass 或 not_applicable（夜間監測用）。
   enforce(gates, *, mode, incomplete_blocking_gates, report_only=None) -> Decision
@@ -44,6 +45,8 @@ TOOL_ALIASES = {"api-probes": "vibesec-g5-api-probes", "promptfoo": "promptfoo-e
 # vibesec.yaml 沒列、但靶場驗收一定要執行的工具（LLM10 成本面）
 EXTRA_REQUIRED = {"G6": ["vibesec-g6-cost-probe"]}
 LAB_GATE_KEYS = {"G5": "g5_dast_api", "G6": "g6_ai_red_team"}
+# 由後續步驟併入的控制（G1：g1_sbom.py、g1_kev.py）：最終判定時缺席與待併入一樣視同未實測
+REQUIRED_CONTROLS = {"G1": ("VS-G1-SBOM", "ASVS5-V15.2")}
 
 
 # ------------------------------------------------------------------ 輸入檢查（不合法 → ValueError）
@@ -150,8 +153,11 @@ def finalize(gate):
     """最終判定，回傳新的 dict：仍待併入的控制視同未實測（CONTEXT.md「最終判定」）。"""
     g = copy.deepcopy(gate)
     base = _status_of(g)
+    cov = _coverage(g.get("coverage") or [])
     pend = [f"{c['control_id']} 待併入、視同未實測" + (f"（{c['reason']}）" if c.get("reason") else "")
-            for c in _coverage(g.get("coverage") or []) if c["state"] == "pending"]
+            for c in cov if c["state"] == "pending"]
+    have = {c["control_id"] for c in cov}
+    pend += [f"{cid} 缺席（應由後續步驟併入）、視同未實測" for cid in REQUIRED_CONTROLS.get(g.get("gate"), ()) if cid not in have]
     final = max(base, "incomplete", key=RANK.__getitem__) if pend and base != "not_applicable" else base
     g["status"] = final
     if pend and base != "not_applicable":
@@ -437,7 +443,7 @@ def selftest() -> list[str]:
             pass
 
     # merge：子結果依排序取較嚴者；coverage 依 control_id 取代；計數相加；理由組合
-    base = {"gate": "G1", "status": "pass", "status_reason": None, "findings_count": {"blocking": 0, "advisory": 2},
+    base = {"gate": "G0", "status": "pass", "status_reason": None, "findings_count": {"blocking": 0, "advisory": 2},
             "coverage": [ok("SLOP"), pend("SBOM")], "tools": [{"name": "slop", "state": "ran"}]}
     for label, g0, kw, want in [
         ("pass + 子結果 pass", base, dict(blocking=0, advisory=0, coverage=[ok("SBOM")]), "pass"),
@@ -469,6 +475,13 @@ def selftest() -> list[str]:
     done = merge(base, blocking=0, advisory=0, coverage=[ok("SBOM")])
     if finalize(done)["status"] != "pass" or not is_clean(done) or is_clean(base):
         fails.append("finalize／is_clean：子結果併入後為 pass；仍待併入不乾淨")
+    sbom_only = merge({**base, "gate": "G1"}, blocking=0, advisory=0, coverage=[ok("SBOM"), ok("VS-G1-SBOM")])
+    if finalize(sbom_only)["status"] != "incomplete" or "ASVS5-V15.2 缺席" not in (finalize(sbom_only)["status_reason"] or ""):
+        fails.append(f"finalize：G1 的 KEV 控制缺席（不是 pending）也視同未實測（得到 {finalize(sbom_only)}）")
+    if not is_clean(merge(sbom_only, blocking=0, advisory=0, coverage=[ok("ASVS5-V15.2")])):
+        fails.append("finalize：G1 的必要控制都併入後為 pass")
+    if not is_clean({**done, "gate": "G3"}):
+        fails.append("finalize：必要控制只適用於 G1")
     na = {**base, "status": "not_applicable", "status_reason": "不適用", "coverage": []}
     if not is_clean(na) or finalize(na)["status"] != "not_applicable":
         fails.append("is_clean：not_applicable 算乾淨")
@@ -481,7 +494,8 @@ def selftest() -> list[str]:
     inc = {"G1", "G2"}
     for label, gates, mode, rep, want in [
         ("shadow 永遠 0", {"G1": g("G1", "fail", 3)}, "shadow", None, 0),
-        ("enforce 全部 pass", {"G1": g("G1", "pass"), "G3": g("G3", "pass")}, "enforce", None, 0),
+        ("enforce 全部 pass", {"G2": g("G2", "pass"), "G3": g("G3", "pass")}, "enforce", None, 0),
+        ("enforce G1 缺必要控制 → 2", {"G1": g("G1", "pass", cov=[ok("VS-G1-SBOM")])}, "enforce", None, 2),
         ("enforce 有 blocking → 1", {"G3": g("G3", "fail", 1)}, "enforce", None, 1),
         ("enforce 政策列出的閘門 incomplete → 2", {"G1": g("G1", "incomplete", reason="x")}, "enforce", None, 2),
         ("enforce 2 優先於 1", {"G1": g("G1", "incomplete", reason="x"), "G3": g("G3", "fail", 1)}, "enforce", None, 2),

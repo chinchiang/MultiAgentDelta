@@ -199,10 +199,17 @@ PY
 
 ## 步驟 5：exit code 與回覆
 
+閘門狀態與 exit code 不要自己推導，一律交給 `scripts/gate_verdict.py`（與 CI 同一份規則，docs/08 §8、docs/10 §9.1）：
+
+```bash
+python3 scripts/gate_verdict.py enforce --trusted-root . \
+  --gate G1=reports/g1-gate.json --gate G2=reports/g2-gate.json ... --markdown-out reports/gate-status.md
+```
+
 - `0`：shadow；或 enforce 且無 blocking 發現、無 blocking 閘門 incomplete。
-- `1`：enforce 且有 `policy_tier: blocking` 且 `validation_status != refuted` 的發現。
-- `2`：enforce 且 `incomplete_gate_is_blocking_in_enforce`（預設 G1、G2）內的閘門 incomplete；或主設定缺席。
-- 同時 1 與 2 → 回 1，summary 兩者都列。（harness 本機規則；CI 的實際優先序見 docs/08 §8：PR 為 2 優先於 1，staging 的 incomplete 為 1）
+- `1`：enforce 且有 `policy_tier: blocking` 且 `validation_status != refuted` 的發現，或閘門狀態為 `fail`。
+- `2`：enforce 且 `incomplete_gate_is_blocking_in_enforce`（預設 G1、G2）內的閘門 incomplete、pending 或缺席；或 mode／政策讀不到。
+- 同時 1 與 2 → 回 2，summary 兩者都列。
 
 最後回覆使用者：exit code、一行理由、INCOMPLETE 清單、blocking 發現數、`requires_human` 數、報告路徑。不要只說「完成」。
 
