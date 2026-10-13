@@ -32,24 +32,53 @@ def external_target():
     """目標不是本 repo → 本 repo 的 blocking-policy exceptions 不適用。"""
     return TARGET.resolve() != ROOT.resolve()
 
+VIBESEC_FILE = ROOT / "vibesec.yaml"
+
 def load_yaml(p: Path):
+    """讀 YAML；缺席、無法解析或缺 PyYAML 都回 None（呼叫端退回預設值）。
+    會讓檢查變寬鬆的設定是否讀得到，由 config_problems() 另外檢查並記 incomplete。"""
     try:
         import yaml
         return yaml.safe_load(p.read_text()) if p.exists() else None
     except Exception:
         return None
 
+def _mapping(x):
+    return x if isinstance(x, dict) else {}
+
 def read_vibesec():
+    return _mapping(load_yaml(VIBESEC_FILE))
+
+def config_problems():
+    """缺席或壞掉就會讓 G1 變寬鬆的設定（門檻退回內建值、安裝腳本樣式／黑名單／熱門清單變空）：
+    回傳未完成原因（incomplete ≠ pass，CLAUDE.md #2）。allowlist.yaml 與 blocking-policy 的例外壞掉只會更嚴，不在此列。"""
+    out = []
     try:
         import yaml
-        return yaml.safe_load((ROOT / "vibesec.yaml").read_text())
-    except Exception:
-        return {}
+    except Exception as e:
+        return [f"G1 設定無法讀取：缺 PyYAML（{type(e).__name__}），門檻、黑名單與安裝腳本樣式都無法載入"]
+    shown = lambda p: Path(p).resolve().relative_to(ROOT).as_posix() if Path(p).resolve().is_relative_to(ROOT) else str(p)
+    for p, kinds in ((VIBESEC_FILE, (dict,)), (CFG_DIR / "cooldown.yaml", (dict,)), (CFG_DIR / "blacklist.yaml", (dict, list))):
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            out.append(f"G1 設定 {shown(p)} 缺席"); continue
+        except Exception as e:
+            out.append(f"G1 設定 {shown(p)} 無法解析（{type(e).__name__}）"); continue
+        if not isinstance(data, kinds):
+            out.append(f"G1 設定 {shown(p)} 格式不符（最上層為 {type(data).__name__}）")
+    for name in ("popular-npm.txt", "popular-pypi.txt"):
+        p = CFG_DIR / name
+        try:
+            p.read_text(encoding="utf-8")
+        except Exception as e:
+            out.append(f"G1 設定 {shown(p)} " + ("缺席" if isinstance(e, FileNotFoundError) else f"無法讀取（{type(e).__name__}）"))
+    return out
 
 def cfg():
     """vibesec.yaml 優先，cooldown.yaml 補細節（檔頭約定）。cooldown.yaml 的門檻在 thresholds、相似度在 similarity 之下；
     以前讀頂層的 similarity_ratio（不存在）而一律用 0.80，與文件寫的 difflib_ratio_min 0.85 不一致。"""
-    c = load_yaml(CFG_DIR / "cooldown.yaml") or {}
+    c = _mapping(load_yaml(CFG_DIR / "cooldown.yaml"))
     th, sim = c.get("thresholds") or {}, c.get("similarity") or {}
     vb = read_vibesec()
     g1 = ((vb.get("gates") or {}).get("g1_supply_chain") or {})
@@ -89,8 +118,9 @@ def load_list(name):
 
     條目名稱可用 `name`（blacklist.yaml）或 `package`（allowlist.yaml）欄位。
     """
-    data = load_yaml(CFG_DIR / name) or {}
-    items = data.get("packages", data if isinstance(data, list) else [])
+    data = load_yaml(CFG_DIR / name)
+    data = data if isinstance(data, (dict, list)) else {}   # 型別不對由 config_problems() 記 incomplete
+    items = data.get("packages", []) if isinstance(data, dict) else data
     out = {}
     for it in (items or []):
         if not isinstance(it, dict):
@@ -282,7 +312,7 @@ def cooldown_finding(pkg, eco, ver, age, c):
                f"版本發布僅 {age} 天，未滿冷卻期 {c['cooldown_days']} 天", "blocking")
 
 def _install_hooks_cfg():
-    return (load_yaml(CFG_DIR / "cooldown.yaml") or {}).get("install_hooks") or {}
+    return _mapping(load_yaml(CFG_DIR / "cooldown.yaml")).get("install_hooks") or {}
 
 def _hook_patterns():
     return _install_hooks_cfg().get("suspicious_patterns") or {}
@@ -917,7 +947,7 @@ def rule_cfg():
     agent_rule_files 的聯集（只會多掃，不會少掃）；兩者都缺席時用 RULE_FILE_DEFAULTS。regex 無法編譯 → 只用內建樣式。"""
     global _RULE_CFG
     if _RULE_CFG is None:
-        c = load_yaml(CFG_DIR / "cooldown.yaml") or {}
+        c = _mapping(load_yaml(CFG_DIR / "cooldown.yaml"))
         g1 = ((read_vibesec() or {}).get("gates") or {}).get("g1_supply_chain") or {}
         globs = [str(x) for x in (g1.get("scan_agent_rule_files") or []) + (c.get("agent_rule_files") or [])]
         try:
@@ -1117,6 +1147,7 @@ def selftest():
     import contextlib, io, tempfile
     from jsonschema import Draft202012Validator
     global TARGET, npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist, _https_only_opener, BACKOFF, _RULE_CFG, http_json
+    global CFG_DIR, VIBESEC_FILE
     fails = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
     real = (npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist)
@@ -1456,6 +1487,51 @@ def selftest():
             if g.get("scope") != "diff":
                 fails.append(f"--changed-files 沒給 --base 也是 scope diff（得到 {g.get('scope')}）")
             gate.unlink()
+        # 設定檔缺席或壞掉 → 門檻退回內建值、安裝腳本樣式／黑名單／熱門清單變空，檢查變寬鬆卻照樣記 pass（fail-open）。
+        # 會讓檢查變寬鬆的設定必須讀得到，否則 incomplete 並列出檔名（CLAUDE.md #2）；allowlist／例外壞掉只會更嚴，不在此列。
+        import shutil
+        real_cfg_dir, real_vibesec = CFG_DIR, ROOT / "vibesec.yaml"
+        npm_check = lambda pkg, ver, c: ([], None)
+        with tempfile.TemporaryDirectory() as d:
+            D, C = Path(d) / "proj", Path(d) / "cfg"
+            D.mkdir()
+            (D / "package.json").write_text(json.dumps({"dependencies": {"express": "4.21.2"}}))
+            git(D, "init", "-q"); git(D, "add", "package.json"); git(D, "commit", "-qm", "t")
+            cases = [
+                ("完整設定（對照組）", None, None),
+                ("cooldown.yaml 缺席", "cooldown.yaml", None),
+                ("cooldown.yaml 語法錯誤", "cooldown.yaml", "thresholds: [\n"),
+                ("cooldown.yaml 不是 mapping", "cooldown.yaml", "- a\n"),
+                ("blacklist.yaml 缺席", "blacklist.yaml", None),
+                ("blacklist.yaml 語法錯誤", "blacklist.yaml", "packages: {\n"),
+                ("blacklist.yaml 不是 mapping 或清單", "blacklist.yaml", "just-a-string\n"),
+                ("popular-npm.txt 缺席", "popular-npm.txt", None),
+                ("popular-pypi.txt 缺席", "popular-pypi.txt", None),
+                ("vibesec.yaml 缺席", "vibesec.yaml", None),
+                ("vibesec.yaml 語法錯誤", "vibesec.yaml", "gates: [\n"),
+            ]
+            for label, broken, content in cases:
+                shutil.rmtree(C, ignore_errors=True)
+                shutil.copytree(real_cfg_dir, C)
+                shutil.copy(real_vibesec, C / "vibesec.yaml")
+                if broken:
+                    (C / broken).unlink()
+                    if content is not None:
+                        (C / broken).write_text(content)
+                CFG_DIR, VIBESEC_FILE, _RULE_CFG = C, C / "vibesec.yaml", None
+                try:
+                    code, out = run("--target", str(D))
+                except Exception as e:      # 設定型別不對時直接崩潰：exit 1 在 G1 代表 blocking，不是 incomplete
+                    code, out = f"例外 {type(e).__name__}", {}
+                finally:
+                    CFG_DIR, VIBESEC_FILE, _RULE_CFG = real_cfg_dir, real_vibesec, None
+                if broken is None:
+                    if code != 0 or out.get("status"):
+                        fails.append(f"設定檔：{label} → pass（exit {code}，{out.get('status')}：{out.get('status_reason')}）")
+                elif code != 2 or out.get("status") != "incomplete" \
+                        or not any(broken in x for x in out.get("incomplete_checks") or []):
+                    fails.append(f"設定檔：{label} → incomplete 並在 incomplete_checks 列出 {broken}"
+                                 f"（exit {code}，{out.get('status')}，{out.get('incomplete_checks')}）")
     finally:
         npm_check, pypi_check, pypi_requires, load_exceptions, load_allowlist = real
         TARGET = ROOT
@@ -1740,7 +1816,7 @@ def main(argv):
     targets = [(m, added_packages(m, base), False) for m in manifests]
     targets += [(r, rule_file_mentions(r), True) for r in rule_files]
 
-    findings, incomplete = [], list(pre_incomplete)
+    findings, incomplete = [], list(pre_incomplete) + config_problems()
     unparsed = [rel_path(m) for m in manifests if UNPARSED_RE.search(Path(m).name)]
     if unparsed:
         incomplete.append(f"鎖定檔尚無解析器，其中的套件未逐一檢查：{', '.join(unparsed)}")
