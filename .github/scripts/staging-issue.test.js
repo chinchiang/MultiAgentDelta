@@ -21,38 +21,16 @@ function mockGithub(openIssues = []) {
 const context = { repo: { owner: 'o', repo: 'r' }, serverUrl: 'https://github.com', runId: 9, sha: 'abcdef1234567' };
 const core = { info: () => {} };
 const bb = (outputs, result = 'success') => ({ result, outputs });
-const labOk = bb({ is_vulnapp: 'true', g5_status: 'fail', g5_blocking: '4', g6_status: 'fail', g6_blocking: '3' });
-const extOk = bb({ is_vulnapp: 'false', g5_status: 'pass', g5_blocking: '0', g6_status: 'pass', g6_blocking: '0' });
+// 與 staging-blackbox.yml 的 job outputs 相同：blackbox_problems 由受信任的 scripts/gate_verdict.py blackbox 計算（空陣列＝健康）
+const labOk = bb({ is_vulnapp: 'true', blackbox_problems: '[]', g5_status: 'fail', g5_blocking: '4', g6_status: 'fail', g6_blocking: '3' });
+const extOk = bb({ is_vulnapp: 'false', blackbox_problems: '[]', g5_status: 'pass', g5_blocking: '0', g6_status: 'pass', g6_blocking: '0' });
+const labRegressed = bb({ ...labOk.outputs, g5_status: 'incomplete', g5_blocking: '0',
+  blackbox_problems: JSON.stringify(['G5 在靶場上預期 `fail` 且有 blocking，實際為 `incomplete`（blocking 0）：偵測能力可能退步']) });
 const tracking = { number: 7, body: `${MARKER}\nold` };
-
-test('lab: G5/G6 fail with blocking is the expected state → no problems', () => {
-  assert.deepEqual(evaluate(labOk).problems, []);
-});
-
-test('lab: G5 pass or incomplete, or fail with 0 blocking, means detection regressed', () => {
-  for (const [s, b] of [['pass', '0'], ['incomplete', '0'], ['fail', '0']]) {
-    const e = evaluate(bb({ ...labOk.outputs, g5_status: s, g5_blocking: b }));
-    assert.equal(e.problems.length, 1, `${s}/${b}`);
-    assert.match(e.problems[0], /G5.*退步/);
-  }
-});
-
-test('external target: fail or incomplete is a problem; pass is not', () => {
-  assert.deepEqual(evaluate(extOk).problems, []);
-  assert.equal(evaluate(bb({ ...extOk.outputs, g5_status: 'fail', g5_blocking: '2' })).problems.length, 1);
-  assert.equal(evaluate(bb({ ...extOk.outputs, g6_status: 'incomplete' })).problems.length, 1);
-});
-
-test('missing gate result or failed/cancelled job is always a problem (incomplete ≠ pass)', () => {
-  assert.equal(evaluate(bb({ ...labOk.outputs, g6_status: 'missing' })).problems.length, 1);
-  assert.ok(evaluate(bb(labOk.outputs, 'failure')).problems.some((p) => /failure/.test(p)));
-  assert.ok(evaluate(bb(labOk.outputs, 'cancelled')).problems.some((p) => /cancelled/.test(p)));
-  assert.equal(evaluate(undefined).problems.length, 3);
-});
 
 test('problem with no open issue → opens one with marker and run link', async () => {
   const gh = mockGithub([]);
-  const r = await run({ github: gh, context, core, blackbox: bb({ ...labOk.outputs, g5_status: 'incomplete' }) });
+  const r = await run({ github: gh, context, core, blackbox: labRegressed });
   assert.equal(r.action, 'opened');
   const [, args] = gh.calls.find((c) => c[0] === 'create');
   assert.ok(args.body.includes(MARKER));
