@@ -170,33 +170,25 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
 
 
 KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
-_RANK = {"pass": 0, "incomplete": 1, "fail": 2}
-
-
 def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | None) -> dict:
-    """把 KEV 結果併入既有 G1 gate-result。嚴重度 fail > incomplete > pass，只升不降；
-    KEV incomplete 會讓原本 pass 的 G1 變 incomplete（incomplete ≠ pass），原因附在 status_reason。"""
-    g = json.loads(json.dumps(gate))
+    """把 KEV 結果（子結果）併入既有 G1 gate-result，狀態由 gate_verdict.merge 判定（只升不降、blocking 優先）。
+    KEV 無法判定 → 控制 untested；命中 → 控制 fail，閘門是否 fail 依 vibesec.g1.kev-hit 的政策 tier。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from gate_verdict import merge
     kev_status = summary["status"]
-    reasons = [r for r in [g.get("status_reason")] if r]
-    if kev_status == "incomplete":
-        reasons.append(f"KEV：{summary['status_reason']}")
-    elif hits:
-        reasons.append(f"KEV 命中 {len(hits)} 筆（{', '.join(sorted({h['cve'] for h in hits}))}）")
-    cur = g.get("status", "pass")
-    if cur in _RANK and _RANK[kev_status] > _RANK[cur]:
-        g["status"] = kev_status
-    g["status_reason"] = "；".join(reasons) or None
-    fc = g.setdefault("findings_count", {"blocking": 0, "advisory": 0})
-    fc[_tier(RULE)] = int(fc.get(_tier(RULE)) or 0) + len(hits)
-    fc[_tier(VULN_RULE)] = int(fc.get(_tier(VULN_RULE)) or 0) + len(summary.get("vulnerable") or [])
-    g.setdefault("tools", []).append({"name": "vibesec-g1-kev", "version": "1.0.0", "state": "ran",
-                                      "exit_code": {"pass": 0, "fail": 1, "incomplete": 2}[kev_status],
-                                      "output_ref": sarif_ref, "duration_seconds": None})
+    kev_tier, vuln_tier = _tier(RULE), _tier(VULN_RULE)
+    n_vuln = len(summary.get("vulnerable") or [])
+    blocking = (len(hits) if kev_tier == "blocking" else 0) + (n_vuln if vuln_tier == "blocking" else 0)
+    advisory = (len(hits) if kev_tier != "blocking" else 0) + (n_vuln if vuln_tier != "blocking" else 0)
     state = {"pass": "pass", "fail": "fail", "incomplete": "untested"}[kev_status]
-    g.setdefault("coverage", []).append({"control_id": KEV_CONTROL, "state": state,
-                                         "reason": summary.get("status_reason") if kev_status == "incomplete" else None})
-    return g
+    return merge(gate, blocking=blocking, advisory=advisory,
+                 coverage=[{"control_id": KEV_CONTROL, "state": state,
+                            "reason": summary.get("status_reason") if kev_status == "incomplete" else None}],
+                 problems=[f"KEV：{summary['status_reason']}"] if kev_status == "incomplete" else [],
+                 notes=[f"KEV 命中 {len(hits)} 筆（{', '.join(sorted({h['cve'] for h in hits}))}）"] if hits else [],
+                 tools=[{"name": "vibesec-g1-kev", "version": "1.0.0", "state": "ran",
+                         "exit_code": {"pass": 0, "fail": 1, "incomplete": 2}[kev_status],
+                         "output_ref": sarif_ref, "duration_seconds": None}])
 
 
 def selftest() -> list[str]:
@@ -276,6 +268,12 @@ def selftest() -> list[str]:
         fails.append("KEV pass 不得把 incomplete 的 G1 洗成 pass")
     if base["status"] != "pass" or base["tools"]:
         fails.append("merge_gate 不得修改輸入物件")
+    # slopcheck 預留的 KEV pending：沒併入 → 最終判定 incomplete；併入後被取代（只留一筆）
+    from gate_verdict import is_clean
+    held = {**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}
+    m = merge_gate(held, {"status": "pass"}, [], None)
+    if is_clean(held) or not is_clean(m) or [c["state"] for c in m["coverage"] if c["control_id"] == KEV_CONTROL] != ["pass"]:
+        fails.append(f"KEV 預留的 pending 應在併入時被取代，未併入則不乾淨：{m['coverage']}")
     return fails
 
 

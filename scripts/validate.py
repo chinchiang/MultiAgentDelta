@@ -717,6 +717,18 @@ if "requirements-evals.txt" in _locks:
                     f"{_locks['requirements-evals.txt'].get('semgrep')} 不一致（評測與閘門會用不同版本）")
 ok(f"CI 的 pip install 一律走雜湊鎖定檔（{_pip_sites} 處；鎖定檔 {len(_locks)} 份）")
 
+# --- 靶場驗收的必要工具（scripts/gate_verdict.py 的 TOOL_ALIASES）：vibesec.yaml G5／G6 的每個工具，對應後的名稱
+# 都要是閘門程式實際寫進 gate JSON tools[].name 的名稱；對不上時靶場驗收會永遠判「必要工具未執行」，或漏驗該工具 ---
+import gate_verdict as _gv
+_tool_src = "\n".join((ROOT / "scripts" / f).read_text(encoding="utf-8") for f in ("g5_api_probes.py", "g5_zap.py", "g6_gate.py")
+                      if (ROOT / "scripts" / f).is_file())
+_bad_tools = [f"{_g}:{_t}" for _g, _ts in _gv.required_tools(load_yaml(ROOT / "vibesec.yaml") or {}).items() for _t in _ts
+              if f'"{_t}"' not in _tool_src]
+if _bad_tools:
+    err(f"靶場驗收的必要工具在閘門程式中找不到對應的 gate JSON 工具名稱（更新 gate_verdict.TOOL_ALIASES）：{'、'.join(_bad_tools)}")
+else:
+    ok("靶場驗收的必要工具皆對應到閘門程式寫入的工具名稱")
+
 # --- CI 設定的不變式（判定在 scripts/ci_invariants.py，有 selftest）：防止已修過的弱點被改回去 ---
 import ci_invariants as _ci
 _wf = {pathlib.Path(_f).name: pathlib.Path(_f).read_text(encoding="utf-8") for _f in sorted(glob.glob(str(ROOT / ".github/workflows/*.yml")))}

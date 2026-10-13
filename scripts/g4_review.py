@@ -247,13 +247,18 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     static_advisory = int((static.get("findings_count") or {}).get("advisory") or 0)
     coverage = [c for c in static.get("coverage") or [] if c.get("control_id") != LLM_CONTROL]
     tools = list(static.get("tools") or [])
-    reasons: list[str] = []
+    # 狀態一律由 gate_verdict.verdict 判定（全 repo 唯一一份規則）。以前在這裡另寫一份：審查紀錄有效時只看
+    # blocking／裁決／紀錄本身的問題，靜態結果 coverage 的 untested（READ_ERR、MCP 檢查無法執行）被忽略而報 pass。
+    from gate_verdict import verdict
+    static_cov = list(coverage)
     llm_blocking = llm_advisory = 0
-    human_pending: list[str] = []
+    confirmed_blocking: list[str] = []
+    problems: list[str] = []
+    awaiting: list[str] = []
+    notes: list[str] = []
     if record is None or ev is None:
-        reasons.append(fresh_reason or "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 完成並提交 reviews/g4/<commit>.yaml")
-        coverage.append({"control_id": LLM_CONTROL, "state": "pending", "reason": reasons[-1]})
-        status = "fail" if static_blocking else "incomplete"
+        problems.append(fresh_reason or "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 完成並提交 reviews/g4/<commit>.yaml")
+        coverage.append({"control_id": LLM_CONTROL, "state": "pending", "reason": problems[-1]})
     else:
         for p in record["providers"]:
             # gate-result 的 tools 沒有 refused：資料分級不允許、未送出的 provider 記為 missing（未執行），exit_code 沿用 review_provider.py 的 3
@@ -262,7 +267,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
                           "exit_code": 3 if p["state"] == "refused" else None,
                           "output_ref": record_ref, "duration_seconds": None})
         coverage += [dict(c) for c in record["coverage"]]
-        confirmed_blocking, unresolved_blocking = [], []
+        unresolved_blocking, human_pending = [], []
         for f in ev["findings"]:
             if f["validation_status"] == "refuted":
                 continue
@@ -276,25 +281,18 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
                 llm_advisory += 1
             if f["requires_human"]:
                 human_pending.append(f["id"])
-        if static_blocking or confirmed_blocking:
-            status = "fail"
-            if confirmed_blocking:
-                reasons.append("LLM 審查發現經人工裁決 confirm 的 blocking：" + "、".join(confirmed_blocking))
-        elif human_pending or unresolved_blocking:
-            status = "pending"
-            if human_pending:
-                reasons.append("待人工裁決（rulings/）：" + "、".join(human_pending))
-            if unresolved_blocking:
-                reasons.append("blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：" + "、".join(unresolved_blocking))
-        elif ev["incomplete"]:
-            status = "incomplete"
-            reasons.extend(ev["incomplete"])
-        else:
-            status = "pass"
-        reasons.append(f"審查紀錄 {record_ref}（{ev['families']} family）")
-        if ev["incomplete"] and status != "incomplete":
-            reasons.extend(ev["incomplete"])
-    gate.update({"status": status, "status_reason": "；".join(reasons) if reasons else None, "tools": tools,
+        if confirmed_blocking:
+            notes.append("LLM 審查發現經人工裁決 confirm 的 blocking：" + "、".join(confirmed_blocking))
+        if human_pending:
+            awaiting.append("rulings/：" + "、".join(human_pending))
+        if unresolved_blocking:
+            awaiting.append("blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：" + "、".join(unresolved_blocking))
+        problems.extend(ev["incomplete"])            # 紀錄本身的問題（含紀錄 coverage 的 pending／untested）
+        notes.append(f"審查紀錄 {record_ref}（{ev['families']} family）")
+    # 只有經人工裁決 confirm 的 LLM blocking 才讓閘門 fail；未裁決者是待人工裁決（findings_count 仍照實計入）
+    status, status_reason = verdict(blocking=static_blocking + len(confirmed_blocking), coverage=static_cov,
+                                    problems=problems, awaiting_human=awaiting, notes=notes)
+    gate.update({"status": status, "status_reason": status_reason, "tools": tools,
                  "coverage": coverage,
                  "findings_count": {"blocking": static_blocking + llm_blocking, "advisory": static_advisory + llm_advisory},
                  "finished_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()})
@@ -576,6 +574,13 @@ def selftest() -> list[str]:
     s = _static(); s["findings_count"]["blocking"] = 1
     if derive_gate(s, r4, ev4, None, "x")["status"] != "fail":
         fails.append("靜態 blocking → fail")
+    # 重現：審查紀錄有效時，靜態結果 coverage 的 untested（READ_ERR、MCP 檢查無法執行）不得被忽略而報 pass
+    for cid, why in (("VS-G4-AGENT-TOOL-ALLOWLIST", "無法讀取：app.py（PermissionError）"),
+                     ("VS-G4-MCP-RESOURCE-INDICATOR", "MCP resource indicator 檢查無法執行")):
+        s = _static(); s["coverage"].append({"control_id": cid, "state": "untested", "reason": why})
+        g = derive_gate(s, r4, ev4, None, "x")
+        if g["status"] == "pass" or why not in (g["status_reason"] or ""):
+            fails.append(f"有效審查紀錄 + 靜態 {cid} untested → 不得為 pass，並寫明原因（得到 {g['status']}：{g['status_reason']}）")
     # 無紀錄／過期 → incomplete
     if gate_of(None, None, fresh=False)["status"] != "incomplete":
         fails.append("無有效紀錄 → incomplete")

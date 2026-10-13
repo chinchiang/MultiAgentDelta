@@ -483,16 +483,13 @@ def build(c: Collector, mode: str, started: str) -> tuple[dict, dict]:
     blocking = sum(1 for r in c.results if r["properties"]["policy_tier"] == "blocking")
     advisory = len(c.results) - blocking
     cov = list(c.coverage.values())
-    if any(x["state"] == "fail" for x in cov) and blocking:
-        status, reason = "fail", None
-    elif any(x["state"] == "untested" for x in cov) or not cov:
-        status, reason = "incomplete", "；".join(dict.fromkeys(c.reasons)) or "沒有可用的 G6 結果"
-    elif any(x["state"] == "fail" for x in cov):
-        status, reason = "fail", None
-    else:
-        status, reason = "pass", None
-    if status == "fail" and c.reasons:
-        reason = "另有未完成項目：" + "；".join(dict.fromkeys(c.reasons))
+    # 狀態由 gate_verdict.verdict 判定：fail 只代表有 blocking 發現（以前只有 advisory 的 coverage fail 也記 fail，
+    # 與其他閘門不一致，staging 判定也不擋）；untested 的控制或沒有任何結果 → incomplete。
+    # c.reasons 中已寫在 coverage reason 的不重複列入
+    from gate_verdict import verdict
+    in_cov = {x.get("reason") for x in cov}
+    problems = [r for r in dict.fromkeys(c.reasons) if r not in in_cov] + ([] if cov else ["沒有可用的 G6 結果"])
+    status, reason = verdict(blocking=blocking, coverage=cov, problems=problems)
     gate = {"gate": "G6", "status": status, "status_reason": reason, "mode": mode, "scope": "full",
             "diff_base": None, "commit": None, "started_at": started, "finished_at": now(),
             "tools": c.tools, "findings_count": {"blocking": blocking, "advisory": advisory},
@@ -547,8 +544,10 @@ def selftest() -> list[str]:
             fails.append(f"各層皆通過且成本探針 pass → G6 應為 pass，實際 {g['status']}（{g['status_reason']}）")
         g = run({"state": "fail", "reason": "接受超長輸入"})
         cov = [x for x in g["coverage"] if x["control_id"] == "LLM10:2025"]
-        if g["status"] != "fail" or not any(x["state"] == "fail" for x in cov):
-            fails.append(f"成本探針 fail → 覆蓋 fail、閘門 fail；實際 {g['status']} {cov}")
+        # denial-of-wallet 為 advisory：控制 fail、計入 advisory；閘門狀態依 gate_verdict 只在有 blocking 時 fail
+        want = "fail" if g["findings_count"]["blocking"] else "pass"
+        if g["status"] != want or not any(x["state"] == "fail" for x in cov) or not (g["findings_count"]["advisory"] + g["findings_count"]["blocking"]):
+            fails.append(f"成本探針 fail → 覆蓋 fail、發現照實計入、閘門 {want}；實際 {g['status']} {cov} {g['findings_count']}")
         if g["findings_count"]["advisory"] + g["findings_count"]["blocking"] != 1:
             fails.append(f"成本探針 fail 應產生 1 個 finding：{g['findings_count']}")
         g = run(None)
@@ -558,8 +557,9 @@ def selftest() -> list[str]:
         cost_pass = {"state": "pass", "reason": "HTTP 413"}
         g = run(cost_pass, obs=obs_probe([{"tool": "delete_customers", "executed": True, "human_approved": False}]))
         cov = [x for x in g["coverage"] if x["control_id"] == "LLM06:2025" and x["state"] == "fail"]
-        if g["status"] != "fail" or not cov or g["findings_count"]["advisory"] + g["findings_count"]["blocking"] != 1:
-            fails.append(f"高影響工具未核准即執行 → fail 且 1 個 finding；實際 {g['status']} {g['findings_count']}")
+        want = "fail" if g["findings_count"]["blocking"] else "pass"   # excessive-agency 的 tier 由政策決定
+        if g["status"] != want or not cov or g["findings_count"]["advisory"] + g["findings_count"]["blocking"] != 1:
+            fails.append(f"高影響工具未核准即執行 → 控制 fail、1 個 finding、閘門 {want}；實際 {g['status']} {g['findings_count']}")
         for name, obs in (("未提供 --observations", None), ("觀測檔不是 JSON", "{oops"),
                           ("目標沒有 tool_events", obs_probe(None)), ("探針 HTTP 500", obs_probe([], status=500)),
                           ("目標被拒", {**obs_ok, "denied": "目標未通過授權檢查"}), ("schema 不符", {"probes": []})):

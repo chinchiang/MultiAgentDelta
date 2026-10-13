@@ -207,7 +207,26 @@
 coverage_ratio = (pass + fail) / (pass + fail + pending + untested)
 ```
 
-分母排除 `not_applicable`；分子只算「已完成測試」。`summary.md` 同時列出各領域（docs/09 §8 的 14 領域）結果，避免大量低風險 pass 掩蓋關鍵授權 fail。閘門 `status` 推導：任一 `fail` → `fail`；無 fail 但有 `untested`/`pending` 且原因屬 docs/08 §7 → `incomplete`；全 pass（或 pass + not_applicable）→ `pass`。
+分母排除 `not_applicable`；分子只算「已完成測試」。`summary.md` 同時列出各領域（docs/09 §8 的 14 領域）結果，避免大量低風險 pass 掩蓋關鍵授權 fail。
+
+### 9.1 閘門判定規則（gate verdict）
+
+閘門 `status` 一律由 `scripts/gate_verdict.py` 判定，全 repo 只有這一份（以本節與該程式的 selftest 真值表為準；用語見 `CONTEXT.md`）。各閘門只提供：blocking 發現數、`coverage[]`、未完成原因（工具缺席、逾時、缺 token…）、待人工裁決的發現，以及「依設計不適用」的宣告。依序判定，先符合者為準：
+
+| 順序 | 條件 | `status` |
+|---|---|---|
+| 1 | 閘門宣告不適用（必附理由；同時有 blocking 或未完成原因 → 程式錯誤） | `not_applicable` |
+| 2 | blocking 發現數 > 0 | `fail`（未完成項目以「另有未完成項目：」寫進 `status_reason`，不會遺失） |
+| 3 | 有未完成原因，或 `coverage` 有 `untested` | `incomplete` |
+| 4 | 有待人工裁決的發現 | `pending` |
+| 5 | 以上皆無 | `pass` |
+
+- **`fail` 只代表有 blocking 發現**：只有 advisory 發現時為 `pass`，advisory 照實計入 `findings_count` 與 `coverage`（控制可為 `fail`）；是否阻擋只看政策 tier。
+- **`incomplete` 優先於 `pending`**：證據不完整比「證據完整、待人判斷」更不確定。
+- **子結果併入**（例如 G1 的 SBOM、KEV）：依 `fail > incomplete > pending > pass > not_applicable` 取較嚴者，只升不降。
+- **最終判定**：消費閘門結果前，`coverage` 仍為 `pending`（待併入）的控制視同 `untested`，閘門至少為 `incomplete`。
+- 閘門程式不輸出 `untested` 這個閘門狀態；舊資料中的 `untested` 視為 `incomplete`。
+- **阻擋判定**（enforce）：shadow 或靶場只報告 → 0；政策 `incomplete_gate_is_blocking_in_enforce` 列出的閘門未完成，或 mode／政策讀不到 → 2（優先）；有 blocking（或狀態為 `fail`）→ 1。PR head 送來的 gate JSON 先以 schema 驗證，不合法或缺席 → `incomplete`。
 
 ## 10. 重測規則
 

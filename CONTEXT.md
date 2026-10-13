@@ -1,0 +1,201 @@
+[正體中文（臺灣）](#zh-tw) | [English](#english)
+
+<a id="zh-tw"></a>
+
+# VibeSec 領域用語
+
+VibeSec 以六道資安閘門（G0–G6）檢查 Vibe Coding 產出的程式與設定；本檔定義各閘門、判定與政策共用的詞彙。判定規則的完整真值表見 `docs/10-evidence-scoring-and-findings.md`。
+
+## 閘門與結果
+
+**閘門（gate）**：
+G0–G6 其中一道檢查；每次執行產出一份閘門結果。
+_避免_：關卡、stage、check（check 專指閘門內的單項檢查）
+
+**閘門結果（gate result）**：
+一道閘門單次執行的紀錄：閘門狀態、狀態理由、發現計數與控制覆蓋。
+_避免_：報告、gate report
+
+**發現（finding）**：
+一筆具體的問題紀錄，帶有規則 ID 與政策 tier。
+_避免_：告警、issue、漏洞（漏洞是發現的一種，不是同義詞）
+
+**控制覆蓋（coverage）**：
+閘門對每個控制的實測狀態：通過、失敗、未實測、待併入或不適用。
+_避免_：檢查清單、checklist
+
+**未實測（untested）**：
+某個控制這次沒有得到證據（工具缺席、逾時、無法讀取）。只用於控制覆蓋，不是閘門狀態。
+_避免_：略過、skipped
+
+**待併入（coverage pending）**：
+控制的結果要由後續步驟補上，尚未補上；到最終判定時仍待併入，視同未實測。
+_避免_：與「待人工裁決」混用
+
+**未完成原因（problem）**：
+讓閘門無法完整判定的工具或環境問題，例如工具缺席、registry 逾時、缺帳號 token。
+_避免_：錯誤、error（error 專指程式本身的錯誤）
+
+**待人工裁決（awaiting human）**：
+模型意見分歧或證據不足以下結論、須由人工裁決的發現。
+_避免_：待審、pending review
+
+## 判定
+
+**閘門判定（gate verdict）**：
+由發現、控制覆蓋、未完成原因與待人工裁決推出閘門狀態與狀態理由的規則；全 repo 只有一份。
+_避免_：評分、score、合併分數
+
+**閘門狀態（gate status）**：
+閘門判定的結論，五種之一：
+- **fail**：有 blocking 發現；
+- **incomplete**：沒有 blocking 發現，但有未完成原因或未實測的控制；
+- **pending**：證據完整，但有待人工裁決的發現；
+- **pass**：以上皆無；
+- **not_applicable**：閘門由設計判定不適用，必須附理由。
+
+incomplete 不等於 pass。
+_避免_：用 untested 當閘門狀態；用「通過」描述 incomplete
+
+**子結果（sub-result）**：
+同一道閘門分段產出的部分結果（例如 G1 的 SBOM 與 KEV 檢查），併入閘門結果後才是完整的判定。
+_避免_：子閘門、sub-gate
+
+**最終判定（finalization）**：
+消費閘門結果前，把仍待併入的控制視同未實測、重新確認閘門狀態的步驟。
+_避免_：重算、recompute
+
+**乾淨（clean）**：
+經最終判定後閘門狀態為 pass 或 not_applicable；夜間監測以此決定是否開追蹤 issue。
+_避免_：綠燈、green
+
+**阻擋判定（enforcement decision）**：
+依各閘門結果、執行模式與阻擋政策，決定是否擋下合併或部署。
+_避免_：gating、blocking decision（blocking 專指政策 tier）
+
+**黑箱健康（blackbox health）**：
+staging 黑箱閘門（G5、G6）是否需要通知：靶場看靶場驗收，外部目標看是否乾淨。
+_避免_：staging 狀態
+
+**靶場驗收（lab acceptance）**：
+對刻意有漏洞的靶場，G5、G6 必須判定 fail、有 blocking 發現，且必要工具都實際執行；否則代表偵測能力退步。
+_避免_：靶場測試、lab test
+
+## 政策與信任
+
+**政策 tier（policy tier）**：
+規則的阻擋等級：blocking 或 advisory，唯一來源是阻擋政策與風險層級。
+_避免_：嚴重度、severity（嚴重度是 CVSS 的範疇）
+
+**執行模式（mode）**：
+shadow（只報告、不阻擋）或 enforce（依阻擋政策阻擋）；只能由受信任設定升級，不能被降級。
+_避免_：dry-run
+
+**受信任樹（trusted tree）**：
+default branch 的判定程式、政策與設定（CI 中的 `_trusted/`）；受測的 PR 內容不得改變判定。
+_避免_：base、main（main 是分支名，不是信任概念）
+
+**受驗樹（project tree）**：
+被檢查的專案內容，在 CI 中是 PR head；只當資料讀取。
+_避免_：目標、target（target 專指 G5／G6 的受測服務）
+
+---
+
+<a id="english"></a>
+
+# VibeSec Domain Language
+
+VibeSec checks the code and configuration produced by Vibe Coding through six security gates (G0–G6). This file defines the vocabulary shared by gates, verdicts, and policy. The full truth table for the verdict rules is in `docs/10-evidence-scoring-and-findings.md`. If the two language sections disagree, the Traditional Chinese section prevails.
+
+## Gates and results
+
+**Gate**:
+One of the checks G0–G6; each run produces one gate result.
+_Avoid_: stage, check (a check is a single item inside a gate)
+
+**Gate result**:
+The record of one gate run: gate status, status reason, finding counts, and coverage.
+_Avoid_: report, gate report
+
+**Finding**:
+A concrete problem record carrying a rule ID and a policy tier.
+_Avoid_: alert, issue, vulnerability (a vulnerability is one kind of finding, not a synonym)
+
+**Coverage**:
+The tested state of each control in a gate: pass, fail, untested, pending merge, or not applicable.
+_Avoid_: checklist
+
+**Untested**:
+A control that got no evidence this run (tool missing, timeout, unreadable). Used only for coverage, never as a gate status.
+_Avoid_: skipped
+
+**Coverage pending**:
+A control whose result is to be supplied by a later step and has not been yet; still pending at finalization, it counts as untested.
+_Avoid_: confusing it with "awaiting human"
+
+**Problem**:
+A tool or environment issue that prevents a complete verdict, such as a missing tool, a registry timeout, or a missing account token.
+_Avoid_: error (error means a bug in the program itself)
+
+**Awaiting human**:
+A finding on which model opinions disagree or the evidence does not support a conclusion, so a human must rule.
+_Avoid_: pending review
+
+## Verdicts
+
+**Gate verdict**:
+The rule that derives the gate status and status reason from findings, coverage, problems, and findings awaiting human rulings; there is exactly one in the repository.
+_Avoid_: score, combined score
+
+**Gate status**:
+The conclusion of the gate verdict, one of five:
+- **fail**: there is a blocking finding;
+- **incomplete**: no blocking finding, but there are problems or untested controls;
+- **pending**: the evidence is complete, but some findings await a human ruling;
+- **pass**: none of the above;
+- **not_applicable**: the gate does not apply by design; a reason is required.
+
+Incomplete does not equal pass.
+_Avoid_: using untested as a gate status; describing incomplete as "passed"
+
+**Sub-result**:
+A partial result produced in stages by the same gate (for example G1's SBOM and KEV checks); the verdict is complete only after it is merged into the gate result.
+_Avoid_: sub-gate
+
+**Finalization**:
+The step before a gate result is consumed that treats still-pending controls as untested and reconfirms the gate status.
+_Avoid_: recompute
+
+**Clean**:
+A gate whose status after finalization is pass or not_applicable; nightly monitoring uses it to decide whether to open a tracking issue.
+_Avoid_: green
+
+**Enforcement decision**:
+The decision, from all gate results, the mode, and the blocking policy, whether to block a merge or deployment.
+_Avoid_: gating, blocking decision (blocking refers only to the policy tier)
+
+**Blackbox health**:
+Whether the staging blackbox gates (G5, G6) need a notification: the lab is judged by lab acceptance, an external target by whether it is clean.
+_Avoid_: staging status
+
+**Lab acceptance**:
+For the deliberately vulnerable lab, G5 and G6 must be judged fail with blocking findings, and every required tool must actually have run; otherwise detection has regressed.
+_Avoid_: lab test
+
+## Policy and trust
+
+**Policy tier**:
+A rule's blocking level, blocking or advisory, whose only sources are the blocking policy and the risk tier.
+_Avoid_: severity (severity belongs to CVSS)
+
+**Mode**:
+shadow (report only, never block) or enforce (block according to the blocking policy); it can only be raised by the trusted configuration, never lowered.
+_Avoid_: dry-run
+
+**Trusted tree**:
+The default branch's verdict code, policy, and configuration (`_trusted/` in CI); the PR content under test must not change a verdict.
+_Avoid_: base, main (main is a branch name, not a trust concept)
+
+**Project tree**:
+The content being checked, the PR head in CI; it is read only as data.
+_Avoid_: target (target means the service under test in G5/G6)

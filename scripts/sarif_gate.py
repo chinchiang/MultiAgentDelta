@@ -252,23 +252,6 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
             problems.append(f"envcheck：{envcheck.name} 缺席或無法解析")
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     advisory = len(findings) - len(blocking)
-    reasons = []
-    if blocking:
-        status = "fail"
-        top = collections.Counter(f["rule_id"] for f in blocking).most_common(5)
-        reasons.append("blocking：" + "、".join(f"{r}×{n}" for r, n in top))
-        if problems:
-            reasons.append("另有工具未完成：" + "；".join(problems))
-    elif problems:
-        status = "incomplete"
-        reasons.append("工具未完成：" + "；".join(problems))
-    else:
-        status = "pass"
-    excepted = [f for f in findings if f.get("exception")]
-    if excepted:
-        reasons.append(f"{len(excepted)} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
-    if pol["ignored_exceptions"]:
-        reasons.append("忽略的例外：" + "；".join(pol["ignored_exceptions"]))
     coverage = []
     for ctl, owners in GATE_CONTROLS.get(gate, {}).items():
         if not all(o in ran for o in owners):
@@ -278,7 +261,22 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
         else:
             state, why = "pass", None
         coverage.append({"control_id": ctl, "state": state, "reason": why})
-    return {"gate": gate, "status": status, "status_reason": "；".join(reasons) or None,
+    # 狀態由 gate_verdict.verdict 判定（blocking 優先 fail、工具未完成或控制未實測 → incomplete）；
+    # blocking 摘要與例外說明只是附註，不影響狀態
+    notes = []
+    if blocking:
+        top = collections.Counter(f["rule_id"] for f in blocking).most_common(5)
+        notes.append("blocking：" + "、".join(f"{r}×{n}" for r, n in top))
+    excepted = [f for f in findings if f.get("exception")]
+    if excepted:
+        notes.append(f"{len(excepted)} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
+    if pol["ignored_exceptions"]:
+        notes.append("忽略的例外：" + "；".join(pol["ignored_exceptions"]))
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from gate_verdict import verdict
+    status, status_reason = verdict(blocking=len(blocking), coverage=coverage,
+                                    problems=list(dict.fromkeys(problems)), notes=notes)
+    return {"gate": gate, "status": status, "status_reason": status_reason,
             "mode": pol["mode"], "risk_tier": pol["risk_tier"], "scope": "diff", "diff_base": None, "commit": None,
             "started_at": started, "finished_at": now(), "tools": tool_rows,
             "findings_count": {"blocking": len(blocking), "advisory": advisory}, "coverage": coverage}
@@ -338,7 +336,7 @@ def selftest() -> list[str]:
         if g["status"] != "incomplete":
             fails.append("SARIF 無法解析 → incomplete")
         g = run("G3", {"semgrep": sarif(res("vibesec.g3.command-injection")), "checkov": None, "trivy": sarif()})
-        if g["status"] != "fail" or "另有工具未完成" not in (g["status_reason"] or ""):
+        if g["status"] != "fail" or "另有未完成項目" not in (g["status_reason"] or "") or "checkov" not in (g["status_reason"] or ""):
             fails.append("有 blocking 又有工具缺席 → fail，且理由寫出缺席工具")
         bad_run = lambda inv: {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "semgrep"}}, "results": [],
                                                              "invocations": [inv]}]}

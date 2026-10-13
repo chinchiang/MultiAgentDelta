@@ -171,26 +171,13 @@ def _write_gate(gstatus, status_reason, blocking, advisory, cov, zap_tools, star
 
 
 def _gate_status(blocking, incomplete_reason, has_a, has_b, coverage):
-    """G5 整體狀態與 status_reason。有 blocking 發現 → fail 優先（比照 g6_gate.build）：
-    以前先判缺 token／無法連線再判 blocking，缺一個帳號就把 blocking 的 fail 蓋成 incomplete，
-    staging 判定只擋 fail，enforce 下 SSRF、CORS 等 blocking 發現因此放行。未完成項目仍寫進 status_reason。"""
-    reasons = []
-    if incomplete_reason:
-        reasons.append(incomplete_reason)
+    """G5 整體狀態與 status_reason：由 gate_verdict.verdict 判定（blocking 優先 fail、untested 不得 pass）。
+    coverage 為 [{control_id, state, reason}]；缺 token、目標無法連線是未完成原因。"""
+    from gate_verdict import verdict
+    problems = [incomplete_reason] if incomplete_reason else []
     if not (has_a and has_b):
-        reasons.append(f"雙帳號測試需兩個 token（has_a={has_a}, has_b={has_b}）；缺 token 的 BOLA/JWT 檢查記為 untested")
-    untested = [k for k, v in coverage.items() if v == "untested"]
-    if blocking > 0:
-        # 是否擋由「黑箱彙整與判定」依 mode 與政策決定
-        if untested:
-            reasons.append("未能實測：" + "、".join(untested))
-        return "fail", ("另有未完成項目：" + "；".join(reasons)) if reasons else None
-    if reasons:
-        return "incomplete", "；".join(reasons)
-    if untested:
-        # incomplete ≠ pass（CLAUDE.md #2）：任何檢查未能實測，整體就不能報 pass
-        return "incomplete", "未能實測：" + "、".join(untested)
-    return "pass", None
+        problems.append(f"雙帳號測試需兩個 token（has_a={has_a}, has_b={has_b}）；缺 token 的 BOLA/JWT 檢查記為 untested")
+    return verdict(blocking=blocking, coverage=coverage, problems=problems)
 
 
 def main():
@@ -572,8 +559,6 @@ def main():
     blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
     advisory = sum(1 for r in results if r["properties"]["policy_tier"] == "advisory")
 
-    gstatus, status_reason = _gate_status(blocking, incomplete_reason, HAS_A, HAS_B, coverage)
-
     def _cov_reason(k, v):
         if k in coverage_reasons: return coverage_reasons[k]
         if v == "untested": return "缺 token 或目標限制，未能實測"
@@ -581,6 +566,7 @@ def main():
         return None
     cov = [{"control_id": k, "state": v, "reason": _cov_reason(k, v)}
            for k, v in coverage.items()]
+    gstatus, status_reason = _gate_status(blocking, incomplete_reason, HAS_A, HAS_B, cov)
     # schema：not_applicable 才強制 reason；untested 可無 reason，但附上更佳
     _write_gate(gstatus, status_reason, blocking, advisory, cov, ZAP_TOOLS, started)
     print(f"G5 api-probes: status={gstatus} blocking={blocking} advisory={advisory}")
@@ -778,24 +764,12 @@ def selftest():
         elif want == "untested" and not got.get("reason"):
             fails.append(f"{control}（{name}）untested 時應說明原因")
 
-    # 整體狀態：blocking 發現優先記 fail，不被缺 token／未實測蓋成 incomplete（staging 判定只擋 fail）
-    for args, want in [
-        ((1, None, True, False, {"bola_idor": "untested"}), "fail"),
-        ((2, None, False, False, {}), "fail"),
-        ((1, "目標 x 無法連線", True, True, {}), "fail"),
-        ((0, None, True, False, {}), "incomplete"),
-        ((0, "目標 x 無法連線", True, True, {}), "incomplete"),
-        ((0, None, True, True, {"rate_limit": "untested"}), "incomplete"),
-        ((0, None, True, True, {"rate_limit": "pass"}), "pass"),
-        ((1, None, True, True, {"rate_limit": "pass"}), "fail"),
-    ]:
-        st, why = _gate_status(*args)
-        if st != want:
-            fails.append(f"_gate_status{args} 應為 {want}（得到 {st}）")
-        elif st == "incomplete" and not why:
-            fails.append(f"_gate_status{args} incomplete 時應說明原因")
-        elif st == "fail" and (not args[2] or not args[3] or args[1]) and "另有未完成項目" not in (why or ""):
-            fails.append(f"_gate_status{args} fail 且有未完成項目時應寫進 status_reason")
+    # 接線：G5 把缺 token／無法連線當未完成原因、coverage 原樣交給 gate_verdict.verdict（真值表在 gate_verdict.py selftest）
+    st, why = _gate_status(1, "目標 x 無法連線", True, False, [{"control_id": "bola_idor", "state": "untested", "reason": "缺 token"}])
+    if st != "fail" or not all(x in (why or "") for x in ("目標 x 無法連線", "has_b=False", "bola_idor 未實測")):
+        fails.append(f"_gate_status 接線：blocking＋缺 token＋無法連線 → fail，理由列出全部未完成項目（得到 {st}：{why}）")
+    if _gate_status(0, None, True, True, [{"control_id": "rate_limit", "state": "untested", "reason": None}])[0] != "incomplete":
+        fails.append("_gate_status 接線：控制未實測 → incomplete")
     # 端到端：沒有任何 token，但 /me 反射 Origin（blocking）→ gate 應為 fail，不是 incomplete
     srv = serve_routes(lambda m, p, h: base(m, p, h, lambda m, p, full, h: (200, reflect(h), "{}") if p == "/me" else None))
     try:
