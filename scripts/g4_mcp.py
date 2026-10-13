@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """G4 mcp_resource_indicator（VS-G4-MCP-RESOURCE-INDICATOR，docs/05 §7）的單檔啟發式靜態檢查。
 
-由 .github/workflows/pr-gates.yml 的「G4 靜態檢查」步驟、scripts/g4_access.py（本機／harness 版，執行同一段步驟）
-與 scripts/run_evals.py（G4 評測，同樣執行該步驟）共用。只用標準函式庫：CI 的靜態步驟在安裝 PyYAML／jsonschema 之前執行，
-不能 import g4_access（它載入 g4_review，缺套件時直接結束）。
+由 scripts/g4_static.py（G4 靜態檢查）呼叫；scripts/g4_access.py（本機／harness 版）與 scripts/run_evals.py（G4 評測）
+都執行同一支 g4_static.py（CI 目前仍執行 pr-gates.yml 的 inline，改用腳本見 #152）。只用標準函式庫：CI 的靜態步驟在
+安裝 PyYAML／jsonschema 之前執行，不能 import g4_access（它載入 g4_review，缺套件時直接結束）。
 
 用法：python3 scripts/g4_mcp.py selftest
 """
