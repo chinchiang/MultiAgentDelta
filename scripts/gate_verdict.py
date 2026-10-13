@@ -312,7 +312,7 @@ def _load_gates(specs, trusted_root: pathlib.Path):
     return gates
 
 
-def _trusted_config(trusted_root: pathlib.Path, requested_mode):
+def _read_settings(trusted_root: pathlib.Path, requested_mode):
     """(mode, incomplete_blocking_gates, cfg, errors)。--mode 只能把 shadow 升為 enforce，不能降級。"""
     errors, cfg, mode = [], None, None
     try:
@@ -366,14 +366,14 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     gates = _load_gates(a.gate, a.trusted_root)
     if a.cmd == "enforce":
-        mode, inc, _, errs = _trusted_config(a.trusted_root, a.mode)
+        mode, inc, _, errs = _read_settings(a.trusted_root, a.mode)
         d = enforce(gates, mode=mode, incomplete_blocking_gates=inc, report_only=a.report_only, title=a.title, errors=errs)
         print(d["markdown"])
         if a.markdown_out:
             pathlib.Path(a.markdown_out).write_text(d["markdown"] + "\n", encoding="utf-8")
         _write_outputs(a.github_output, d["outputs"])
         return d["code"]
-    _, _, cfg, _ = _trusted_config(a.trusted_root, None)
+    _, _, cfg, _ = _read_settings(a.trusted_root, None)
     problems = blackbox_health(gates, lab=a.lab, required_tools=required_tools(cfg) if a.lab else None,
                                job_result=a.job_result)
     print(json.dumps(problems, ensure_ascii=False, indent=1))
@@ -540,14 +540,14 @@ def selftest() -> list[str]:
         if not isinstance(gates["G3"], dict) or not isinstance(gates["G1"], Invalid) or not isinstance(gates["G2"], Invalid) \
                 or gates["G4"] is not None:
             fails.append(f"_load_gates：合法 → dict；無法解析／不符 schema → Invalid；缺檔 → None（得到 {gates}）")
-        mode, inc, _, errs = _trusted_config(ROOT, "shadow")
+        mode, inc, _, errs = _read_settings(ROOT, "shadow")
         real = __import__("yaml").safe_load((ROOT / "vibesec.yaml").read_text(encoding="utf-8")).get("mode")
         if mode != real or errs:
-            fails.append(f"_trusted_config：mode 取自受信任設定（{real}）（得到 {mode}，{errs}）")
-        if _trusted_config(ROOT, "enforce")[0] != "enforce":
+            fails.append(f"_read_settings：mode 取自受信任設定（{real}）（得到 {mode}，{errs}）")
+        if _read_settings(ROOT, "enforce")[0] != "enforce":
             fails.append("--mode enforce 可以升級")
         (D / "vibesec.yaml").write_text("mode: enforce\n")
-        if _trusted_config(D, "shadow")[0] != "enforce":
+        if _read_settings(D, "shadow")[0] != "enforce":
             fails.append("--mode shadow 不得降級受信任設定的 enforce")
         out = D / "out.txt"
         import contextlib, io
