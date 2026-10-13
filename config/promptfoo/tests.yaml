@@ -4,7 +4,7 @@
 #   export VIBESEC_TARGET_URL=http://localhost:8000
 #   promptfoo eval -c config/promptfoo/tests.yaml --output reports/g6-promptfoo.json
 #   python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-cost.json
-#   python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --cost reports/g6-cost.json --gate reports/g6-gate.json
+#   python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --cost reports/g6-cost.json --gate reports/g6-gate.json --mode shadow
 # 每個 test 的 metadata.vibesec_rule_id 必須存在於 config/catalogs/cwe-map.yaml。
 # 不放 cost 斷言：http target 無法回報 token 用量；成本面由 scripts/g6_cost_probe.py 另外實測（g6_gate.py --cost）。
 

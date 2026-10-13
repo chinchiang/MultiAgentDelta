@@ -20,8 +20,8 @@
        | --redteam-skipped "未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret"] \
       [--garak-glob 'reports/g6-garak*.report.jsonl'] \
       --cost reports/g6-cost.json --observations reports/g6-observations.json \
-      --gate reports/g6-gate.json --sarif reports/g6.sarif [--mode shadow|enforce]
-  python3 scripts/g6_gate.py --target-denied "<原因>" --gate … --sarif …   # 目標未通過 scripts/target_guard.py
+      --gate reports/g6-gate.json --sarif reports/g6.sarif --mode shadow|enforce
+  python3 scripts/g6_gate.py --target-denied "<原因>" --gate … --sarif … --mode …   # 目標未通過 scripts/target_guard.py
   python3 scripts/g6_gate.py selftest
 成本面（LLM10 denial_of_wallet_cost）由 scripts/g6_cost_probe.py 實測後以 --cost 帶入；未提供或無法解析 → untested。
 工具事件（LLM06 excessive_agency_telemetry）由 scripts/g6_observe.py 實測後以 --observations 帶入：高影響工具未經人工核准
@@ -503,7 +503,7 @@ def build(c: Collector, mode: str, started: str) -> tuple[dict, dict]:
 
 
 def selftest() -> list[str]:
-    import tempfile
+    import contextlib, io, tempfile
     fails: list[str] = []
     with tempfile.TemporaryDirectory() as d:
         dp = pathlib.Path(d)
@@ -527,7 +527,7 @@ def selftest() -> list[str]:
         def run(cost: dict | None, extra: list[str] | None = None, base: list[str] | None = None,
                 obs: dict | str | None = obs_ok) -> dict:
             args = (["--eval", str(dp / "eval.json"), "--redteam", str(dp / "red.json"),
-                     "--garak-glob", str(dp / "g6-garak*.report.jsonl")] if base is None else base) + ["--gate", str(dp / "gate.json")]
+                     "--garak-glob", str(dp / "g6-garak*.report.jsonl")] if base is None else base) + ["--gate", str(dp / "gate.json"), "--mode", "shadow"]
             if cost is not None:
                 (dp / "cost.json").write_text(json.dumps(cost), encoding="utf-8")
                 args += ["--cost", str(dp / "cost.json")]
@@ -670,6 +670,19 @@ def selftest() -> list[str]:
         g = run({"state": "pass"}, ["--target-denied", "example.com 不在允許清單"])
         if g["status"] != "incomplete" or "授權" not in (g["status_reason"] or "") or g["tools"]:
             fails.append(f"--target-denied → incomplete 且不讀任何結果；實際 {g['status']} tools={g['tools']}")
+        # --mode 必填：漏帶時不得默默以 shadow 寫出結果（呼叫端必須明講 mode，取自 vibesec.yaml）
+        for extra in ([], ["--target-denied", "x"]):
+            (dp / "gate.json").unlink(missing_ok=True)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    main(ev + red2 + gk + ["--gate", str(dp / "gate.json")] + extra)
+                fails.append(f"未帶 --mode{'（--target-denied）' if extra else ''} → 應以 argparse 錯誤結束，實際照常執行")
+            except SystemExit as e:
+                if e.code != 2 or (dp / "gate.json").exists():
+                    fails.append(f"未帶 --mode → 退出碼 2 且不寫 gate JSON；實際 {e.code}，gate JSON {'存在' if (dp / 'gate.json').exists() else '不存在'}")
+        for m in ("shadow", "enforce"):
+            if run(cost_ok, ["--mode", m], base=ev + red2 + gk)["mode"] != m:
+                fails.append(f"--mode {m} → gate JSON 的 mode 應為 {m}")
     return fails
 
 
@@ -696,7 +709,8 @@ def main(argv=None) -> int:
     ap.add_argument("--cost", help="scripts/g6_cost_probe.py 的輸出（denial_of_wallet_cost）")
     ap.add_argument("--observations", help="scripts/g6_observe.py 的觀測檔（excessive_agency_telemetry）")
     ap.add_argument("--target-denied", help="目標未通過 scripts/target_guard.py 的原因：不讀任何結果，閘門 incomplete")
-    ap.add_argument("--mode", default="shadow", choices=["shadow", "enforce"])
+    ap.add_argument("--mode", required=True, choices=["shadow", "enforce"],
+                    help="取自 vibesec.yaml 的 mode；必填，漏帶不得默默以 shadow 執行")
     a = ap.parse_args(argv)
     started = now()
     c = Collector(*load_catalog())

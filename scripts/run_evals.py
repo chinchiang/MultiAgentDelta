@@ -1093,7 +1093,7 @@ class IntegrationRunner(Runner):
         with tempfile.TemporaryDirectory() as d:
             dp = pathlib.Path(d)
             args = [sys.executable, str(ROOT / "scripts/g6_gate.py"), "--gate", str(dp / "gate.json"),
-                    "--sarif", str(dp / "g6.sarif")]
+                    "--sarif", str(dp / "g6.sarif"), "--mode", "shadow"]   # --mode 必填；評測只看狀態與發現，沿用舊預設
             (dp / "eval.json").write_text(json.dumps({"results": {"results": self._promptfoo_rows(fx.get("promptfoo_failed_checks") or [])}}),
                                           encoding="utf-8")
             args += ["--eval", str(dp / "eval.json")]
