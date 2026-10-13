@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """G4 架構與存取控制（本機／harness 版）— 靜態檢查 + LLM 審查紀錄；可用 --target 掃其他專案。
 
-靜態檢查（隱形 Unicode、Supabase RLS、Agent 工具 allow-list、高影響工具 HITL、單層 middleware、MCP resource indicator）直接執行
-.github/workflows/pr-gates.yml「G4 靜態檢查」步驟的同一段程式碼（scripts/run_evals.py 的 G4 評測也這樣做），
-不另寫一份；tier 由該程式碼以本 repo 的 blocking-policy 計算（VIBESEC_CONFIG 指向本 repo）。
-該程式碼會走訪工作目錄並寫出 reports/，所以在目標「追蹤中檔案」的暫存副本上執行（同 G3：不跟隨 symlink），
-不寫進被測專案。結果檔損毀或缺欄位 → incomplete。
-mcp_resource_indicator（VS-G4-MCP-RESOURCE-INDICATOR，docs/05 §7）也在同一段步驟內（判定在 scripts/g4_mcp.py），
+靜態檢查（隱形 Unicode、Supabase RLS、Agent 工具 allow-list、高影響工具 HITL、單層 middleware、MCP resource indicator）執行
+scripts/g4_static.py（scripts/run_evals.py 的 G4 評測也執行同一支），不另寫一份；tier 由該腳本以本 repo 的
+blocking-policy 計算（腳本以自己所在的樹為 ROOT）。腳本會走訪 --target，所以在目標「追蹤中檔案」的暫存副本上執行
+（同 G3：不跟隨 symlink），輸出寫在副本以外的暫存目錄，不寫進被測專案。結果檔損毀或缺欄位 → incomplete。
+mcp_resource_indicator（VS-G4-MCP-RESOURCE-INDICATOR，docs/05 §7）也在 g4_static.py 內（判定在 scripts/g4_mcp.py），
 本機版與 CI 的 gate JSON 都含此控制：沒有 MCP 程式碼／設定 → not_applicable；MCP OAuth 缺 resource／audience 綁定 → fail（advisory 發現）。
 
 VS-G4-LLM-REVIEW（LLM 審查紀錄）：
@@ -21,7 +20,7 @@ VS-G4-LLM-REVIEW（LLM 審查紀錄）：
     · 紀錄通過 g4_review 的規則檢查。
   紀錄尚未提交到本 repo（未經 PR 與 CODEOWNERS）或 recorded_by.handle 空白 → 最高 pending。
   沒有可用紀錄 → VS-G4-LLM-REVIEW 維持 pending，G4 最多 incomplete（有靜態 blocking 則 fail）。
-原則（CLAUDE.md #2）：靜態檢查程式碼找不到或執行失敗、目標不是 git repo 根目錄 → incomplete，絕不視為通過。
+原則（CLAUDE.md #2）：靜態檢查腳本找不到或執行失敗、目標不是 git repo 根目錄 → incomplete，絕不視為通過。
 
 用法：python3 scripts/g4_access.py [--target <dir>] [--out-dir reports/raw/G4] [--gate reports/gates/G4.json]
       python3 scripts/g4_access.py selftest
@@ -35,35 +34,24 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import g4_review  # noqa: E402  審查紀錄的驗證與狀態推導（缺 PyYAML／jsonschema 時以 exit 2 結束）
 from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本
 
-WORKFLOW = ROOT / ".github/workflows/pr-gates.yml"
-STEP = "G4 靜態檢查"
+STATIC_SCRIPT = ROOT / "scripts/g4_static.py"   # G4 靜態檢查（與 run_evals.py 的 G4 評測同一支）
+STEP = "G4 靜態檢查"                             # 失敗理由中的名稱
 EXTERNAL_REVIEWS = "reviews/g4/external"
-
-
-def static_step_code(workflow: pathlib.Path = WORKFLOW) -> str | None:
-    """pr-gates.yml 中「G4 靜態檢查」步驟的 run 內容（與 CI、run_evals.py 同一份）。"""
-    import yaml
-    wf = yaml.safe_load(workflow.read_text(encoding="utf-8"))
-    for job in (wf.get("jobs") or {}).values():
-        for st in job.get("steps") or []:
-            if str(st.get("name", "")).startswith(STEP):
-                return st.get("run")
-    return None
 
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
-# mcp_resource_indicator（docs/05 §7）已併入 pr-gates.yml 的 G4 靜態步驟（判定在 scripts/g4_mcp.py）；這裡只重新匯出名稱
+# mcp_resource_indicator（docs/05 §7）已併入 scripts/g4_static.py（判定在 scripts/g4_mcp.py）；這裡只重新匯出名稱
 from g4_mcp import MCP_CONTROL, MCP_RULE, mcp_resource_check  # noqa: E402,F401
 
 
-def run_static(target: pathlib.Path, out_dir: pathlib.Path, code: str | None, commit: str | None, mode: str,
+def run_static(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path, commit: str | None, mode: str,
                timeout: int) -> tuple[dict | None, str | None, list[str]]:
-    """在目標追蹤中檔案的副本上執行靜態檢查。回傳 (靜態 gate JSON, 失敗原因, 附註)。"""
-    if not code:
-        return None, f"{WORKFLOW.name} 找不到「{STEP}」步驟", []
+    """在目標追蹤中檔案的副本上執行靜態檢查腳本。回傳 (靜態 gate JSON, 失敗原因, 附註)。"""
+    if not pathlib.Path(script).is_file():
+        return None, f"{STEP}腳本不存在：{script}", []
     notes = []
     with tempfile.TemporaryDirectory(prefix="vibesec-g4-") as tmp:
         copy = pathlib.Path(tmp) / "vibesec-target"
@@ -71,19 +59,17 @@ def run_static(target: pathlib.Path, out_dir: pathlib.Path, code: str | None, co
         skipped = copy_tracked(target, copy)
         if skipped:
             notes.append(f"靜態檢查略過 {skipped} 個 symlink（不跟隨到目標以外的檔案）")
-        env = {**os.environ, "VIBESEC_MODE": mode, "COMMIT_SHA": commit or "",
-               "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
+        reports = pathlib.Path(tmp) / "reports"   # 副本以外：不讓輸出成為下一次掃描的內容
         t0 = time.monotonic()
         try:
-            p = subprocess.run(["bash", "-e", "-c", code], env=env, cwd=copy, capture_output=True, text=True,
-                               timeout=timeout)
+            p = subprocess.run([sys.executable, "-I", str(script), "--target", str(copy), "--out", str(reports),
+                                "--mode", mode, "--commit", commit or ""], capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, f"G4 靜態檢查逾時（{timeout}s）", notes
         except OSError as e:
             return None, f"G4 靜態檢查無法執行（{type(e).__name__}）", notes
-        reports = copy / "reports"
         gate_p, sarif_p = reports / "g4-gate.json", reports / "g4-static.sarif"
-        # enforce 且有 blocking 時該步驟以 exit 1 結束（CI 用來擋 merge），結果仍有效；其餘非零、或沒寫出結果 → 失敗
+        # enforce 且有 blocking 時腳本以 exit 1 結束（CI 用來擋 merge），結果仍有效；其餘非零、或沒寫出結果 → 失敗
         if p.returncode not in (0, 1) or not gate_p.is_file() or not sarif_p.is_file():
             return None, f"G4 靜態檢查 exit {p.returncode}：{(p.stderr or p.stdout).strip()[-200:]}", notes
         try:   # 結果檔損毀或缺欄位：靜態檢查沒有可用結果 → incomplete，不是 traceback
@@ -167,7 +153,7 @@ def find_self_record(target: pathlib.Path, commit: str, cfg: dict, controls: set
     return record, ev, ref, None, cap
 
 
-def scan(target: pathlib.Path, out_dir: pathlib.Path, code: str | None = None, timeout: int = 900,
+def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STATIC_SCRIPT, timeout: int = 900,
          review_root: pathlib.Path = ROOT) -> dict:
     """掃描目標專案並回傳 G4 gate JSON（schemas/gate-result.schema.json）。
     review_root：外部專案審查紀錄所在的 repo（本 repo；selftest 以暫存 repo 代替）。"""
@@ -180,7 +166,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, code: str | None = None, t
     problem = (f"目標不是 git repo（{target}）" if top is None else
                None if pathlib.Path(top).resolve() == target else f"--target 必須是 git repo 根目錄（{top}）")
     commit = _git(target, "rev-parse", "HEAD") if not problem else None
-    static, why, notes = (None, problem, []) if problem else run_static(target, out_dir, code, commit, mode, timeout)
+    static, why, notes = (None, problem, []) if problem else run_static(target, out_dir, script, commit, mode, timeout)
     if static is None:
         return {"gate": "G4", "status": "incomplete", "status_reason": why, "mode": mode, "scope": "full",
                 "diff_base": None, "commit": commit, "started_at": started, "finished_at": _now(),
@@ -211,9 +197,18 @@ def selftest() -> list[str]:
     import yaml
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    code = static_step_code()
-    if not code:
-        return [f"{WORKFLOW.name} 找不到「{STEP}」步驟"]
+    script = STATIC_SCRIPT
+    if not script.is_file():
+        return [f"找不到 {script}"]
+    _wrap_dir = tempfile.TemporaryDirectory(prefix="vibesec-g4-wrap-")
+
+    def wrapped(name: str, tail: str) -> pathlib.Path:
+        """先以相同參數執行 g4_static.py，再執行 tail（可用 rc 與輸出目錄 out）：模擬腳本執行後失敗、輸出損毀。"""
+        w = pathlib.Path(_wrap_dir.name) / f"{name}.py"
+        w.write_text("import pathlib, subprocess, sys\n"
+                     f"rc = subprocess.run([sys.executable, '-I', {str(script)!r}, *sys.argv[1:]]).returncode\n"
+                     "out = pathlib.Path(sys.argv[sys.argv.index('--out') + 1])\n" + tail + "\n", encoding="utf-8")
+        return w
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True, text=True)
     zw = "​"   # 零寬空白：Rules File Backdoor 的典型手法
@@ -233,8 +228,8 @@ def selftest() -> list[str]:
             for rel, body in files.items():
                 (pathlib.Path(d) / rel).parent.mkdir(parents=True, exist_ok=True)
                 (pathlib.Path(d) / rel).write_text(body, encoding="utf-8")
-            env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": "", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")}
-            subprocess.run(["bash", "-e", "-c", code], env=env, cwd=d, capture_output=True, text=True, timeout=120, check=True)
+            subprocess.run([sys.executable, "-I", str(script), "--target", d, "--out", f"{d}/reports", "--mode", "shadow"],
+                           capture_output=True, text=True, timeout=120, check=True)
             sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
         return [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in sarif["runs"][0]["results"]
                 if r["ruleId"] == "vibesec.g4.agent-tool-overexposure"]
@@ -276,7 +271,7 @@ def selftest() -> list[str]:
         git(repo, "add", "-A"); git(repo, "commit", "-qm", "self-review")
         head = git(repo, "rev-parse", "HEAD").stdout.strip()
 
-        g = check(scan(repo, out, code), "外部目標")
+        g = check(scan(repo, out, script), "外部目標")
         sp = out / "g4-static.sarif"
         sarif = json.loads(sp.read_text(encoding="utf-8")) if sp.is_file() else {"runs": []}
         hits = {(r["ruleId"], r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"])
@@ -296,16 +291,16 @@ def selftest() -> list[str]:
         dangerous = "execute" + "_sql"
         (repo / "agent.py").write_text(f"@tool\ndef {dangerous}(q):\n    return db.run(q)\n")
         git(repo, "add", "-A"); git(repo, "commit", "-qm", "tool")
-        g = check(scan(repo, out, code), "靜態 blocking")
+        g = check(scan(repo, out, script), "靜態 blocking")
         if g["status"] != "fail" or not g["findings_count"]["blocking"]:
             fails.append("Agent 高危工具（blocking）→ G4 fail")
-        g = check(scan(repo, out, None), "找不到步驟")
+        g = check(scan(repo, out, pathlib.Path(_wrap_dir.name) / "none.py"), "找不到腳本")
         if g["status"] != "incomplete" or STEP not in (g["status_reason"] or ""):
-            fails.append("找不到 CI 的靜態檢查步驟 → incomplete")
-        g = check(scan(repo, out, code + "\necho boom >&2; exit 3\n"), "步驟失敗")   # 結果已寫出，但步驟以非零結束
+            fails.append("找不到靜態檢查腳本 → incomplete")
+        g = check(scan(repo, out, wrapped("boom", "print('boom', file=sys.stderr); sys.exit(3)")), "腳本失敗")   # 結果已寫出，但以非零結束
         if g["status"] != "incomplete" or "exit 3" not in (g["status_reason"] or "") or (out / "g4-static.sarif").exists():
             fails.append("靜態檢查失敗 → incomplete，且不留下舊的 SARIF")
-        g = check(scan(repo / "supabase", out, code), "子目錄")
+        g = check(scan(repo / "supabase", out, script), "子目錄")
         if g["status"] != "incomplete" or "根目錄" not in (g["status_reason"] or ""):
             fails.append("--target 不是 repo 根目錄 → incomplete")
         if git(repo, "status", "--porcelain").stdout.strip():
@@ -332,7 +327,7 @@ def selftest() -> list[str]:
             p.write_text(yaml.safe_dump(record, allow_unicode=True), encoding="utf-8")
 
         def ext(why):
-            g = check(scan(repo, out, code, review_root=home), why)
+            g = check(scan(repo, out, script, review_root=home), why)
             return g, g["status_reason"] or "", next((c for c in g["coverage"] if c["control_id"] == g4_review.LLM_CONTROL), {})
 
         g, why, llm = ext("外部紀錄缺席")
@@ -398,7 +393,7 @@ def selftest() -> list[str]:
         g4_review.PROJECT, g4_review.REVIEWS_DIR = repo.resolve(), repo.resolve() / "reviews/g4"
         try:
             def own(why):
-                g = check(scan(repo, out, code), why)
+                g = check(scan(repo, out, script), why)
                 return g, g["status_reason"] or "", next((c for c in g["coverage"] if c["control_id"] == g4_review.LLM_CONTROL), {})
             (repo / rel).write_text(yaml.safe_dump(rec, allow_unicode=True), encoding="utf-8")   # 只在工作目錄、尚未提交
             g, why, _ = own("本 repo 紀錄未提交")
@@ -427,7 +422,8 @@ def selftest() -> list[str]:
                 fails.append(f"本 repo 工作目錄有未提交的程式變更 → 紀錄過期、G4 incomplete（得到 {g['status']}：{why}）")
             git(repo, "checkout", "--", "app.py")
             for bad, label in (("{", "損毀"), ("{}", "缺欄位")):   # 靜態結果檔無法使用 → incomplete，不是 traceback
-                g = check(scan(repo, out, code + f"\necho '{bad}' > reports/g4-gate.json\n"), f"g4-gate.json {label}")
+                g = check(scan(repo, out, wrapped(f"bad{len(bad)}", f"(out / 'g4-gate.json').write_text({bad!r}); sys.exit(rc)")),
+                          f"g4-gate.json {label}")
                 if g["status"] != "incomplete" or "無法解析" not in (g["status_reason"] or ""):
                     fails.append(f"g4-gate.json {label} → incomplete 並寫明理由（得到 {g['status']}：{g['status_reason']}）")
         finally:
@@ -439,18 +435,18 @@ def selftest() -> list[str]:
         repo.mkdir()
         (repo / "server.py").write_text(imp + srv + "claims = jwt.decode(tok, key)\n", encoding="utf-8")
         git(repo, "init", "-q"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "c1")
-        g = check(scan(repo, out, code), "MCP 經 scan")
+        g = check(scan(repo, out, script), "MCP 經 scan")
         sarif = json.loads((out / "g4-static.sarif").read_text(encoding="utf-8"))
         hits = [r for run in sarif["runs"] for r in run["results"] if r["ruleId"] == MCP_RULE]
         cov = next((c for c in g["coverage"] if c["control_id"] == MCP_CONTROL), {})
         if len(hits) != 1 or hits[0]["properties"]["policy_tier"] != "advisory" or cov.get("state") != "fail" \
                 or g["findings_count"]["advisory"] < 1 or g["status"] == "pass":
             fails.append(f"MCP 缺綁定經 scan → SARIF 一筆 advisory、coverage fail（得到 {len(hits)} 筆、{cov}、{g['findings_count']}）")
-    # CI 靜態步驟本身（不經 g4_access 的後處理）：gate JSON 一定含 VS-G4-MCP-RESOURCE-INDICATOR；
-    # 受信任樹（VIBESEC_CONFIG 所在）沒有 scripts/g4_mcp.py → 該控制 untested 並寫進 status_reason，步驟不崩潰、不記 pass
-    def run_step(cwd: pathlib.Path, config: pathlib.Path):
-        env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": "", "VIBESEC_CONFIG": str(config)}
-        p = subprocess.run(["bash", "-e", "-c", code], env=env, cwd=cwd, capture_output=True, text=True, timeout=120)
+    # 靜態檢查腳本本身（不經 g4_access 的後處理）：gate JSON 一定含 VS-G4-MCP-RESOURCE-INDICATOR；
+    # 腳本所在的受信任樹（CI 的 _trusted/）沒有 scripts/g4_mcp.py → 該控制 untested 並寫進 status_reason，不崩潰、不記 pass
+    def run_step(cwd: pathlib.Path, step_script: pathlib.Path):
+        p = subprocess.run([sys.executable, "-I", str(step_script), "--target", str(cwd), "--out", str(cwd / "reports"),
+                            "--mode", "shadow"], capture_output=True, text=True, timeout=120)
         gp = cwd / "reports/g4-gate.json"
         return p.returncode, (json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else None)
     with tempfile.TemporaryDirectory() as d:
@@ -458,27 +454,29 @@ def selftest() -> list[str]:
         proj, trusted = D / "proj", D / "trusted"
         proj.mkdir(); (trusted / "scripts").mkdir(parents=True); (trusted / "config/policy").mkdir(parents=True)
         (proj / "app.py").write_text("print('no mcp here')\n", encoding="utf-8")
-        rc, g = run_step(proj, ROOT / "vibesec.yaml")
+        rc, g = run_step(proj, script)
         cov = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == MCP_CONTROL), None)
         if rc != 0 or not g or not cov or cov["state"] != "not_applicable" or not cov.get("reason"):
-            fails.append(f"CI 靜態步驟：沒有 MCP → coverage 應含 {MCP_CONTROL} not_applicable 並附理由（exit {rc}，{cov}）")
+            fails.append(f"靜態檢查腳本：沒有 MCP → coverage 應含 {MCP_CONTROL} not_applicable 並附理由（exit {rc}，{cov}）")
         elif g:
-            check(g, "CI 靜態步驟（無 MCP）")
-        for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py", "scripts/gate_verdict.py"):
+            check(g, "靜態檢查腳本（無 MCP）")
+        for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py", "scripts/gate_verdict.py",
+                    "scripts/g4_static.py"):
             (trusted / rel).write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
-        rc, g = run_step(proj, trusted / "vibesec.yaml")   # 受信任樹缺 g4_mcp.py（例如 default branch 尚未合併本模組）
+        rc, g = run_step(proj, trusted / "scripts/g4_static.py")   # 受信任樹缺 g4_mcp.py（例如 default branch 尚未合併本模組）
         cov = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == MCP_CONTROL), None)
         if rc != 0 or not g or not cov or cov["state"] != "untested" or "g4_mcp" not in (g.get("status_reason") or ""):
-            fails.append(f"CI 靜態步驟：缺 scripts/g4_mcp.py → {MCP_CONTROL} untested 並寫進 status_reason（exit {rc}，{cov}）")
+            fails.append(f"靜態檢查腳本：缺 scripts/g4_mcp.py → {MCP_CONTROL} untested 並寫進 status_reason（exit {rc}，{cov}）")
         elif g["status"] == "pass":
-            fails.append("CI 靜態步驟：MCP 檢查無法執行時 G4 不得記 pass")
+            fails.append("靜態檢查腳本：MCP 檢查無法執行時 G4 不得記 pass")
         else:
-            check(g, "CI 靜態步驟（缺 g4_mcp）")
+            check(g, "靜態檢查腳本（缺 g4_mcp）")
     # 目標是本 repo：與 CI 相同，從 reviews/g4 找紀錄（本 repo 目前沒有 → 標準的 pending 理由）
     with tempfile.TemporaryDirectory() as d:
-        g = check(scan(ROOT, pathlib.Path(d), code), "本 repo")
+        g = check(scan(ROOT, pathlib.Path(d), script), "本 repo")
         if "不得自證" in (g["status_reason"] or "") or g["status"] not in ("incomplete", "pending", "pass", "fail"):
             fails.append("目標是本 repo 時照 CI 的方式讀 reviews/g4，不套用外部專案的規則")
+    _wrap_dir.cleanup()
     return fails
 
 
@@ -497,7 +495,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     target = pathlib.Path(a.target).expanduser()
     g4 = ((g4_review._yaml(ROOT / "vibesec.yaml").get("gates") or {}).get("g4_access_control_review") or {})
-    g = scan(target, pathlib.Path(a.out_dir), static_step_code(), int(g4.get("timeout_seconds") or 900))
+    g = scan(target, pathlib.Path(a.out_dir), STATIC_SCRIPT, int(g4.get("timeout_seconds") or 900))
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"G4 {g['status']}（{target.resolve()}）：blocking={g['findings_count']['blocking']} "

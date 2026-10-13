@@ -9,7 +9,7 @@
 執行器：
   semgrep   — input.kind ∈ {code, iac} 且預期規則存在於 config/semgrep/vibesec-rules.yaml
   slopcheck — G1 manifest 案例，且只用到 ecosystem / added（其餘欄位為合成 fixture，live registry 無法重現）
-  g4-static — G4 code／iac 案例且預期規則由 pr-gates.yml 的 G4 靜態檢查（或 g4_access.py 本機版額外檢查）實作：
+  g4-static — G4 code／iac 案例且預期規則由 scripts/g4_static.py（G4 靜態檢查；或 g4_access.py 本機版額外檢查）實作：
               把 fixture 寫回原路徑後執行同一份程式碼
   gitleaks／checkov — 預期規則在 config/catalogs/cwe-map.yaml 有 implemented_by 指向該工具的規則：
               以 CI 同一份設定檔（config/gitleaks.toml、config/checkov/.checkov.yaml）掃 fixture，再對回 vibesec 規則
@@ -480,15 +480,15 @@ def _fixture_path(inp: dict) -> str | None:
 
 
 class G4StaticRunner(Runner):
-    """執行 pr-gates.yml 中同一份 G4 靜態檢查程式碼：把 fixture 寫到暫存 repo 的原路徑，再跑該步驟
-    （含步驟呼叫 scripts/g4_mcp.py 的 mcp_resource_indicator）。所有 SARIF 等級都算偵測（G4 的 single-middleware 本來就以 note 等級回報 advisory）。"""
+    """執行 scripts/g4_static.py（G4 靜態檢查，與 g4_access.py 同一支）：把 fixture 寫到暫存 repo 的原路徑，再跑該腳本
+    （含腳本呼叫 scripts/g4_mcp.py 的 mcp_resource_indicator）。所有 SARIF 等級都算偵測（G4 的 single-middleware 本來就以 note 等級回報 advisory）。"""
     name = "g4-static"
-    STEP = "G4 靜態檢查"
+    SCRIPT = ROOT / "scripts/g4_static.py"
 
     def __init__(self):
-        self.code = _workflow_step(self.STEP, "pr-gates.yml")
+        self.code = self.SCRIPT.read_text(encoding="utf-8") if self.SCRIPT.is_file() else None
         self.rules = set(re.findall(r'add\("(vibesec\.g4\.[a-z0-9-]+)"', self.code or ""))
-        # MCP resource indicator 由步驟呼叫 scripts/g4_mcp.py 實作（規則 ID 不是字面字串）：步驟有呼叫才算實作
+        # MCP resource indicator 由腳本呼叫 scripts/g4_mcp.py 實作（規則 ID 不是字面字串）：腳本有呼叫才算實作
         if "from g4_mcp import" in (self.code or ""):
             sys.path.insert(0, str(ROOT / "scripts"))
             import g4_mcp
@@ -499,7 +499,7 @@ class G4StaticRunner(Runner):
         if case["gate"] != "G4":
             return "非 G4 案例"
         if not self.code:
-            return "pr-gates.yml 找不到 G4 靜態檢查步驟"
+            return "找不到 scripts/g4_static.py"
         if exp.get("rule_id") not in self.rules:
             return f"{exp.get('rule_id')} 不由 G4 靜態檢查實作"
         if inp.get("kind") not in ("code", "iac", "config") or not inp.get("snippet"):
@@ -514,15 +514,14 @@ class G4StaticRunner(Runner):
         for k, v in PLACEHOLDERS.items():
             snippet = snippet.replace(k, v)
         with tempfile.TemporaryDirectory() as d:
-            target = pathlib.Path(d) / _fixture_path(inp)
+            repo, out = pathlib.Path(d) / "repo", pathlib.Path(d) / "reports"   # 輸出在受測目錄以外，不成為掃描內容
+            target = repo / _fixture_path(inp)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(snippet, encoding="utf-8")
-            env = {**os.environ, "VIBESEC_MODE": "shadow", "COMMIT_SHA": "", "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
-                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")}
             try:
-                subprocess.run(["bash", "-e", "-c", self.code], env=env, cwd=d, check=True,
-                               capture_output=True, text=True, timeout=120)
-                sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
+                subprocess.run([sys.executable, "-I", str(self.SCRIPT), "--target", str(repo), "--out", str(out), "--mode", "shadow"],
+                               check=True, capture_output=True, text=True, timeout=120)
+                sarif = json.loads((out / "g4-static.sarif").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
                 return None, f"G4 靜態檢查執行失敗：{type(e).__name__}"
         return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])}, None
