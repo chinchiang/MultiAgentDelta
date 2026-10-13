@@ -20,7 +20,7 @@
 
 ## 觸發時機與性質
 
-- 每次 PR 跑靜態部分（設定為 `diff_aware: true`，但 CI 內 inline 靜態檢查目前實際掃整棵樹，gate JSON 的 `scope` 為 `full`；秒–分級）。
+- 每次 PR 跑靜態部分（設定為 `diff_aware: true`，但 CI 的靜態檢查（受信任樹的 `scripts/g4_static.py`）目前實際掃整棵樹，gate JSON 的 `scope` 為 `full`；秒–分級）。
 - **重大變更**（新端點、新資料表、新 Agent / 工具、新 MCP 伺服器）與 **AI 生成模組上線前**跑完整審查（靜態 + LLM 分流 + 人工）。
 - 性質：靜態高確定性項目（RLS 停用、工具清單含 `execute_sql`、missing-owner-filter）預設 advisory，**L3 才升為 blocking**（見 `config/policy/blocking-policy.yaml` 的 `tier_overrides`）；隱形 Unicode 任何 tier 皆為 advisory；架構判斷為 advisory 並進 `risk_register.json`。LLM 審查結果**永遠**只是 E0/E1 線索（VulDetectBench：定位根因 < 30%），升級需人工。
 
@@ -89,7 +89,7 @@ create policy "todos_delete_own" on public.todos
 
 修法：三層都做——路由層（middleware，快速拒絕）、服務層（`assert_owner(user, resource)`）、資料層（RLS / `WHERE owner_id`）。規則 `vibesec.g4.single-middleware-authz`（advisory，CWE-287 / CWE-863）。
 
-靜態檢查（`pr-gates.yml`「G4 靜態檢查」第 4 項）涵蓋兩種框架：
+靜態檢查（`scripts/g4_static.py` 第 4 項）涵蓋兩種框架：
 
 - **Next.js**：只要有 `middleware.ts` 就提醒，因為 CVE-2025-29927 類型的繞過不看授權寫在哪裡。
 - **FastAPI／Starlette**：以 `ast` 解析 import fastapi／starlette 的 `.py` 檔。下列兩個條件同時成立才報：
@@ -137,7 +137,7 @@ allow if {
 
 高影響動作定義：刪除 / 不可逆變更、金流、對外送信 / 發布、部署、改權限、對正式 DB 寫入。要求：Agent 先產出「擬執行內容」→ 人工核准（含 diff 或 SQL 預覽）→ 才執行；核准票有時效；全部寫稽核日誌（`ASVS5-V16.1`、MAESTRO-L5）。缺 HITL → `vibesec.g4.missing-hitl`（advisory，CWE-250）。對應 threat-model 的 `agents[].high_impact_tools` 與 `mitigations: [human_in_the_loop]`。
 
-靜態規則（啟發式，`pr-gates.yml` 的 G4 靜態檢查，py / ts / js / yaml / json；略過 `.github/` 與 `evals/cases/`）：檔案有 Agent 工具註冊脈絡（`@tool`、`@mcp.tool()`、`tools=[…]`／`tools:`、`register_tool`、`server.tool("…")`、`tool({name: …})`），註冊的工具名稱屬高影響動作（refund／transfer／payment／delete／drop／deploy／publish／send_email／grant／revoke…），且**同一檔案**看不到人工核准訊號（confirm、approval、HITL、`interrupt(`、`ask_user`、`require_human`…）→ `vibesec.g4.missing-hitl`（advisory）。只看單一檔案：核准做在其他檔案（框架設定、gateway、policy engine）時會誤報，請在 LLM 審查（VS-G4-LLM-REVIEW）說明；反過來，同檔案出現核准字樣不代表核准真的擋在執行前，跨檔與執行順序的確認仍由 LLM 審查負責。
+靜態規則（啟發式，`scripts/g4_static.py`，py / ts / js / yaml / json；略過 `.github/` 與 `evals/cases/`）：檔案有 Agent 工具註冊脈絡（`@tool`、`@mcp.tool()`、`tools=[…]`／`tools:`、`register_tool`、`server.tool("…")`、`tool({name: …})`），註冊的工具名稱屬高影響動作（refund／transfer／payment／delete／drop／deploy／publish／send_email／grant／revoke…），且**同一檔案**看不到人工核准訊號（confirm、approval、HITL、`interrupt(`、`ask_user`、`require_human`…）→ `vibesec.g4.missing-hitl`（advisory）。只看單一檔案：核准做在其他檔案（框架設定、gateway、policy engine）時會誤報，請在 LLM 審查（VS-G4-LLM-REVIEW）說明；反過來，同檔案出現核准字樣不代表核准真的擋在執行前，跨檔與執行順序的確認仍由 LLM 審查負責。
 
 ### 6. Rules File Backdoor：隱形 Unicode 掃描（`rules_file_unicode`）
 
@@ -165,17 +165,17 @@ for p in pathlib.Path('.').rglob('*'):
 EOF
 ```
 
-規則 `vibesec.g4.rules-file-invisible-unicode`（advisory，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。由 `pr-gates.yml` 的 G4 inline 靜態步驟執行（G1 不做 Unicode 掃描）。
+規則 `vibesec.g4.rules-file-invisible-unicode`（advisory，CWE-94：隱形字元本質是對程式碼產生器的指令注入）。由 `scripts/g4_static.py` 執行（G1 不做 Unicode 掃描）。
 
 ### 7. MCP 伺服器 OAuth：RFC 8707 Resource Indicators（`mcp_resource_indicator`）
 
 MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canonical URI>`；MCP server 驗證 `aud` 等於自己，拒絕為其他資源簽發的 Token（防 token passthrough / confused deputy）。檢查：授權請求與 token 請求含 `resource` 參數；server 端驗 `aud`；不把上游 Token 原樣轉給下游 API。缺失 → `vibesec.g4.mcp-missing-resource-indicator`（advisory，CWE-863，`ASVS5-V10.1`）。
 
-靜態規則（啟發式，判定在 `scripts/g4_mcp.py`；由 `pr-gates.yml` 的 G4 靜態步驟執行，本機／harness 版 `scripts/g4_access.py` 與 `run_evals.py` 執行同一段步驟，CI 與本機的 G4 gate JSON 都含此控制；受信任樹缺這支模組或執行失敗 → `untested` 並寫進 `status_reason`）：py / ts / js / json / yaml / toml，略過 `.github/`、`evals/cases/`、`node_modules/`；檔案是 MCP 程式碼或設定（`from mcp…`／`import mcp`／`fastmcp`、`"@modelcontextprotocol/…"`、`mcpServers` 鍵），同檔案有 OAuth／Token 驗證脈絡（oauth、`grant_type`、`token_endpoint`、`jwt.decode`、`TokenVerifier`、`AuthSettings`、`Bearer`…），且看不到 `resource=`／`resource:`／`resource_server_url`／`audience`／`aud` 綁定，或明確關掉 `verify_aud` → 回報。coverage `VS-G4-MCP-RESOURCE-INDICATOR`：沒有 MCP 程式碼或設定、或 MCP 未見 OAuth 流程（例如 stdio server）→ `not_applicable`（附理由）；有命中 → `fail`；MCP OAuth 檔案皆見綁定 → `pass`（啟發式；token passthrough 與驗證順序仍由 LLM 審查確認）。只看單一檔案：綁定做在共用 auth 模組時會誤報。
+靜態規則（啟發式，判定在 `scripts/g4_mcp.py`；由 `scripts/g4_static.py` 呼叫；CI、本機／harness 版 `scripts/g4_access.py` 與 `run_evals.py` 都執行這同一支腳本，CI 與本機的 G4 gate JSON 都含此控制；受信任樹缺這支模組或執行失敗 → `untested` 並寫進 `status_reason`）：py / ts / js / json / yaml / toml，略過 `.github/`、`evals/cases/`、`node_modules/`；檔案是 MCP 程式碼或設定（`from mcp…`／`import mcp`／`fastmcp`、`"@modelcontextprotocol/…"`、`mcpServers` 鍵），同檔案有 OAuth／Token 驗證脈絡（oauth、`grant_type`、`token_endpoint`、`jwt.decode`、`TokenVerifier`、`AuthSettings`、`Bearer`…），且看不到 `resource=`／`resource:`／`resource_server_url`／`audience`／`aud` 綁定，或明確關掉 `verify_aud` → 回報。coverage `VS-G4-MCP-RESOURCE-INDICATOR`：沒有 MCP 程式碼或設定、或 MCP 未見 OAuth 流程（例如 stdio server）→ `not_applicable`（附理由）；有命中 → `fail`；MCP OAuth 檔案皆見綁定 → `pass`（啟發式；token passthrough 與驗證順序仍由 LLM 審查確認）。只看單一檔案：綁定做在共用 auth 模組時會誤報。
 
 ## 自動化作法
 
-1. **靜態**（CI 內 owner binding／RLS 的 semgrep 規則經 G3 job 併入 G3 gate，G4 inline 步驟不含 semgrep；以下為本機版）：`semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $BASE --sarif -o reports/semgrep-g4.sarif .`（結果中 `metadata.gate == G4` 的歸 G4）+ 上述 Unicode 腳本 + `grep -rn 'disable row level security'`。
+1. **靜態**（CI 內 owner binding／RLS 的 semgrep 規則經 G3 job 併入 G3 gate，G4 靜態檢查（`scripts/g4_static.py`）不含 semgrep；以下為本機版）：`semgrep --config config/semgrep/vibesec-rules.yaml --baseline-commit $BASE --sarif -o reports/semgrep-g4.sarif .`（結果中 `metadata.gate == G4` 的歸 G4）+ 上述 Unicode 腳本 + `grep -rn 'disable row level security'`。
 2. **LLM 輔助分流（handoff 到 reviewer）**：harness 把 diff、路由表、threat-model 的 `trust_boundaries` 與 `agents[]`、靜態結果打包，交給 `docs/09-multi-model-review.md` 定義的四角色中與 G4 相關的兩個（`roles: [architecture, identity-authz]`；`appsec` 與 `supplychain-cicd` 視變更範圍加入）。每個 reviewer 回答固定問題：
    - identity-authz：每個新 / 改端點的「主體 → 資源 → 操作」矩陣；哪裡只靠 middleware；哪裡缺 owner filter；跨租戶路徑。
    - architecture：Agent 工具清單 vs threat-model `agents[].tools`；高影響工具是否有 HITL；資料流是否新增跨邊界路徑；Lethal Trifecta 是否被重新打開。
@@ -184,7 +184,7 @@ MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canoni
 
 本機 / harness：`python3 scripts/g4_access.py [--target <dir>] --out-dir reports/raw/G4 --gate reports/gates/G4.json`。
 
-- 靜態部分直接執行 `pr-gates.yml`「G4 靜態檢查」步驟的同一段程式碼（`scripts/run_evals.py` 的 G4 評測也用它），在目標「追蹤中檔案」的暫存副本上跑（不跟隨 symlink、不把 `reports/` 寫進被測專案）。
+- 靜態部分執行與 CI 同一支 `scripts/g4_static.py`（CI 以 `python3 -I _trusted/scripts/g4_static.py` 執行受信任樹的版本；`scripts/run_evals.py` 的 G4 評測也用它），在目標「追蹤中檔案」的暫存副本上跑（不跟隨 symlink、不把 `reports/` 寫進被測專案）。
 - `VS-G4-LLM-REVIEW`：目標是本 repo 時與 CI 相同，由 `scripts/g4_review.py` 從 `reviews/g4/` 找對 HEAD 有效的紀錄（本機沒有 PR，不檢查 approve）。
 - `--target` 指向外部專案時，**不讀目標自己的 `reviews/g4/`、`rulings/`**——那是被測專案自己寫的，等於自證。外部專案的紀錄放在本 repo 的 `reviews/g4/external/<commit>.yaml`（2026-10-06 人工決定），格式、規則與核准方式同 `reviews/g4/`，裁決同樣放本 repo 的 `rulings/`。只有 `<commit>` 恰好是目標目前的 HEAD、目標追蹤中的檔案沒有未提交修改時才採用；紀錄尚未提交到本 repo 或 `recorded_by.handle` 空白 → 最高 `pending`。沒有可用紀錄 → `VS-G4-LLM-REVIEW` 維持 `pending`，G4 最多 `incomplete`（有靜態 blocking 則 `fail`）。細節見 `reviews/README.md`。
 

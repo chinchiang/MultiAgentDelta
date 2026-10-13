@@ -202,7 +202,7 @@ INCOMPLETE 區塊永遠出現；沒有 incomplete 時寫「無」。
 
 ### (b) GitHub Actions
 
-四條工作流：`pr-gates.yml`（G1–G4；Semgrep 與 G1 diff-aware，其餘全樹）、`nightly-full.yml`（Semgrep 全量、G1、G2 歷史、evals；CodeQL 由 Code scanning default setup 執行）、`staging-blackbox.yml`（G5 + G6）、`review-record-trust.yml`（外部 G4 紀錄不得自證）。Actions 以確定性工具為主；唯一例外是 staging 的選用 promptfoo redteam 會用模型金鑰呼叫 LLM（評分／攻擊生成）。SARIF 上傳 Code Scanning、各 `reports/*-gate.json` 當 artifact 保留；`findings.json`、`risk_register.json`、`summary.md`、`vibesec.sarif` 目前不是 CI 產物，而是由 harness agent（skill）彙整產生。LLM 審查由 (a) 或 (c) 讀取 artifact 後執行。Actions 自身也是被審對象：第三方 Action 必須固定完整 SHA、`permissions:` 最小化、`pull_request_target` 需追查完整路徑（docs/09 §9 原則 2）。
+四條工作流：`pr-gates.yml`（G1–G4；Semgrep 與 G1 diff-aware，其餘全樹）、`nightly-full.yml`（Semgrep 全量、G1、G2 歷史、evals；CodeQL 由 Code scanning default setup 執行）、`staging-blackbox.yml`（G5 + G6）、`review-record-trust.yml`（外部 G4 紀錄不得自證）。G4 靜態檢查由受信任樹的 `scripts/g4_static.py` 執行（`python3 -I`，本機 `scripts/g4_access.py` 與 `run_evals.py` 執行同一支），`scripts/ci_invariants.py` 擋下改回 workflow 內 inline 的寫法。Actions 以確定性工具為主；唯一例外是 staging 的選用 promptfoo redteam 會用模型金鑰呼叫 LLM（評分／攻擊生成）。SARIF 上傳 Code Scanning、各 `reports/*-gate.json` 當 artifact 保留；`findings.json`、`risk_register.json`、`summary.md`、`vibesec.sarif` 目前不是 CI 產物，而是由 harness agent（skill）彙整產生。LLM 審查由 (a) 或 (c) 讀取 artifact 後執行。Actions 自身也是被審對象：第三方 Action 必須固定完整 SHA、`permissions:` 最小化、`pull_request_target` 需追查完整路徑（docs/09 §9 原則 2）。
 
 ### (c) 未來 Python CLI（僅規格）
 

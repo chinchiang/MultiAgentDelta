@@ -90,12 +90,12 @@ python3 scripts/g3_sast.py --target "$TARGET" [--base <base>] --out-dir reports/
 ### G4 架構與存取控制
 
 ```bash
-# CI 同一段靜態檢查（rules_file_unicode、supabase_rls、agent_tool_allowlist、single_middleware_authz），在目標追蹤中檔案的副本上執行
+# 與 CI 同一支 scripts/g4_static.py（rules_file_unicode、supabase_rls、agent_tool_allowlist、single_middleware_authz、mcp_resource_indicator），在目標追蹤中檔案的副本上執行
 # + VS-G4-LLM-REVIEW：本 repo 照 CI 讀 reviews/g4；外部專案讀本 repo 的 reviews/g4/external/<目標 HEAD>.yaml（見下）。exit 1 = blocking、2 = incomplete／pending
 python3 scripts/g4_access.py --target "$TARGET" --out-dir reports/raw/G4 --gate reports/gates/G4.json
 ```
 
-六項靜態檢查（`static_checks`）中，上面的腳本涵蓋四項；`owner_binding`、`mcp_resource_indicator` 與腳本之外的細節以 Grep / Read 在 `$TARGET` 內執行：
+六項靜態檢查（`static_checks`）中，上面的腳本涵蓋五項；`owner_binding` 與腳本之外的細節以 Grep / Read 在 `$TARGET` 內執行：
 - `owner_binding`：ORM / SQL 查詢含 `id = ` 但同函式無 `owner_id|user_id|tenant_id` 綁定 → `vibesec.g4.missing-owner-filter`。
 - `supabase_rls`：`supabase/migrations/**` 有 `create table` 但無 `enable row level security` → `vibesec.g4.supabase-rls-disabled`。
 - `single_middleware_authz`：Next.js 有 `middleware.ts`，或 FastAPI 的 app middleware 做授權而沒有任何路由／router 授權依賴（`Depends`／`Security`）→ `vibesec.g4.single-middleware-authz`（腳本已涵蓋這兩種；其他框架以 Grep／Read 檢查）。
