@@ -87,3 +87,17 @@ test('blackbox_problems unparseable or not a string array → problem, never hea
     assert.match(ev.problems[0], /無法解析/);
   }
 });
+
+test('blackbox_problems missing or empty → problem, never healthy, even if legacy status fields look healthy (incomplete ≠ pass)', () => {
+  const legacy = { is_vulnapp: 'true', g5_status: 'fail', g5_blocking: '4', g6_status: 'fail', g6_blocking: '3' };
+  for (const [label, out] of [['missing', legacy], ['empty string', { ...legacy, blackbox_problems: '' }]]) {
+    const ev = evaluate(bb(out));
+    assert.equal(ev.problems.length, 1, label);
+    assert.match(ev.problems[0], /blackbox_problems/, label);
+    assert.equal(ev.lab, true, label);
+  }
+  // job 也失敗時兩個問題都要列出
+  assert.equal(evaluate(bb(legacy, 'failure')).problems.length, 2);
+  // 沒有任何輸入（needs.blackbox 缺席）：job 結果未知＋判定結果缺席
+  assert.equal(evaluate(undefined).problems.length, 2);
+});
