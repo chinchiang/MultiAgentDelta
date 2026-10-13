@@ -154,7 +154,9 @@ def finalize(gate):
     g = copy.deepcopy(gate)
     base = _status_of(g)
     cov = _coverage(g.get("coverage") or [])
-    pend = [f"{c['control_id']} 待併入、視同未實測" + (f"（{c['reason']}）" if c.get("reason") else "")
+    # 控制的 reason 已寫在閘門理由裡（例如 G4 的「LLM 審查未在 CI 執行」同時是未完成原因）就不再重複附上
+    had = g.get("status_reason") or ""
+    pend = [f"{c['control_id']} 待併入、視同未實測" + (f"（{c['reason']}）" if c.get("reason") and c["reason"] not in had else "")
             for c in cov if c["state"] == "pending"]
     have = {c["control_id"] for c in cov}
     pend += [f"{cid} 缺席（應由後續步驟併入）、視同未實測" for cid in REQUIRED_CONTROLS.get(g.get("gate"), ()) if cid not in have]
@@ -475,6 +477,12 @@ def selftest() -> list[str]:
     done = merge(base, blocking=0, advisory=0, coverage=[ok("SBOM")])
     if finalize(done)["status"] != "pass" or not is_clean(done) or is_clean(base):
         fails.append("finalize／is_clean：子結果併入後為 pass；仍待併入不乾淨")
+    g4 = {"gate": "G4", "status": "incomplete", "status_reason": "LLM 審查未在 CI 執行",
+          "coverage": [{"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查未在 CI 執行"}]}
+    if (finalize(g4)["status_reason"] or "").count("LLM 審查未在 CI 執行") != 1 or "VS-G4-LLM-REVIEW 待併入" not in finalize(g4)["status_reason"]:
+        fails.append(f"finalize：控制的 reason 已在閘門理由中就不再重複附上（得到 {finalize(g4)['status_reason']!r}）")
+    if "（缺 syft）" not in (finalize({**g4, "coverage": [{**g4["coverage"][0], "reason": "缺 syft"}]})["status_reason"] or ""):
+        fails.append("finalize：理由中沒有的 reason 仍要附上")
     sbom_only = merge({**base, "gate": "G1"}, blocking=0, advisory=0, coverage=[ok("SBOM"), ok("VS-G1-SBOM")])
     if finalize(sbom_only)["status"] != "incomplete" or "ASVS5-V15.2 缺席" not in (finalize(sbom_only)["status_reason"] or ""):
         fails.append(f"finalize：G1 的 KEV 控制缺席（不是 pending）也視同未實測（得到 {finalize(sbom_only)}）")
