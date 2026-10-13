@@ -408,9 +408,6 @@ if yaml is not None:
                 err(f"{cid}: control_id {_e.get('control_id')!r} 不在 {_e.get('rule_id')} 的 control_ids {_ids}")
         # 每條 vibesec 規則至少 1 正例、1 反例；沒有可重現案例者須列在下方豁免清單並寫明由哪個 selftest 覆蓋
         _EVAL_EXEMPT = {
-            "vibesec.g5.graphql-introspection": "靶場 patched 模式刻意未修；pass 判定由 g5_api_probes.py selftest 的本機假目標覆蓋",
-            "vibesec.g5.swagger-exposed": "靶場 patched 模式刻意未修（文件仍對外）；無可重現的反例",
-            "vibesec.g5.missing-rate-limit": "靶場 patched 模式刻意未修；無可重現的反例",
             "vibesec.g1.unmaintained-dependency": "需即時查 deps.dev，無離線執行器；判定由 g1_maintenance.py selftest 覆蓋",
             "vibesec.g1.sbom-missing-provenance": "需 GitHub attestation，無離線執行器；判定由 g1_provenance.py selftest 覆蓋",
             "vibesec.g1.sbom-incomplete": "需 syft；判定由 g1_sbom.py selftest 覆蓋",

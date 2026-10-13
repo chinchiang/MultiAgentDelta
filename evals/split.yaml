@@ -39,6 +39,7 @@ held_out:
 - g5-jwt-neg-01
 - g5-jwt-neg-02
 - g5-jwt-pos-01
+- g5-ratelimit-neg-01
 - g5-session-neg-01
 - g5-ssrf-neg-01
 - g5-stacktrace-pos-02
@@ -121,6 +122,7 @@ held_in:
 - g5-bola-neg-01
 - g5-bola-pos-01
 - g5-cors-neg-01
+- g5-graphql-neg-01
 - g5-graphql-pos-01
 - g5-jwksorigin-incomplete-01
 - g5-jwt-pos-02
@@ -131,6 +133,7 @@ held_in:
 - g5-ssrf-pos-01
 - g5-stacktrace-neg-01
 - g5-stacktrace-pos-01
+- g5-swagger-neg-01
 - g6-agency-neg-01
 - g6-agency-pos-01
 - g6-agency-telemetry-neg-01
@@ -145,7 +148,7 @@ held_in:
 distribution:
   # 由 scripts/validate.py 依 evals/cases/ 重算核對；新增或移除案例時一併更新（不一致即 error）。
   # by_polarity 依 expected.should_flag（pos = 應偵測到）；incomplete_cases 為 expected.gate_status 是 incomplete 的案例。
-  total: 142
+  total: 145
   held_out_ratio: 0.37
   by_gate:
     G0: 13
@@ -153,25 +156,25 @@ distribution:
     G2: 11
     G3: 32
     G4: 29
-    G5: 21
+    G5: 24
     G6: 19
   by_domain:
     ai_agent_security: 33
-    application_architecture: 11
-    authentication: 16
+    application_architecture: 12
+    authentication: 17
     authorization: 15
     build_supply_chain: 4
     csp: 2
     data_integrity: 2
     dependency: 13
     error_handling: 3
-    general_vulnerabilities: 13
+    general_vulnerabilities: 14
     github_actions: 7
     input_validation: 6
     secret_exposure: 11
     xss: 6
   by_polarity:
-    neg: 64
+    neg: 67
     pos: 78
   incomplete_cases:
   - g1-slopsquat-incomplete-01

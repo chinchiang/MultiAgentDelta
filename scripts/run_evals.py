@@ -434,7 +434,8 @@ class Vulnapp:
         self.port = port
         for _ in range(90):
             try:
-                status, _ = self.request("GET", "/openapi.json", timeout=2)
+                # 以 / 判斷就緒：修補模式的 /openapi.json 需登入（匿名 401），兩種模式只有 / 都回 200
+                status, _ = self.request("GET", "/", timeout=2)
                 if status != 200:
                     raise OSError(status)
                 self.url = f"http://{self.HOST}:{port}"   # 只傳給 G5 探針作為目標

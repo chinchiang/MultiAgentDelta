@@ -294,9 +294,10 @@ def main():
         s, body = req("/__vibesec_nonexistent__/%ff", "GET")
         answered = s is not None          # 至少有一個請求真的得到 HTTP 回應，「沒洩漏」才有意義
         if not leaked(body):
-            # 型別混淆輸入：對 openapi 列出、無 path 參數的 POST 端點（最多 5 個）送數值型欄位，誘發未處理例外
+            # 型別混淆輸入：對 openapi 列出、無 path 參數的 POST 端點（最多 5 個）送數值型欄位，誘發未處理例外。
+            # 取 spec 時帶 token A：文件只給登入者的目標（匿名 401）也要列得出端點，否則型別混淆測試整段略過
             try:
-                _, spec = req("/openapi.json")
+                _, spec = req("/openapi.json", token=TA or None)
                 posts = [k for k, v in (json.loads(spec or "{}").get("paths") or {}).items()
                          if "post" in v and "{" not in k][:5]
             except ValueError:

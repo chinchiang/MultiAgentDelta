@@ -14,4 +14,4 @@ expected:
   rule_id: vibesec.g5.missing-rate-limit
   policy_tier: advisory
 held_out: false
-notes: 靶場 /login 無 rate limiting。vulnapp-patched 也沒有加上 rate limiting，現有執行器無法表達反例。
+notes: 靶場 /login 無 rate limiting。反例見 g5-ratelimit-neg-01（vulnapp-patched 連續失敗後回 429）。

@@ -15,4 +15,4 @@ expected:
   rule_id: vibesec.g5.swagger-exposed
   policy_tier: advisory
 held_out: true
-notes: 靶場刻意開放 /docs、/redoc、/openapi.json。反例無法以現有執行器表達：vulnapp-patched 仍開放 /openapi.json（G5 探針以它判定目標可連線）。
+notes: 靶場刻意開放 /docs、/redoc、/openapi.json。反例見 g5-swagger-neg-01（vulnapp-patched 關閉 /docs、/redoc，/openapi.json 需登入）。

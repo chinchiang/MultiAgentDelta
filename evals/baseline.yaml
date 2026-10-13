@@ -107,12 +107,14 @@ executed:
   - g5-bola-pos-01
   - g5-cors-neg-01
   - g5-cors-pos-01
+  - g5-graphql-neg-01
   - g5-graphql-pos-01
   - g5-jwksorigin-incomplete-01
   - g5-jwt-neg-01
   - g5-jwt-neg-02
   - g5-jwt-pos-01
   - g5-jwt-pos-02
+  - g5-ratelimit-neg-01
   - g5-ratelimit-pos-01
   - g5-session-neg-01
   - g5-session-pos-01
@@ -123,6 +125,7 @@ executed:
   - g5-stacktrace-neg-01
   - g5-stacktrace-pos-01
   - g5-stacktrace-pos-02
+  - g5-swagger-neg-01
   - g5-swagger-pos-01
   - g6-agency-neg-01
   - g6-agency-pos-01
