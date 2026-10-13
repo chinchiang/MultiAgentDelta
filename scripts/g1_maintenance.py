@@ -177,8 +177,19 @@ class Undecidable(Exception):
 
 def assess(pkg: dict, data: dict, days: int, now: datetime.datetime) -> dict | None:
     versions = data.get("versions") or []
-    used = next((v for v in versions
-                 if _same_version(pkg.get("system", ""), (v.get("versionKey") or {}).get("version"), pkg["version"])), None)
+    system = pkg.get("system", "")
+    match = lambda want: next((v for v in versions
+                               if _same_version(system, (v.get("versionKey") or {}).get("version"), want)), None)
+    used, local_note = match(pkg["version"]), None
+    # PEP 440 本地版本標籤（torch 2.14.0+cpu）：deps.dev 只收公開版本，完整版本查不到時改以公開版本（+ 之前）判定。
+    # 本地版本是同一公開版本的下游建置，棄用與否、最新版發布日都是專案層級的訊號（nightly run 38231243310：
+    # requirements-garak.txt 的 torch 2.14.0+cpu 無法判定 → G1 維護狀態 incomplete、nightly 轉紅）。只限 PyPI；
+    # 公開版本也查不到 → 照樣無法判定
+    if used is None and str(system).lower() == "pypi" and "+" in str(pkg["version"]):
+        public = str(pkg["version"]).split("+", 1)[0]
+        used = match(public)
+        if used is not None:
+            local_note = f"本地版本 {pkg['version']} 以公開版本 {public} 判定（PEP 440 local version label）"
     default = next((v for v in versions if v.get("isDefault")), None)
     # 任一訊號無法評估就不算「已檢查」：否則兩個訊號都被跳過，套件被當成維護中（incomplete ≠ pass）
     missing = ([f"所用版本 {pkg['version']} 不在 deps.dev versions"] if used is None else []) + \
@@ -196,7 +207,8 @@ def assess(pkg: dict, data: dict, days: int, now: datetime.datetime) -> dict | N
     if not signals:
         return None
     return {**pkg, "signals": signals, "latest_version": (default or {}).get("versionKey", {}).get("version"),
-            "latest_published_at": latest_at.date().isoformat() if latest_at else None}
+            "latest_published_at": latest_at.date().isoformat() if latest_at else None,
+            **({"version_note": local_note} if local_note else {})}
 
 
 def run(sbom_path: pathlib.Path, fetch=fetch_deps_dev, days: int | None = None,
@@ -381,6 +393,27 @@ def selftest() -> list[str]:
             st = run(sp, fetch=fake, days=730, now=now, own=set())[0]
             if st["status"] != "incomplete" or st["packages_checked"] != 0 or len(st["unresolved"]) != 1:
                 fails.append(f"{label} 應為 incomplete、不計入 packages_checked：{st}")
+    # PEP 440 本地版本標籤（torch 2.14.0+cpu）：deps.dev 只有公開版本 → 以公開版本判定；公開版本也沒有 → 仍無法判定；只限 PyPI
+    torch_db = {"versions": [ver("2.14.0", "2026-08-01T00:00:00Z", default=True)]}
+    try:
+        if assess({"system": "pypi", "name": "torch", "version": "2.14.0+cpu"}, torch_db, 730, now) is not None:
+            fails.append("torch 2.14.0+cpu：公開版本 2.14.0 維護中，不應命中")
+    except Undecidable as e:
+        fails.append(f"torch 2.14.0+cpu 應以公開版本 2.14.0 判定，不是無法判定：{e}")
+    dep_db = {"versions": [ver("2.14.0", "2026-08-01T00:00:00Z", dep=True, reason="moved"),
+                           ver("2.15.0", "2026-09-01T00:00:00Z", default=True)]}
+    try:
+        h = assess({"system": "pypi", "name": "torch", "version": "2.14.0+cpu"}, dep_db, 730, now)
+        if not h or [x["signal"] for x in h["signals"]] != ["deprecated"] or "公開版本 2.14.0" not in h.get("version_note", ""):
+            fails.append(f"本地版本對應的公開版本已棄用 → 應命中 deprecated 並註明以公開版本判定（得到 {h}）")
+    except Undecidable as e:
+        fails.append(f"本地版本對應的公開版本已棄用 → 不應無法判定：{e}")
+    for label, pkg in [("公開版本也不在 deps.dev", {"system": "pypi", "name": "torch", "version": "2.13.0+cpu"}),
+                       ("非 PyPI 的 + 不剝除", {"system": "npm", "name": "torch", "version": "2.14.0+cpu"})]:
+        try:
+            assess(pkg, torch_db, 730, now); fails.append(f"{label} → 應無法判定（incomplete ≠ pass）")
+        except Undecidable:
+            pass
     return fails
 
 
