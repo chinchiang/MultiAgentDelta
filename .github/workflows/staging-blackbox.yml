@@ -187,13 +187,16 @@ jobs:
           mkdir -p reports
           if [ -f report_json.json ]; then mv -f report_json.json reports/zap-baseline.json; else echo "::warning::ZAP Baseline 沒有產出報告（記為 untested）"; fi
 
-      # ZAP 警示 → G5 覆蓋與 SARIF 結果（規則對應查 cwe-map、tier 查 blocking-policy）；下一步的 api-probes 會合併
+      # ZAP 警示 → G5 覆蓋與 SARIF 結果（規則對應查 cwe-map、tier 查 blocking-policy）；下一步的 api-probes 會合併。
+      # --target：只採計 origin 與授權目標相同的 site（報告掃到別的 origin 時記 untested，不是 pass）
       - name: G5 ZAP 彙整（reports/zap-*.json → reports/g5-zap.json）
         if: always() && steps.target.outputs.allowed == 'true'
         shell: bash
+        env:
+          VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
         run: |
           python3 _trusted/scripts/g5_zap.py --report api=reports/zap-api.json --report baseline=reports/zap-baseline.json \
-            --conf _trusted/config/zap/api-scan.conf --out reports/g5-zap.json
+            --conf _trusted/config/zap/api-scan.conf --target "$VIBESEC_TARGET_URL" --out reports/g5-zap.json
 
       # ---------- G5：api-probes（stdlib urllib）----------
       # 目標被拒時仍執行：腳本內再檢查一次授權（縱深），不送任何請求，寫出 incomplete 的 g5-gate.json

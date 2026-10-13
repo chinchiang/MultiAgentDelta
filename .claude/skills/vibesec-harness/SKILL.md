@@ -118,7 +118,8 @@ curl -sf -m 30 "$VIBESEC_TARGET_URL/healthz" || echo UNREACHABLE
 zap-baseline.py -t "$VIBESEC_TARGET_URL" -J reports/raw/G5/zap-baseline.json -c config/zap/api-scan.conf
 zap-api-scan.py -t "$VIBESEC_TARGET_URL/openapi.json" -f openapi -J reports/raw/G5/zap-api.json -c config/zap/api-scan.conf
 python3 scripts/g5_zap.py --report api=reports/raw/G5/zap-api.json --report baseline=reports/raw/G5/zap-baseline.json \
-  --conf config/zap/api-scan.conf --out reports/raw/G5/g5-zap.json   # 報告缺席 → 該掃描 untested
+  --conf config/zap/api-scan.conf --target "$VIBESEC_TARGET_URL" --out reports/raw/G5/g5-zap.json
+# 報告缺席、沒有授權目標的 site 或沒給 --target → 該掃描 untested
 ```
 
 api-probes（用 `curl`，每個請求與回應存 `reports/raw/G5/api-probes/*.json`）：
