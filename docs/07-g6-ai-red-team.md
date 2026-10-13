@@ -99,13 +99,13 @@ garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
 python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-cost.json
 # 5) 觀測層：工具事件與用量遙測
 python3 scripts/g6_observe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-observations.json
-# 6) 彙整成單一 G6 結果（mode 取自 vibesec.yaml）
+# 6) 彙整成單一 G6 結果（--mode 必填，取自 vibesec.yaml 的 mode；漏帶會以退出碼 2 結束、不寫出結果）
 python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6-promptfoo-redteam.json \
   --garak-glob 'reports/g6-garak*.report.jsonl' --cost reports/g6-cost.json --observations reports/g6-observations.json \
   --gate reports/g6-gate.json --sarif reports/g6.sarif --mode shadow
 ```
 
-`.github/workflows/staging-blackbox.yml` 的 G6 步驟依序執行上述六步（判定程式取自 default branch 的 `_trusted/scripts/`，mode 取自 default branch 的 `vibesec.yaml`），產出 `reports/g6-gate.json` 與 `reports/g6.sarif`（上傳至 Code Scanning，category `vibesec-g6-ai-red-team`）。目標未通過 `scripts/target_guard.py` 時不跑任何工具，改以 `g6_gate.py --target-denied "<原因>"` 寫出 `incomplete`。enforce 模式下對外部目標的阻擋判定見 docs/06「自動化作法」第 6 點。
+`.github/workflows/staging-blackbox.yml` 的 G6 步驟依序執行上述六步（判定程式取自 default branch 的 `_trusted/scripts/`，mode 取自 default branch 的 `vibesec.yaml`），產出 `reports/g6-gate.json` 與 `reports/g6.sarif`（上傳至 Code Scanning，category `vibesec-g6-ai-red-team`）。目標未通過 `scripts/target_guard.py` 時不跑任何工具，改以 `g6_gate.py --target-denied "<原因>" --mode <mode>` 寫出 `incomplete`。enforce 模式下對外部目標的阻擋判定見 docs/06「自動化作法」第 6 點。
 
 ### 狀態判定（`scripts/g6_gate.py`）
 
