@@ -29,8 +29,8 @@ RETRIES, BACKOFF = 2, 1.0                          # 暫時性網路錯誤重試
 TARGET = ROOT                                      # 被掃描的專案根目錄；--target 改寫
 
 def external_target():
-    """目標不是本 repo（例外是否套用另由 Policy.exceptions_for 判斷，條件相同）。"""
-    return TARGET.resolve() != ROOT.resolve()
+    """目標不是本 repo：判斷交給 Policy.is_this_repo（與例外是否套用同一份條件；CI 以 VIBESEC_PROJECT_ROOT 指出受驗樹）。"""
+    return not _policy().is_this_repo(TARGET)
 
 VIBESEC_FILE = ROOT / "vibesec.yaml"
 
@@ -1147,7 +1147,7 @@ def selftest():
     shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
     (PR / "examples/vulnapp").mkdir(parents=True)
     shutil.copy(ROOT / "examples/vulnapp/pyproject.toml", PR / "examples/vulnapp/pyproject.toml")
-    _POLICY = Policy(PR)
+    _POLICY = Policy(PR, project_root=None)   # 明確傳值：不受 CI 設定的 VIBESEC_PROJECT_ROOT 影響
 
     def run(*argv):
         global TARGET
@@ -1437,6 +1437,28 @@ def selftest():
             fails.append(f"目標是本 repo 時照常套用 blocking-policy 例外（降為 advisory、附核准資訊）：{out.get('findings')}")
         if out.get("ignored_exceptions") != ["vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期"]:
             fails.append(f"過期的例外列在 ignored_exceptions：{out.get('ignored_exceptions')}")
+        # CI 的形狀：判定程式與政策在 _trusted/（這裡是 PR），受驗樹在 workspace（這裡是 W）。兩者都是本 repo：
+        # project_root 指向 W → 例外照常套用，並在 status_reason 註明命中筆數；沒有 project_root → 外部專案，未套用
+        W = Path(tempfile.mkdtemp())
+        (W / "examples/vulnapp").mkdir(parents=True)
+        shutil.copy(ROOT / "examples/vulnapp/pyproject.toml", W / "examples/vulnapp/pyproject.toml")
+        policy_saved = _POLICY
+        try:
+            for proj, label in ((W, "project_root＝受驗樹"), (None, "沒有 project_root")):
+                _POLICY = Policy(PR, project_root=proj)
+                gate = W / "gate.json"
+                code, out = run("--target", str(W), "--manifest", "examples/vulnapp/pyproject.toml", "--gate", str(gate))
+                why = json.loads(gate.read_text(encoding="utf-8")).get("status_reason") or ""
+                n = len(out.get("findings") or [])
+                if proj is not None:
+                    if not n or any(f.get("exception") != want_ex for f in out["findings"]) or "target" in out \
+                            or f"{n} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）" not in why or "未套用" in why:
+                        fails.append(f"CI 形狀，{label} → 本 repo：例外套用並註明命中筆數（{why}；{out.get('findings')}）")
+                elif any(f.get("exception") for f in out.get("findings") or []) or "未套用" not in why:
+                    fails.append(f"CI 形狀，{label} → 外部專案，例外未套用（{why}）")
+        finally:
+            _POLICY = policy_saved
+            shutil.rmtree(W, ignore_errors=True)
         code, _ = run("--target", str(ROOT / "no-such-dir"))
         if code != 2:
             fails.append("--target 不是目錄 → exit 2（incomplete）")
@@ -1863,6 +1885,9 @@ def main(argv):
             f["manifest"] = rel_path(m)
             findings.append(apply_exceptions(f, exceptions))
     pypi_checked = sum(1 for e, _, _ in jobs if e == "pypi")
+    excepted = sum(1 for f in findings if f.get("exception"))
+    if excepted:   # 套用了例外要看得到（與 sarif_gate 相同的說明）
+        notes.append(f"{excepted} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
 
     incomplete = list(dict.fromkeys(incomplete))
     coverage = gate_coverage(findings, incomplete, pypi_checked)
