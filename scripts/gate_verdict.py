@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VibeSec 閘門判定（gate verdict）：全 repo 唯一一份「閘門狀態怎麼判」的規則（CONTEXT.md「閘門判定」）。
+"""VibeSec 閘門判定（gate verdict）：全 repo 唯一一份「閘門狀態怎麼判」的規則（GLOSSARY.md「閘門判定」）。
 
 以前同一條規則（blocking 優先、incomplete ≠ pass）在各閘門與三個 workflow 各寫一份、順序不一致（#120、#121
 都是這裡的 bug）。現在各閘門只產出計數、控制覆蓋、未完成原因與待人工裁決，狀態一律由本 module 決定。
@@ -155,7 +155,7 @@ def merge(gate, *, blocking, advisory, coverage, problems=(), tools=(), notes=()
 
 
 def finalize(gate):
-    """最終判定，回傳新的 dict：仍待併入的控制視同未實測（CONTEXT.md「最終判定」）。"""
+    """最終判定，回傳新的 dict：仍待併入的控制視同未實測（GLOSSARY.md「最終判定」）。"""
     g = copy.deepcopy(gate)
     base = _status_of(g)
     cov = _coverage(g.get("coverage") or [])
@@ -260,7 +260,7 @@ def required_tools(cfg: dict) -> dict[str, list[str]]:
 
 
 def blackbox_health(gates, *, lab, required_tools, job_result="success") -> list[str]:
-    """staging 黑箱是否需要通知（CONTEXT.md「黑箱健康」）。回傳問題清單；空清單＝健康。"""
+    """staging 黑箱是否需要通知（GLOSSARY.md「黑箱健康」）。回傳問題清單；空清單＝健康。"""
     problems = []
     if job_result != "success":
         problems.append(f"blackbox job 結果為 `{job_result or 'unknown'}`")

@@ -211,7 +211,7 @@ coverage_ratio = (pass + fail) / (pass + fail + pending + untested)
 
 ### 9.1 閘門判定規則（gate verdict）
 
-閘門 `status` 一律由 `scripts/gate_verdict.py` 判定，全 repo 只有這一份（以本節與該程式的 selftest 真值表為準；用語見 `CONTEXT.md`）。各閘門只提供：blocking 發現數、`coverage[]`、未完成原因（工具缺席、逾時、缺 token…）、待人工裁決的發現，以及「依設計不適用」的宣告。依序判定，先符合者為準：
+閘門 `status` 一律由 `scripts/gate_verdict.py` 判定，全 repo 只有這一份（以本節與該程式的 selftest 真值表為準；用語見 `GLOSSARY.md`）。各閘門只提供：blocking 發現數、`coverage[]`、未完成原因（工具缺席、逾時、缺 token…）、待人工裁決的發現，以及「依設計不適用」的宣告。依序判定，先符合者為準：
 
 | 順序 | 條件 | `status` |
 |---|---|---|

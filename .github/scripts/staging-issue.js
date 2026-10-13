@@ -1,7 +1,7 @@
 // VibeSec staging 黑箱通知：由 staging-blackbox.yml 的 notify job 經 actions/github-script 呼叫。
 //
 // 何時算「有問題」（evaluate）：判定不在這裡做。blackbox job 的 verdict 步驟以受信任的
-// scripts/gate_verdict.py blackbox 算出問題清單（CONTEXT.md「黑箱健康」：靶場看靶場驗收、外部目標看是否乾淨），
+// scripts/gate_verdict.py blackbox 算出問題清單（GLOSSARY.md「黑箱健康」：靶場看靶場驗收、外部目標看是否乾淨），
 // 寫入 job output blackbox_problems（JSON 字串陣列，空陣列＝健康）；這裡照用，另加 job 失敗或取消。
 // blackbox_problems 缺席、空字串或無法解析 → 有問題（incomplete ≠ pass）。
 // 有問題 → 找「未關閉、帶 MARKER 的追蹤 issue」：沒有就開、有就留言；恢復 → 留言並關閉；一直正常 → 不寫入。

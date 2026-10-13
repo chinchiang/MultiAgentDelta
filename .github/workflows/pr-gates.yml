@@ -1026,7 +1026,7 @@ jobs:
             --tool checkov=$A/vibesec-g3-iac-reports/results_sarif.sarif \
             --tool trivy=$A/vibesec-g3-iac-reports/trivy-config.sarif --out reports/g3-gate.json
 
-      # 判定一律由受信任的 scripts/gate_verdict.py 執行（CONTEXT.md「阻擋判定」、docs/10 §9.1）：PR head 只提供 gate JSON，
+      # 判定一律由受信任的 scripts/gate_verdict.py 執行（GLOSSARY.md「阻擋判定」、docs/10 §9.1）：PR head 只提供 gate JSON，
       # 先以受信任的 schema 驗證，缺席／無法解析／不符 schema → incomplete；mode 與 blocking-policy 取自 _trusted/。
       # enforce 下：政策列為 incomplete 也擋的閘門未完成，或 mode／政策讀不到 → exit 2（優先）；有 blocking 或狀態為 fail → exit 1。
       - name: 彙整 gate-status 矩陣
