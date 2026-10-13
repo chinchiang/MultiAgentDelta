@@ -40,8 +40,13 @@ STATUSES = ("pass", "fail", "incomplete", "pending", "not_applicable")
 COVERAGE_STATES = ("pass", "fail", "pending", "untested", "not_applicable")
 RANK = {"not_applicable": 0, "pass": 1, "pending": 2, "incomplete": 3, "fail": 4}
 UNFINISHED_PREFIX = "另有未完成項目："
-# vibesec.yaml gates.*.tools 的名稱 → gate JSON tools[].name（由 g5_api_probes、g5_zap、g6_gate 寫入）
-TOOL_ALIASES = {"api-probes": "vibesec-g5-api-probes", "promptfoo": "promptfoo-eval"}
+# vibesec.yaml gates.*.tools 的名稱 → gate JSON tools[].name（由 g5_api_probes、g5_zap、g6_gate 寫入）。
+# 前綴另存變數：「"api-…": "較長的識別碼字串"」會被 gitleaks generic-api-key 誤判為金鑰（#139；.gitleaksignore 已有前例）
+_G5_TOOL = "vibesec-g5-"
+TOOL_ALIASES = {
+    "api-probes": _G5_TOOL + "api-probes",
+    "promptfoo": "promptfoo-eval",
+}
 # vibesec.yaml 沒列、但靶場驗收一定要執行的工具（LLM10 成本面）
 EXTRA_REQUIRED = {"G6": ["vibesec-g6-cost-probe"]}
 LAB_GATE_KEYS = {"G5": "g5_dast_api", "G6": "g6_ai_red_team"}
