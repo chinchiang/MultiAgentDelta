@@ -196,7 +196,7 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 | `vibesec.g1.rules-file-unknown-package` | blocking | CWE-1357 |
 | `vibesec.g1.low-download-package` | advisory（升 blocking 的邏輯尚未實作） | CWE-1357 |
 | `vibesec.g1.vulnerable-dependency`（`scripts/g1_kev.py` 由 grype 結果產生；KEV 以外的已知漏洞，CVSS 原樣分欄、EPSS 另記） | advisory；KEV 命中改發 `vibesec.g1.kev-hit`（blocking） | CWE-1395 |
-| `vibesec.g1.unmaintained-dependency`（nightly `scripts/g1_maintenance.py`：SBOM 套件查 deps.dev，所用版本 deprecated 或最新版發布超過 `unmaintained_days`（預設 730）天；查詢失敗或查無 → incomplete；本 repo 自身專案與 GitHub Actions 列 not_applicable） | advisory | CWE-1104 |
+| `vibesec.g1.unmaintained-dependency`（nightly `scripts/g1_maintenance.py`：SBOM 套件查 deps.dev，所用版本 deprecated 或最新版發布超過 `unmaintained_days`（預設 730）天；查詢失敗或查無 → incomplete；PyPI 的 PEP 440 本地版本（如 `torch 2.14.0+cpu`）在 deps.dev 查不到時以公開版本（`2.14.0`）判定，公開版本也查無仍 incomplete；本 repo 自身專案與 GitHub Actions 列 not_applicable） | advisory | CWE-1104 |
 | `vibesec.g1.sbom-missing-provenance`（nightly 以 `actions/attest-build-provenance` 為 SBOM 簽發 SLSA provenance，`scripts/g1_provenance.py` 以 `gh attestation verify --signer-workflow` 驗證存在、簽章有效且由本 repo 的 nightly-full 簽發；缺 SBOM／gh、權限或網路錯誤 → incomplete） | advisory | CWE-1357 |
 | `vibesec.g1.sbom-incomplete`（`scripts/g1_sbom.py`：鎖定檔釘選的套件不在 CycloneDX SBOM；一個鎖定檔一筆） | advisory | 無（MITRE CWE 沒有對應類別，見 cwe-map 的 notes） |
 | 無 lockfile / Registry API 失敗 | （無 lockfile 判定尚未實作）/ `incomplete` | — |
