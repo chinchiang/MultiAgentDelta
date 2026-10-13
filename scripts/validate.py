@@ -324,6 +324,12 @@ if yaml is not None:
     _blocking = {r.get("rule_id") for r in _pol.get("blocking") or [] if isinstance(r, dict)}
     for _t in (_pol.get("tier_overrides") or {}).values():
         _blocking |= set((_t or {}).get("promote_to_blocking") or [])
+    # exceptions 的 path_glob 以 fnmatch 比對：單一 * 也會跨越 /（app/*.py 命中 app/x/y.py），範圍可能比核准者預期大。
+    # 比對方式不改（是否改嚴格 glob 見 #159），只提醒
+    for _ex in _pol.get("exceptions") or []:
+        _g = str((_ex or {}).get("path_glob") or "") if isinstance(_ex, dict) else ""
+        if re.search(r"(?<!\*)\*(?!\*)", _g):
+            warn(f"blocking-policy exceptions {_ex.get('rule_id')} @ {_g}：單一 * 以 fnmatch 比對會跨越 /，範圍可能比預期大")
     _auto = {_VARIANT.sub("", r) for r in known_rules
              if r in set(re.findall(r"vibesec\.g[0-6]\.[a-z0-9-]+", (ROOT / "config/semgrep/vibesec-rules.yaml").read_text(encoding="utf-8")))}
     for f in _emitters:

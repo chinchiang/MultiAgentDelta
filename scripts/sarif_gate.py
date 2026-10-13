@@ -39,7 +39,6 @@ except ImportError:
     sys.exit(2)
 
 sys.path.insert(0, str(ROOT / "scripts"))
-from g1_slopcheck import load_exceptions  # noqa: E402  同一份例外規則（欄位完整且未過期，fail closed）
 from vibesec_policy import Policy  # noqa: E402  tier 的唯一來源
 
 
@@ -49,7 +48,6 @@ def _yaml(p: pathlib.Path) -> dict:
 
 def load_policy() -> dict:
     vb = _yaml(ROOT / "vibesec.yaml")
-    pol = _yaml(ROOT / "config/policy/blocking-policy.yaml")
     policy = Policy(ROOT)
     tier = policy.risk_tier
     blocking = policy.effective_blocking()
@@ -61,10 +59,10 @@ def load_policy() -> dict:
         for ref in (meta or {}).get("implemented_by") or []:
             t, _, ext = str(ref).partition(":")
             impl[f"{t}:{ext}"].add(rid)
-    exceptions, ignored = load_exceptions()
     return {"mode": vb.get("mode", "shadow"), "risk_tier": tier, "blocking": blocking, "policy": policy,
             "default_tier": policy.default_tier, "impl": impl, "controls": controls,
-            "exceptions": exceptions, "ignored_exceptions": ignored, "semgrep_aliases": load_semgrep_aliases()}
+            "exceptions": policy.exceptions_for(None),   # 本 repo；外部專案由 g2_secrets／g3_sast 換成 exceptions_for(target)
+            "semgrep_aliases": load_semgrep_aliases()}
 
 
 _TIMEOUT_RE = re.compile(r"\btime(?:d)?\s?out\b", re.I)
@@ -184,12 +182,11 @@ def to_findings(tool: str, results: list[dict], pol: dict) -> list[dict]:
         loc = _location(r)
         for rid in map_rule(tool, r.get("ruleId") or "", pol, r.get("_vibesec_rule_id")):
             f = {"rule_id": rid, "tool": tool, "location": loc, "policy_tier": pol["policy"].tier(rid)}   # tier 唯一來源
-            for ex in pol["exceptions"]:
-                if ex["rule_id"] == rid and fnmatch.fnmatchcase(loc, ex["path_glob"]):
-                    if f["policy_tier"] == "blocking":
-                        f["policy_tier"] = "advisory"
-                    f["exception"] = ex["path_glob"]
-                    break
+            ex = pol["exceptions"].match(rid, loc)
+            if ex:
+                if f["policy_tier"] == "blocking":
+                    f["policy_tier"] = "advisory"
+                f["exception"] = ex["path_glob"]
             out.append(f)
     return out
 
@@ -270,8 +267,8 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
     excepted = [f for f in findings if f.get("exception")]
     if excepted:
         notes.append(f"{len(excepted)} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
-    if pol["ignored_exceptions"]:
-        notes.append("忽略的例外：" + "；".join(pol["ignored_exceptions"]))
+    if pol["exceptions"].ignored:
+        notes.append("忽略的例外：" + "；".join(pol["exceptions"].ignored))
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from gate_verdict import verdict
     status, status_reason = verdict(blocking=len(blocking), coverage=coverage,
