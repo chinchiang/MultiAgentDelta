@@ -445,7 +445,7 @@ jobs:
           python3 -I - <<'EOF'
           import json, os, sys
           sys.path.insert(0, "scripts")
-          from gate_verdict import finalize, is_clean   # 乾淨＝最終判定為 pass 或 not_applicable（CONTEXT.md「乾淨」）
+          from gate_verdict import finalize, is_clean   # 乾淨＝最終判定為 pass 或 not_applicable（GLOSSARY.md「乾淨」）
           g = finalize(json.load(open("reports/g2-history-gate.json", encoding="utf-8")))
           fc = g.get("findings_count") or {}
           line = f"G2 全歷史：`{g['status']}`（blocking {fc.get('blocking')}，advisory {fc.get('advisory')}）{g.get('status_reason') or ''}"

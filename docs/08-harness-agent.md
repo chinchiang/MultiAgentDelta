@@ -138,7 +138,7 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 | `1` | `mode: enforce` 且至少一個閘門有 blocking 發現（`policy_tier: blocking` 且 `validation_status != refuted`），或閘門狀態為 `fail` | 阻擋 PR / 部署 |
 | `2` | `mode: enforce` 且 `incomplete_gate_is_blocking_in_enforce` 內的閘門 `incomplete`、`pending` 或缺席；或 mode／blocking-policy 無法載入 | 「不知道」也要擋。這是 incomplete ≠ pass 的 CI 落地 |
 
-判定一律由 `scripts/gate_verdict.py enforce` 執行（docs/10 §9.1、`CONTEXT.md`「阻擋判定」）：`pr-gates.yml` 的 summary、`staging-blackbox.yml` 的 verdict 步驟與 harness 本機都用同一份規則，**`2` 優先於 `1`**。CI 以受信任樹（`_trusted/`）的這支程式執行；PR head 只提供 gate JSON，先以受信任的 schema 驗證，缺席、無法解析或不符 schema → 該閘門 `incomplete`。消費前先做最終判定：仍待併入（`coverage` 為 `pending`）或必須併入卻缺席的控制（G1 的 `VS-G1-SBOM`、`ASVS5-V15.2`）視同 `untested`。`--mode` 只能把 shadow 升為 enforce，不能降級。`summary.md` 必須同時列出 blocking 與 incomplete 兩者。
+判定一律由 `scripts/gate_verdict.py enforce` 執行（docs/10 §9.1、`GLOSSARY.md`「阻擋判定」）：`pr-gates.yml` 的 summary、`staging-blackbox.yml` 的 verdict 步驟與 harness 本機都用同一份規則，**`2` 優先於 `1`**。CI 以受信任樹（`_trusted/`）的這支程式執行；PR head 只提供 gate JSON，先以受信任的 schema 驗證，缺席、無法解析或不符 schema → 該閘門 `incomplete`。消費前先做最終判定：仍待併入（`coverage` 為 `pending`）或必須併入卻缺席的控制（G1 的 `VS-G1-SBOM`、`ASVS5-V15.2`）視同 `untested`。`--mode` 只能把 shadow 升為 enforce，不能降級。`summary.md` 必須同時列出 blocking 與 incomplete 兩者。
 
 staging 的失敗通知（`.github/scripts/staging-issue.js`）不自行判定：同一步驟以 `scripts/gate_verdict.py blackbox` 計算黑箱健康問題清單，寫入 job output `blackbox_problems`（JSON 字串陣列，空陣列＝健康），notify 照用。靶場看靶場驗收：G5／G6 都要 `fail` 且有 blocking，且 `vibesec.yaml` 列出的工具都有執行；外部目標看是否乾淨（`pass` 或 `not_applicable`）。
 
