@@ -899,7 +899,8 @@ class ZapRunner(Runner):
                     return None, f"ZAP baseline 沒有產出報告（exit {p.returncode}）：{(p.stderr or p.stdout or '').strip()[-120:]}"
                 out = pathlib.Path(d) / "g5-zap.json"
                 subprocess.run([sys.executable, str(ROOT / "scripts/g5_zap.py"), "--report", f"baseline={rep}",
-                                "--conf", str(ROOT / "config/zap/api-scan.conf"), "--out", str(out)],
+                                "--conf", str(ROOT / "config/zap/api-scan.conf"),
+                                "--target", f"http://127.0.0.1:{srv.server_address[1]}", "--out", str(out)],
                                check=True, capture_output=True, text=True, timeout=60, cwd=ROOT)
                 z = json.loads(out.read_text(encoding="utf-8"))
         except (OSError, subprocess.SubprocessError, ValueError) as e:

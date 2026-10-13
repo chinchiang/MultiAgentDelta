@@ -2,12 +2,15 @@
 """VibeSec G5：把 OWASP ZAP（api-scan／baseline）的 JSON 報告轉成 G5 的覆蓋與 SARIF 結果，給 staging 的 G5 api-probes 合併。
 
   python3 scripts/g5_zap.py --report api=reports/zap-api.json --report baseline=reports/zap-baseline.json \\
-      --conf config/zap/api-scan.conf --out reports/g5-zap.json
+      --conf config/zap/api-scan.conf --target http://127.0.0.1:8000 --out reports/g5-zap.json
   python3 scripts/g5_zap.py selftest
 
 判定：
   - 報告缺席或無法解析 → 該掃描 untested（incomplete ≠ pass；vibesec.yaml g5 tools 含 zap-baseline、zap-api-scan）。
   - 報告沒有任何 site（site: [] 或缺 site）→ untested（spider 沒掃到目標或 API 定義匯入失敗）；有 site 但沒有警示 → pass。
+  - 只採計 origin 與授權目標（--target，已經 target_guard 檢查）相同的 site：scheme、host 不分大小寫，port 依 scheme 補預設值。
+    沒有任何目標 site（掃到的是別的 origin、舊報告或設定錯誤）→ untested；別的 origin 上的警示不列為發現。
+    沒給 --target → 無法確認 site 是受測目標，兩個掃描都 untested。
   - 規則在 conf 為 IGNORE／OUTOFSCOPE → 略過；conf 沒列且 riskcode 0（Informational）→ 略過；其餘列為發現。
   - 規則 ID：以 config/catalogs/cwe-map.yaml 的 implemented_by（zap:<id>）反查 vibesec 規則；查不到 → zap:<pluginid>
     （CLAUDE.md 規則 3：不自行對應）。tier 一律由 scripts/vibesec_policy.py 決定（外部規則預設 advisory）。
@@ -15,7 +18,7 @@
 退出碼：0 已寫出結果；2 參數或寫檔錯誤。
 """
 from __future__ import annotations
-import argparse, json, pathlib, sys
+import argparse, json, pathlib, sys, urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -44,8 +47,22 @@ def load_impl(root: pathlib.Path) -> dict[str, str]:
     return impl
 
 
-def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl: dict[str, str], policy) -> dict:
+def _origin(url) -> tuple[str, str, int] | None:
+    """(scheme, host, port)，scheme 與 host 轉小寫、port 依 scheme 補預設值；無法解析 → None。"""
+    try:
+        u = urllib.parse.urlsplit(str(url or "").strip())
+        port = u.port or {"http": 80, "https": 443}.get(u.scheme.lower())
+    except ValueError:
+        return None
+    if not u.scheme or not u.hostname or not port:
+        return None
+    return u.scheme.lower(), u.hostname.lower(), port
+
+
+def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl: dict[str, str], policy,
+            target: str | None = None) -> dict:
     coverage: dict[str, dict] = {}
+    want = _origin(target)
     tools: list[dict] = []
     rules: dict[str, dict] = {}
     by_plugin: dict[str, dict] = {}
@@ -74,6 +91,16 @@ def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl:
         if not sites:
             coverage[cov_key] = {"state": "untested",
                                  "reason": f"ZAP {tool_name} 報告沒有任何 site（未掃到目標：spider 無結果、目標不可達或 API 定義匯入失敗）"}
+            continue
+        if want is None:
+            coverage[cov_key] = {"state": "untested",
+                                 "reason": f"ZAP {tool_name}：沒有可解析的授權目標（--target {target!r}），無法確認報告的 site 是受測目標"}
+            continue
+        seen = [str(x.get("@name")) for x in sites]
+        sites = [x for x in sites if _origin(x.get("@name")) == want]
+        if not sites:
+            coverage[cov_key] = {"state": "untested",
+                                 "reason": f"ZAP {tool_name} 報告沒有授權目標 {target} 的 site（實際為 {', '.join(seen[:5])}）"}
             continue
         hits = 0
         for site in sites:
@@ -130,6 +157,7 @@ def selftest() -> list[str]:
     conf = {"10038": "WARN", "40018": "FAIL", "10096": "IGNORE", "40040": "FAIL"}
     impl = {"zap:10038": "vibesec.g3.missing-csp", "zap:40040": "vibesec.g5.cors-reflect-origin"}
     pol = Policy(ROOT)
+    T = "http://127.0.0.1:8000"   # 授權目標（staging 的 steps.target.outputs.url）
     rep_api = {"@version": "2.16.1", "site": [{"@name": "http://127.0.0.1:8000", "alerts": [
         {"pluginid": "40018", "alert": "SQL Injection", "riskcode": "3", "cweid": "89", "count": "1",
          "instances": [{"uri": "http://127.0.0.1:8000/users?id=1"}]},
@@ -144,7 +172,7 @@ def selftest() -> list[str]:
         (dp / "api.json").write_text(json.dumps(rep_api), encoding="utf-8")
         (dp / "base.json").write_text(json.dumps(rep_base), encoding="utf-8")
         (dp / "bad.json").write_text("{not json", encoding="utf-8")
-        r = convert({"api": dp / "api.json", "baseline": dp / "base.json"}, conf, impl, pol)
+        r = convert({"api": dp / "api.json", "baseline": dp / "base.json"}, conf, impl, pol, target=T)
         ids = sorted(x["ruleId"] for x in r["results"])
         if ids != ["vibesec.g3.missing-csp", "vibesec.g5.cors-reflect-origin", "zap:40018"]:
             fails.append(f"規則對應／過濾錯誤：{ids}")
@@ -156,17 +184,17 @@ def selftest() -> list[str]:
                 fails.append(f"tier 必須來自政策：{x['ruleId']}")
         if r["coverage"]["zap_api_scan"]["state"] != "fail" or r["coverage"]["zap_baseline"]["state"] != "fail":
             fails.append(f"有發現的掃描應記 fail：{r['coverage']}")
-        r = convert({"api": dp / "missing.json", "baseline": dp / "bad.json"}, conf, impl, pol)
+        r = convert({"api": dp / "missing.json", "baseline": dp / "bad.json"}, conf, impl, pol, target=T)
         if [r["coverage"][k]["state"] for k in ("zap_api_scan", "zap_baseline")] != ["untested", "untested"]:
             fails.append(f"缺席／壞掉的報告應 untested：{r['coverage']}")
         if [t["state"] for t in r["tools"]] != ["missing", "error"]:
             fails.append(f"工具狀態應為 missing／error：{r['tools']}")
-        r = convert({"api": None, "baseline": None}, conf, impl, pol)
+        r = convert({"api": None, "baseline": None}, conf, impl, pol, target=T)
         if any(v["state"] != "untested" for v in r["coverage"].values()):
             fails.append("未提供報告應 untested")
-        (dp / "clean.json").write_text(json.dumps({"site": [{"alerts": [
+        (dp / "clean.json").write_text(json.dumps({"site": [{"@name": T, "alerts": [
             {"pluginid": "10096", "riskcode": "1"}, {"pluginid": "10027", "riskcode": "0"}]}]}), encoding="utf-8")
-        r = convert({"api": dp / "clean.json", "baseline": dp / "clean.json"}, conf, impl, pol)
+        r = convert({"api": dp / "clean.json", "baseline": dp / "clean.json"}, conf, impl, pol, target=T)
         if any(v["state"] != "pass" for v in r["coverage"].values()) or r["results"]:
             fails.append(f"只有略過的警示 → pass 且無發現：{r['coverage']} {r['results']}")
         for name, rep in (("empty", {"@version": "2.16.1", "site": []}), ("nosite", {"@version": "2.16.1"}),
@@ -176,19 +204,62 @@ def selftest() -> list[str]:
             if any(v["state"] != "untested" for v in r["coverage"].values()):
                 fails.append(f"報告 {name}（沒有 site）應 untested：{r['coverage']}")
         (dp / "nosalerts.json").write_text(json.dumps({"site": [{"@name": "http://127.0.0.1:8000", "alerts": []}]}), encoding="utf-8")
-        r = convert({"api": dp / "nosalerts.json", "baseline": dp / "nosalerts.json"}, conf, impl, pol)
+        r = convert({"api": dp / "nosalerts.json", "baseline": dp / "nosalerts.json"}, conf, impl, pol, target=T)
         if any(v["state"] != "pass" for v in r["coverage"].values()):
             fails.append(f"有 site、零警示 → pass：{r['coverage']}")
-        (dp / "badcount.json").write_text(json.dumps({"site": [{"alerts": [
+        (dp / "badcount.json").write_text(json.dumps({"site": [{"@name": T, "alerts": [
             {"pluginid": "40018", "riskcode": "3", "count": "n/a", "instances": [{"uri": "u1"}, {"uri": "u2"}]},
             {"pluginid": "10038", "riskcode": None, "count": None}]}]}), encoding="utf-8")
         try:
-            r = convert({"api": dp / "badcount.json", "baseline": None}, conf, impl, pol)
+            r = convert({"api": dp / "badcount.json", "baseline": None}, conf, impl, pol, target=T)
             got = {x["properties"]["zap_pluginid"]: x["message"]["text"] for x in r["results"]}
             if "2 處" not in got.get("40018", "") or r["coverage"]["zap_api_scan"]["state"] != "fail":
                 fails.append(f"count 非數字 → 改以 instances 數計：{got}")
         except Exception as e:
             fails.append(f"count／riskcode 非數字不得崩潰：{type(e).__name__}: {e}")
+        # site 必須是授權目標：報告掃到的是別的 origin（重新導向、舊報告、設定錯誤）時，授權目標其實沒有實測，
+        # 不得記 pass；別的 origin 上的警示也不屬於這次受測目標，不列為發現
+        sqli = {"pluginid": "40018", "alert": "SQL Injection", "riskcode": "3"}
+        for label, names, want, want_hits in [
+            ("只有別的主機", ["http://evil.example"], "untested", 0),
+            ("同主機不同 port", ["http://127.0.0.1:9000"], "untested", 0),
+            ("同主機不同 scheme", ["https://127.0.0.1:8000"], "untested", 0),
+            ("目標＋外部資源：只採計目標", [T, "https://cdn.example"], "fail", 1),
+            ("大小寫與結尾斜線視為同一 origin", ["HTTP://127.0.0.1:8000/"], "fail", 1),
+        ]:
+            sites = [{"@name": n, "alerts": [sqli] if n.lower().rstrip("/") == T or n == names[-1] else []} for n in names]
+            (dp / "site.json").write_text(json.dumps({"site": sites}), encoding="utf-8")
+            try:
+                r = convert({"api": dp / "site.json", "baseline": None}, conf, impl, pol, target=T)
+            except Exception as e:
+                fails.append(f"site 比對（{label}）：{type(e).__name__}: {e}"); continue
+            cov = r["coverage"]["zap_api_scan"]
+            if cov["state"] != want or len(r["results"]) != want_hits \
+                    or (want == "untested" and names[0] not in (cov.get("reason") or "")):
+                fails.append(f"site 比對（{label}）→ {want}、發現 {want_hits} 項，untested 時理由列出實際的 site"
+                             f"（得到 {cov}，發現 {len(r['results'])} 項）")
+        try:
+            r = convert({"api": dp / "site.json", "baseline": None}, conf, impl, pol, target="https://staging.example")
+            if r["coverage"]["zap_api_scan"]["state"] != "untested":
+                fails.append(f"預設 port：https://staging.example 不等於 http://127.0.0.1:8000（得到 {r['coverage']}）")
+            (dp / "port.json").write_text(json.dumps({"site": [{"@name": "https://staging.example:443", "alerts": []}]}), encoding="utf-8")
+            r = convert({"api": dp / "port.json", "baseline": None}, conf, impl, pol, target="https://staging.example")
+            if r["coverage"]["zap_api_scan"]["state"] != "pass":
+                fails.append(f"預設 port：https://staging.example:443 與 https://staging.example 是同一 origin（得到 {r['coverage']}）")
+        except Exception as e:
+            fails.append(f"site 比對（預設 port）：{type(e).__name__}: {e}")
+        # CLI：沒有給 --target 就無法確認 site 是授權目標 → 兩個掃描都 untested（不是 pass）
+        import contextlib, io
+        out = dp / "cli.json"
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                rc = main(["--report", f"api={dp / 'nosalerts.json'}", "--report", f"baseline={dp / 'nosalerts.json'}",
+                           "--conf", str(ROOT / "config/zap/api-scan.conf"), "--out", str(out)])
+            except SystemExit as e:
+                rc = e.code
+        cov = json.loads(out.read_text(encoding="utf-8"))["coverage"] if out.exists() else {}
+        if rc != 0 or [cov.get(k, {}).get("state") for k in ("zap_api_scan", "zap_baseline")] != ["untested", "untested"]:
+            fails.append(f"CLI 缺 --target → 兩個掃描都 untested 並寫出結果（exit {rc}，{cov}）")
     try:
         real = load_impl(ROOT)
         if real.get("zap:10038") != "vibesec.g3.missing-csp":
@@ -211,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--report", action="append", default=[], help="api=<path> 或 baseline=<path>")
     ap.add_argument("--conf", required=True)
+    ap.add_argument("--target", help="授權目標 URL（已經 target_guard 檢查）；只採計 origin 相同的 site，沒給 → untested")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     reports: dict[str, pathlib.Path | None] = {k: None for k in SCANS}
@@ -227,9 +299,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"無法讀取 {a.conf}：{e}（ZAP 掃描記 untested）", file=sys.stderr)
         conf = None
     if conf is None:
-        r = convert({k: None for k in SCANS}, {}, {}, Policy(ROOT))
+        r = convert({k: None for k in SCANS}, {}, {}, Policy(ROOT), target=a.target)
     else:
-        r = convert(reports, conf, load_impl(ROOT), Policy(ROOT))
+        r = convert(reports, conf, load_impl(ROOT), Policy(ROOT), target=a.target)
     try:
         out = pathlib.Path(a.out); out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
