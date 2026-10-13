@@ -200,6 +200,7 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 | `vibesec.g1.sbom-missing-provenance`（nightly 以 `actions/attest-build-provenance` 為 SBOM 簽發 SLSA provenance，`scripts/g1_provenance.py` 以 `gh attestation verify --signer-workflow` 驗證存在、簽章有效且由本 repo 的 nightly-full 簽發；缺 SBOM／gh、權限或網路錯誤 → incomplete） | advisory | CWE-1357 |
 | `vibesec.g1.sbom-incomplete`（`scripts/g1_sbom.py`：鎖定檔釘選的套件不在 CycloneDX SBOM；一個鎖定檔一筆） | advisory | 無（MITRE CWE 沒有對應類別，見 cwe-map 的 notes） |
 | 無 lockfile / Registry API 失敗 | （無 lockfile 判定尚未實作）/ `incomplete` | — |
+| G1 設定缺席或壞掉：`vibesec.yaml`、`config/slopsquat/cooldown.yaml`、`blacklist.yaml`（缺席、無法解析、缺 PyYAML、最上層型別不符），`popular-npm.txt`、`popular-pypi.txt`（缺席或無法讀取） | `incomplete`（`incomplete_checks` 列出檔名；以前退回內建門檻、空的黑名單／熱門清單／安裝腳本樣式而照樣 pass）。`allowlist.yaml` 與 blocking-policy 的例外壞掉只會更嚴（不放行），不在此列 | — |
 
 正式判定以 `config/policy/blocking-policy.yaml` 為準。
 
@@ -230,7 +231,7 @@ python3 scripts/g1_slopcheck.py --target ../MultiAgentBeta \
 
 1. **正例 / 反例（`evals/`）**：lockfile 含 `axois` → block；含 `axios` 最新版但發布 3 天 → cooldown block；含 allowlist 內緊急版本 → pass 並附 ticket；`.cursorrules` 指示以 pip 安裝幻覺套件 `huggingface-cli` → block（案例描述刻意不寫成可執行指令，避免文件本身被規則檔掃描命中或被 AI 助手照做）。
 2. **安裝鉤子 fixture**：假 tarball 的 postinstall 含 `curl … $NPM_TOKEN` → `vibesec.g1.postinstall-egress`。
-3. **Registry 失敗模擬**：封鎖 `registry.npmjs.org` → G1 `incomplete`，summary 顯示紅字而非綠勾。
+3. **Registry 失敗模擬**：封鎖 `registry.npmjs.org` → G1 `incomplete`，summary 顯示紅字而非綠勾。設定檔缺席或壞掉的各種情況（含對照組）在 `python3 scripts/g1_slopcheck.py selftest` 逐一驗證為 `incomplete`。
 4. **SBOM 可重現且完整**：同一 commit 兩次產出的 CycloneDX `components[]` 集合相同（忽略 timestamp / serialNumber），且鎖定檔釘選的套件都在 SBOM。`scripts/g1_sbom.py` 每次執行都檢查；`python3 scripts/g1_sbom.py selftest` 涵蓋可重現、格式、缺漏、只讀 commit 與無解析器鎖定檔等案例。
 5. **分欄不混算**：抽查 finding：`cvss_score` 與 `epss` 各自存在，`priority` 由政策表決定而非乘積。
 6. **時效**：PR 階段 G1 wall-clock < 3 分鐘（快取命中時 < 60 秒）。
