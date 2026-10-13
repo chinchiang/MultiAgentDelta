@@ -60,10 +60,13 @@ def slopcheck_incomplete(out: dict, case: dict) -> str | None:
     """slopcheck 的 stdout 是否讓本案例無法判定（回傳原因；可判定回 None）。
     檢查本身失敗（incomplete_checks：registry 失敗、鎖定檔未解析）→ 無法判定；只有與本案例規則無關的控制未實測
     （untested_controls，例如 PyPI 安裝腳本尚無檢查的 VS-G1-INSTALL-HOOK）→ 照常判定，否則每個 PyPI 案例都變 incomplete。"""
+    reason = f"slopcheck incomplete：{(out.get('status_reason') or '')[:120]}"
+    if out.get("incomplete_checks"):
+        # 有 blocking 時 G1 記 fail（gate_verdict：blocking 優先），但檢查本身仍沒跑完 → 案例照樣無法判定
+        return reason
     if out.get("status") != "incomplete":
         return None
-    reason = f"slopcheck incomplete：{out.get('status_reason', '')[:120]}"
-    if out.get("incomplete_checks") or "untested_controls" not in out:
+    if "untested_controls" not in out:
         return reason
     sys.path.insert(0, str(ROOT / "scripts"))
     from g1_slopcheck import CONTROL_OF
@@ -1435,6 +1438,10 @@ def selftest() -> list[str]:
         ("沒有 incomplete", {"findings": []}, slop, False),
         ("registry 失敗", {**inc, "incomplete_checks": ["npm 逾時"], "untested_controls": ["VS-G1-SLOPSQUAT"]}, slop, True),
         ("舊版輸出（沒有分欄）", inc, slop, True),
+        ("有 blocking 記 fail、但檢查失敗", {"status": "fail", "status_reason": "x", "incomplete_checks": ["npm 逾時"],
+                                         "untested_controls": ["VS-G1-SLOPSQUAT"]}, slop, True),
+        ("有 blocking 記 fail、檢查都完成", {"status": "fail", "status_reason": "x"}, slop, False),
+        ("有 blocking 記 fail、沒有理由、檢查失敗", {"status": "fail", "status_reason": None, "incomplete_checks": ["npm 逾時"]}, slop, True),
         ("只有安裝腳本未實測", {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]}, slop, False),
         ("本案例的控制未實測", {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]}, hook, True),
     ]:

@@ -12,13 +12,26 @@
 const MARKER = '<!-- vibesec-staging-failure -->';
 const GATES = ['g5', 'g6'];
 
-// blackbox：needs.blackbox，{ result, outputs: { is_vulnapp, g5_status, g5_blocking, g6_status, g6_blocking } }
+// blackbox：needs.blackbox，{ result, outputs: { is_vulnapp, blackbox_problems?, g5_status, g5_blocking, g6_status, g6_blocking } }
+// blackbox_problems（JSON 字串陣列）由受信任的 scripts/gate_verdict.py blackbox 計算（CONTEXT.md「黑箱健康」）：
+// 有就照用，這裡不再自行判定；沒有（尚未改用的 workflow）才走下方舊判定。舊判定會在改用完成後移除。
 function evaluate(blackbox) {
   const problems = [];
   const result = blackbox && blackbox.result;
   const out = (blackbox && blackbox.outputs) || {};
   if (result !== 'success') problems.push(`blackbox job 結果為 \`${result || 'unknown'}\``);
   const lab = out.is_vulnapp === 'true';
+  if (out.blackbox_problems !== undefined && out.blackbox_problems !== '') {
+    let parsed;
+    try { parsed = JSON.parse(out.blackbox_problems); } catch (e) { parsed = undefined; }
+    if (!Array.isArray(parsed) || !parsed.every((p) => typeof p === 'string')) {
+      // 無法判讀的判定結果不能當成「沒有問題」（incomplete ≠ pass）
+      problems.push('blackbox_problems 無法解析（gate_verdict 的輸出格式不符），無法確認黑箱閘門狀態');
+    } else {
+      for (const p of parsed) if (!problems.includes(p)) problems.push(p);
+    }
+    return { lab, problems };
+  }
   for (const g of GATES) {
     const name = g.toUpperCase();
     const status = out[`${g}_status`] || '';

@@ -83,3 +83,29 @@ test('recovered with open issue → comment and close as completed; healthy with
   assert.deepEqual(await run({ github: gh, context, core, blackbox: extOk }), { action: 'none' });
   assert.deepEqual(gh.calls.map((c) => c[0]), ['list']);
 });
+
+// blackbox_problems：由受信任的 scripts/gate_verdict.py blackbox 計算；有就照用，不再由這裡判定
+test('blackbox_problems present: empty list means healthy, regardless of legacy status fields', () => {
+  const out = { is_vulnapp: 'true', blackbox_problems: '[]', g5_status: 'pass', g5_blocking: '0' };
+  assert.deepEqual(evaluate(bb(out)).problems, []);
+});
+
+test('blackbox_problems present: problems are taken as-is and the lab flag is kept', () => {
+  const ev = evaluate(bb({ is_vulnapp: 'true', blackbox_problems: JSON.stringify(['G6 必要工具未執行（garak）']) }));
+  assert.equal(ev.lab, true);
+  assert.deepEqual(ev.problems, ['G6 必要工具未執行（garak）']);
+});
+
+test('blackbox_problems present: a failed job is still a problem', () => {
+  const ev = evaluate(bb({ is_vulnapp: 'false', blackbox_problems: '[]' }, 'failure'));
+  assert.equal(ev.problems.length, 1);
+  assert.match(ev.problems[0], /failure/);
+});
+
+test('blackbox_problems unparseable or not a string array → problem, never healthy (incomplete ≠ pass)', () => {
+  for (const raw of ['{', '{"a":1}', '[1,2]', 'null']) {
+    const ev = evaluate(bb({ is_vulnapp: 'false', blackbox_problems: raw }));
+    assert.equal(ev.problems.length, 1, raw);
+    assert.match(ev.problems[0], /無法解析/);
+  }
+});

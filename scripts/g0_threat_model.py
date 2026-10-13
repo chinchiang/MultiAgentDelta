@@ -150,11 +150,19 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
     cov = {c["control_id"]: c for c in gate["coverage"]}
     reasons: list[str] = []
 
-    def done(status: str) -> dict:
+    def done(status: str, tier_fail: bool = False) -> dict:
+        """status 只區分兩種收尾：incomplete（提早結束，reasons 是未完成原因）與完成（reasons 是附註）；
+        實際狀態由 gate_verdict.verdict 判定。tier_fail（risk_tier 宣告低於推導值或與 vibesec.yaml 不一致）不是發現、
+        卻要讓 G0 fail：維持既有行為，暫以一個 blocking 條件交給 verdict（findings_count 不計入；改成正式規則
+        須另開政策 PR，CLAUDE.md 規則 1）。"""
         for c in gate["coverage"]:
             if c["state"] == "untested" and not c["reason"]:
                 c["reason"] = reasons[0] if reasons else None
-        gate.update(status=status, status_reason="；".join(reasons) or None, finished_at=_now())
+        from gate_verdict import verdict
+        early = status == "incomplete"
+        st, why = verdict(blocking=int(gate["findings_count"]["blocking"]) + (1 if tier_fail else 0),
+                          coverage=gate["coverage"], problems=reasons if early else [], notes=[] if early else reasons)
+        gate.update(status=st, status_reason=why, finished_at=_now())
         return gate
 
     top = _git(target, "rev-parse", "--show-toplevel")
@@ -228,7 +236,7 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
     findings_ref.write_text(json.dumps({"gate": "G0", "threat_model": shown, "risk_tier": {
         "declared": declared, "derived": derived, "derivation": why, "policy": policy_tier}, "findings": findings},
         ensure_ascii=False, indent=2), encoding="utf-8")
-    return done("fail" if blocking or tier_fail else "pass")
+    return done("complete", tier_fail=bool(tier_fail))
 
 
 # ------------------------------------------------------------------ selftest

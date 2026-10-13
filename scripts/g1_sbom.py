@@ -234,34 +234,22 @@ def to_sarif(found: list[dict]) -> dict:
                                   for f in found]}]}
 
 
-_RANK = {"pass": 0, "incomplete": 1, "fail": 2}
-
-
 def merge_gate(gate: dict, summary: dict, found: list[dict], sarif_ref: str | None) -> dict:
-    """併入 G1 gate-result：取代 VS-G1-SBOM 的 coverage；status 只升不降（incomplete ≠ pass）。
+    """SBOM 結果（子結果）併入 G1 gate-result：取代 VS-G1-SBOM 的 coverage，狀態由 gate_verdict.merge 判定。
     只有 blocking 發現會讓 G1 變 fail；advisory 發現只計數，但 VS-G1-SBOM 仍記 fail（控制本身沒有達成）。"""
-    g = json.loads(json.dumps(gate))
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from gate_verdict import merge
     st = summary["status"]
     blocking = sum(f["policy_tier"] == "blocking" for f in found)
-    effect = "incomplete" if st == "incomplete" else ("fail" if blocking else "pass")
-    cur = g.get("status", "pass")
-    if cur in _RANK and _RANK[effect] > _RANK[cur]:
-        g["status"] = effect
-    reasons = [r for r in [g.get("status_reason")] if r]
-    if summary.get("status_reason"):
-        reasons.append(f"SBOM：{summary['status_reason']}")
-    g["status_reason"] = "；".join(reasons) or None
-    fc = g.setdefault("findings_count", {"blocking": 0, "advisory": 0})
-    fc["blocking"] = int(fc.get("blocking") or 0) + blocking
-    fc["advisory"] = int(fc.get("advisory") or 0) + len(found) - blocking
-    g.setdefault("tools", []).append({"name": "vibesec-g1-sbom", "version": VERSION, "state": "ran",
-                                      "exit_code": 2 if st == "incomplete" else (1 if blocking else 0),
-                                      "output_ref": sarif_ref, "duration_seconds": None})
-    state = {"pass": "pass", "fail": "fail", "incomplete": "untested"}[st]
-    cov = [c for c in g.get("coverage") or [] if c.get("control_id") != CONTROL]
-    cov.append({"control_id": CONTROL, "state": state, "reason": summary.get("status_reason")})
-    g["coverage"] = cov
-    return g
+    reason = summary.get("status_reason")
+    return merge(gate, blocking=blocking, advisory=len(found) - blocking,
+                 coverage=[{"control_id": CONTROL, "state": {"pass": "pass", "fail": "fail", "incomplete": "untested"}[st],
+                            "reason": reason}],
+                 problems=[f"SBOM：{reason}"] if st == "incomplete" and reason else [],
+                 notes=[f"SBOM：{reason}"] if st != "incomplete" and reason else [],
+                 tools=[{"name": "vibesec-g1-sbom", "version": VERSION, "state": "ran",
+                         "exit_code": 2 if st == "incomplete" else (1 if blocking else 0),
+                         "output_ref": sarif_ref, "duration_seconds": None}])
 
 
 def run(target: pathlib.Path, commit: str, out: pathlib.Path, syft=run_syft) -> dict:
