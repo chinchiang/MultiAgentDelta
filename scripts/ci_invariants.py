@@ -74,6 +74,30 @@ def sarif_jobs_without_permission(wf: dict) -> list[str]:
     return out
 
 
+def _step_runs(wf: dict, job: str, step_id: str | None = None, name: str | None = None) -> str | None:
+    for st in (((wf.get("jobs") or {}).get(job) or {}).get("steps") or []):
+        if (step_id and st.get("id") == step_id) or (name and st.get("name") == name):
+            return str(st.get("run") or "")
+    return None
+
+
+def verdict_wiring(pr_gates: dict, staging: dict) -> list[str]:
+    """閘門判定必須交給受信任樹的 scripts/gate_verdict.py（docs/08 §8）：以前 summary、staging 各自 inline 一份規則，
+    順序不一致（#120、#121）。改回 inline 判定，或 staging 沒把 blackbox_problems 交給 notify → 回報。"""
+    out = []
+    run = _step_runs(pr_gates, "summary", name="彙整 gate-status 矩陣")
+    if run is None or "_trusted/scripts/gate_verdict.py enforce" not in run:
+        out.append("pr-gates.yml summary 的「彙整 gate-status 矩陣」沒有以 _trusted/scripts/gate_verdict.py enforce 判定")
+    run = _step_runs(staging, "blackbox", step_id="verdict")
+    for cmd in ("blackbox", "enforce"):
+        if run is None or f"_trusted/scripts/gate_verdict.py {cmd}" not in run:
+            out.append(f"staging-blackbox.yml 的 verdict 步驟沒有以 _trusted/scripts/gate_verdict.py {cmd} 判定")
+    outputs = (((staging.get("jobs") or {}).get("blackbox") or {}).get("outputs") or {})
+    if "steps.verdict.outputs.blackbox_problems" not in str(outputs.get("blackbox_problems", "")):
+        out.append("staging-blackbox.yml 的 blackbox job outputs 沒有 blackbox_problems（notify 會改走舊判定）")
+    return out
+
+
 def selftest() -> list[str]:
     fails: list[str] = []
     wf_ok = "on: push\npermissions:\n  contents: read\n\njobs:\n  a:\n    permissions:\n      security-events: write\n"
@@ -106,6 +130,19 @@ def selftest() -> list[str]:
     ]:
         if sarif_jobs_without_permission(wf) != want:
             fails.append(f"sarif_jobs_without_permission「{label}」：預期 {want}，得到 {sarif_jobs_without_permission(wf)}")
+    pr_ok = {"jobs": {"summary": {"steps": [{"name": "彙整 gate-status 矩陣",
+                                             "run": "python3 _trusted/scripts/gate_verdict.py enforce --trusted-root _trusted"}]}}}
+    st_ok = {"jobs": {"blackbox": {"outputs": {"blackbox_problems": "${{ steps.verdict.outputs.blackbox_problems }}"},
+                                   "steps": [{"id": "verdict", "run": "python3 _trusted/scripts/gate_verdict.py blackbox\n"
+                                                                     "python3 _trusted/scripts/gate_verdict.py enforce"}]}}}
+    if verdict_wiring(pr_ok, st_ok):
+        fails.append(f"verdict_wiring：都接上時不應回報（得到 {verdict_wiring(pr_ok, st_ok)}）")
+    inline = {"jobs": {"summary": {"steps": [{"name": "彙整 gate-status 矩陣", "run": "python3 -I - <<'EOF'"}]}}}
+    st_bad = {"jobs": {"blackbox": {"steps": [{"id": "verdict", "run": "python3 _trusted/scripts/gate_verdict.py enforce"}]}}}
+    if len(verdict_wiring(inline, st_bad)) != 3:
+        fails.append(f"verdict_wiring：inline summary、staging 缺 blackbox 與 outputs 應各回報一項（得到 {verdict_wiring(inline, st_bad)}）")
+    if len(verdict_wiring({}, {})) != 4:
+        fails.append("verdict_wiring：找不到步驟也要回報")
     pc = ('        args:\n          - "--config=config/semgrep/vibesec-rules.yaml"\n'
           '          - "--config=p/owasp-top-ten"\n          - "--config=p/security-audit"   # 與 CI 一致\n          - "--error"\n')
     rules = ["config/semgrep/vibesec-rules.yaml", "p/owasp-top-ten", "p/security-audit"]

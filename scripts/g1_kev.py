@@ -270,7 +270,8 @@ def selftest() -> list[str]:
         fails.append("merge_gate 不得修改輸入物件")
     # slopcheck 預留的 KEV pending：沒併入 → 最終判定 incomplete；併入後被取代（只留一筆）
     from gate_verdict import is_clean
-    held = {**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}
+    held = {**base, "coverage": [{"control_id": "VS-G1-SBOM", "state": "pass", "reason": None},
+                                 {"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}
     m = merge_gate(held, {"status": "pass"}, [], None)
     if is_clean(held) or not is_clean(m) or [c["state"] for c in m["coverage"] if c["control_id"] == KEV_CONTROL] != ["pass"]:
         fails.append(f"KEV 預留的 pending 應在併入時被取代，未併入則不乾淨：{m['coverage']}")
