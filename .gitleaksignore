@@ -10,3 +10,8 @@
 cb777496eea9a66b181447fdb986b38f7a619197:scripts/validate.py:generic-api-key:417
 56583c0bc190bb9cd0b49fcfa5ccdb0284cd4bfb:scripts/validate.py:generic-api-key:411
 6d15bd5e6d02dff33f1d42b99940e45a4a45281a:scripts/gate_verdict.py:generic-api-key:31
+#
+# 2026-10-13：同一個誤報再次發生。#137 的 squash commit 03990af 重新寫了 scripts/gate_verdict.py 的工具別名對照表
+# （vibesec.yaml 的工具名稱 → gate JSON 的工具名稱），generic-api-key 誤判為金鑰。內容只是工具名稱，不含任何憑證；
+# #140 已改寫為不會觸發的形式。nightly 的 G2 全歷史掃描因此失敗（run 38338489403，issue #139）。
+03990afd3e8a7042cd87d3b3b3b681d85870f28d:scripts/gate_verdict.py:generic-api-key:43
