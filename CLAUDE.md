@@ -33,6 +33,20 @@ python3 scripts/validate.py          # YAML 語法、JSON schema、範例檔、c
 uv run --project examples/vulnapp uvicorn app.main:app --port 8000   # 啟動靶場
 ```
 
+## Agent skills
+
+### Issue tracker
+
+Issue 與 spec 放在 GitHub Issues（`chinchiang/MultiAgentDelta`），用 `gh` 操作。見 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用五個預設角色標籤（`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`）。見 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+Single-context：`GLOSSARY.md` ＋ `docs/adr/`。見 `docs/agents/domain.md`。
+
 ---
 
 <a id="english"></a>
@@ -67,3 +81,17 @@ This repository holds the documentation, configuration, and lab for the "Vibe Co
 python3 scripts/validate.py          # YAML syntax, JSON schema, examples, catalog ID consistency
 uv run --project examples/vulnapp uvicorn app.main:app --port 8000   # start the lab
 ```
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in GitHub Issues (`chinchiang/MultiAgentDelta`), operated with `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default role labels are used (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
