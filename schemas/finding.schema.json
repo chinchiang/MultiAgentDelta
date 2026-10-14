@@ -111,7 +111,20 @@
       }
     },
     "created_at": { "type": "string", "format": "date-time" },
-    "notes": { "type": ["string", "null"] }
+    "notes": { "type": ["string", "null"] },
+    "exception": {
+      "description": "命中的 blocking-policy 例外（只把 blocking 降為 advisory，發現保留）；閘門以 vibesec_policy.Exceptions.record 產生，harness 原樣搬入。沒有命中 → 省略。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path_glob", "reason", "approved_by", "expires", "agent_id"],
+      "properties": {
+        "path_glob": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "approved_by": { "type": "string", "minLength": 1 },
+        "expires": { "type": "string", "format": "date" },
+        "agent_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
   },
   "$defs": {
     "gate": { "type": "string", "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6"] }

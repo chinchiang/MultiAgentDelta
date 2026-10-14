@@ -110,25 +110,29 @@ def load_threat_model(path: Path) -> tuple[dict | None, str | None]:
     return tm, None
 
 
-def policy_exception(agent_id, tm_rel: str | None, today=None) -> tuple[dict | None, list[str]]:
-    """本 repo blocking-policy 中適用這個 agent 的未過期例外（只降為 advisory，發現保留；與 sarif_gate 相同）。
-    G0 的例外必須寫明 agent_id：只寫 path_glob 會連同同一份威脅模型裡之後新增的 agent 一起放行。
-    回傳 (例外或 None, 被忽略的例外說明)。讀取失敗 → 不套用任何例外（fail closed）。"""
+def _policy_exceptions(tm_rel: str | None, today=None):
+    """(例外集合或 None, 讀取失敗的說明或 None)。只對本 repo 的威脅模型（有 tm_rel）讀取；讀取失敗 → 不套用（fail closed）。"""
     if not tm_rel:
-        return None, []
+        return None, None
     try:
         sys.path.insert(0, str(ROOT / "scripts"))
         from vibesec_policy import Policy
-        exceptions = Policy(POLICY_ROOT).exceptions_for(None, today=today)   # 欄位完整且未過期（與 G1–G3 同一份規則）
+        return Policy(POLICY_ROOT).exceptions_for(None, today=today), None   # 欄位完整且未過期（與 G1–G3 同一份規則）
     except Exception as e:
-        return None, [f"blocking-policy 例外無法讀取（{type(e).__name__}），未套用"]
-    hit = exceptions.match(RULE, tm_rel, agent_id=agent_id)
-    if hit:
-        return hit, []
-    notes = [x for x in exceptions.ignored if x.startswith(RULE)]
-    notes += [f"{RULE} @ {ex['path_glob']}：G0 例外缺 agent_id，未套用"
-              for ex in exceptions.matches(RULE, tm_rel) if not ex.get("agent_id")]
-    return None, notes
+        return None, f"blocking-policy 例外無法讀取（{type(e).__name__}），未套用"
+
+
+def policy_notes(findings: list[dict], tm_rel: str | None, today=None) -> list[str]:
+    """G0 status_reason 的例外說明：命中筆數、忽略的例外（只列 G0 的規則）與缺 agent_id 而未套用的例外。
+    G0 的例外必須寫明 agent_id：只寫 path_glob 會連同同一份威脅模型裡之後新增的 agent 一起放行。"""
+    exceptions, error = _policy_exceptions(tm_rel, today)
+    if error:
+        return [error]
+    if exceptions is None:
+        return []
+    unapplied = [f"{RULE} @ {ex['path_glob']}：G0 例外缺 agent_id，未套用"
+                 for ex in exceptions.matches(RULE, tm_rel) if not ex.get("agent_id")]
+    return exceptions.report(findings, "G0", unapplied=unapplied)
 
 
 def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str | None = None, today=None) -> list[dict]:
@@ -140,6 +144,7 @@ def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str 
     tm_rel：本 repo 威脅模型的相對路徑；有給才套用 blocking-policy 例外（外部專案不給：例外只核准給本 repo）。"""
     root = root or ROOT
     out = []
+    exceptions, _ = _policy_exceptions(tm_rel, today)   # 讀取失敗 → None（不套用；說明由 policy_notes 給閘門）
     for a in (threat_model or {}).get("agents") or []:
         if not all(a.get(k) is True for k in LEGS):
             continue
@@ -159,13 +164,11 @@ def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str 
                 else "未切斷任何一腳，且沒有可驗證的切腳 mitigation")
         f = {"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": _tier(),
              "agent": a.get("id"), "reason": f"agent {a.get('id')!r} 三要素皆成立、{head}（{'；'.join(why)}）"}
-        ex, notes = policy_exception(a.get("id"), tm_rel, today)
-        if ex is not None:   # 已接受風險：降為 advisory，發現與理由照實保留
+        ex = exceptions.match(RULE, tm_rel, agent_id=a.get("id")) if exceptions else None
+        if ex is not None:   # 已接受風險：降為 advisory，發現與理由照實保留（未套用的例外由 policy_notes 寫進閘門說明）
             f["policy_tier"] = "advisory"
-            f["exception"] = {k: ex.get(k) for k in ("path_glob", "agent_id", "approved_by", "expires")}
+            f["exception"] = exceptions.record(ex)
             f["reason"] += f"；依 blocking-policy 例外降為 advisory（核准：{ex['approved_by']}，到期：{ex['expires']}）"
-        elif notes:
-            f["reason"] += "；" + "；".join(notes)
         out.append(f)
     return out
 
@@ -278,7 +281,7 @@ def selftest() -> list[str]:
         try:
             with_exceptions(ex)
             got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")
-            if [(f["policy_tier"], f.get("exception")) for f in got] != [("advisory", {"path_glob": "docs/threat-model.yaml", "agent_id": "a", "approved_by": "o", "expires": "2099-01-01"})] \
+            if [(f["policy_tier"], f.get("exception")) for f in got] != [("advisory", {"path_glob": "docs/threat-model.yaml", "reason": "t", "approved_by": "o", "expires": "2099-01-01", "agent_id": "a"})] \
                     or "依 blocking-policy 例外降為 advisory（核准：o，到期：2099-01-01）" not in got[0]["reason"]:
                 fails.append(f"符合的例外 → advisory、發現保留並註明核准者與到期日：{got}")
             if [f["policy_tier"] for f in trifecta_findings(tm_open)] != [_tier()]:
@@ -290,17 +293,23 @@ def selftest() -> list[str]:
                 fails.append("agent_id 不同 → 不套用例外")
             with_exceptions({k: v for k, v in ex.items() if k != "agent_id"})
             got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")
-            if got[0]["policy_tier"] != _tier() or "；vibesec.g0.lethal-trifecta-open @ docs/threat-model.yaml：G0 例外缺 agent_id，未套用" not in got[0]["reason"]:
-                fails.append(f"G0 例外缺 agent_id → 不套用並註明：{got}")
+            notes = policy_notes(got, "docs/threat-model.yaml")
+            if got[0]["policy_tier"] != _tier() or "缺 agent_id" in got[0]["reason"] \
+                    or notes != ["忽略的例外：vibesec.g0.lethal-trifecta-open @ docs/threat-model.yaml：G0 例外缺 agent_id，未套用"]:
+                fails.append(f"G0 例外缺 agent_id → 不套用，註明在閘門說明（不附加在 finding.reason）：{got}；{notes}")
             with_exceptions(ex)
             got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", today=date(2099, 1, 2))
-            if got[0]["policy_tier"] != _tier() or got[0].get("exception") \
-                    or "；vibesec.g0.lethal-trifecta-open @ docs/threat-model.yaml：已於 2099-01-01 過期" not in got[0]["reason"]:
-                fails.append(f"例外過期 → 不套用並註明：{got}")
+            notes = policy_notes(got, "docs/threat-model.yaml", today=date(2099, 1, 2))
+            if got[0]["policy_tier"] != _tier() or got[0].get("exception") or "過期" in got[0]["reason"] \
+                    or notes != ["忽略的例外：vibesec.g0.lethal-trifecta-open @ docs/threat-model.yaml：已於 2099-01-01 過期"]:
+                fails.append(f"例外過期 → 不套用，註明在閘門說明：{got}；{notes}")
+            if policy_notes(got, None) != []:
+                fails.append("沒給 tm_rel（外部專案）→ 沒有例外說明")
             (POLICY_ROOT / "config/policy/blocking-policy.yaml").write_text("exceptions: [", encoding="utf-8")
             got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml")
-            if got[0]["policy_tier"] != "blocking" or "blocking-policy 例外無法讀取" not in got[0]["reason"]:
-                fails.append(f"政策檔壞掉 → 不套用例外並註明（fail closed）：{got}")
+            notes = policy_notes(got, "docs/threat-model.yaml")
+            if got[0]["policy_tier"] != "blocking" or not any("blocking-policy 例外無法讀取" in n for n in notes):
+                fails.append(f"政策檔壞掉 → 不套用例外並註明（fail closed）：{got}；{notes}")
         finally:
             POLICY_ROOT = ROOT
     return fails

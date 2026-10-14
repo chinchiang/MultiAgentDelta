@@ -751,7 +751,7 @@ def apply_exceptions(finding, exceptions):
     if ex:
         if finding["policy_tier"] == "blocking":
             finding["policy_tier"] = "advisory"
-        finding["exception"] = {k: ex[k] for k in ("path_glob", "reason", "approved_by", "expires")}
+        finding["exception"] = exceptions.record(ex)      # 各閘門相同的固定形狀
     return finding
 
 # allowlist.yaml 的 bypass 只能放行這些檢查（檔頭規則 3：slopsquat／cooldown／low-download）；
@@ -1142,6 +1142,8 @@ def selftest():
     pol["exceptions"] = [{"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "examples/vulnapp/**",
                           "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"},
                          {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "nowhere/**",
+                          "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"},
+                         {"rule_id": "vibesec.g2.hardcoded-secret", "path_glob": "nowhere/**",   # 別的閘門：G1 不列
                           "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"}]
     (PR / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump(pol, allow_unicode=True), encoding="utf-8")
     shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
@@ -1431,12 +1433,21 @@ def selftest():
             code, out = run("--target", str(D), "--manifest", "examples/vulnapp/requirements.txt")
             if [f["package"] for f in out.get("findings", [])] != ["requests"] or code != 1:
                 fails.append("--target 搭配 --manifest：相對路徑以目標專案為準，只掃指定的檔")
-        code, out = run("--target", str(PR), "--manifest", "examples/vulnapp/pyproject.toml")
-        want_ex = {"path_glob": "examples/vulnapp/**", "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"}
+        gate, sarif_p = PR / "gate.json", PR / "g1.sarif"
+        code, out = run("--target", str(PR), "--manifest", "examples/vulnapp/pyproject.toml", "--gate", str(gate), "--sarif", str(sarif_p))
+        want_ex = {"path_glob": "examples/vulnapp/**", "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31",
+                   "agent_id": None}
         if not out.get("findings") or any(f["policy_tier"] != "advisory" or f.get("exception") != want_ex for f in out["findings"]):
-            fails.append(f"目標是本 repo 時照常套用 blocking-policy 例外（降為 advisory、附核准資訊）：{out.get('findings')}")
-        if out.get("ignored_exceptions") != ["vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期"]:
-            fails.append(f"過期的例外列在 ignored_exceptions：{out.get('ignored_exceptions')}")
+            fails.append(f"目標是本 repo 時照常套用 blocking-policy 例外（降為 advisory、附固定 5 欄核准資訊）：{out.get('findings')}")
+        props = [r["properties"].get("exception") for run_ in json.loads(sarif_p.read_text(encoding="utf-8"))["runs"] for r in run_["results"]]
+        if not props or any(x != want_ex for x in props):
+            fails.append(f"SARIF properties.exception 與 finding 相同（固定 5 欄）：{props}")
+        if out.get("ignored_exceptions") != ["vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期",
+                                             "vibesec.g2.hardcoded-secret @ nowhere/**：已於 2020-01-01 過期"]:
+            fails.append(f"stdout 的 ignored_exceptions 列出全部忽略的例外：{out.get('ignored_exceptions')}")
+        why = json.loads(gate.read_text(encoding="utf-8")).get("status_reason") or ""
+        if "忽略的例外：vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期" not in why or "hardcoded-secret" in why:
+            fails.append(f"G1 的 status_reason 列出本閘門忽略的例外、不列其他閘門的：{why}")
         # CI 的形狀：判定程式與政策在 _trusted/（這裡是 PR），受驗樹在 workspace（這裡是 W）。兩者都是本 repo：
         # project_root 指向 W → 例外照常套用，並在 status_reason 註明命中筆數；沒有 project_root → 外部專案，未套用
         W = Path(tempfile.mkdtemp())
@@ -1885,9 +1896,7 @@ def main(argv):
             f["manifest"] = rel_path(m)
             findings.append(apply_exceptions(f, exceptions))
     pypi_checked = sum(1 for e, _, _ in jobs if e == "pypi")
-    excepted = sum(1 for f in findings if f.get("exception"))
-    if excepted:   # 套用了例外要看得到（與 sarif_gate 相同的說明）
-        notes.append(f"{excepted} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
+    notes += exceptions.report(findings, "G1")   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
 
     incomplete = list(dict.fromkeys(incomplete))
     coverage = gate_coverage(findings, incomplete, pypi_checked)

@@ -186,7 +186,7 @@ def to_findings(tool: str, results: list[dict], pol: dict) -> list[dict]:
             if ex:
                 if f["policy_tier"] == "blocking":
                     f["policy_tier"] = "advisory"
-                f["exception"] = ex["path_glob"]
+                f["exception"] = pol["exceptions"].record(ex)   # 各閘門相同的固定形狀
             out.append(f)
     return out
 
@@ -264,11 +264,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
     if blocking:
         top = collections.Counter(f["rule_id"] for f in blocking).most_common(5)
         notes.append("blocking：" + "、".join(f"{r}×{n}" for r, n in top))
-    excepted = [f for f in findings if f.get("exception")]
-    if excepted:
-        notes.append(f"{len(excepted)} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
-    if pol["exceptions"].ignored:
-        notes.append("忽略的例外：" + "；".join(pol["exceptions"].ignored))
+    notes += pol["exceptions"].report(findings, gate)   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from gate_verdict import verdict
     status, status_reason = verdict(blocking=len(blocking), coverage=coverage,
@@ -399,6 +395,17 @@ def selftest() -> list[str]:
         g = run("G2", {"gitleaks": sarif(res("vibesec-openai-api-key", "examples/vulnapp/app/main.py"))}, env={"env_gitignore_fail": 0})
         if g["status"] != "pass" or g["findings_count"]["advisory"] < 1 or "例外" not in (g["status_reason"] or ""):
             fails.append("blocking-policy 例外 → 降為 advisory、發現保留、理由註明")
+        # 忽略的例外只列本閘門的規則：G1 的過期例外不出現在 G2（以前每個閘門都列全部）
+        from vibesec_policy import Exceptions
+        saved_ex = pol["exceptions"]
+        try:
+            pol["exceptions"] = Exceptions([], [("vibesec.g1.cooldown-violation", "G1 的過期例外"),
+                                                ("vibesec.g2.hardcoded-secret", "G2 的過期例外")])
+            why = run("G2", {"gitleaks": sarif()}, env={"env_gitignore_fail": 0})["status_reason"] or ""
+            if "忽略的例外：G2 的過期例外" not in why or "G1 的過期例外" in why:
+                fails.append(f"G2 只列本閘門忽略的例外（不列 G1 的）：{why}")
+        finally:
+            pol["exceptions"] = saved_ex
         g = run("G2", {"gitleaks": None}, env={"env_gitignore_fail": 1})
         if g["status"] != "incomplete" or g["findings_count"]["advisory"] != 1:
             fails.append("gitleaks 缺席 → incomplete；envcheck 失敗 → advisory 發現")

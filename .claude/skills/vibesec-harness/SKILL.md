@@ -173,7 +173,7 @@ python3 scripts/g0_threat_model.py --target "$TARGET" [--threat-model <file>] --
 
 ## 步驟 3：評分與 finding 組裝
 
-對每個發現依 `config/harness/harness-agent.md` §5 組 Finding，並用 Python 驗證：
+對每個發現依 `config/harness/harness-agent.md` §5 組 Finding（閘門 finding 的 `exception` 原樣搬進 Finding、`policy_tier` 沿用閘門降級後的結果），並用 Python 驗證：
 
 ```bash
 python3 - <<'PY'

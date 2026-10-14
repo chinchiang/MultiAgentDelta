@@ -68,7 +68,8 @@ role: harness
 - `cvss_*`、`epss*`、`kev*`：分欄；不適用 `null`；**不做任何乘法或合成分數**。
 - `evidence_grade`：依 docs/10 §1；工具單一告警預設 E1；完整污點路徑 / 版本可達 E2；實測或人工核對 E3；無 file:line 的模型推測 E0。
 - `validation_status`：預設 `pending`；只有 E3 且（人工裁決或確定性實測）才 `confirmed`。
-- `policy_tier`：ApplyPolicy 結果。
+- `policy_tier`：ApplyPolicy 結果。閘門已依 blocking-policy 例外降為 advisory 者沿用閘門結果，**不得升回 blocking**。
+- `exception`：閘門 finding 帶 `exception`（命中 blocking-policy 例外；固定五欄 `path_glob`、`reason`、`approved_by`、`expires`、`agent_id`，由 `vibesec_policy.Exceptions.record` 產生）→ 原樣搬進 Finding；沒有命中 → 省略（選填欄位，不填 `null`）。
 - `priority`：docs/10 §5 查表；pending 者在 `notes` 標 `candidate`。
 - `location.kind`：code / dependency / config 進 SARIF；architecture / prompt 進 risk register；http 兩者皆不進 SARIF，只在 findings.json。
 - 祕密：`title`、`description`、`evidence_refs[].note` 只留遮罩（至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）與 sha256 指紋。
