@@ -132,6 +132,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
     out_dir = out_dir.resolve()                # semgrep 在目標目錄執行：相對路徑會寫進被測專案
     pol = dict(pol or sarif_gate.load_policy())
     external = not pol["policy"].is_this_repo(target)   # 與例外是否套用同一份判斷（Policy；含 VIBESEC_PROJECT_ROOT）
+    project = pol["policy"].for_project(target)          # 受驗樹的政策例外：外部專案 → 沒有任何例外，note 說明
     out_dir.mkdir(parents=True, exist_ok=True)
     sarifs = {t: out_dir / f"{t}.sarif" for t in TOOLS}
     for p in sarifs.values():
@@ -147,9 +148,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
         notes.append(problem)
     else:
         if external:
-            pol.update(exceptions=pol["policy"].exceptions_for(target))   # 外部專案 → 不套用任何例外
-            notes.append(f"目標專案 {target.name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用；"
-                         "# nosemgrep 不採信；checkov 掃描已去除目標的 .checkov.yaml")
+            notes.append(f"{project.note}；# nosemgrep 不採信；checkov 掃描已去除目標的 .checkov.yaml")
             if (target / ".semgrepignore").exists():
                 notes.append("目標專案有 .semgrepignore，semgrep 會略過其中的路徑（未經 blocking-policy 核准，需人工確認）")
             inline = [f for f in (_git(target, "grep", "-l", "-E", INLINE_SUPPRESSIONS) or "").splitlines() if f]
@@ -189,7 +188,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
             if rows[t]["state"] != "ran":
                 sarifs[t].unlink(missing_ok=True)
             reasons[t] = rows[t].pop("reason")
-    gate = sarif_gate.derive("G3", sarifs, None, pol, started)
+    gate = sarif_gate.derive("G3", sarifs, None, pol, project, started)
     gate["tools"] = [dict(t, **rows[t["name"]]) if t["name"] in rows else t for t in gate["tools"]]
     notes = [r for r in reasons.values() if r] + notes
     if notes:
@@ -231,12 +230,11 @@ def selftest() -> list[str]:
     from jsonschema import Draft202012Validator
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    from vibesec_policy import Exceptions, Policy
-    # 合成例外（不依賴政策檔現有例外與其到期日）：外部目標必須忽略它
-    pol = dict(sarif_gate.load_policy(), policy=Policy(ROOT, project_root=None),   # 不受 VIBESEC_PROJECT_ROOT 影響
-               exceptions=Exceptions([
-        {"rule_id": "vibesec.g3.command-injection", "path_glob": "app/**", "reason": "selftest",
-         "approved_by": "selftest", "expires": "2099-12-31"}], []))
+    from vibesec_policy import Policy, temp_policy_root
+    # 合成例外（不依賴政策檔現有例外與其到期日）：暫存 root 放本 repo 政策的副本，只換掉 exceptions；外部目標必須忽略它
+    with temp_policy_root([{"rule_id": "vibesec.g3.command-injection", "path_glob": "app/**", "reason": "selftest",
+                           "approved_by": "selftest", "expires": "2099-12-31"}]) as PR:
+        pol = dict(sarif_gate.load_policy(), policy=Policy(PR, project_root=None))   # 建構時讀完政策檔；不受 VIBESEC_PROJECT_ROOT 影響
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True)
     with tempfile.TemporaryDirectory() as d:

@@ -10,15 +10,15 @@ base_tier；所有發出 finding 的元件（workflow 內嵌探針、scripts/*.p
   p.tier(rule_id)        # 有效 tier：含 risk_tier 的 tier_overrides（CI 阻擋用）
   p.base_tier(rule_id)   # 基礎 tier：不含 tier_overrides（cwe-map／docs／evals 對齊用）
   p.cap(rule_id, req)    # 呼叫端只能把個別發現降為 advisory，不能升級到政策以上
-  e = p.exceptions_for(target=None, today=None)   # blocking-policy 的 exceptions（G0–G3 唯一的讀取與比對）
-  e.match(rule_id, path, agent_id=None)           # 命中的例外或 None；呼叫端把 blocking 降為 advisory、發現保留
-  e.ignored / e.applies / e.note                  # 被忽略的例外說明／是否套用／外部專案的說明
-  e.record(ex)                                    # 命中例外寫進 finding 的固定五欄（finding.schema.json 的 exception）
-  e.report(findings, gate, unapplied=())          # status_reason 的例外說明：命中筆數、本閘門忽略的例外（各閘門同一份文字）
+  pp = p.for_project(project, today=None)       # 綁定受驗樹的政策例外（G0–G3 唯一的讀取與比對）；project 必填
+  pp.classify(rule_id, path, agent_id=None, requested=None)
+                         # {"policy_tier", "exception"}：tier 依 cap；命中例外 → advisory、發現保留，exception 為固定五欄
+  pp.report(findings, gate, paths=())           # status_reason 的例外說明：命中筆數、本閘門忽略與缺 agent_id 而未套用的例外
+  pp.note / pp.ignored                          # 外部專案的說明（本 repo → None）／全部被忽略的例外說明
 
 exceptions：欄位（rule_id、path_glob、reason、approved_by、expires）缺一、expires 格式無效、已過期（expires < today；
 到期當日仍有效）→ 不套用並列入 ignored；path_glob 以 fnmatch.fnmatchcase 比對（單一 * 也會跨越 /）。
-p.is_this_repo(target)：None、root，或 project_root（存在的目錄）→ 本 repo；其他 → 外部專案，例外全部不套用
+p.is_this_repo(project)：None、root，或 project_root（存在的目錄）→ 本 repo；其他 → 外部專案，例外全部不套用
 （例外只核准給本 repo 路徑）。project_root 是「判定程式與受驗樹分開」時的受驗樹（CI：_trusted/ 與 workspace），
 預設取環境變數 VIBESEC_PROJECT_ROOT（由受信任的 workflow 設定）；明確傳 None ＝ 沒有（selftest 用）。
 
@@ -29,7 +29,7 @@ p.is_this_repo(target)：None、root，或 project_root（存在的目錄）→ 
 不合法 → 例外（incomplete ≠ pass，CLAUDE.md #2）；要改政策必須由人類在獨立 PR 決定（規則 1）。
 """
 from __future__ import annotations
-import fnmatch, os, pathlib, sys
+import contextlib, fnmatch, os, pathlib, sys
 from datetime import date
 
 try:
@@ -47,6 +47,8 @@ EXCEPTION_FIELDS = ("rule_id", "path_glob", "reason", "approved_by", "expires") 
 RISK_TIERS = ("L1", "L2", "L3")             # vibesec.yaml risk_tier（docs/01 決策樹）
 # 外部工具規則前綴 → 閘門（applies_only_to_gates 用）。trivy 同時用於 G1（漏洞）與 G3（IaC 設定），
 # 從規則 ID 分不出閘門 → 不列，不因 applies_only_to_gates 降級（fail closed）。
+# 例外必須寫明 agent_id 才命中的規則：G0 的致命三要素例外只寫 path_glob，會連同同一份威脅模型之後新增的 agent 一起放行
+AGENT_SCOPED_RULES = frozenset({"vibesec.g0.lethal-trifecta-open"})
 TOOL_GATE = {"gitleaks": "G2", "semgrep": "G3", "checkov": "G3", "zap": "G5", "promptfoo": "G6", "garak": "G6", "grype": "G1"}
 
 
@@ -100,7 +102,7 @@ class Policy:
         if bad:
             raise ValueError(f"blocking-policy incomplete_gate_is_blocking_in_enforce 不合法：{bad!r}（須為 {'／'.join(GATES)}）")
         self.incomplete_blocking_gates = list(gates)
-        self._exceptions = pol.get("exceptions") or []   # 政策檔只讀一次；exceptions_for 再篩選
+        self._exceptions = pol.get("exceptions") or []   # 政策檔只讀一次；for_project 再篩選
 
     def base_tier(self, rule_id: str) -> str:
         if rule_id in self.blocking_base:
@@ -139,10 +141,14 @@ class Policy:
         # project_root 必須是存在的目錄：打錯或未取出時不因此認定本 repo（fail closed）
         return self.project_root is not None and self.project_root.is_dir() and t == self.project_root.resolve()
 
-    def exceptions_for(self, target=None, today=None) -> "Exceptions":
-        # 外部專案（target 不是本 repo）：例外只核准給本 repo 路徑 → 全部不套用（fail closed）
-        if not self.is_this_repo(target):
-            return Exceptions([], [], note=f"目標專案 {pathlib.Path(target).name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用")
+    def for_project(self, project, today=None) -> "ProjectPolicy":
+        """綁定受驗樹的政策例外。project 必填：None 不再代表本 repo（以前 exceptions_for(None) 是預設值，
+        外部專案忘了替換就套用本 repo 的例外）。today 只供測試注入日期。"""
+        if project is None:
+            raise ValueError("for_project 需要受驗樹；None 不代表本 repo")
+        # 外部專案（受驗樹不是本 repo）：例外只核准給本 repo 路徑 → 全部不套用（fail closed）
+        if not self.is_this_repo(project):
+            return ProjectPolicy(self, [], [], note=f"目標專案 {pathlib.Path(project).name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用")
         today = today or date.today()
         valid, ignored = [], []                   # ignored：(rule_id 或 None, 說明)；report 依 rule_id 分閘門
         for ex in self._exceptions:
@@ -162,45 +168,74 @@ class Policy:
                 ignored.append((ex["rule_id"], f"{ex['rule_id']} @ {ex['path_glob']}：已於 {exp} 過期"))
                 continue
             valid.append(dict(ex, expires=str(exp)))
-        return Exceptions(valid, ignored)
+        return ProjectPolicy(self, valid, ignored)
 
 
-class Exceptions:
-    """blocking-policy 的 exceptions（Policy.exceptions_for 產生）。"""
-    def __init__(self, valid: list[dict], ignored: list, note: str | None = None):
-        # ignored 可給說明字串，或 (rule_id, 說明)；只有字串時分不出閘門 → 每個閘門都列
-        self._ignored = [x if isinstance(x, tuple) else (None, x) for x in ignored]
-        self.ignored = [text for _, text in self._ignored]     # 全部（G1 stdout 的 ignored_exceptions）
-        self.valid, self.note = valid, note
-        self.applies = note is None          # False：外部專案，note 說明為何未套用
+class ProjectPolicy:
+    """Policy.for_project 的結果：綁定受驗樹的政策例外。外部專案沒有任何有效例外，note 說明為何未套用。"""
+    def __init__(self, policy: Policy, valid: list[dict], ignored: list[tuple], note: str | None = None):
+        self._policy, self._valid, self._ignored = policy, valid, ignored
+        self.ignored = [text for _, text in ignored]     # 全部（G1 stdout 的 ignored_exceptions）
+        self.note = note
 
-    def matches(self, rule_id: str, path: str) -> list[dict]:
-        """rule_id 相等且 fnmatchcase(path, path_glob) 的全部例外（不看 agent_id）。"""
-        return [ex for ex in self.valid if ex["rule_id"] == rule_id and fnmatch.fnmatchcase(path, ex["path_glob"])]
+    def classify(self, rule_id: str, path: str | None, agent_id: str | None = None,
+                 requested: str | None = None) -> dict:
+        """發現的政策 tier 與例外紀錄：{"policy_tier", "exception"}。tier 為 Policy.cap(rule_id, requested)
+        （呼叫端只能先降級）；rule_id 相等且 fnmatchcase(path, path_glob) 的例外命中 → advisory，發現保留，
+        exception 為 finding.schema.json 的固定五欄；沒有命中 → None。AGENT_SCOPED_RULES 的例外另須 agent_id 相同。"""
+        tier = self._policy.cap(rule_id, requested)
+        scoped = rule_id in AGENT_SCOPED_RULES
+        ex = None if path is None else next(
+            (e for e in self._valid if e["rule_id"] == rule_id and fnmatch.fnmatchcase(path, e["path_glob"])
+             and (not scoped or (agent_id is not None and e.get("agent_id") == agent_id))), None)
+        if ex is None:
+            return {"policy_tier": tier, "exception": None}
+        return {"policy_tier": "advisory", "exception": _record(ex)}
 
-    def match(self, rule_id: str, path: str, agent_id: str | None = None) -> dict | None:
-        """matches 的第一筆；沒有 → None。
-        傳了 agent_id（G0）→ 例外也必須寫明相同的 agent_id：只寫 path_glob 會連同之後新增的 agent 一起放行。"""
-        return next((ex for ex in self.matches(rule_id, path) if agent_id is None or ex.get("agent_id") == agent_id), None)
-
-    def report(self, findings: list[dict], gate: str, unapplied: list[str] = ()) -> list[str]:
-        """閘門 status_reason 的例外說明（各閘門相同的文字）。unapplied：閘門自己判定未套用的例外說明
-        （G0 缺 agent_id），與忽略的例外同列。"""
+    def report(self, findings: list[dict], gate: str, paths=()) -> list[str]:
+        """閘門 status_reason 的例外說明（各閘門相同的文字）：命中筆數、本閘門忽略的例外，以及缺 agent_id 而未套用的例外。
+        paths：閘門比對例外用的路徑（G0：威脅模型）。AGENT_SCOPED_RULES 的例外只寫 path_glob 不放行任何 agent，
+        path_glob 符合其中任一路徑時列為「缺 agent_id，未套用」；不列入 ignored。"""
         notes = []
         hits = sum(1 for f in findings if f.get("exception"))
         if hits:
             notes.append(f"{hits} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
         # 只列本閘門的規則；分不出閘門（缺 rule_id、trivy: 同時用於 G1／G3）→ 每個閘門都列，寧可重複不可漏看
-        mine = [text for rid, text in self._ignored if rid is None or rule_gate(rid) in (None, gate)] + list(unapplied)
+        unapplied = [(ex["rule_id"], f"{ex['rule_id']} @ {ex['path_glob']}：{rule_gate(ex['rule_id'])} 例外缺 agent_id，未套用")
+                     for ex in self._valid if ex["rule_id"] in AGENT_SCOPED_RULES and not ex.get("agent_id")
+                     and any(fnmatch.fnmatchcase(p, ex["path_glob"]) for p in paths)]
+        mine = [text for rid, text in self._ignored + unapplied if rid is None or rule_gate(rid) in (None, gate)]
         if mine:
             notes.append("忽略的例外：" + "；".join(mine))
         return notes
 
-    @staticmethod
-    def record(ex: dict) -> dict:
-        """命中的例外寫進 finding 的固定形狀（各閘門相同，finding.schema.json 的 exception）；沒有 agent_id → None。"""
-        return {"path_glob": ex["path_glob"], "reason": ex["reason"], "approved_by": ex["approved_by"],
-                "expires": ex["expires"], "agent_id": ex.get("agent_id")}
+
+def _record(ex: dict) -> dict:
+    """命中的例外寫進 finding 的固定形狀（各閘門相同，finding.schema.json 的 exception）；沒有 agent_id → None。"""
+    return {"path_glob": ex["path_glob"], "reason": ex["reason"], "approved_by": ex["approved_by"],
+            "expires": ex["expires"], "agent_id": ex.get("agent_id")}
+
+
+@contextlib.contextmanager
+def temp_policy_root(exceptions=(), root: pathlib.Path | None = None):
+    """selftest 用：暫存 root 放 root（預設本 repo）政策的副本（blocking-policy.yaml、vibesec.yaml），只換掉 exceptions，
+    不依賴政策檔現有例外與其到期日。yield 暫存 root；離開時刪除。要換例外時呼叫 write_exceptions。"""
+    import shutil, tempfile
+    root = pathlib.Path(root) if root else DEFAULT_ROOT
+    with tempfile.TemporaryDirectory(prefix="vibesec-policy-") as d:
+        tmp = pathlib.Path(d)
+        (tmp / "config/policy").mkdir(parents=True)
+        shutil.copy(root / "vibesec.yaml", tmp / "vibesec.yaml")
+        shutil.copy(root / "config/policy/blocking-policy.yaml", tmp / "config/policy/blocking-policy.yaml")
+        write_exceptions(tmp, exceptions)
+        yield tmp
+
+
+def write_exceptions(root: pathlib.Path, exceptions) -> None:
+    """selftest 用：把 root 的 blocking-policy.yaml 的 exceptions 換成 exceptions，其餘照舊。"""
+    path = pathlib.Path(root) / "config/policy/blocking-policy.yaml"
+    pol = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    path.write_text(yaml.safe_dump(dict(pol, exceptions=list(exceptions)), allow_unicode=True), encoding="utf-8")
 
 
 def selftest() -> list[str]:
@@ -273,98 +308,118 @@ def selftest() -> list[str]:
             Policy(root, risk_tier="L2"); fails.append("tier_overrides 有未知層級 L9 應拋出例外")
         except ValueError:
             pass
-        # exceptions_for：rule_id 相等且 fnmatchcase(path, path_glob) → 命中（只降為 advisory、發現保留由呼叫端處理）
+        # for_project → ProjectPolicy.classify：rule_id 相等且 fnmatchcase(path, path_glob) → 命中，tier 降為 advisory、發現保留
         ok_ex = {"rule_id": "vibesec.g9.a", "path_glob": "lab/**", "reason": "靶場", "approved_by": "@o", "expires": "2099-01-01"}
+        want = {"path_glob": "lab/**", "reason": "靶場", "approved_by": "@o", "expires": "2099-01-01", "agent_id": None}
+        (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"blocking": [{"rule_id": "vibesec.g9.a", "why": "x"}]}))
+        base_policy = Policy(root, risk_tier="L2", project_root=None)
 
-        def exs(entries, target=None, today=date(2026, 10, 13)):
-            (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"exceptions": entries}))
-            return Policy(root, risk_tier="L2", project_root=None).exceptions_for(target, today=today)
+        def pps(entries, project=root, today=date(2026, 10, 13), project_root=None):
+            (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump(
+                {"blocking": [{"rule_id": "vibesec.g9.a", "why": "x"}], "exceptions": entries}))
+            return Policy(root, risk_tier="L2", project_root=project_root).for_project(project, today=today)
 
-        e = exs([ok_ex])
-        hit = e.match("vibesec.g9.a", "lab/app/main.py")
-        if not hit or hit["approved_by"] != "@o" or hit["expires"] != "2099-01-01":
-            fails.append(f"rule_id 與 path_glob 都符合 → 命中並帶核准資訊；得到 {hit!r}")
-        if e.match("vibesec.g9.b", "lab/app/main.py") or e.match("vibesec.g9.a", "src/main.py"):
-            fails.append("rule_id 或 path_glob 不符 → 不命中")
+        pp = pps([ok_ex])
+        got = pp.classify("vibesec.g9.a", "lab/app/main.py")
+        if got != {"policy_tier": "advisory", "exception": want}:
+            fails.append(f"rule_id 與 path_glob 都符合 → advisory 並帶固定 5 欄的例外紀錄；得到 {got!r}")
+        for rid, path in (("vibesec.g9.b", "lab/app/main.py"), ("vibesec.g9.a", "src/main.py"), ("vibesec.g9.a", None)):
+            got = pp.classify(rid, path)
+            if got != {"policy_tier": base_policy.tier(rid), "exception": None}:
+                fails.append(f"rule_id 或 path 不符（{rid} @ {path}）→ 政策 tier、沒有例外紀錄；得到 {got!r}")
+        # requested：呼叫端可先把個別發現降為 advisory（G1 的 cap），例外不命中時保留，不得回到政策 tier
+        if pp.classify("vibesec.g9.a", "src/x", requested="advisory")["policy_tier"] != "advisory" \
+                or pp.classify("vibesec.g9.a", "src/x", requested="blocking")["policy_tier"] != "blocking":
+            fails.append("classify 的 requested 依 Policy.cap：只能降級、不能升到政策以上")
         # 缺欄位、expires 格式無效、非 dict → 不套用（fail closed）；ignored 文字與舊 g1_slopcheck.load_exceptions 逐字相同
         no_owner = {k: v for k, v in ok_ex.items() if k not in ("approved_by", "reason")}
-        e = exs(["不是 dict", no_owner, dict(ok_ex, expires="明年")])
-        if e.match("vibesec.g9.a", "lab/app/main.py"):
+        pp = pps(["不是 dict", no_owner, dict(ok_ex, expires="明年")])
+        if pp.classify("vibesec.g9.a", "lab/app/main.py")["exception"]:
             fails.append("缺欄位或 expires 無效的例外不得命中")
-        if e.ignored != ["vibesec.g9.a：缺少欄位 reason, approved_by", "vibesec.g9.a：expires 格式無效（明年）"]:
-            fails.append(f"ignored 文字不符：{e.ignored!r}")
-        if exs([{"path_glob": "lab/**"}]).ignored != ["?：缺少欄位 rule_id, reason, approved_by, expires"]:
+        if pp.ignored != ["vibesec.g9.a：缺少欄位 reason, approved_by", "vibesec.g9.a：expires 格式無效（明年）"]:
+            fails.append(f"ignored 文字不符：{pp.ignored!r}")
+        if pps([{"path_glob": "lab/**"}]).ignored != ["?：缺少欄位 rule_id, reason, approved_by, expires"]:
             fails.append("缺 rule_id → ignored 以 ? 代替")
-        # 過期：expires < today 才算過期（到期當日仍有效）；YAML 的日期值與字串同樣處理
+        # 過期：expires < today 才算過期（到期當日仍有效）；YAML 的日期值與字串同樣處理；today 在建立 context 時注入
         due = dict(ok_ex, expires="2026-10-13")
-        if not exs([due]).match("vibesec.g9.a", "lab/x") or not exs([dict(due, expires=date(2026, 10, 13))]).match("vibesec.g9.a", "lab/x"):
+        if not pps([due]).classify("vibesec.g9.a", "lab/x")["exception"] \
+                or not pps([dict(due, expires=date(2026, 10, 13))]).classify("vibesec.g9.a", "lab/x")["exception"]:
             fails.append("到期當日的例外仍有效")
-        e = exs([due], today=date(2026, 10, 14))
-        if e.match("vibesec.g9.a", "lab/x") or e.ignored != ["vibesec.g9.a @ lab/**：已於 2026-10-13 過期"]:
-            fails.append(f"過期的例外不得命中且記入 ignored；得到 {e.ignored!r}")
-        # agent_id（G0）：有傳時例外必須寫明相同的 agent_id；只寫 path_glob 的例外不放行任何 agent。沒傳 → 不看 agent_id
-        e = exs([dict(ok_ex, agent_id="a")])
-        if not e.match("vibesec.g9.a", "lab/x", agent_id="a") or e.match("vibesec.g9.a", "lab/x", agent_id="b"):
-            fails.append("agent_id 相同才命中")
-        if exs([ok_ex]).match("vibesec.g9.a", "lab/x", agent_id="a"):
-            fails.append("傳了 agent_id 時，未寫 agent_id 的例外不得命中")
-        if not e.match("vibesec.g9.a", "lab/x"):
-            fails.append("沒傳 agent_id → 不看例外的 agent_id")
-        # matches：rule_id 與 path_glob 都符合的全部例外（不看 agent_id；G0 用來註明缺 agent_id 的例外）
-        e = exs([dict(ok_ex, agent_id="a"), ok_ex, dict(ok_ex, path_glob="src/**")])
-        if [x.get("agent_id") for x in e.matches("vibesec.g9.a", "lab/x")] != ["a", None]:
-            fails.append(f"matches 回傳 rule_id 與 path_glob 都符合的全部例外；得到 {e.matches('vibesec.g9.a', 'lab/x')!r}")
-        # record：命中例外寫進 finding 的固定形狀（各閘門相同；finding.schema.json 的 exception）
-        want = {"path_glob": "lab/**", "reason": "靶場", "approved_by": "@o", "expires": "2099-01-01", "agent_id": None}
-        if e.record(e.match("vibesec.g9.a", "lab/x", agent_id="a")) != dict(want, agent_id="a") \
-                or e.record(exs([ok_ex]).match("vibesec.g9.a", "lab/x")) != want:
-            fails.append("record：固定 5 欄（path_glob、reason、approved_by、expires、agent_id；沒有 agent_id → null），不含 rule_id")
+        pp = pps([due], today=date(2026, 10, 14))
+        if pp.classify("vibesec.g9.a", "lab/x")["exception"] or pp.ignored != ["vibesec.g9.a @ lab/**：已於 2026-10-13 過期"]:
+            fails.append(f"過期的例外不得命中且記入 ignored；得到 {pp.ignored!r}")
+        # agent_id 規則（AGENT_SCOPED_RULES，目前只有 G0 的致命三要素）：例外必須寫明相同的 agent_id 才命中；
+        # 只寫 path_glob 的例外不放行任何 agent，並由 report 列為未套用。其他規則不看 agent_id
+        g0r, x1, x2 = ("vibesec." + x for x in ("g0.lethal-trifecta-open", "g1.x", "g2.x"))   # 執行期組出：validate 會掃原文
+        g0ex = dict(ok_ex, rule_id=g0r, path_glob="docs/tm.yaml")
+        pp = pps([dict(g0ex, agent_id="a")])
+        if pp.classify(g0r, "docs/tm.yaml", agent_id="a")["exception"] != dict(want, path_glob="docs/tm.yaml", agent_id="a") \
+                or pp.classify(g0r, "docs/tm.yaml", agent_id="b")["exception"] \
+                or pp.classify(g0r, "docs/tm.yaml")["exception"]:
+            fails.append("agent_id 規則：agent_id 相同才命中（沒傳 agent_id 也不命中）")
+        pp = pps([g0ex])
+        if pp.classify(g0r, "docs/tm.yaml", agent_id="a")["exception"]:
+            fails.append("agent_id 規則：未寫 agent_id 的例外不得命中")
+        if pp.report([], "G0", paths=["docs/tm.yaml"]) != [f"忽略的例外：{g0r} @ docs/tm.yaml：G0 例外缺 agent_id，未套用"] \
+                or pp.report([], "G1", paths=["docs/tm.yaml"]) != [] or pp.ignored != []:
+            fails.append(f"agent_id 規則：缺 agent_id 的例外只列在本閘門的 report（不列入 ignored）；得到 {pp.report([], 'G0', paths=['docs/tm.yaml'])!r}")
+        # 只列 path_glob 符合閘門比對路徑的（與有沒有發現無關）；沒給路徑或路徑不符 → 不列
+        if pp.report([], "G0", paths=["other/tm.yaml"]) != [] or pp.report([], "G0") != []:
+            fails.append("agent_id 規則：缺 agent_id 的例外只列 path_glob 符合比對路徑的")
+        if not pps([dict(ok_ex, agent_id="a")]).classify("vibesec.g9.a", "lab/x")["exception"]:
+            fails.append("其他規則不看例外的 agent_id")
         # report：閘門 status_reason 的例外說明（各閘門相同的文字）
         hit = {"exception": want}
-        got = exs([ok_ex]).report([hit, {}, hit], "G9")
+        got = pps([ok_ex]).report([hit, {}, hit], "G9")
         if got != ["2 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）"]:
             fails.append(f"report：命中筆數說明；得到 {got!r}")
-        if exs([ok_ex]).report([{}], "G9") != []:
+        if pps([ok_ex]).report([{}], "G9") != []:
             fails.append("report：沒有命中、沒有忽略的例外 → 不加說明")
         # 忽略的例外只列本閘門的規則（rule_gate）；分不出閘門的（缺 rule_id、trivy:）每個閘門都列，寧可重複不可漏看
-        x1, x2 = "vibesec." + "g1.x", "vibesec." + "g2.x"   # 執行期組出：validate 會掃原文中的 vibesec.g<0-6>.*
         old = dict(ok_ex, expires="2026-01-01")
-        e = exs([dict(old, rule_id=x1), dict(old, rule_id=x2), {"path_glob": "lab/**"}, dict(old, rule_id="trivy:AVD-1")])
+        pp = pps([dict(old, rule_id=x1), dict(old, rule_id=x2), {"path_glob": "lab/**"}, dict(old, rule_id="trivy:AVD-1"),
+                  dict(ok_ex, rule_id=g0r, path_glob="docs/tm.yaml")])
         common = "?：缺少欄位 rule_id, reason, approved_by, expires；trivy:AVD-1 @ lab/**：已於 2026-01-01 過期"
         for gate, mine in (("G2", x2), ("G1", x1)):
-            got = e.report([], gate)
+            got = pp.report([], gate)
             if got != [f"忽略的例外：{mine} @ lab/**：已於 2026-01-01 過期；{common}"]:
                 fails.append(f"report {gate}：只列本閘門與分不出閘門的忽略例外；得到 {got!r}")
-        # unapplied：閘門自己判定未套用的例外（G0 缺 agent_id）與忽略的例外同列，接在後面
-        got = e.report([], "G2", unapplied=["某例外缺 agent_id，未套用"])
-        if got != [f"忽略的例外：{x2} @ lab/**：已於 2026-01-01 過期；{common}；某例外缺 agent_id，未套用"] \
-                or exs([ok_ex]).report([], "G9", unapplied=["Y"]) != ["忽略的例外：Y"]:
-            fails.append(f"report：unapplied 接在忽略的例外之後、同一個前綴；得到 {got!r}")
-        if len(e.ignored) != 4:
-            fails.append(f"ignored 仍列出全部（G1 stdout 用）；得到 {e.ignored!r}")
-        # 外部專案：例外只核准給本 repo 路徑 → 不套用、不列 ignored，附說明；target 為 None 或本 repo → 套用
+        # 缺 agent_id 而未套用的例外與忽略的例外同列，接在後面、同一個前綴
+        got = pp.report([], "G0", paths=["docs/tm.yaml"])
+        if got != [f"忽略的例外：{common}；{g0r} @ docs/tm.yaml：G0 例外缺 agent_id，未套用"]:
+            fails.append(f"report G0：缺 agent_id 的例外接在忽略的例外之後；得到 {got!r}")
+        if len(pp.ignored) != 4:
+            fails.append(f"ignored 仍列出全部忽略的例外（G1 stdout 用）；得到 {pp.ignored!r}")
+        # 外部專案：例外只核准給本 repo 路徑 → 不套用、不列 ignored，附說明；受驗樹是本 repo → 套用
         (root / "other").mkdir()
-        e = exs([ok_ex, no_owner], target=root / "other")
-        if e.applies or e.match("vibesec.g9.a", "lab/x") or e.ignored \
-                or e.note != "目標專案 other：blocking-policy exceptions 只核准給本 repo 路徑，未套用":
-            fails.append(f"外部專案 → 不套用例外並附說明；得到 applies={e.applies!r} note={e.note!r} ignored={e.ignored!r}")
-        for same in (None, root, root / "other" / ".."):
-            e = exs([ok_ex], target=same)
-            if not e.applies or e.note is not None or not e.match("vibesec.g9.a", "lab/x"):
-                fails.append(f"target={same!r} 是本 repo → 套用例外")
-        # project_root（CI：判定程式在 _trusted/、受驗樹在 workspace，兩者都是本 repo）：等於它的 target 也算本 repo
+        pp = pps([ok_ex, no_owner, g0ex], project=root / "other")
+        if pp.classify("vibesec.g9.a", "lab/x") != {"policy_tier": "blocking", "exception": None} or pp.ignored \
+                or pp.report([], "G0", paths=["docs/tm.yaml"]) != [] or pp.note != "目標專案 other：blocking-policy exceptions 只核准給本 repo 路徑，未套用":
+            fails.append(f"外部專案 → 不套用例外並附說明；得到 note={pp.note!r} ignored={pp.ignored!r}")
+        for same in (root, root / "other" / ".."):
+            pp = pps([ok_ex], project=same)
+            if pp.note is not None or not pp.classify("vibesec.g9.a", "lab/x")["exception"]:
+                fails.append(f"受驗樹 {same} 是本 repo → 套用例外")
+        # 受驗樹必填：None 不再代表「本 repo」（以前 exceptions_for(None) 是預設值，外部專案忘了換就套用本 repo 的例外）
+        try:
+            base_policy.for_project(None); fails.append("for_project(None) 應拋出例外")
+        except (TypeError, ValueError):
+            pass
+        # project_root（CI：判定程式在 _trusted/、受驗樹在 workspace，兩者都是本 repo）：等於它的受驗樹也算本 repo
         (root / "proj").mkdir()
-        pp = Policy(root, risk_tier="L2", project_root=root / "proj")
-        got = [pp.is_this_repo(t) for t in (None, root, root / "proj", root / "other" / ".." / "proj", root / "other")]
+        pp_ = Policy(root, risk_tier="L2", project_root=root / "proj")
+        got = [pp_.is_this_repo(t) for t in (None, root, root / "proj", root / "other" / ".." / "proj", root / "other")]
         if got != [True, True, True, True, False]:
             fails.append(f"is_this_repo（None、root、project_root、project_root 別名、其他目錄）應為 T T T T F；得到 {got}")
-        e = pp.exceptions_for(root / "proj", today=date(2026, 10, 13))
-        if not e.applies or e.note is not None or not e.match("vibesec.g9.a", "lab/x"):
-            fails.append("target 等於 project_root → 本 repo，套用例外")
+        pp = pps([ok_ex], project=root / "proj", project_root=root / "proj")
+        if pp.note is not None or not pp.classify("vibesec.g9.a", "lab/x")["exception"]:
+            fails.append("受驗樹等於 project_root → 本 repo，套用例外")
         # project_root 不是存在的目錄（打錯、未取出）→ 不因此認定本 repo（fail closed：例外不套用）
         for bad in (root / "nope", root / "vibesec.yaml"):
             if Policy(root, risk_tier="L2", project_root=bad).is_this_repo(bad):
                 fails.append(f"project_root={bad.name} 不是存在的目錄 → 不算本 repo")
+        if pps([ok_ex], project=root / "nope", project_root=root / "nope").note is None:
+            fails.append("project_root 不是存在的目錄 → 受驗樹視為外部專案，例外不套用")
         # 沒傳 project_root → 取環境變數 VIBESEC_PROJECT_ROOT（CI 由受信任的 workflow 設定）；明確傳 None → 不讀（selftest 用）
         saved = os.environ.pop("VIBESEC_PROJECT_ROOT", None)
         try:
@@ -389,12 +444,23 @@ def selftest() -> list[str]:
         (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"incomplete_gate_is_blocking_in_enforce": ["G1", "G2"]}))
         if Policy(root, risk_tier="L2").incomplete_blocking_gates != ["G1", "G2"]:
             fails.append("合法的 incomplete_gate_is_blocking_in_enforce 照常讀入")
+    # temp_policy_root：本 repo 政策的副本只換掉 exceptions（tier 與本 repo 相同）；離開時刪除
+    ex = {"rule_id": "vibesec.g2.hardcoded-secret", "path_glob": "x/**", "reason": "r", "approved_by": "@o", "expires": "2099-01-01"}
+    with temp_policy_root([ex]) as tmp:
+        tp = Policy(tmp, project_root=None)
+        if tp._exceptions != [ex] or tp.tier("vibesec.g2.hardcoded-secret") != Policy(project_root=None).tier("vibesec.g2.hardcoded-secret"):
+            fails.append("temp_policy_root：只換掉 exceptions，tier 與本 repo 政策相同")
+        write_exceptions(tmp, [])
+        if Policy(tmp, project_root=None)._exceptions:
+            fails.append("write_exceptions：換掉 exceptions")
+    if tmp.exists():
+        fails.append("temp_policy_root：離開時刪除暫存 root")
     # 契約：record() 的形狀就是 finding.schema.json 的 exception（harness 原樣搬進 findings.json）；缺欄、多欄、型別不符 → 不通過
     import json
     from jsonschema import Draft202012Validator as V
     schema = json.loads((DEFAULT_ROOT / "schemas/finding.schema.json").read_text(encoding="utf-8"))
     finding = json.loads((DEFAULT_ROOT / "docs/templates/finding.example.json").read_text(encoding="utf-8"))
-    rec = Exceptions.record({"rule_id": "r", "path_glob": "lab/**", "reason": "靶場", "approved_by": "@o", "expires": "2099-01-01"})
+    rec = _record({"rule_id": "r", "path_glob": "lab/**", "reason": "靶場", "approved_by": "@o", "expires": "2099-01-01"})
     ok = lambda exc: not list(V(schema, format_checker=V.FORMAT_CHECKER).iter_errors(dict(finding, exception=exc)))
     if not ok(rec) or not ok(dict(rec, agent_id="a")):
         fails.append("finding.schema.json 接受 record() 的 exception（agent_id 為 null 或字串）")

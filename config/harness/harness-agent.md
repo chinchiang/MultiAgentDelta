@@ -37,7 +37,7 @@ role: harness
    b. 依 `tools[]` 順序執行，每個工具一個子程序，總預算 `timeout_seconds`。原生輸出存 `reports/raw/G<N>/<tool>.<ext>`。逐一記 `tools[]`：`name / version / state(ran|missing|timeout|error) / exit_code / output_ref / duration_seconds`。
    c. **G1 通過前不得執行任何安裝指令**（`npm install`、`pip install`、`uv sync`、`poetry install`）。
    d. 解析原生輸出（SARIF：`runs[].results[]` + `tool.driver.rules[]`；JSON：各工具 adapter）→ 正規化為 Finding（§5）。
-   e. ApplyPolicy：`exceptions`（欄位完整、未過期且 `rule_id` 相等、path 以 fnmatch 符合；G0 另須 `agent_id` 相同；外部專案不套用；讀取與比對一律經 `scripts/vibesec_policy.py` 的 `Policy.exceptions_for`）→ `tier_overrides.<tier>` → `blocking` → `advisory` → `default_tier`。
+   e. ApplyPolicy：`exceptions`（欄位完整、未過期且 `rule_id` 相等、path 以 fnmatch 符合；G0 另須 `agent_id` 相同；外部專案不套用；讀取與比對一律經 `scripts/vibesec_policy.py` 的 `Policy.for_project(受驗樹).classify`）→ `tier_overrides.<tier>` → `blocking` → `advisory` → `default_tier`。
    f. 決定資料分級（docs/08 §12），把需要審查的發現（G4 全部；其他閘門中 E1/E2 且 blocking 或 P0/P1 候選者）送 reviewer（§6）。
    g. Score：CVSS v4.0 向量（工具提供或 reviewer 提議；reviewer 提議者 `notes` 標 `cvss proposed by reviewer, pending human confirmation`）、EPSS / KEV 查詢（失敗填 `null` + `notes`）、E 等級、validation_status、P 查表、`due_date`。
    h. 寫 `coverage[]`：本閘門適用控制逐一 `pass / fail / pending / untested / not_applicable(+reason)`。
@@ -69,7 +69,7 @@ role: harness
 - `evidence_grade`：依 docs/10 §1；工具單一告警預設 E1；完整污點路徑 / 版本可達 E2；實測或人工核對 E3；無 file:line 的模型推測 E0。
 - `validation_status`：預設 `pending`；只有 E3 且（人工裁決或確定性實測）才 `confirmed`。
 - `policy_tier`：ApplyPolicy 結果。閘門已依 blocking-policy 例外降為 advisory 者沿用閘門結果，**不得升回 blocking**。
-- `exception`：閘門 finding 帶 `exception`（命中 blocking-policy 例外；固定五欄 `path_glob`、`reason`、`approved_by`、`expires`、`agent_id`，由 `vibesec_policy.Exceptions.record` 產生）→ 原樣搬進 Finding；沒有命中 → 省略（選填欄位，不填 `null`）。
+- `exception`：閘門 finding 帶 `exception`（命中 blocking-policy 例外；固定五欄 `path_glob`、`reason`、`approved_by`、`expires`、`agent_id`，由 `vibesec_policy.ProjectPolicy.classify` 產生）→ 原樣搬進 Finding；沒有命中 → 省略（選填欄位，不填 `null`）。
 - `priority`：docs/10 §5 查表；pending 者在 `notes` 標 `candidate`。
 - `location.kind`：code / dependency / config 進 SARIF；architecture / prompt 進 risk register；http 兩者皆不進 SARIF，只在 findings.json。
 - 祕密：`title`、`description`、`evidence_refs[].note` 只留遮罩（至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）與 sha256 指紋。

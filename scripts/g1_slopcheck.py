@@ -744,14 +744,13 @@ def resolve(path):
         return p
     return TARGET / p
 
-def apply_exceptions(finding, exceptions):
-    """命中 rule_id 與 path_glob 的例外（exceptions：Policy.exceptions_for 的結果）時把 blocking 降為 advisory；
-    例外不刪除發現。"""
-    ex = exceptions.match(finding["rule_id"], finding.get("manifest") or "")
-    if ex:
-        if finding["policy_tier"] == "blocking":
-            finding["policy_tier"] = "advisory"
-        finding["exception"] = exceptions.record(ex)      # 各閘門相同的固定形狀
+def apply_exceptions(finding, project):
+    """命中 rule_id 與 path_glob 的例外（project：Policy.for_project 的結果）時把 blocking 降為 advisory；
+    例外不刪除發現。發現的 tier 已經過 cap（fnd），作為 requested 傳入：只能維持或降級。"""
+    c = project.classify(finding["rule_id"], finding.get("manifest") or "", requested=finding["policy_tier"])
+    finding["policy_tier"] = c["policy_tier"]
+    if c["exception"]:
+        finding["exception"] = c["exception"]      # 各閘門相同的固定形狀
     return finding
 
 # allowlist.yaml 的 bypass 只能放行這些檢查（檔頭規則 3：slopsquat／cooldown／low-download）；
@@ -1813,9 +1812,9 @@ def main(argv):
         pre_incomplete.append(f"變更清單中的檔案不存在，且不在 base {base}：{', '.join(unknown)}")
     manifests = [resolve(m) for m in dict.fromkeys(manifests) if resolve(m).exists()]
     rule_files = [resolve(r) for r in dict.fromkeys(rule_files) if resolve(r).exists()]
-    exceptions = _policy().exceptions_for(TARGET)      # 外部專案 → 不套用，note 說明
-    if exceptions.note:
-        notes.append(exceptions.note)
+    project = _policy().for_project(TARGET)      # 受驗樹的政策例外：外部專案 → 不套用，note 說明
+    if project.note:
+        notes.append(project.note)
 
     if not manifests and not rule_files:
         out = {"gate": "G1", "findings": []}
@@ -1888,15 +1887,15 @@ def main(argv):
                 incomplete.append(reason)
             for f in found:
                 f["manifest"] = source_rel
-                findings.append(apply_exceptions(apply_allowlist(f, allowlist, ver), exceptions))
+                findings.append(apply_exceptions(apply_allowlist(f, allowlist, ver), project))
 
     for m in manifests:
         f = self_install_hooks(m)
         if f:
             f["manifest"] = rel_path(m)
-            findings.append(apply_exceptions(f, exceptions))
+            findings.append(apply_exceptions(f, project))
     pypi_checked = sum(1 for e, _, _ in jobs if e == "pypi")
-    notes += exceptions.report(findings, "G1")   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
+    notes += project.report(findings, "G1")   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
 
     incomplete = list(dict.fromkeys(incomplete))
     coverage = gate_coverage(findings, incomplete, pypi_checked)
@@ -1905,8 +1904,8 @@ def main(argv):
     if external_target():
         out["target"] = str(TARGET)
         out["notes"] = notes
-    if exceptions.ignored:
-        out["ignored_exceptions"] = exceptions.ignored
+    if project.ignored:
+        out["ignored_exceptions"] = project.ignored
     if ignored_allowlist:
         out["ignored_allowlist"] = ignored_allowlist
     if status != "pass":
