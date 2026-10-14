@@ -20,7 +20,7 @@
   tool(name, state, *, version=None, exit_code=None, output_ref=None, duration_seconds=None) -> dict
   sarif(driver, rules, results) -> dict      自產 SARIF 2.1.0 文件骨架；rules、results 照原樣放入
   remove_stale(path) -> bool                 刪掉過期的自產 SARIF（這一次沒有判定任何發現時用：政策讀不到、
-                                             G1 sbom／kev 的 incomplete）；檔案不存在不出錯
+                                             G1 sbom／kev／provenance 的 incomplete）；檔案不存在不出錯
   now() -> str                               UTC、精度到秒、+00:00
 
 控制覆蓋不變式：宣告在 controls、卻沒有 cover 的控制，result() 時補成 untested（原因：未執行）；宣告在 deferred、
@@ -106,7 +106,7 @@ def sarif(driver, rules, results) -> dict:
 
 def remove_stale(path) -> bool:
     """刪掉上一次留下的自產 SARIF（不讓上一次的發現被當成這一次的結果）；回傳是否刪了檔案。
-    這一次沒有判定任何發現時才用（政策讀不到、G1 sbom／kev 的 incomplete）；還有部分發現時應照常寫出 SARIF。"""
+    這一次沒有判定任何發現時才用（政策讀不到、G1 sbom／kev／provenance 的 incomplete）；還有部分發現時應照常寫出 SARIF。"""
     p = pathlib.Path(path)
     if p.is_file():
         p.unlink()
