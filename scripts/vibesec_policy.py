@@ -13,6 +13,8 @@ base_tier；所有發出 finding 的元件（workflow 內嵌探針、scripts/*.p
   e = p.exceptions_for(target=None, today=None)   # blocking-policy 的 exceptions（G0–G3 唯一的讀取與比對）
   e.match(rule_id, path, agent_id=None)           # 命中的例外或 None；呼叫端把 blocking 降為 advisory、發現保留
   e.ignored / e.applies / e.note                  # 被忽略的例外說明／是否套用／外部專案的說明
+  e.record(ex)                                    # 命中例外寫進 finding 的固定五欄（finding.schema.json 的 exception）
+  e.report(findings, gate, unapplied=())          # status_reason 的例外說明：命中筆數、本閘門忽略的例外（各閘門同一份文字）
 
 exceptions：欄位（rule_id、path_glob、reason、approved_by、expires）缺一、expires 格式無效、已過期（expires < today；
 到期當日仍有效）→ 不套用並列入 ignored；path_glob 以 fnmatch.fnmatchcase 比對（單一 * 也會跨越 /）。
@@ -142,22 +144,22 @@ class Policy:
         if not self.is_this_repo(target):
             return Exceptions([], [], note=f"目標專案 {pathlib.Path(target).name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用")
         today = today or date.today()
-        valid, ignored = [], []
+        valid, ignored = [], []                   # ignored：(rule_id 或 None, 說明)；report 依 rule_id 分閘門
         for ex in self._exceptions:
             if not isinstance(ex, dict):
                 continue
             missing = [k for k in EXCEPTION_FIELDS if not ex.get(k)]
             if missing:
-                ignored.append(f"{ex.get('rule_id', '?')}：缺少欄位 {', '.join(missing)}")
+                ignored.append((ex.get("rule_id"), f"{ex.get('rule_id', '?')}：缺少欄位 {', '.join(missing)}"))
                 continue
             exp = ex["expires"]
             try:
                 exp = exp if isinstance(exp, date) else date.fromisoformat(str(exp))
             except ValueError:
-                ignored.append(f"{ex['rule_id']}：expires 格式無效（{ex['expires']}）")
+                ignored.append((ex["rule_id"], f"{ex['rule_id']}：expires 格式無效（{ex['expires']}）"))
                 continue
             if exp < today:
-                ignored.append(f"{ex['rule_id']} @ {ex['path_glob']}：已於 {exp} 過期")
+                ignored.append((ex["rule_id"], f"{ex['rule_id']} @ {ex['path_glob']}：已於 {exp} 過期"))
                 continue
             valid.append(dict(ex, expires=str(exp)))
         return Exceptions(valid, ignored)
@@ -165,8 +167,11 @@ class Policy:
 
 class Exceptions:
     """blocking-policy 的 exceptions（Policy.exceptions_for 產生）。"""
-    def __init__(self, valid: list[dict], ignored: list[str], note: str | None = None):
-        self.valid, self.ignored, self.note = valid, ignored, note
+    def __init__(self, valid: list[dict], ignored: list, note: str | None = None):
+        # ignored 可給說明字串，或 (rule_id, 說明)；只有字串時分不出閘門 → 每個閘門都列
+        self._ignored = [x if isinstance(x, tuple) else (None, x) for x in ignored]
+        self.ignored = [text for _, text in self._ignored]     # 全部（G1 stdout 的 ignored_exceptions）
+        self.valid, self.note = valid, note
         self.applies = note is None          # False：外部專案，note 說明為何未套用
 
     def matches(self, rule_id: str, path: str) -> list[dict]:
@@ -177,6 +182,25 @@ class Exceptions:
         """matches 的第一筆；沒有 → None。
         傳了 agent_id（G0）→ 例外也必須寫明相同的 agent_id：只寫 path_glob 會連同之後新增的 agent 一起放行。"""
         return next((ex for ex in self.matches(rule_id, path) if agent_id is None or ex.get("agent_id") == agent_id), None)
+
+    def report(self, findings: list[dict], gate: str, unapplied: list[str] = ()) -> list[str]:
+        """閘門 status_reason 的例外說明（各閘門相同的文字）。unapplied：閘門自己判定未套用的例外說明
+        （G0 缺 agent_id），與忽略的例外同列。"""
+        notes = []
+        hits = sum(1 for f in findings if f.get("exception"))
+        if hits:
+            notes.append(f"{hits} 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）")
+        # 只列本閘門的規則；分不出閘門（缺 rule_id、trivy: 同時用於 G1／G3）→ 每個閘門都列，寧可重複不可漏看
+        mine = [text for rid, text in self._ignored if rid is None or rule_gate(rid) in (None, gate)] + list(unapplied)
+        if mine:
+            notes.append("忽略的例外：" + "；".join(mine))
+        return notes
+
+    @staticmethod
+    def record(ex: dict) -> dict:
+        """命中的例外寫進 finding 的固定形狀（各閘門相同，finding.schema.json 的 exception）；沒有 agent_id → None。"""
+        return {"path_glob": ex["path_glob"], "reason": ex["reason"], "approved_by": ex["approved_by"],
+                "expires": ex["expires"], "agent_id": ex.get("agent_id")}
 
 
 def selftest() -> list[str]:
@@ -290,6 +314,34 @@ def selftest() -> list[str]:
         e = exs([dict(ok_ex, agent_id="a"), ok_ex, dict(ok_ex, path_glob="src/**")])
         if [x.get("agent_id") for x in e.matches("vibesec.g9.a", "lab/x")] != ["a", None]:
             fails.append(f"matches 回傳 rule_id 與 path_glob 都符合的全部例外；得到 {e.matches('vibesec.g9.a', 'lab/x')!r}")
+        # record：命中例外寫進 finding 的固定形狀（各閘門相同；finding.schema.json 的 exception）
+        want = {"path_glob": "lab/**", "reason": "靶場", "approved_by": "@o", "expires": "2099-01-01", "agent_id": None}
+        if e.record(e.match("vibesec.g9.a", "lab/x", agent_id="a")) != dict(want, agent_id="a") \
+                or e.record(exs([ok_ex]).match("vibesec.g9.a", "lab/x")) != want:
+            fails.append("record：固定 5 欄（path_glob、reason、approved_by、expires、agent_id；沒有 agent_id → null），不含 rule_id")
+        # report：閘門 status_reason 的例外說明（各閘門相同的文字）
+        hit = {"exception": want}
+        got = exs([ok_ex]).report([hit, {}, hit], "G9")
+        if got != ["2 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）"]:
+            fails.append(f"report：命中筆數說明；得到 {got!r}")
+        if exs([ok_ex]).report([{}], "G9") != []:
+            fails.append("report：沒有命中、沒有忽略的例外 → 不加說明")
+        # 忽略的例外只列本閘門的規則（rule_gate）；分不出閘門的（缺 rule_id、trivy:）每個閘門都列，寧可重複不可漏看
+        x1, x2 = "vibesec." + "g1.x", "vibesec." + "g2.x"   # 執行期組出：validate 會掃原文中的 vibesec.g<0-6>.*
+        old = dict(ok_ex, expires="2026-01-01")
+        e = exs([dict(old, rule_id=x1), dict(old, rule_id=x2), {"path_glob": "lab/**"}, dict(old, rule_id="trivy:AVD-1")])
+        common = "?：缺少欄位 rule_id, reason, approved_by, expires；trivy:AVD-1 @ lab/**：已於 2026-01-01 過期"
+        for gate, mine in (("G2", x2), ("G1", x1)):
+            got = e.report([], gate)
+            if got != [f"忽略的例外：{mine} @ lab/**：已於 2026-01-01 過期；{common}"]:
+                fails.append(f"report {gate}：只列本閘門與分不出閘門的忽略例外；得到 {got!r}")
+        # unapplied：閘門自己判定未套用的例外（G0 缺 agent_id）與忽略的例外同列，接在後面
+        got = e.report([], "G2", unapplied=["某例外缺 agent_id，未套用"])
+        if got != [f"忽略的例外：{x2} @ lab/**：已於 2026-01-01 過期；{common}；某例外缺 agent_id，未套用"] \
+                or exs([ok_ex]).report([], "G9", unapplied=["Y"]) != ["忽略的例外：Y"]:
+            fails.append(f"report：unapplied 接在忽略的例外之後、同一個前綴；得到 {got!r}")
+        if len(e.ignored) != 4:
+            fails.append(f"ignored 仍列出全部（G1 stdout 用）；得到 {e.ignored!r}")
         # 外部專案：例外只核准給本 repo 路徑 → 不套用、不列 ignored，附說明；target 為 None 或本 repo → 套用
         (root / "other").mkdir()
         e = exs([ok_ex, no_owner], target=root / "other")
@@ -337,6 +389,20 @@ def selftest() -> list[str]:
         (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"incomplete_gate_is_blocking_in_enforce": ["G1", "G2"]}))
         if Policy(root, risk_tier="L2").incomplete_blocking_gates != ["G1", "G2"]:
             fails.append("合法的 incomplete_gate_is_blocking_in_enforce 照常讀入")
+    # 契約：record() 的形狀就是 finding.schema.json 的 exception（harness 原樣搬進 findings.json）；缺欄、多欄、型別不符 → 不通過
+    import json
+    from jsonschema import Draft202012Validator as V
+    schema = json.loads((DEFAULT_ROOT / "schemas/finding.schema.json").read_text(encoding="utf-8"))
+    finding = json.loads((DEFAULT_ROOT / "docs/templates/finding.example.json").read_text(encoding="utf-8"))
+    rec = Exceptions.record({"rule_id": "r", "path_glob": "lab/**", "reason": "靶場", "approved_by": "@o", "expires": "2099-01-01"})
+    ok = lambda exc: not list(V(schema, format_checker=V.FORMAT_CHECKER).iter_errors(dict(finding, exception=exc)))
+    if not ok(rec) or not ok(dict(rec, agent_id="a")):
+        fails.append("finding.schema.json 接受 record() 的 exception（agent_id 為 null 或字串）")
+    for label, bad in (("缺 reason", {k: v for k, v in rec.items() if k != "reason"}), ("多 rule_id", dict(rec, rule_id="r")),
+                       ("agent_id 非字串", dict(rec, agent_id=3)), ("expires 不是日期", dict(rec, expires="明年")),
+                       ("approved_by 空字串", dict(rec, approved_by=""))):
+        if ok(bad):
+            fails.append(f"finding.schema.json 的 exception 應拒絕：{label}")
     # 本 repo 的實際政策：L1 下 G3 規則不阻擋、G1／G2 照常；L3 的升級規則仍在
     real_l1, real_l3 = Policy(risk_tier="L1"), Policy(risk_tier="L3")
     if real_l1.tier("vibesec.g3.sql-string-concat") != "advisory" or real_l1.tier("vibesec.g2.hardcoded-secret") != "blocking":

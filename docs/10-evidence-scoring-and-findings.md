@@ -148,6 +148,8 @@
 
 祕密類範例差異：`title` 與 `description` 只保留遮罩（`sk-ab…9f3Q`）與 sha256 指紋；`evidence_refs[].ref` 指向 gitleaks 原生輸出，原始值不得進任何報告。
 
+已接受風險（blocking-policy 例外）範例差異：`policy_tier` 為 `advisory`（閘門已降級，harness 不得升回），另帶選填欄位 `exception`，固定五欄：`{"path_glob": "examples/vulnapp/**", "reason": "…", "approved_by": "…", "expires": "2027-03-31", "agent_id": null}`（`agent_id` 只有 G0 的例外會寫）。沒有命中例外的發現省略此欄。各閘門的 `status_reason` 另以相同文字註明「N 筆命中 blocking-policy 例外」與「忽略的例外：…」（只列該閘門的規則；分不出閘門者每個閘門都列）。
+
 ## 7. SARIF 2.1.0 對映
 
 只有 `location.kind ∈ {code, dependency, config}` 的發現匯出 SARIF；每個工具一個 `run`。
