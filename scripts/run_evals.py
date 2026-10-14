@@ -260,6 +260,8 @@ class G0TrifectaRunner(Runner):
         spec = importlib.util.spec_from_file_location("g0_trifecta", ROOT / "scripts/g0_trifecta.py")
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
+        # 與 validate.py 相同：tier 取自本 repo 的政策；案例沒有 tm_rel → 不比對政策例外
+        self.project = self.mod.load_project_policy(ROOT)[0]
 
     def handles(self, case):
         if case.get("gate") != "G0" or case["expected"].get("rule_id") != self.mod.RULE:
@@ -269,7 +271,7 @@ class G0TrifectaRunner(Runner):
         return None
 
     def run(self, case):
-        return {f["rule_id"] for f in self.mod.trifecta_findings(case["input"]["threat_model"])}, None
+        return {f["rule_id"] for f in self.mod.trifecta_findings(case["input"]["threat_model"], project=self.project)}, None
 
 
 class G0CoverageRunner(Runner):
@@ -1448,6 +1450,23 @@ def selftest() -> list[str]:
     ]:
         if bool(slopcheck_incomplete(out, case)) != want:
             fails.append(f"slopcheck_incomplete（{name}）應為 {'無法判定' if want else '可判定'}")
+
+    # 真實的進程內 G0 runner：以 evals/cases/g0 的案例實際呼叫閘門函式。以前閘門函式改了簽名、這裡沒有呼叫到，
+    # run_evals 整支以 TypeError 結束（#173 的 trifecta_findings）；判定是否正確由 baseline 比對負責，這裡只看呼叫得通
+    for runner_cls in (G0TrifectaRunner, G0CoverageRunner):
+        r, ran = runner_cls(), 0
+        for p in sorted((ROOT / "evals/cases/g0").glob("*.yaml")):
+            case = load_yaml(p)
+            if r.handles(case) is not None:
+                continue
+            try:
+                r.run(case)
+            except Exception as e:
+                fails.append(f"{r.name} 執行 {case['id']} 拋出例外：{type(e).__name__}: {e}")
+                break
+            ran += 1
+        if not ran:
+            fails.append(f"{r.name} 沒有處理任何 evals/cases/g0 案例")
 
     return fails
 
