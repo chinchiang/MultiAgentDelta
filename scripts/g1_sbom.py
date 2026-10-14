@@ -238,7 +238,6 @@ def merge_gate(gate: dict, summary: dict, found: list[dict], sarif_ref: str | No
     只有 blocking 發現會讓 G1 變 fail；advisory 發現只計數，但 VS-G1-SBOM 仍記 fail（控制本身沒有達成）。
     policy_unreadable：政策讀不到、SBOM 沒有執行 → tool 列為 gate_result 的統一形狀（error、exit_code／output_ref null，
     #182 決定 2）；一般 incomplete 維持 ran／exit_code 2。"""
-    sys.path.insert(0, str(ROOT / "scripts"))
     from gate_verdict import merge
     st = summary["status"]
     blocking = sum(f["policy_tier"] == "blocking" for f in found)

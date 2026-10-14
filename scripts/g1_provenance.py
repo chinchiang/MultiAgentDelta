@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse, datetime, json, pathlib, re, shutil, subprocess, sys
 
 RULE = "vibesec.g1.sbom-missing-provenance"
+TOOL_NAME, TOOL_VERSION = "vibesec-g1-provenance", "1.0.0"
 # gh 對「沒有證明／證明不符」的訊息（其餘錯誤一律視為無法判定）
 MISSING = re.compile(r"no attestations? (were )?found|failed to verify|verification failed|no matching attestations?|"
                      r"none of the attestations matched|"
@@ -73,7 +74,7 @@ def to_sarif(summary: dict, hit: bool, policy: "Policy") -> dict:
                         "locations": [{"physicalLocation": {"artifactLocation": {"uri": ".github/workflows/nightly-full.yml"}}}],
                         "properties": {"policy_tier": _TIER, "subject": summary["subject"],
                                        "signer_workflow": summary["signer_workflow"]}})
-    return gate_result.sarif({"name": "vibesec-g1-provenance", "version": "1.0.0"}, [rule], results)
+    return gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, [rule], results)
 
 
 def selftest() -> list[str]:

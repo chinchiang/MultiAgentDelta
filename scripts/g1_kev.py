@@ -174,7 +174,6 @@ def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | Non
     KEV 無法判定 → 控制 untested；命中 → 控制 fail，閘門是否 fail 依 vibesec.g1.kev-hit 的政策 tier。
     policy：None ＝ 政策讀不到（summary 為 incomplete、沒有任何發現可分類）→ tool 列為 gate_result 的統一形狀
     （error、exit_code／output_ref null，#182 決定 2）；一般 incomplete 維持 ran／exit_code 2。"""
-    sys.path.insert(0, str(ROOT / "scripts"))
     from gate_verdict import merge
     kev_status = summary["status"]
     n_vuln = len(summary.get("vulnerable") or [])
