@@ -351,8 +351,10 @@ def selftest() -> list[str]:
         why = g["status_reason"] or ""
         if g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in why or "不是 git repo" in why \
                 or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
+                or [c["control_id"] for c in g["coverage"]] != list(sarif_gate.GATE_CONTROLS["G3"]) \
+                or g["tools"] != [{"name": "vibesec-sarif-gate", "version": None, "state": "error", "exit_code": None, "output_ref": None, "duration_seconds": None}] \
                 or list(schema.iter_errors(g)):
-            fails.append(f"政策檔讀不到 → 不跑工具、G3 incomplete、控制 untested、寫明原因（得到 {g}）")
+            fails.append(f"政策檔讀不到（只有 vibesec-sarif-gate 一列 error）→ 不跑工具、G3 incomplete、控制 untested、寫明原因（得到 {g}）")
     return fails
 
 
