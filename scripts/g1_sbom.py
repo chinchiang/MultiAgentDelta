@@ -205,10 +205,9 @@ def check(sbom: dict, tree: pathlib.Path) -> dict:
             "components": len(sbom.get("components") or []), "spec_version": sbom.get("specVersion")}
 
 
-def findings(summary: dict) -> list[dict]:
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from vibesec_policy import Policy
-    tier = Policy(ROOT).tier(RULE)
+def findings(summary: dict, policy: "Policy") -> list[dict]:
+    """policy：tier 唯一來源（blocking-policy）；由進入點建立一次傳入。"""
+    tier = policy.tier(RULE)
     out = []
     for rel, v in sorted((summary.get("lockfiles") or {}).items()):
         if v["missing"]:
@@ -272,6 +271,9 @@ def selftest() -> list[str]:
     from jsonschema import Draft202012Validator
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
+    P = Policy(ROOT)
 
     def bom(*purls, spec="1.6"):
         return {"bomFormat": "CycloneDX", "specVersion": spec,
@@ -315,7 +317,7 @@ def selftest() -> list[str]:
         s = run(repo, "HEAD", out, fake([nodev, nodev]))
         if s["status"] != "fail" or s["lockfiles"]["web/package-lock.json"]["missing"] != ["@babel/core@7.29.7"]:
             fails.append(f"缺 devDependency 應為 fail 並列出套件：{s}")
-        f = findings(s)
+        f = findings(s, P)
         if len(f) != 1 or f[0]["path"] != "web/package-lock.json" or f[0]["policy_tier"] not in ("advisory", "blocking"):
             fails.append(f"每個有缺漏的鎖定檔一筆發現：{f}")
         s = run(repo, "HEAD", out, fake([full, nodev]))
@@ -389,10 +391,26 @@ def selftest() -> list[str]:
         fails.append("merge_gate 不得修改輸入物件")
     for e in schema.iter_errors(merge_gate(base, {"status": "fail", "status_reason": "缺"}, adv, "r.sarif")):
         fails.append(f"merge_gate 輸出不符 gate-result schema：{e.message}")
+    # 政策檔讀不到 → 進入點就停：摘要 incomplete 並寫明未完成原因、沒有任何發現、退出碼 2；
+    # 併入的 G1 為 incomplete、控制 untested（以前退回預設 tier 照樣判定，或以例外結束）
+    import contextlib, io
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
+        gp.write_text(json.dumps({**base, "coverage": [{"control_id": "VS-G1-SBOM", "state": "pending", "reason": None}]}), encoding="utf-8")
+        rc = main(["--target", d, "--sbom", str(pathlib.Path(d, "s.cdx.json")), "--sarif", str(sf), "--json", str(js),
+                       "--merge-gate", str(gp)], policy_root=pr)
+        sm, g = json.loads(js.read_text(encoding="utf-8")), json.loads(gp.read_text(encoding="utf-8"))
+        st = [c["state"] for c in g["coverage"] if c["control_id"] == "VS-G1-SBOM"]
+        if rc != 2 or sm.get("status") != "incomplete" or not str(sm.get("status_reason")).startswith(POLICY_UNREADABLE + "（") \
+                or g["status"] != "incomplete" or POLICY_UNREADABLE not in (g["status_reason"] or "") or st != ["untested"] \
+                or g["findings_count"] != base["findings_count"] or json.loads(sf.read_text(encoding="utf-8"))["runs"][0]["results"]:
+            fails.append(f"SBOM：政策檔讀不到 → 退出碼 2、incomplete、G1 incomplete 且控制 untested（得到 {rc}、{sm}、{g}）")
     return fails
 
 
-def main(argv=None) -> int:
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     argv = argv if argv is not None else sys.argv[1:]
     if argv[:1] == ["selftest"]:
         fails = selftest()
@@ -406,13 +424,15 @@ def main(argv=None) -> int:
     ap.add_argument("--json", required=True)
     ap.add_argument("--merge-gate", help="併入既有的 G1 gate-result（就地更新）；檔案不存在則略過")
     a = ap.parse_args(argv)
-    summary = run(pathlib.Path(a.target), a.commit, pathlib.Path(a.sbom))
-    found = []
-    if summary["status"] != "incomplete":
-        try:
-            found = findings(summary)
-        except ImportError as e:       # 缺 PyYAML：查不到政策 tier，不自行假設
-            summary = {**summary, "status": "incomplete", "status_reason": f"無法讀取阻擋政策（{e}），不能決定發現的 tier"}
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import load_policy
+    policy, problem = load_policy(policy_root)   # 進入點只建立一次；讀不到 → incomplete，不產生 SBOM、不分類發現
+    if problem:
+        pathlib.Path(a.sbom).unlink(missing_ok=True)   # 不讓上一次的 SBOM 被 grype／維護狀態／provenance 當成這次的結果
+        summary = {"status": "incomplete", "status_reason": problem, "lockfiles": {}, "commit": None}
+    else:
+        summary = run(pathlib.Path(a.target), a.commit, pathlib.Path(a.sbom))
+    found = findings(summary, policy) if summary["status"] != "incomplete" else []
     for p in (a.sarif, a.json):
         pathlib.Path(p).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

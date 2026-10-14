@@ -69,18 +69,6 @@ def verify_mitigation(name: str, evidence: list[dict], root: Path, high_impact: 
     return True, f"{name}：已由 " + "、".join(str(e.get("ref")) for e in evidence) + " 落實"
 
 
-def _tier(root: Path = ROOT) -> str:
-    """tier 只來自本 repo（VibeSec）的 blocking-policy，不讀被檢查專案的政策檔——否則被測專案放一份自己的
-    blocking-policy.yaml 就能把本規則降為 advisory（--target）。政策檔無法讀取或解析（含 YAMLError、結構不符）
-    時退回 blocking（fail closed）。root 只供 selftest 指向壞政策檔。"""
-    try:
-        sys.path.insert(0, str(ROOT / "scripts"))
-        from vibesec_policy import Policy
-        return Policy(root).tier(RULE)
-    except Exception:   # yaml.YAMLError 不是 ValueError 的子類別；任何讀取失敗都不得讓本規則消失或降級
-        return "blocking"
-
-
 def load_threat_model(path: Path) -> tuple[dict | None, str | None]:
     """讀取並以 schemas/threat-model.schema.json 驗證威脅模型 → (模型, None) 或 (None, 理由)。
     空檔、{}、不符 schema、缺 jsonschema 都是「無法判定」，不是「沒有發現」（incomplete ≠ pass）。"""
@@ -109,37 +97,22 @@ def load_threat_model(path: Path) -> tuple[dict | None, str | None]:
     return tm, None
 
 
-def load_project_policy(project: Path, today=None, policy_root: Path = ROOT, **policy_kw):
-    """(受驗樹的 ProjectPolicy 或 None, 讀取失敗的說明或 None)。政策只取自 policy_root（本 repo），不讀被檢查專案的
-    政策檔；讀取失敗 → None（不套用例外，tier 退回 blocking；fail closed）。policy_kw 原樣交給 Policy（例如 project_root）。"""
-    try:
-        sys.path.insert(0, str(ROOT / "scripts"))
-        from vibesec_policy import Policy
-        return Policy(policy_root, **policy_kw).for_project(project, today=today), None   # 與 G1–G3 同一份規則
-    except Exception as e:
-        return None, f"blocking-policy 例外無法讀取（{type(e).__name__}），未套用"
-
-
-def policy_notes(findings: list[dict], tm_rel: str | None, project, error: str | None = None) -> list[str]:
+def policy_notes(findings: list[dict], tm_rel: str | None, project: "ProjectPolicy") -> list[str]:
     """G0 status_reason 的例外說明：命中筆數、忽略的例外（只列 G0 的規則）與缺 agent_id 而未套用的例外。
-    project：load_project_policy 的結果（None ＝ 讀取失敗，error 為說明）；沒有 tm_rel（沒有可比對的路徑）→ 沒有說明。
+    project：受驗樹的 ProjectPolicy；沒有 tm_rel（沒有可比對的路徑）→ 沒有說明。
     G0 的例外必須寫明 agent_id（vibesec_policy.AGENT_SCOPED_RULES）：只寫 path_glob 會連同同一份威脅模型裡之後新增的 agent 一起放行。"""
-    if not tm_rel:
-        return []
-    if project is None:
-        return [error] if error else []
-    return project.report(findings, "G0", paths=[tm_rel])
+    return project.report(findings, "G0", paths=[tm_rel]) if tm_rel else []
 
 
-def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str | None = None, *, project) -> list[dict]:
+def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str | None = None, *, project: "ProjectPolicy") -> list[dict]:
     """三要素皆成立，且沒有任何「切腳」mitigation 有可驗證證據 → 發現。
     只宣告 mitigation 名稱不算數（第二次 harness 審查發現 A：宣告與落實不符時 fail-open）；同理：
       - human_in_the_loop 不算切腳（docs/01 §5），只有它通過驗證仍報；
       - trifecta_leg_cut 只是宣告，宣告了也要有切該腳的 mitigation 附可驗證證據（否則改一個欄位就能跳過檢查）。
     root：mitigation_evidence 的 ref 相對的專案根目錄（被檢查的專案）。
     tm_rel：威脅模型在受驗樹內的相對路徑，用來比對例外的 path_glob；沒給 → 不比對例外。
-    project：load_project_policy 的結果（tier 與例外一律取自本 repo 的政策；外部專案沒有例外）；
-    None ＝ 政策讀取失敗 → 不套用例外，tier 退回 blocking（說明由 policy_notes 給閘門）。"""
+    project：受驗樹的 ProjectPolicy（呼叫端以本 repo 的政策建立：不讀被檢查專案的政策檔，否則被測專案放一份自己的
+    blocking-policy.yaml 就能把本規則降為 advisory；外部專案沒有例外）。政策讀不到由進入點記 incomplete，不會走到這裡。"""
     root = root or ROOT
     out = []
     for a in (threat_model or {}).get("agents") or []:
@@ -159,7 +132,7 @@ def trifecta_findings(threat_model: dict, root: Path | None = None, tm_rel: str 
             why.append(f"宣告 trifecta_leg_cut: {leg}，但 mitigations 沒有切這隻腳的項目（{'、'.join(cutters) or '無'}）")
         head = (f"宣告切斷 {leg}，但沒有切該腳且可驗證的 mitigation" if leg is not None
                 else "未切斷任何一腳，且沒有可驗證的切腳 mitigation")
-        c = project.classify(RULE, tm_rel, agent_id=a.get("id")) if project else {"policy_tier": _tier(), "exception": None}
+        c = project.classify(RULE, tm_rel, agent_id=a.get("id"))
         f = {"rule_id": RULE, "control_id": "VS-G0-LETHAL-TRIFECTA", "policy_tier": c["policy_tier"],
              "agent": a.get("id"), "reason": f"agent {a.get('id')!r} 三要素皆成立、{head}（{'；'.join(why)}）"}
         ex = c["exception"]
@@ -178,7 +151,10 @@ def selftest() -> list[str]:
     ev = lambda rules, ref=".claude/settings.json", m="human_in_the_loop": {m: [{"kind": "claude_permission", "ref": ref, "rules": rules}]}
     cov = lambda rules, covers, m="human_in_the_loop": {m: [{"kind": "claude_permission", "ref": ".claude/settings.json",
                                                              "rules": rules, "covers": covers}]}
-    P = load_project_policy(ROOT)[0]   # 呼叫端（g0_threat_model、validate）以本 repo 的政策綁定受驗樹
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
+    P = Policy(ROOT).for_project(ROOT)   # 呼叫端（g0_threat_model、validate）以本 repo 的政策綁定受驗樹
+    T = Policy(ROOT).tier(RULE)          # 本 repo 政策的 tier
     with tempfile.TemporaryDirectory() as d:
         root = Path(d); (root / ".claude").mkdir()
         (root / ".claude/settings.json").write_text(json.dumps({"permissions": {"ask": ["mcp__x__merge", "Bash(echo hi)"],
@@ -242,13 +218,6 @@ def selftest() -> list[str]:
         got = trifecta_findings(agent(mitigations=[]), root, project=P)
         if not got or got[0]["policy_tier"] != "blocking":
             fails.append("tier 取自本 repo 的政策，不讀被檢查專案的 blocking-policy.yaml")
-        # 政策檔是壞 YAML → 退回 blocking，不拋出例外
-        (root / "config/policy/blocking-policy.yaml").write_text("blocking: [\n  - {rule_id: x\n")
-        try:
-            if _tier(root) != "blocking":
-                fails.append("政策檔 YAML 壞掉時 tier 應退回 blocking")
-        except Exception as e:
-            fails.append(f"政策檔 YAML 壞掉時不應拋出例外：{type(e).__name__}")
         # 獨立 CLI：空檔、{}、不符 schema → 離開碼 2（incomplete），不是 0（無發現）
         import contextlib, io
         for label, body in [("空檔", ""), ("{}", "{}\n"), ("不符 schema", "agents: []\n"), ("壞 YAML", "a: [\n")]:
@@ -262,7 +231,7 @@ def selftest() -> list[str]:
         if rc == 2:
             fails.append("符合 schema 的威脅模型不應為 incomplete")
     # blocking-policy 例外：只對本 repo 威脅模型、須寫 agent_id；降為 advisory、發現保留；過期或缺欄位不套用。
-    # 例外經 load_project_policy(policy_root=暫存政策檔) 讀取：暫存 root 放本 repo 政策的副本，只換掉 exceptions
+    # 例外經 Policy(暫存政策檔).for_project 讀取：暫存 root 放本 repo 政策的副本，只換掉 exceptions
     # （不依賴本 repo 現有例外與其到期日）；暫存 root 就是「本 repo」
     from datetime import date
     from vibesec_policy import temp_policy_root, write_exceptions
@@ -274,43 +243,47 @@ def selftest() -> list[str]:
             write_exceptions(PD, entries)
 
         def pp(today=None):
-            return load_project_policy(PD, today=today, policy_root=PD, project_root=None)
+            return Policy(PD, project_root=None).for_project(PD, today=today)
 
         with_exceptions(ex)
-        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp()[0])
+        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp())
         if [(f["policy_tier"], f.get("exception")) for f in got] != [("advisory", {"path_glob": "docs/threat-model.yaml", "reason": "t", "approved_by": "o", "expires": "2099-01-01", "agent_id": "a"})] \
                 or "依 blocking-policy 例外降為 advisory（核准：o，到期：2099-01-01）" not in got[0]["reason"]:
             fails.append(f"符合的例外 → advisory、發現保留並註明核准者與到期日：{got}")
-        if [f["policy_tier"] for f in trifecta_findings(tm_open, project=pp()[0])] != [_tier()]:
+        if [f["policy_tier"] for f in trifecta_findings(tm_open, project=pp())] != [T]:
             fails.append("沒給 tm_rel（外部專案、評測）→ 不套用例外")
-        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="other/tm.yaml", project=pp()[0])] != [_tier()]:
+        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="other/tm.yaml", project=pp())] != [T]:
             fails.append("path_glob 不符 → 不套用例外")
         with_exceptions(dict(ex, agent_id="b"))
-        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp()[0])] != [_tier()]:
+        if [f["policy_tier"] for f in trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp())] != [T]:
             fails.append("agent_id 不同 → 不套用例外")
         with_exceptions({k: v for k, v in ex.items() if k != "agent_id"})
-        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp()[0])
-        notes = policy_notes(got, "docs/threat-model.yaml", *pp())
-        if got[0]["policy_tier"] != _tier() or "缺 agent_id" in got[0]["reason"] \
+        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp())
+        notes = policy_notes(got, "docs/threat-model.yaml", pp())
+        if got[0]["policy_tier"] != T or "缺 agent_id" in got[0]["reason"] \
                 or notes != ["忽略的例外：vibesec.g0.lethal-trifecta-open @ docs/threat-model.yaml：G0 例外缺 agent_id，未套用"]:
             fails.append(f"G0 例外缺 agent_id → 不套用，註明在閘門說明（不附加在 finding.reason）：{got}；{notes}")
         with_exceptions(ex)
-        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp(date(2099, 1, 2))[0])
-        notes = policy_notes(got, "docs/threat-model.yaml", *pp(date(2099, 1, 2)))
-        if got[0]["policy_tier"] != _tier() or got[0].get("exception") or "過期" in got[0]["reason"] \
+        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp(date(2099, 1, 2)))
+        notes = policy_notes(got, "docs/threat-model.yaml", pp(date(2099, 1, 2)))
+        if got[0]["policy_tier"] != T or got[0].get("exception") or "過期" in got[0]["reason"] \
                 or notes != ["忽略的例外：vibesec.g0.lethal-trifecta-open @ docs/threat-model.yaml：已於 2099-01-01 過期"]:
             fails.append(f"例外過期 → 不套用，註明在閘門說明：{got}；{notes}")
-        if policy_notes(got, None, *pp()) != []:
+        if policy_notes(got, None, pp()) != []:
             fails.append("沒給 tm_rel（外部專案）→ 沒有例外說明")
-        (PD / "config/policy/blocking-policy.yaml").write_text("exceptions: [", encoding="utf-8")
-        got = trifecta_findings(tm_open, tm_rel="docs/threat-model.yaml", project=pp()[0])
-        notes = policy_notes(got, "docs/threat-model.yaml", *pp())
-        if got[0]["policy_tier"] != "blocking" or not any("blocking-policy 例外無法讀取" in n for n in notes):
-            fails.append(f"政策檔壞掉 → 不套用例外並註明（fail closed）：{got}；{notes}")
+    # 政策檔讀不到 → 進入點就停：incomplete（離開碼 2）並寫明原因，不判定任何發現
+    # （以前 tier 退回 blocking 照樣判定：讀不到政策就報 fail，原因寫錯）
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, contextlib.redirect_stdout(io.StringIO()) as out:
+        rc = main(["g0_trifecta.py", str(ROOT / "docs/templates/threat-model.yaml")], policy_root=pr)
+    got = json.loads(out.getvalue() or "{}")
+    if rc != 2 or got.get("status") != "incomplete" or not str(got.get("status_reason")).startswith(POLICY_UNREADABLE + "（"):
+        fails.append(f"政策檔讀不到 → 離開碼 2、incomplete 並寫明原因（得到 {rc}、{got}）")
     return fails
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], policy_root: Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if argv[1:2] == ["selftest"]:
         fails = selftest()
         for f in fails: print(f"FAIL {f}")
@@ -319,6 +292,11 @@ def main(argv: list[str]) -> int:
     def incomplete(reason: str) -> int:
         print(json.dumps({"gate": "G0", "status": "incomplete", "status_reason": reason}, ensure_ascii=False))
         return 2
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import load_policy
+    policy, problem = load_policy(policy_root)   # 進入點只建立一次；讀不到 → incomplete，不判定任何發現
+    if problem:
+        return incomplete(problem)
     if len(argv) > 1:
         path = Path(argv[1])
     else:
@@ -334,7 +312,7 @@ def main(argv: list[str]) -> int:
     tm, err = load_threat_model(path)
     if err:
         return incomplete(err)
-    findings = trifecta_findings(tm, project=load_project_policy(ROOT)[0])   # 沒有 tm_rel → 不比對例外
+    findings = trifecta_findings(tm, project=policy.for_project(ROOT))   # 沒有 tm_rel → 不比對例外
     print(json.dumps({"gate": "G0", "findings": findings}, ensure_ascii=False, indent=2))
     return 1 if findings else 0
 

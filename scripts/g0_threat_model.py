@@ -29,7 +29,8 @@ import argparse, datetime, json, pathlib, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import sarif_gate  # noqa: E402  缺 PyYAML 時以 exit 2 結束（無法判定，不視為通過）
-from g0_trifecta import load_project_policy, policy_notes, trifecta_findings  # noqa: E402
+from g0_trifecta import policy_notes, trifecta_findings  # noqa: E402
+from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
 from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本
 
 ORDER = {"L1": 1, "L2": 2, "L3": 3}
@@ -59,21 +60,12 @@ def _model_contains_llm(tm: dict) -> bool:
 COVERAGE_RULES = ("vibesec.g0.threat-gate-disabled", "vibesec.g0.maestro-missing", "vibesec.g0.threats-empty-public")
 
 
-def _tier(rule: str) -> str:
-    """tier 只取本 repo 的政策（不讀被檢查專案的政策檔）；政策無法讀取 → blocking（fail closed，同 g0_trifecta._tier）。"""
-    try:
-        from vibesec_policy import Policy
-        return Policy(ROOT).tier(rule)
-    except Exception:
-        return "blocking"
-
-
-def coverage_findings(tm: dict, vb: dict, contains_llm: bool, external: bool = False) -> list[dict]:
+def coverage_findings(tm: dict, vb: dict, contains_llm: bool, external: bool = False, *, policy: "Policy") -> list[dict]:
     """docs/01「自動化作法」第 4 項與「阻擋政策」的覆蓋對照 → 發現（格式同 trifecta_findings）。
     vb：本 repo 的 vibesec.yaml（G1–G6 以它執行，外部專案也以它判斷閘門是否啟用）；external 時不看它的 methodologies
-    （外部專案沒有可對照的 vibesec.yaml）。"""
+    （外部專案沒有可對照的 vibesec.yaml）。policy：本 repo 的 Policy（tier 只取本 repo 的政策，不讀被檢查專案的政策檔）。"""
     out, gates = [], (vb.get("gates") or {})
-    mk = lambda rule, reason, **kw: {"rule_id": rule, "control_id": "ASVS5-V15.1", "policy_tier": _tier(rule), **kw, "reason": reason}
+    mk = lambda rule, reason, **kw: {"rule_id": rule, "control_id": "ASVS5-V15.1", "policy_tier": policy.tier(rule), **kw, "reason": reason}
     for t in tm.get("threats") or []:
         g = (t or {}).get("gate")
         if not g:
@@ -129,9 +121,9 @@ def _now() -> str:
 
 
 def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Path | None = None,
-          vibesec: dict | None = None, project_policy=None) -> dict:
+          vibesec: dict | None = None, policy_root: pathlib.Path = ROOT, project_root=None) -> dict:
     """檢查目標專案的威脅模型並回傳 G0 gate JSON（schemas/gate-result.schema.json）。vibesec：測試用的 vibesec.yaml 內容。
-    project_policy：測試用的 ProjectPolicy（取代依本 repo 政策、以受驗樹綁定的那一份）。"""
+    policy_root、project_root：測試用，交給 Policy（政策取自 policy_root；預設本 repo，且不讀 VIBESEC_PROJECT_ROOT）。"""
     started = _now()
     target, out_dir = target.resolve(), out_dir.resolve()
     explicit = threat_model.resolve() if threat_model else None
@@ -168,6 +160,11 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
         gate.update(status=st, status_reason=why, finished_at=_now())
         return gate
 
+    policy, problem = load_policy(policy_root, project_root=project_root)   # 只建立一次；讀不到 → incomplete，不判定任何發現
+    if problem:
+        gate["tools"][0]["state"] = "error"
+        reasons.append(problem)
+        return done("incomplete")
     top = _git(target, "rev-parse", "--show-toplevel")
     if top is None or pathlib.Path(top).resolve() != target:
         gate["tools"][0]["state"] = "error"
@@ -209,20 +206,19 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
         except ValueError:
             tm_rel = None
         # 政策例外綁定受驗樹本身（target），不綁暫存副本 copy：副本一定是外部專案，本 repo 的例外會全部失效
-        project, policy_error = ((project_policy, None) if project_policy is not None
-                                 else load_project_policy(target, project_root=None))
+        project = policy.for_project(target)
         findings = trifecta_findings(tm, copy, tm_rel, project=project)
     open_agents = [f for f in findings if f["policy_tier"] == "blocking"]
     for f in findings:
         if f.get("exception"):   # 已接受風險：照實寫進 status_reason，不讓它看起來像「已切斷」
             reasons.append(f"致命三要素未切斷：{f['agent']}（依 blocking-policy 例外降為 advisory，核准 {f['exception']['approved_by']}、"
                            f"到期 {f['exception']['expires']}）")
-    reasons += policy_notes(findings, tm_rel, project, policy_error)   # 命中筆數、忽略與缺 agent_id 的例外（各閘門相同的文字；外部專案 → 無）
+    reasons += policy_notes(findings, tm_rel, project)   # 命中筆數、忽略與缺 agent_id 的例外（各閘門相同的文字；外部專案 → 無）
     cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "fail" if open_agents else "pass"
     if open_agents:
         reasons.append("致命三要素未切斷：" + "、".join(str(f["agent"]) for f in open_agents))
     contains_llm = bool((vb.get("project") or {}).get("contains_llm")) if not external else _model_contains_llm(tm)
-    extra = coverage_findings(tm, vb, contains_llm, external)
+    extra = coverage_findings(tm, vb, contains_llm, external, policy=policy)
     findings += extra
     reasons += [f"{f['rule_id']}（blocking）：{f['reason']}" for f in extra if f["policy_tier"] == "blocking"]
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
@@ -248,6 +244,7 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
 
 # ------------------------------------------------------------------ selftest
 def selftest() -> list[str]:
+    from vibesec_policy import Policy
     import yaml, subprocess
     from jsonschema import Draft202012Validator
     fails: list[str] = []
@@ -285,7 +282,7 @@ def selftest() -> list[str]:
             ("不含 LLM 不要求 MAESTRO", sysm(methodologies=["STRIDE"]), nomaestro, False, False, set()),
             ("public 但 threats 為空", dict(base, threats=[]), vb0, True, False, {"vibesec.g0.threats-empty-public"}),
             ("internal 且 threats 為空", dict(base, threats=[], system=dict(base["system"], exposure="internal")), vb0, True, False, set())]:
-        got = coverage_findings(model, vbx, llm, ext)
+        got = coverage_findings(model, vbx, llm, ext, policy=Policy(ROOT))
         if {f["rule_id"] for f in got} != want or any(f["policy_tier"] != "advisory" for f in got):
             fails.append(f"覆蓋對照「{label}」應得 {sorted(want) or '無發現'}（advisory），得到 {[(f['rule_id'], f['policy_tier']) for f in got]}")
 
@@ -403,7 +400,7 @@ def selftest() -> list[str]:
     # 例外的回報（#158）：命中 → finding.exception 固定 5 欄、status_reason 註明筆數；忽略與缺 agent_id 的例外
     # 寫進 status_reason（只列 G0 的規則），不再附加在 finding.reason。政策指向暫存檔，不依賴本 repo 現有例外的到期日
     import g0_trifecta
-    from vibesec_policy import Policy, temp_policy_root
+    from vibesec_policy import temp_policy_root
     rule = g0_trifecta.RULE
     base = {"rule_id": rule, "path_glob": "docs/threat-model.yaml", "reason": "selftest", "approved_by": "o"}
     with temp_policy_root([dict(base, agent_id="c-claude", expires="2099-01-01"),
@@ -412,7 +409,7 @@ def selftest() -> list[str]:
                            {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "x/**", "reason": "r", "approved_by": "o",
                             "expires": "2020-01-01"}]) as PR, tempfile.TemporaryDirectory() as d:
         # 暫存政策檔與受驗樹（本 repo）分開：以 project_root 指出受驗樹，與 CI 的 _trusted/ 加 workspace 同一種情況
-        g = run(ROOT, pathlib.Path(d), project_policy=Policy(PR, project_root=ROOT).for_project(ROOT))
+        g = run(ROOT, pathlib.Path(d), policy_root=PR, project_root=ROOT)
         why = g["status_reason"] or ""
         fs = [f for f in json.loads((pathlib.Path(d) / "g0-findings.json").read_text())["findings"] if f["rule_id"] == rule]
         want = {"path_glob": "docs/threat-model.yaml", "reason": "selftest", "approved_by": "o", "expires": "2099-01-01", "agent_id": "c-claude"}
@@ -425,6 +422,15 @@ def selftest() -> list[str]:
             fails.append(f"G0 status_reason 列出本閘門忽略與缺 agent_id 的例外、不列其他閘門的：{why}")
         if any("過期" in f["reason"] or "缺 agent_id" in f["reason"] for f in fs):
             fails.append(f"忽略的例外不再附加在 finding.reason：{[f['reason'] for f in fs]}")
+    # 政策檔讀不到 → 進入點就停：G0 incomplete 並寫明未完成原因、沒有任何發現、控制 untested。
+    # 以前 tier 退回 blocking 照樣判定，而且沒有發現時根本不讀政策，G0 報 pass（fail-open）
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
+        g = run(ROOT, pathlib.Path(d), policy_root=pr)
+        if g["status"] != "incomplete" or not (g["status_reason"] or "").startswith(POLICY_UNREADABLE + "（") \
+                or g["findings_count"] != {"blocking": 0, "advisory": 0} or {c["state"] for c in g["coverage"]} != {"untested"} \
+                or (pathlib.Path(d) / "g0-findings.json").exists():
+            fails.append(f"政策檔讀不到 → G0 incomplete、寫明原因、沒有發現、控制 untested（得到 {g['status']}：{g['status_reason']}）")
     return fails
 
 

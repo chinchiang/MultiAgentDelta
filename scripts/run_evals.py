@@ -260,8 +260,11 @@ class G0TrifectaRunner(Runner):
         spec = importlib.util.spec_from_file_location("g0_trifecta", ROOT / "scripts/g0_trifecta.py")
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
-        # 與 validate.py 相同：tier 取自本 repo 的政策；案例沒有 tm_rel → 不比對政策例外
-        self.project = self.mod.load_project_policy(ROOT)[0]
+        # 與 validate.py 相同：tier 取自本 repo 的政策；案例沒有 tm_rel → 不比對政策例外。讀不到 → 案例記 incomplete
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from vibesec_policy import load_policy
+        policy, self.problem = load_policy(ROOT)
+        self.project = policy.for_project(ROOT) if policy else None
 
     def handles(self, case):
         if case.get("gate") != "G0" or case["expected"].get("rule_id") != self.mod.RULE:
@@ -271,6 +274,8 @@ class G0TrifectaRunner(Runner):
         return None
 
     def run(self, case):
+        if self.problem:
+            return None, self.problem
         return {f["rule_id"] for f in self.mod.trifecta_findings(case["input"]["threat_model"], project=self.project)}, None
 
 
@@ -285,6 +290,7 @@ class G0CoverageRunner(Runner):
         spec = importlib.util.spec_from_file_location("g0_threat_model", ROOT / "scripts/g0_threat_model.py")
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
+        self.policy, self.problem = self.mod.load_policy(ROOT)   # tier 取自本 repo 的政策；讀不到 → 案例記 incomplete
 
     def handles(self, case):
         if case.get("gate") != "G0" or case["expected"].get("rule_id") not in self.mod.COVERAGE_RULES:
@@ -302,7 +308,10 @@ class G0CoverageRunner(Runner):
         if "g0_methodologies" in inp:
             gates.setdefault("g0_threat_model", {})["methodologies"] = list(inp["g0_methodologies"] or [])
         llm = inp.get("contains_llm", bool((vb.get("project") or {}).get("contains_llm")))
-        return {f["rule_id"] for f in self.mod.coverage_findings(inp["threat_model"], dict(vb, gates=gates), bool(llm))}, None
+        if self.problem:
+            return None, self.problem
+        return {f["rule_id"] for f in self.mod.coverage_findings(inp["threat_model"], dict(vb, gates=gates), bool(llm),
+                                                                 policy=self.policy)}, None
 
 
 class RulesFileRunner(Runner):

@@ -113,18 +113,9 @@ def find_vulns(grype: dict, kev: dict[str, str | None]) -> list[dict]:
     return sorted(out, key=lambda h: (h["id"], h["package"] or "", h["version"] or ""))
 
 
-def _tier(rule: str) -> str:
-    """tier 唯一來源是 blocking-policy（第四次審視 S-11）；政策檔讀不到時退回規則預設（只影響標籤）。"""
-    try:
-        sys.path.insert(0, str(ROOT / "scripts"))
-        from vibesec_policy import Policy
-        return Policy(ROOT).tier(rule)
-    except Exception:
-        return "blocking" if rule == RULE else "advisory"
-
-
-def to_sarif(hits: list[dict], vulns: list[dict] | None = None) -> dict:
-    kev_tier, vuln_tier = _tier(RULE), _tier(VULN_RULE)
+def to_sarif(hits: list[dict], vulns: list[dict] | None, policy: "Policy") -> dict:
+    """policy：tier 唯一來源（blocking-policy，第四次審視 S-11）；由進入點建立一次傳入。"""
+    kev_tier, vuln_tier = policy.tier(RULE), policy.tier(VULN_RULE)
     lvl = lambda t: "error" if t == "blocking" else "warning"
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "相依套件 CVE 收錄於 CISA KEV（已遭實際利用）"},
             "defaultConfiguration": {"level": lvl(kev_tier)}, "properties": {"policy_tier": kev_tier}}
@@ -179,16 +170,20 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
 
 
 KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
-def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | None) -> dict:
+def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | None, policy: "Policy | None") -> dict:
     """把 KEV 結果（子結果）併入既有 G1 gate-result，狀態由 gate_verdict.merge 判定（只升不降、blocking 優先）。
-    KEV 無法判定 → 控制 untested；命中 → 控制 fail，閘門是否 fail 依 vibesec.g1.kev-hit 的政策 tier。"""
+    KEV 無法判定 → 控制 untested；命中 → 控制 fail，閘門是否 fail 依 vibesec.g1.kev-hit 的政策 tier。
+    policy：None ＝ 政策讀不到（summary 為 incomplete、沒有任何發現可分類）。"""
     sys.path.insert(0, str(ROOT / "scripts"))
     from gate_verdict import merge
     kev_status = summary["status"]
-    kev_tier, vuln_tier = _tier(RULE), _tier(VULN_RULE)
     n_vuln = len(summary.get("vulnerable") or [])
-    blocking = (len(hits) if kev_tier == "blocking" else 0) + (n_vuln if vuln_tier == "blocking" else 0)
-    advisory = (len(hits) if kev_tier != "blocking" else 0) + (n_vuln if vuln_tier != "blocking" else 0)
+    if policy is None:   # 沒有執行檢查：沒有命中、沒有已知漏洞，也不需要 tier
+        blocking = advisory = 0
+    else:
+        kev_tier, vuln_tier = policy.tier(RULE), policy.tier(VULN_RULE)
+        blocking = (len(hits) if kev_tier == "blocking" else 0) + (n_vuln if vuln_tier == "blocking" else 0)
+        advisory = (len(hits) if kev_tier != "blocking" else 0) + (n_vuln if vuln_tier != "blocking" else 0)
     state = {"pass": "pass", "fail": "fail", "incomplete": "untested"}[kev_status]
     return merge(gate, blocking=blocking, advisory=advisory,
                  coverage=[{"control_id": KEV_CONTROL, "state": state,
@@ -202,6 +197,9 @@ def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | Non
 
 def selftest() -> list[str]:
     import tempfile
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
+    P = Policy(ROOT)
     fails: list[str] = []
     ago = lambda days: (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat()
     kev_feed = {"dateReleased": ago(1), "vulnerabilities": [{"cveID": "CVE-2021-44228", "dateAdded": "2021-12-10"}]}
@@ -228,7 +226,7 @@ def selftest() -> list[str]:
             fails.append(f"套件位置應為 repo 相對路徑 pom.xml：{hits[1]['uri']}")
         if hits and hits[0]["uri"] != FALLBACK_URI:
             fails.append("含 .. 的位置不得使用，應退回 workflow 路徑")
-        sarif = to_sarif(hits)
+        sarif = to_sarif(hits, None, P)
         r0 = sarif["runs"][0]["results"][0] if hits else {}
         if r0.get("ruleId") != RULE or r0.get("properties", {}).get("kev_date") != "2021-12-10" or "cvss" in json.dumps(r0).lower():
             fails.append("SARIF 結果應為 kev-hit、帶 kev_date，且不混入 CVSS")
@@ -238,7 +236,7 @@ def selftest() -> list[str]:
             fails.append(f"非 KEV 漏洞應只有 CVE-2099-0001：{vulns}")
         elif (vulns[0]["cvss"] or {}).get("version") != "4.0":
             fails.append(f"CVSS 應優先取 v4.0：{vulns[0]['cvss']}")
-        vs = to_sarif(hits, vulns)["runs"][0]
+        vs = to_sarif(hits, vulns, P)["runs"][0]
         vr = [r for r in vs["results"] if r["ruleId"] == VULN_RULE]
         if len(vr) != 1 or vr[0]["level"] != "warning" or vr[0]["properties"]["policy_tier"] != "advisory" \
                 or "epss" in json.dumps(vr[0]).lower():
@@ -278,16 +276,16 @@ def selftest() -> list[str]:
     base = {"gate": "G1", "status": "pass", "status_reason": None, "findings_count": {"blocking": 0, "advisory": 2},
             "tools": [], "coverage": []}
     hit = [{"cve": "CVE-2021-44228"}]
-    m = merge_gate(base, {"status": "fail", "vulnerable": [{"id": "x"}]}, hit, "r.sarif")
+    m = merge_gate(base, {"status": "fail", "vulnerable": [{"id": "x"}]}, hit, "r.sarif", P)
     if m["status"] != "fail" or m["findings_count"] != {"blocking": 1, "advisory": 3} or m["coverage"][-1]["state"] != "fail":
         fails.append(f"KEV 命中應讓 G1 fail 並加 1 筆 blocking：{m}")
-    m = merge_gate(base, {"status": "incomplete", "status_reason": "缺 KEV feed"}, [], None)
+    m = merge_gate(base, {"status": "incomplete", "status_reason": "缺 KEV feed"}, [], None, P)
     if m["status"] != "incomplete" or "缺 KEV feed" not in (m["status_reason"] or "") or m["coverage"][-1]["state"] != "untested":
         fails.append(f"KEV incomplete 應讓原本 pass 的 G1 變 incomplete：{m}")
-    m = merge_gate({**base, "status": "fail"}, {"status": "incomplete", "status_reason": "x"}, [], None)
+    m = merge_gate({**base, "status": "fail"}, {"status": "incomplete", "status_reason": "x"}, [], None, P)
     if m["status"] != "fail":
         fails.append("G1 已 fail 時 KEV incomplete 不得降為 incomplete")
-    m = merge_gate({**base, "status": "incomplete", "status_reason": "slop"}, {"status": "pass"}, [], None)
+    m = merge_gate({**base, "status": "incomplete", "status_reason": "slop"}, {"status": "pass"}, [], None, P)
     if m["status"] != "incomplete" or m["status_reason"] != "slop":
         fails.append("KEV pass 不得把 incomplete 的 G1 洗成 pass")
     if base["status"] != "pass" or base["tools"]:
@@ -296,13 +294,29 @@ def selftest() -> list[str]:
     from gate_verdict import is_clean
     held = {**base, "coverage": [{"control_id": "VS-G1-SBOM", "state": "pass", "reason": None},
                                  {"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}
-    m = merge_gate(held, {"status": "pass"}, [], None)
+    m = merge_gate(held, {"status": "pass"}, [], None, P)
     if is_clean(held) or not is_clean(m) or [c["state"] for c in m["coverage"] if c["control_id"] == KEV_CONTROL] != ["pass"]:
         fails.append(f"KEV 預留的 pending 應在併入時被取代，未併入則不乾淨：{m['coverage']}")
+    # 政策檔讀不到 → 進入點就停：摘要 incomplete 並寫明未完成原因、沒有任何發現、退出碼 2；
+    # 併入的 G1 為 incomplete、控制 untested（以前退回預設 tier 照樣判定，或以例外結束）
+    import contextlib, io
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
+        gp.write_text(json.dumps({**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}), encoding="utf-8")
+        rc = main(["--grype", str(pathlib.Path(d, "g.json")), "--kev-feed", str(pathlib.Path(d, "k.json")),
+                       "--sarif", str(sf), "--json", str(js), "--merge-gate", str(gp)], policy_root=pr)
+        sm, g = json.loads(js.read_text(encoding="utf-8")), json.loads(gp.read_text(encoding="utf-8"))
+        st = [c["state"] for c in g["coverage"] if c["control_id"] == KEV_CONTROL]
+        if rc != 2 or sm.get("status") != "incomplete" or not str(sm.get("status_reason")).startswith(POLICY_UNREADABLE + "（") \
+                or g["status"] != "incomplete" or POLICY_UNREADABLE not in (g["status_reason"] or "") or st != ["untested"] \
+                or g["findings_count"] != base["findings_count"]:
+            fails.append(f"KEV：政策檔讀不到 → 退出碼 2、incomplete、G1 incomplete 且控制 untested（得到 {rc}、{sm}、{g}）")
     return fails
 
 
-def main(argv=None) -> int:
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
         fails = selftest()
         print("\n".join(f"FAIL {x}" for x in fails) or "g1_kev selftest ok")
@@ -315,7 +329,13 @@ def main(argv=None) -> int:
     ap.add_argument("--merge-gate", help="併入既有的 G1 gate-result（就地更新）；檔案不存在則略過")
     ap.add_argument("--kev-source", help="scripts/fetch_kev.py 的來源紀錄（--meta）；附進摘要，看得出用了官網、鏡像或舊快取")
     a = ap.parse_args(argv)
-    summary, hits = run(pathlib.Path(a.grype), pathlib.Path(a.kev_feed))
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import load_policy
+    policy, problem = load_policy(policy_root)   # 進入點只建立一次；讀不到 → incomplete，不執行檢查（不再退回規則預設 tier）
+    if problem:
+        summary, hits = {"rule_id": RULE, "status": "incomplete", "status_reason": problem}, []
+    else:
+        summary, hits = run(pathlib.Path(a.grype), pathlib.Path(a.kev_feed))
     if a.kev_source:
         try:
             summary["kev_source"] = json.loads(pathlib.Path(a.kev_source).read_text(encoding="utf-8"))
@@ -328,7 +348,7 @@ def main(argv=None) -> int:
         gp = pathlib.Path(a.merge_gate)
         if gp.is_file():
             ref = a.sarif if summary["status"] != "incomplete" else None
-            merged = merge_gate(json.loads(gp.read_text(encoding="utf-8")), summary, hits, ref)
+            merged = merge_gate(json.loads(gp.read_text(encoding="utf-8")), summary, hits, ref, policy)
             gp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
         else:
             print(f"::warning::{gp} 不存在，KEV 結果未併入 G1 gate（summary 會顯示 G1 untested）")
@@ -336,7 +356,7 @@ def main(argv=None) -> int:
         print(f"::error::KEV 檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
         return 2
     vulns = summary.get("vulnerable") or []
-    pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits, vulns), ensure_ascii=False, indent=2), encoding="utf-8")
+    pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits, vulns, policy), ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"已知漏洞（非 KEV，advisory）：{len(vulns)} 筆")
     print(f"KEV：檢查 {summary['matches_checked']} 筆 grype 結果，命中 {len(hits)} 筆"
           + "".join(f"\n  {h['cve']} {h['package']}@{h['version']}（KEV {h['kev_date']}）" for h in hits))

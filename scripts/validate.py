@@ -562,9 +562,13 @@ try:
                 err(f"{_tm_rel} 仍是範本內容（system.name: example-project）")
             else:
                 ok(f"威脅模型 ok: {_tm_rel}")
-                from g0_trifecta import load_project_policy, trifecta_findings
+                from g0_trifecta import trifecta_findings
+                from vibesec_policy import load_policy as _load_policy
                 # 政策取自本腳本所在的樹（CI 為 default branch），綁定受驗樹 ROOT（CI 以 VIBESEC_PROJECT_ROOT 認出是本 repo）
-                for f in trifecta_findings(_d, ROOT, str(_tm_rel), project=load_project_policy(ROOT)[0]):
+                _g0_policy, _g0_policy_problem = _load_policy(CODE.parent)
+                if _g0_policy_problem:
+                    err(f"{_tm_rel}：G0 致命三要素無法判定（incomplete ≠ pass）：{_g0_policy_problem}")
+                for f in trifecta_findings(_d, ROOT, str(_tm_rel), project=_g0_policy.for_project(ROOT)) if _g0_policy else []:
                     if f["policy_tier"] == "blocking":
                         err(f"{_tm_rel}：{f['rule_id']}（blocking）— {f['reason']}")
                     else:   # blocking-policy 例外（已接受風險、有到期日）：不擋，但每次都看得到
