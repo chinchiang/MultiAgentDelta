@@ -39,7 +39,7 @@ except ImportError:
     sys.exit(2)
 
 sys.path.insert(0, str(ROOT / "scripts"))
-from vibesec_policy import Policy  # noqa: E402  tier 的唯一來源
+from vibesec_policy import Policy, ProjectPolicy  # noqa: E402  tier 的唯一來源
 
 
 def _yaml(p: pathlib.Path) -> dict:
@@ -61,8 +61,7 @@ def load_policy() -> dict:
             impl[f"{t}:{ext}"].add(rid)
     return {"mode": vb.get("mode", "shadow"), "risk_tier": tier, "blocking": blocking, "policy": policy,
             "default_tier": policy.default_tier, "impl": impl, "controls": controls,
-            "exceptions": policy.exceptions_for(None),   # 本 repo；外部專案由 g2_secrets／g3_sast 換成 exceptions_for(target)
-            "semgrep_aliases": load_semgrep_aliases()}
+            "semgrep_aliases": load_semgrep_aliases()}   # 政策例外不在這裡：呼叫端以 Policy.for_project(受驗樹) 傳入
 
 
 _TIMEOUT_RE = re.compile(r"\btime(?:d)?\s?out\b", re.I)
@@ -176,17 +175,15 @@ def map_rule(tool: str, rule_id: str, pol: dict, declared: str | None = None) ->
     return sorted(mapped) or [key]
 
 
-def to_findings(tool: str, results: list[dict], pol: dict) -> list[dict]:
+def to_findings(tool: str, results: list[dict], pol: dict, project: ProjectPolicy) -> list[dict]:
     out = []
     for r in results:
         loc = _location(r)
         for rid in map_rule(tool, r.get("ruleId") or "", pol, r.get("_vibesec_rule_id")):
-            f = {"rule_id": rid, "tool": tool, "location": loc, "policy_tier": pol["policy"].tier(rid)}   # tier 唯一來源
-            ex = pol["exceptions"].match(rid, loc)
-            if ex:
-                if f["policy_tier"] == "blocking":
-                    f["policy_tier"] = "advisory"
-                f["exception"] = pol["exceptions"].record(ex)   # 各閘門相同的固定形狀
+            c = project.classify(rid, loc)   # tier 唯一來源；命中例外 → advisory、發現保留
+            f = {"rule_id": rid, "tool": tool, "location": loc, "policy_tier": c["policy_tier"]}
+            if c["exception"]:
+                f["exception"] = c["exception"]   # 各閘門相同的固定形狀
             out.append(f)
     return out
 
@@ -206,7 +203,8 @@ def env_findings(d: dict, pol: dict) -> list[dict]:
 
 
 def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | None, pol: dict,
-           started: str | None = None) -> dict:
+           project: ProjectPolicy, started: str | None = None) -> dict:
+    """project：受驗樹的政策例外（Policy.for_project），必填；外部專案的 project 沒有任何例外。"""
     now = lambda: datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
     started = started or now()
     tool_rows, findings, problems = [], [], []
@@ -229,7 +227,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
             continue
         if err is None:   # 工具自報失敗：發現照算，但不算跑完（負責的控制記 untested）
             ran.add(name)
-        findings += to_findings(name, results, pol)
+        findings += to_findings(name, results, pol, project)
     if envcheck is not None:
         try:
             d = json.loads(envcheck.read_text(encoding="utf-8"))
@@ -264,7 +262,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
     if blocking:
         top = collections.Counter(f["rule_id"] for f in blocking).most_common(5)
         notes.append("blocking：" + "、".join(f"{r}×{n}" for r, n in top))
-    notes += pol["exceptions"].report(findings, gate)   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
+    notes += project.report(findings, gate)   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from gate_verdict import verdict
     status, status_reason = verdict(blocking=len(blocking), coverage=coverage,
@@ -298,7 +296,7 @@ def selftest() -> list[str]:
             e = None
             if env is not None:
                 e = D / "env.json"; e.write_text(json.dumps(env), encoding="utf-8")
-            g = derive(gate, tools, e, pol)
+            g = derive(gate, tools, e, pol, pol["policy"].for_project(ROOT))
             errs = sorted(schema.iter_errors(g), key=str)
             if errs:
                 fails.append(f"{gate} gate JSON 不符 schema：{errs[0].message}")
@@ -379,8 +377,9 @@ def selftest() -> list[str]:
         # L3：tier_overrides 把 vibesec.g4.supabase-rls-disabled 升為 blocking；建表未啟用 RLS 的 semgrep 規則要吃到這個升級
         run("G3", {"semgrep": sarif(res("config.semgrep.vibesec.g4.supabase-table-without-rls", "supabase/migrations/1.sql")),
                 "checkov": sarif(), "trivy": sarif()})
+        l3 = Policy(ROOT, risk_tier="L3")
         g = derive("G3", {k: D / f"G3-{k}.sarif" for k in ("semgrep", "checkov", "trivy")}, None,
-                   dict(pol, policy=Policy(ROOT, risk_tier="L3")))
+                   dict(pol, policy=l3), l3.for_project(ROOT))
         if g["status"] != "fail" or g["findings_count"]["blocking"] != 1:
             fails.append(f"L3 下 supabase-table-without-rls → supabase-rls-disabled blocking → fail（得到 {g['status']}）")
         g = run("G2", {"gitleaks": sarif()}, env={"rule_id": "vibesec.g2.env-not-ignored", "env_gitignore_fail": 0})
@@ -396,16 +395,13 @@ def selftest() -> list[str]:
         if g["status"] != "pass" or g["findings_count"]["advisory"] < 1 or "例外" not in (g["status_reason"] or ""):
             fails.append("blocking-policy 例外 → 降為 advisory、發現保留、理由註明")
         # 忽略的例外只列本閘門的規則：G1 的過期例外不出現在 G2（以前每個閘門都列全部）
-        from vibesec_policy import Exceptions
-        saved_ex = pol["exceptions"]
-        try:
-            pol["exceptions"] = Exceptions([], [("vibesec.g1.cooldown-violation", "G1 的過期例外"),
-                                                ("vibesec.g2.hardcoded-secret", "G2 的過期例外")])
-            why = run("G2", {"gitleaks": sarif()}, env={"env_gitignore_fail": 0})["status_reason"] or ""
-            if "忽略的例外：G2 的過期例外" not in why or "G1 的過期例外" in why:
-                fails.append(f"G2 只列本閘門忽略的例外（不列 G1 的）：{why}")
-        finally:
-            pol["exceptions"] = saved_ex
+        e = D / "env.json"; e.write_text(json.dumps({"env_gitignore_fail": 0}), encoding="utf-8")
+        (D / "G2-gitleaks.sarif").write_text(json.dumps(sarif()), encoding="utf-8")
+        ignored = ProjectPolicy(pol["policy"], [], [("vibesec.g1.cooldown-violation", "G1 的過期例外"),
+                                                    ("vibesec.g2.hardcoded-secret", "G2 的過期例外")], [])
+        why = derive("G2", {"gitleaks": D / "G2-gitleaks.sarif"}, e, pol, ignored)["status_reason"] or ""
+        if "忽略的例外：G2 的過期例外" not in why or "G1 的過期例外" in why:
+            fails.append(f"G2 只列本閘門忽略的例外（不列 G1 的）：{why}")
         g = run("G2", {"gitleaks": None}, env={"env_gitignore_fail": 1})
         if g["status"] != "incomplete" or g["findings_count"]["advisory"] != 1:
             fails.append("gitleaks 缺席 → incomplete；envcheck 失敗 → advisory 發現")
@@ -456,7 +452,9 @@ def main(argv=None) -> int:
     for spec in a.tool:
         name, _, path = spec.partition("=")
         tools[name] = pathlib.Path(path)
-    g = derive(a.gate, tools, pathlib.Path(a.envcheck) if a.envcheck else None, load_policy())
+    pol = load_policy()
+    # 命令列只用於本 repo 的 CI：SARIF 來自本 repo 的受驗樹 → 綁定政策所在的 repo（G2／G3 掃其他專案走 g2_secrets／g3_sast）
+    g = derive(a.gate, tools, pathlib.Path(a.envcheck) if a.envcheck else None, pol, pol["policy"].for_project(pol["policy"].root))
     pathlib.Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.out).write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"{a.gate} {g['status']}：blocking={g['findings_count']['blocking']} advisory={g['findings_count']['advisory']}"

@@ -29,7 +29,7 @@ import argparse, datetime, json, pathlib, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import sarif_gate  # noqa: E402  缺 PyYAML 時以 exit 2 結束（無法判定，不視為通過）
-from g0_trifecta import policy_notes, trifecta_findings  # noqa: E402
+from g0_trifecta import load_project_policy, policy_notes, trifecta_findings  # noqa: E402
 from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本
 
 ORDER = {"L1": 1, "L2": 2, "L3": 3}
@@ -129,11 +129,14 @@ def _now() -> str:
 
 
 def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Path | None = None,
-          vibesec: dict | None = None) -> dict:
-    """檢查目標專案的威脅模型並回傳 G0 gate JSON（schemas/gate-result.schema.json）。vibesec：測試用的 vibesec.yaml 內容。"""
+          vibesec: dict | None = None, project_policy=None) -> dict:
+    """檢查目標專案的威脅模型並回傳 G0 gate JSON（schemas/gate-result.schema.json）。vibesec：測試用的 vibesec.yaml 內容。
+    project_policy：測試用的 ProjectPolicy（取代依本 repo 政策、以受驗樹綁定的那一份）。"""
     started = _now()
     target, out_dir = target.resolve(), out_dir.resolve()
     explicit = threat_model.resolve() if threat_model else None
+    # G0 只認 ROOT 是本 repo（不讀 VIBESEC_PROJECT_ROOT）：G0 不在 CI 執行，判定程式與受驗樹不會分開。
+    # G0 進 CI、判定程式與受驗樹分開時，改認 VIBESEC_PROJECT_ROOT，並重新判斷 external 的其他用途（docs/adr/0001）
     external = target != ROOT.resolve()
     vb = vibesec if vibesec is not None else sarif_gate._yaml(ROOT / "vibesec.yaml")
     mode, policy_tier = vb.get("mode", "shadow"), vb.get("risk_tier", "L2")
@@ -205,13 +208,16 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
             tm_rel = None if external else path.resolve().relative_to(copy.resolve()).as_posix()
         except ValueError:
             tm_rel = None
-        findings = trifecta_findings(tm, copy, tm_rel)
+        # 政策例外綁定受驗樹本身（target），不綁暫存副本 copy：副本一定是外部專案，本 repo 的例外會全部失效
+        project, policy_error = ((project_policy, None) if project_policy is not None
+                                 else load_project_policy(target, project_root=None))
+        findings = trifecta_findings(tm, copy, tm_rel, project=project)
     open_agents = [f for f in findings if f["policy_tier"] == "blocking"]
     for f in findings:
         if f.get("exception"):   # 已接受風險：照實寫進 status_reason，不讓它看起來像「已切斷」
             reasons.append(f"致命三要素未切斷：{f['agent']}（依 blocking-policy 例外降為 advisory，核准 {f['exception']['approved_by']}、"
                            f"到期 {f['exception']['expires']}）")
-    reasons += policy_notes(findings, tm_rel)   # 命中筆數、忽略與缺 agent_id 的例外（各閘門相同的文字；外部專案 → 無）
+    reasons += policy_notes(findings, tm_rel, project, policy_error)   # 命中筆數、忽略與缺 agent_id 的例外（各閘門相同的文字；外部專案 → 無）
     cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "fail" if open_agents else "pass"
     if open_agents:
         reasons.append("致命三要素未切斷：" + "、".join(str(f["agent"]) for f in open_agents))
@@ -396,36 +402,29 @@ def selftest() -> list[str]:
             fails.append("本 repo：威脅模型與 vibesec.yaml 的 risk_tier 不一致 → fail")
     # 例外的回報（#158）：命中 → finding.exception 固定 5 欄、status_reason 註明筆數；忽略與缺 agent_id 的例外
     # 寫進 status_reason（只列 G0 的規則），不再附加在 finding.reason。政策指向暫存檔，不依賴本 repo 現有例外的到期日
-    import g0_trifecta, shutil, yaml
+    import g0_trifecta
+    from vibesec_policy import Policy, temp_policy_root
     rule = g0_trifecta.RULE
     base = {"rule_id": rule, "path_glob": "docs/threat-model.yaml", "reason": "selftest", "approved_by": "o"}
-    with tempfile.TemporaryDirectory() as pd, tempfile.TemporaryDirectory() as d:
-        PR = pathlib.Path(pd)
-        (PR / "config/policy").mkdir(parents=True)
-        shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
-        (PR / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"exceptions": [
-            dict(base, agent_id="c-claude", expires="2099-01-01"),
-            dict(base, agent_id="other", expires="2020-01-01"),
-            dict(base, expires="2099-01-01"),
-            {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "x/**", "reason": "r", "approved_by": "o", "expires": "2020-01-01"},
-        ]}, allow_unicode=True), encoding="utf-8")
-        saved, g0_trifecta.POLICY_ROOT = g0_trifecta.POLICY_ROOT, PR
-        try:
-            g = run(ROOT, pathlib.Path(d))
-            why = g["status_reason"] or ""
-            fs = [f for f in json.loads((pathlib.Path(d) / "g0-findings.json").read_text())["findings"] if f["rule_id"] == rule]
-            want = {"path_glob": "docs/threat-model.yaml", "reason": "selftest", "approved_by": "o", "expires": "2099-01-01", "agent_id": "c-claude"}
-            if [f.get("exception") for f in fs] != [want]:
-                fails.append(f"G0 命中例外 → finding.exception 固定 5 欄（含 reason）：{[f.get('exception') for f in fs]}")
-            if "1 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）" not in why:
-                fails.append(f"G0 status_reason 註明命中筆數：{why}")
-            if (f"忽略的例外：{rule} @ docs/threat-model.yaml：已於 2020-01-01 過期；"
-                    f"{rule} @ docs/threat-model.yaml：G0 例外缺 agent_id，未套用") not in why or "cooldown" in why:
-                fails.append(f"G0 status_reason 列出本閘門忽略與缺 agent_id 的例外、不列其他閘門的：{why}")
-            if any("過期" in f["reason"] or "缺 agent_id" in f["reason"] for f in fs):
-                fails.append(f"忽略的例外不再附加在 finding.reason：{[f['reason'] for f in fs]}")
-        finally:
-            g0_trifecta.POLICY_ROOT = saved
+    with temp_policy_root([dict(base, agent_id="c-claude", expires="2099-01-01"),
+                           dict(base, agent_id="other", expires="2020-01-01"),
+                           dict(base, expires="2099-01-01"),
+                           {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "x/**", "reason": "r", "approved_by": "o",
+                            "expires": "2020-01-01"}]) as PR, tempfile.TemporaryDirectory() as d:
+        # 暫存政策檔與受驗樹（本 repo）分開：以 project_root 指出受驗樹，與 CI 的 _trusted/ 加 workspace 同一種情況
+        g = run(ROOT, pathlib.Path(d), project_policy=Policy(PR, project_root=ROOT).for_project(ROOT))
+        why = g["status_reason"] or ""
+        fs = [f for f in json.loads((pathlib.Path(d) / "g0-findings.json").read_text())["findings"] if f["rule_id"] == rule]
+        want = {"path_glob": "docs/threat-model.yaml", "reason": "selftest", "approved_by": "o", "expires": "2099-01-01", "agent_id": "c-claude"}
+        if [f.get("exception") for f in fs] != [want]:
+            fails.append(f"G0 命中例外 → finding.exception 固定 5 欄（含 reason）：{[f.get('exception') for f in fs]}")
+        if "1 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）" not in why:
+            fails.append(f"G0 status_reason 註明命中筆數：{why}")
+        if (f"忽略的例外：{rule} @ docs/threat-model.yaml：已於 2020-01-01 過期；"
+                f"{rule} @ docs/threat-model.yaml：G0 例外缺 agent_id，未套用") not in why or "cooldown" in why:
+            fails.append(f"G0 status_reason 列出本閘門忽略與缺 agent_id 的例外、不列其他閘門的：{why}")
+        if any("過期" in f["reason"] or "缺 agent_id" in f["reason"] for f in fs):
+            fails.append(f"忽略的例外不再附加在 finding.reason：{[f['reason'] for f in fs]}")
     return fails
 
 
