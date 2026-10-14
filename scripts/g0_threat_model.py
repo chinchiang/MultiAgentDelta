@@ -134,9 +134,9 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
     findings_ref = out_dir / "g0-findings.json"
     findings_ref.unlink(missing_ok=True)       # 不讓上一次的輸出被當成這次的結果
     # 閘門結果由 GateRun 產出（#181）：外層欄位、tool 列、時間戳只有 gate_result 一份寫法；狀態仍由 gate_verdict 判定
-    run = GateRun("G0", controls=CONTROLS, mode=mode, scope="full", risk_tier=policy_tier)
+    gate = GateRun("G0", controls=CONTROLS, mode=mode, scope="full", risk_tier=policy_tier)
     cov = {c: {"state": "untested", "reason": None} for c in CONTROLS}
-    st8 = {"tool": "ran", "blocking": 0, "advisory": 0}
+    tool = {"state": "ran"}   # vibesec-g0 自己的 tool 列狀態：提早結束時改成 error／missing，done() 才寫進閘門結果
     reasons: list[str] = []
 
     def done(status: str, tier_fail: bool = False) -> dict:
@@ -144,25 +144,27 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
         實際狀態由 gate_verdict.verdict 判定（GateRun.result）。tier_fail（risk_tier 宣告低於推導值或與 vibesec.yaml
         不一致）不是發現、卻要讓 G0 fail：維持既有行為，以 GateRun.fail_condition 交給 verdict（findings_count 不計入；
         改成正式規則須另開政策 PR，CLAUDE.md 規則 1）。"""
-        run.tool("vibesec-g0", st8["tool"], output_ref=str(findings_ref))
+        gate.tool("vibesec-g0", tool["state"], output_ref=str(findings_ref))
         for cid, c in cov.items():
-            run.cover(cid, c["state"], c["reason"] if c["state"] != "untested" or c["reason"] else (reasons[0] if reasons else None))
-        run.count(blocking=st8["blocking"], advisory=st8["advisory"])
+            reason = c["reason"]
+            if c["state"] == "untested" and not reason:   # 提早結束：未實測的控制以第一個未完成原因說明
+                reason = reasons[0] if reasons else None
+            gate.cover(cid, c["state"], reason)
         if tier_fail:
-            run.fail_condition()
+            gate.fail_condition()
         for x in reasons:
-            (run.problem if status == "incomplete" else run.note)(x)
-        return run.result()
+            (gate.problem if status == "incomplete" else gate.note)(x)
+        return gate.result()
 
     policy, problem = load_policy(policy_root, project_root=project_root)   # 只建立一次；讀不到 → incomplete，不判定任何發現
     if problem:   # 控制全部 untested（原因＝problem）、tool 列只有 vibesec-g0 一列 error
-        return run.unreadable(problem, tool_name="vibesec-g0")
+        return gate.unreadable(problem, tool_name="vibesec-g0")
     top = _git(target, "rev-parse", "--show-toplevel")
     if top is None or pathlib.Path(top).resolve() != target:
-        st8["tool"] = "error"
+        tool["state"] = "error"
         reasons.append(f"目標不是 git repo（{target}）" if top is None else f"--target 必須是 git repo 根目錄（{top}）")
         return done("incomplete")
-    run.commit = _git(target, "rev-parse", "HEAD")
+    gate.commit = _git(target, "rev-parse", "HEAD")
     with tempfile.TemporaryDirectory(prefix="vibesec-g0-") as tmp:
         copy = pathlib.Path(tmp) / "vibesec-target"
         copy.mkdir()
@@ -179,7 +181,7 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
         try:
             from jsonschema import Draft202012Validator
         except ImportError:   # 工具缺席 → incomplete（不讓 ImportError 以 exit 1 被當成 fail）
-            st8["tool"] = "missing"
+            tool["state"] = "missing"
             reasons.append("工具缺席：jsonschema，無法驗證威脅模型是否符合 schema（incomplete ≠ pass）")
             return done("incomplete")
         schema = json.loads((ROOT / "schemas/threat-model.schema.json").read_text(encoding="utf-8"))
@@ -214,7 +216,7 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
     findings += extra
     reasons += [f"{f['rule_id']}（blocking）：{f['reason']}" for f in extra if f["policy_tier"] == "blocking"]
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
-    st8.update(blocking=len(blocking), advisory=len(findings) - len(blocking))
+    gate.count(blocking=len(blocking), advisory=len(findings) - len(blocking))
 
     declared = tm["risk_tier"]
     derived, why = derive_tier(tm, contains_llm)

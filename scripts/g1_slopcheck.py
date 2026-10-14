@@ -22,6 +22,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent      # VibeSec 本身：設定、清單、政策
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份寫法（#181）；不依賴 PyYAML
 CFG_DIR = ROOT / "config" / "slopsquat"
 TIMEOUT = 8
 WORKERS = 8                                        # registry 並行查詢數
@@ -1025,6 +1027,7 @@ def added_packages(path, base):
     return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
 
 LEVEL = {"blocking": "error", "advisory": "warning"}
+TOOL_NAME, TOOL_VERSION = "vibesec-slopcheck", "2.0.0"
 
 def write_sarif(path, findings):
     rules, results = {}, []
@@ -1042,13 +1045,10 @@ def write_sarif(path, findings):
                           | ({"exception": f["exception"]} if f.get("exception") else {})
                           | ({"allowlist": f["allowlist"]} if f.get("allowlist") else {}),
         })
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import gate_result   # 自產 SARIF 骨架只有一份寫法（#181）
     sarif = gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(rules.values()), results)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
 
-TOOL_NAME, TOOL_VERSION = "vibesec-slopcheck", "2.0.0"
 CONTROLS = ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK")
 
 CONTROL_OF = {
@@ -1088,15 +1088,13 @@ def gate_status(findings, incomplete, coverage, notes=()):
 def gate_run(started, base, scope):
     """G1 的閘門執行（gate_result.GateRun）：SBOM 與 KEV 由 g1_sbom.py、g1_kev.py 併入（依 control_id 取代），
     宣告為 deferred（清單直接取自 gate_verdict.REQUIRED_CONTROLS，不另外維護）；沒併入就維持 pending，最終判定視同未實測。"""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from gate_result import GateRun
     from gate_verdict import REQUIRED_CONTROLS
     vb = read_vibesec() or {}
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=TARGET).stdout.strip() or None
     except Exception:
         commit = None
-    return GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=vb.get("mode", "shadow"), scope=scope,
+    return gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=vb.get("mode", "shadow"), scope=scope,
                    commit=commit, diff_base=base, risk_tier=vb.get("risk_tier", "L2"), started_at=started)
 
 def write_unreadable_gate(path, problem, started, base, scope):
@@ -1752,7 +1750,6 @@ def selftest():
     # 政策檔讀不到 → 進入點就停：G1 gate incomplete 並寫明未完成原因、沒有任何發現、退出碼 2（不查 registry）。
     # 以前 _policy() 在掃描途中拋出例外、整支結束，gate JSON 沒有寫出
     from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
-    import gate_result
     saved = _POLICY
     try:
         _POLICY = None
@@ -1768,7 +1765,7 @@ def selftest():
         iso = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
         if code != 2 or g.get("status") != "incomplete" or POLICY_UNREADABLE not in (g.get("status_reason") or "") \
                 or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
-                or g.get("tools") != [gate_result.tool("vibesec-slopcheck", "error", version="2.0.0")] \
+                or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
                 or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
                            ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False), ("ASVS5-V15.2", "pending", False)] \
                 or stale or list(schema.iter_errors(g)) \
@@ -1782,7 +1779,11 @@ def selftest():
         with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             vbp = pr / "vibesec.yaml"
-            vbp.write_text(vbp.read_text(encoding="utf-8").replace("risk_tier: L3", "risk_tier: l3", 1), encoding="utf-8")
+            # 不依賴 vibesec.yaml 現在的值：把最上層的 risk_tier 覆寫成打錯的 l3，並確認真的換到了
+            text, n = re.subn(r"(?m)^risk_tier:.*$", "risk_tier: l3", vbp.read_text(encoding="utf-8"), count=1)
+            if n != 1:
+                fails.append("selftest 前置：vibesec.yaml 找不到最上層的 risk_tier，無法製造打錯的情境")
+            vbp.write_text(text, encoding="utf-8")
             VIBESEC_FILE = vbp
             gp = Path(d, "G1.json")
             try:
@@ -1812,8 +1813,6 @@ def main(argv, policy_root=ROOT):
             print(f"FAIL {f}")
         print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
         return 1 if fails else 0
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import gate_result
     started = gate_result.now()   # 時間戳一律 +00:00（以前 G1 寫 Z，#181）
     target = (_opt(args, "--target") or [None])[-1]
     if target:
