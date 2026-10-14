@@ -58,15 +58,9 @@ def run(sbom: pathlib.Path, repo: str, signer_workflow: str, verify=gh_verify) -
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def _policy_tier() -> str:
-    """tier 唯一來源是 blocking-policy（第四次審視 S-11）。"""
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from vibesec_policy import Policy
-    return Policy(ROOT).tier(RULE)
-
-
-def to_sarif(summary: dict, hit: bool) -> dict:
-    _TIER = _policy_tier(); _LEVEL = "error" if _TIER == "blocking" else "warning"
+def to_sarif(summary: dict, hit: bool, policy: "Policy") -> dict:
+    """policy：tier 唯一來源（blocking-policy，第四次審視 S-11）；由進入點建立一次傳入。"""
+    _TIER = policy.tier(RULE); _LEVEL = "error" if _TIER == "blocking" else "warning"
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "SBOM 缺少可驗證的 SLSA provenance 來源證明"},
             "defaultConfiguration": {"level": _LEVEL}, "properties": {"policy_tier": _TIER}}
     results = []
@@ -85,6 +79,8 @@ def to_sarif(summary: dict, hit: bool) -> dict:
 
 
 def selftest() -> list[str]:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
     import tempfile
     fails: list[str] = []
     with tempfile.TemporaryDirectory() as d:
@@ -109,10 +105,10 @@ def selftest() -> list[str]:
         if run(pathlib.Path(d, "none"), "o/r", "w", verify=cases[0][1])[0]["status"] != "incomplete":
             fails.append("缺 SBOM 應為 incomplete")
         s, hit = run(sb, "o/r", "w", verify=cases[1][1])
-        r = to_sarif(s, hit)["runs"][0]["results"]
+        r = to_sarif(s, hit, Policy(ROOT))["runs"][0]["results"]
         if len(r) != 1 or r[0]["ruleId"] != RULE or r[0]["properties"]["policy_tier"] != "advisory":
             fails.append("命中時 SARIF 應有 1 筆 advisory")
-        if to_sarif(*run(sb, "o/r", "w", verify=cases[0][1]))["runs"][0]["results"]:
+        if to_sarif(*run(sb, "o/r", "w", verify=cases[0][1]), Policy(ROOT))["runs"][0]["results"]:
             fails.append("驗證成功時 SARIF 不應有結果")
         # gh_verify 必須把 --repo 與 --signer-workflow 傳給 gh：少了 --signer-workflow，任何 workflow（含 PR 的）簽發的
         # 證明都會驗過；以前 selftest 全部用假的 verify，這個參數從沒被檢查
@@ -129,10 +125,23 @@ def selftest() -> list[str]:
         if argv[1:3] != ["attestation", "verify"] or pair("--signer-workflow") != "o/r/.github/workflows/nightly-full.yml" \
                 or pair("--repo") != "o/r":
             fails.append(f"gh_verify 應以 attestation verify --repo o/r --signer-workflow <workflow> 呼叫 gh（得到 {argv}）")
+    # 政策檔讀不到 → 進入點就停：摘要 incomplete 並寫明未完成原因、不寫 SARIF（舊檔刪除；上傳步驟以 hashFiles 略過）、退出碼 2
+    # （不再以例外結束；也不執行檢查，因為無法決定發現的 tier）
+    import contextlib, io, tempfile
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        js, sf = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
+        sf.write_text("上一次的結果", encoding="utf-8")
+        rc = main(["--sbom", str(pathlib.Path(d, "none.json")), "--repo", "o/r", "--signer-workflow", "o/r/w.yml",
+                       "--sarif", str(sf), "--json", str(js)], policy_root=pr)
+        s, stale = json.loads(js.read_text(encoding="utf-8")), sf.exists()
+    if rc != 2 or s.get("status") != "incomplete" or not str(s.get("status_reason")).startswith(POLICY_UNREADABLE + "（") or stale:
+        fails.append(f"來源證明：政策檔讀不到 → 退出碼 2、incomplete 並寫明原因、不留 SARIF（得到 {rc}、{s}、SARIF 存在：{stale}）")
     return fails
 
 
-def main(argv=None) -> int:
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
         fails = selftest()
         print("\n".join(f"FAIL {x}" for x in fails) or "g1_provenance selftest ok")
@@ -144,11 +153,20 @@ def main(argv=None) -> int:
     ap.add_argument("--sarif", required=True)
     ap.add_argument("--json", required=True)
     a = ap.parse_args(argv)
-    summary, hit = run(pathlib.Path(a.sbom), a.repo, a.signer_workflow)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import load_policy
+    policy, problem = load_policy(policy_root)   # 進入點只建立一次；讀不到 → incomplete，不執行檢查
+    if problem:
+        summary, hit = {"rule_id": RULE, "status": "incomplete", "status_reason": problem}, False
+    else:
+        summary, hit = run(pathlib.Path(a.sbom), a.repo, a.signer_workflow)
     for out in (a.sarif, a.json):
         pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(summary, hit), ensure_ascii=False, indent=2), encoding="utf-8")
+    if policy:
+        pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(summary, hit, policy), ensure_ascii=False, indent=2), encoding="utf-8")
+    else:   # 沒有分類任何發現：不寫 SARIF（上傳步驟以 hashFiles 略過），也不讓上一次的結果被當成這次的
+        pathlib.Path(a.sarif).unlink(missing_ok=True)
     if summary["status"] == "incomplete":
         print(f"::error::SBOM 來源證明檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
         return 2

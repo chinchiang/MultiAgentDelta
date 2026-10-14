@@ -1084,7 +1084,8 @@ def gate_status(findings, incomplete, coverage, notes=()):
     return verdict(blocking=sum(f["policy_tier"] == "blocking" for f in findings), coverage=coverage,
                    problems=list(dict.fromkeys(incomplete)), notes=list(notes))
 
-def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0):
+def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0, tool_state="ran"):
+    """tool_state：slopcheck 本身沒有執行（例如政策檔讀不到）→ "error"，sarif_ref 傳 None。"""
     vb = read_vibesec() or {}
     mode = vb.get("mode", "shadow"); tier = vb.get("risk_tier", "L2")
     blocking = sum(f["policy_tier"] == "blocking" for f in findings)
@@ -1101,7 +1102,7 @@ def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, note
     gate = {"gate": "G1", "status": status, "status_reason": reason, "mode": mode, "risk_tier": tier,
             "scope": scope, "diff_base": base, "commit": commit,
             "started_at": started, "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "tools": [{"name": "vibesec-slopcheck", "version": "2.0.0", "state": "ran", "exit_code": None,
+            "tools": [{"name": "vibesec-slopcheck", "version": "2.0.0", "state": tool_state, "exit_code": None,
                        "output_ref": sarif_ref, "duration_seconds": None}],
             "findings_count": {"blocking": blocking, "advisory": advisory},
             "coverage": coverage}
@@ -1736,11 +1737,30 @@ def selftest():
     st, why = gate_status([], [], gate_coverage([], [], 2), ())
     if st != "incomplete" or "VS-G1-INSTALL-HOOK" not in (why or ""):
         fails.append(f"gate_status 接線：PyPI 安裝腳本未實測 → incomplete（得到 {st}：{why}）")
+    # 政策檔讀不到 → 進入點就停：G1 gate incomplete 並寫明未完成原因、沒有任何發現、退出碼 2（不查 registry）。
+    # 以前 _policy() 在掃描途中拋出例外、整支結束，gate JSON 沒有寫出
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    saved = _POLICY
+    try:
+        _POLICY = None
+        with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            gp = Path(d, "G1.json")
+            code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp),
+                         "--sarif", str(Path(d, "G1.sarif"))], policy_root=pr)
+            g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
+        tool = (g.get("tools") or [{}])[0]
+        if code != 2 or g.get("status") != "incomplete" or POLICY_UNREADABLE not in (g.get("status_reason") or "") \
+                or g.get("findings_count") != {"blocking": 0, "advisory": 0} or tool.get("state") != "error" or tool.get("output_ref"):
+            fails.append(f"政策檔讀不到 → 退出碼 2、G1 incomplete 並寫明原因、沒有發現、tool 記 error（得到 {code}、{g}）")
+    finally:
+        _POLICY = saved
 
     return fails
 
-def main(argv):
-    global TARGET
+def main(argv, policy_root=ROOT):
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
+    global TARGET, _POLICY
     args = argv[1:]
     if "--help" in args or "-h" in args:
         print(__doc__.strip())
@@ -1766,6 +1786,15 @@ def main(argv):
     changed = []
     # --staged／--changed-files／--base 只看變更 → scope diff（以前只有給 --base 才記 diff）
     scope = "diff" if base or "--staged" in args or _opt(args, "--changed-files") else "full"
+    if _POLICY is None:   # 進入點只建立一次（selftest 可預先指定）；讀不到 → incomplete，不分類任何發現
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from vibesec_policy import load_policy
+        _POLICY, problem = load_policy(policy_root)
+        if problem:
+            print(f"⚠️ G1 無法完成檢查：{problem} → incomplete。", file=sys.stderr)
+            if gate_out:
+                write_gate(gate_out, [], [problem], started, base, scope, None, tool_state="error")
+            return 2
     if "--staged" in args:
         staged, why = staged_files()
         if staged is None:

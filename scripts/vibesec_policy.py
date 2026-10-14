@@ -10,6 +10,7 @@ base_tier；所有發出 finding 的元件（workflow 內嵌探針、scripts/*.p
   p.tier(rule_id)        # 有效 tier：含 risk_tier 的 tier_overrides（CI 阻擋用）
   p.base_tier(rule_id)   # 基礎 tier：不含 tier_overrides（cwe-map／docs／evals 對齊用）
   p.cap(rule_id, req)    # 呼叫端只能把個別發現降為 advisory，不能升級到政策以上
+  p, problem = load_policy(root)   # 閘門進入點：讀不到 → (None, 未完成原因)，閘門記 incomplete
   pp = p.for_project(project, today=None)       # 綁定受驗樹的政策例外（G0–G3 唯一的讀取與比對）；project 必填
   pp.classify(rule_id, path, agent_id=None, requested=None)
                          # {"policy_tier", "exception"}：tier 依 cap；命中例外 → advisory、發現保留，exception 為固定五欄
@@ -47,6 +48,8 @@ EXCEPTION_FIELDS = ("rule_id", "path_glob", "reason", "approved_by", "expires") 
 RISK_TIERS = ("L1", "L2", "L3")             # vibesec.yaml risk_tier（docs/01 決策樹）
 # 外部工具規則前綴 → 閘門（applies_only_to_gates 用）。trivy 同時用於 G1（漏洞）與 G3（IaC 設定），
 # 從規則 ID 分不出閘門 → 不列，不因 applies_only_to_gates 降級（fail closed）。
+# load_policy 讀不到政策時，未完成原因的開頭（各閘門相同的文字）
+POLICY_UNREADABLE = "blocking-policy 無法讀取"
 # 例外必須寫明 agent_id 才命中的規則：G0 的致命三要素例外只寫 path_glob，會連同同一份威脅模型之後新增的 agent 一起放行
 AGENT_SCOPED_RULES = frozenset({"vibesec.g0.lethal-trifecta-open"})
 TOOL_GATE = {"gitleaks": "G2", "semgrep": "G3", "checkov": "G3", "zap": "G5", "promptfoo": "G6", "garak": "G6", "grype": "G1"}
@@ -216,6 +219,15 @@ def _record(ex: dict) -> dict:
             "expires": ex["expires"], "agent_id": ex.get("agent_id")}
 
 
+def load_policy(root: pathlib.Path | str | None = None, **kw) -> tuple[Policy | None, str | None]:
+    """閘門開始時建立一次 Policy：(Policy, None)。政策檔缺席、無法解析或不合法 → (None, 未完成原因)；
+    閘門記一筆未完成原因、狀態 incomplete，不分類任何發現（incomplete ≠ pass，CLAUDE.md #2）。kw 原樣交給 Policy。"""
+    try:
+        return Policy(root, **kw), None
+    except Exception as e:   # yaml.YAMLError 不是 ValueError 的子類別；任何讀取失敗都不得退回預設 tier 照樣判定
+        return None, f"{POLICY_UNREADABLE}（{type(e).__name__}），無法決定發現的 tier"
+
+
 @contextlib.contextmanager
 def temp_policy_root(exceptions=(), root: pathlib.Path | None = None):
     """selftest 用：暫存 root 放 root（預設本 repo）政策的副本（blocking-policy.yaml、vibesec.yaml），只換掉 exceptions，
@@ -228,6 +240,14 @@ def temp_policy_root(exceptions=(), root: pathlib.Path | None = None):
         shutil.copy(root / "vibesec.yaml", tmp / "vibesec.yaml")
         shutil.copy(root / "config/policy/blocking-policy.yaml", tmp / "config/policy/blocking-policy.yaml")
         write_exceptions(tmp, exceptions)
+        yield tmp
+
+
+@contextlib.contextmanager
+def broken_policy_root():
+    """selftest 用：blocking-policy.yaml 是壞 YAML 的暫存 root（其餘照本 repo）；load_policy 會回傳 (None, 未完成原因)。"""
+    with temp_policy_root() as tmp:
+        (tmp / "config/policy/blocking-policy.yaml").write_text("blocking: [\n", encoding="utf-8")
         yield tmp
 
 
@@ -444,6 +464,24 @@ def selftest() -> list[str]:
         (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"incomplete_gate_is_blocking_in_enforce": ["G1", "G2"]}))
         if Policy(root, risk_tier="L2").incomplete_blocking_gates != ["G1", "G2"]:
             fails.append("合法的 incomplete_gate_is_blocking_in_enforce 照常讀入")
+    # load_policy：閘門開始時建立一次 Policy；政策檔缺席、壞 YAML、不合法 → (None, 未完成原因)，不拋出例外
+    with temp_policy_root() as tmp:
+        got, problem = load_policy(tmp, project_root=None)
+        if not isinstance(got, Policy) or problem is not None:
+            fails.append(f"load_policy：政策可讀 → (Policy, None)；得到 {got!r}、{problem!r}")
+        pf = tmp / "config/policy/blocking-policy.yaml"
+        for label, body in (("壞 YAML", "blocking: [\n  - {rule_id: x\n"), ("risk_tier 不合法", None), ("缺檔", "")):
+            if label == "risk_tier 不合法":
+                (tmp / "vibesec.yaml").write_text("risk_tier: l3\n", encoding="utf-8")
+            elif label == "缺檔":
+                (tmp / "vibesec.yaml").write_text("risk_tier: L2\n", encoding="utf-8"); pf.unlink()
+            else:
+                pf.write_text(body, encoding="utf-8")
+            got, problem = load_policy(tmp, project_root=None)
+            if got is not None or not (problem or "").startswith(POLICY_UNREADABLE + "（"):
+                fails.append(f"load_policy：{label} → (None, 「blocking-policy 無法讀取（…）」)；得到 {got!r}、{problem!r}")
+            if label == "壞 YAML":
+                pf.write_text("{}\n", encoding="utf-8")
     # temp_policy_root：本 repo 政策的副本只換掉 exceptions（tier 與本 repo 相同）；離開時刪除
     ex = {"rule_id": "vibesec.g2.hardcoded-secret", "path_glob": "x/**", "reason": "r", "approved_by": "@o", "expires": "2099-01-01"}
     with temp_policy_root([ex]) as tmp:
@@ -453,6 +491,9 @@ def selftest() -> list[str]:
         write_exceptions(tmp, [])
         if Policy(tmp, project_root=None)._exceptions:
             fails.append("write_exceptions：換掉 exceptions")
+    with broken_policy_root() as tmp:
+        if load_policy(tmp, project_root=None)[0] is not None:
+            fails.append("broken_policy_root：load_policy 應讀不到")
     if tmp.exists():
         fails.append("temp_policy_root：離開時刪除暫存 root")
     # 契約：record() 的形狀就是 finding.schema.json 的 exception（harness 原樣搬進 findings.json）；缺欄、多欄、型別不符 → 不通過

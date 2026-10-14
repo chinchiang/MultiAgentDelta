@@ -263,15 +263,9 @@ def run(sbom_path: pathlib.Path, fetch=fetch_deps_dev, days: int | None = None,
     return summary, hits
 
 
-def _policy_tier() -> str:
-    """tier 唯一來源是 blocking-policy（第四次審視 S-11）。"""
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from vibesec_policy import Policy
-    return Policy(ROOT).tier(RULE)
-
-
-def to_sarif(hits: list[dict]) -> dict:
-    _TIER = _policy_tier(); _LEVEL = "error" if _TIER == "blocking" else "warning"
+def to_sarif(hits: list[dict], policy: "Policy") -> dict:
+    """policy：tier 唯一來源（blocking-policy，第四次審視 S-11）；由進入點建立一次傳入。"""
+    _TIER = policy.tier(RULE); _LEVEL = "error" if _TIER == "blocking" else "warning"
     rule = {"id": RULE, "name": RULE, "shortDescription": {"text": "相依套件已停止維護或被標記 deprecated"},
             "defaultConfiguration": {"level": _LEVEL}, "properties": {"policy_tier": _TIER}}
     def msg(h):
@@ -291,6 +285,8 @@ def to_sarif(hits: list[dict]) -> dict:
 
 
 def selftest() -> list[str]:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import Policy
     import tempfile
     fails: list[str] = []
     now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
@@ -325,7 +321,7 @@ def selftest() -> list[str]:
             fails.append("同一套件只應查詢一次")
         if ("maven", "org.x:lib") not in calls:
             fails.append("maven purl 應轉為 group:artifact")
-        r = to_sarif(hits)["runs"][0]["results"]
+        r = to_sarif(hits, Policy(ROOT))["runs"][0]["results"]
         if len(r) != 2 or any(x["level"] != "warning" or x["properties"]["policy_tier"] != "advisory" for x in r):
             fails.append("SARIF 應為 2 筆 advisory warning")
         # incomplete：API 失敗、查無套件、缺 SBOM、壞 SBOM —— 都不能變成 pass
@@ -414,10 +410,22 @@ def selftest() -> list[str]:
             assess(pkg, torch_db, 730, now); fails.append(f"{label} → 應無法判定（incomplete ≠ pass）")
         except Undecidable:
             pass
+    # 政策檔讀不到 → 進入點就停：摘要 incomplete 並寫明未完成原因、不寫 SARIF（舊檔刪除；上傳步驟以 hashFiles 略過）、退出碼 2
+    # （不再以例外結束；也不執行檢查，因為無法決定發現的 tier）
+    import contextlib, io, tempfile
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        js, sf = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
+        sf.write_text("上一次的結果", encoding="utf-8")
+        rc = main(["--sbom", str(pathlib.Path(d, "none.json")), "--sarif", str(sf), "--json", str(js)], policy_root=pr)
+        s, stale = json.loads(js.read_text(encoding="utf-8")), sf.exists()
+    if rc != 2 or s.get("status") != "incomplete" or not str(s.get("status_reason")).startswith(POLICY_UNREADABLE + "（") or stale:
+        fails.append(f"維護狀態：政策檔讀不到 → 退出碼 2、incomplete 並寫明原因、不留 SARIF（得到 {rc}、{s}、SARIF 存在：{stale}）")
     return fails
 
 
-def main(argv=None) -> int:
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
         fails = selftest()
         print("\n".join(f"FAIL {x}" for x in fails) or "g1_maintenance selftest ok")
@@ -427,11 +435,20 @@ def main(argv=None) -> int:
     ap.add_argument("--sarif", required=True)
     ap.add_argument("--json", required=True)
     a = ap.parse_args(argv)
-    summary, hits = run(pathlib.Path(a.sbom))
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import load_policy
+    policy, problem = load_policy(policy_root)   # 進入點只建立一次；讀不到 → incomplete，不執行檢查
+    if problem:
+        summary, hits = {"rule_id": RULE, "status": "incomplete", "status_reason": problem}, []
+    else:
+        summary, hits = run(pathlib.Path(a.sbom))
     for out in (a.sarif, a.json):
         pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits), ensure_ascii=False, indent=2), encoding="utf-8")
+    if policy:
+        pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits, policy), ensure_ascii=False, indent=2), encoding="utf-8")
+    else:   # 沒有分類任何發現：不寫 SARIF（上傳步驟以 hashFiles 略過），也不讓上一次的結果被當成這次的
+        pathlib.Path(a.sarif).unlink(missing_ok=True)
     print(f"維護狀態：查 {summary.get('packages_checked', 0)} 個套件，命中 {len(hits)} 個；"
           f"不適用 {len(summary.get('not_applicable') or [])} 個；無法判定 {len(summary.get('unresolved') or [])} 個"
           + "".join(f"\n  {h['name']}@{h['version']}：{', '.join(s['signal'] for s in h['signals'])}" for h in hits))
