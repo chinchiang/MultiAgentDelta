@@ -20,7 +20,7 @@ tier：blocking-policy.yaml 的 blocking 清單 + tier_overrides[risk_tier]；ex
 退出碼：0（寫出 gate JSON；狀態由 summary 依 mode 決定是否阻擋）；2 = 缺 PyYAML（無法判定）。
 """
 from __future__ import annotations
-import argparse, collections, datetime, fnmatch, json, pathlib, re, sys, tempfile
+import argparse, collections, fnmatch, json, pathlib, re, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 VARIANT = re.compile(r"-(supabase-)?js$")
@@ -40,10 +40,10 @@ except ImportError:
 
 sys.path.insert(0, str(ROOT / "scripts"))
 from vibesec_policy import Policy, ProjectPolicy, load_policy  # noqa: E402  tier 的唯一來源
+from gate_result import GateRun  # noqa: E402  閘門結果的外層欄位、tool 列與時間戳（#180）
 
-
-def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+# 政策讀不到時閘門自己的 tool 列名稱：正常路徑只列外部工具（gitleaks、semgrep…），這一列代表產出結果的本程式
+SELF_TOOL = "vibesec-sarif-gate"
 
 
 def _yaml(p: pathlib.Path) -> dict:
@@ -208,20 +208,15 @@ def env_findings(d: dict, pol: dict) -> list[dict]:
 
 
 def unreadable_gate(gate: str, problem: str, *, scope: str, started: str | None = None) -> dict:
-    """政策檔讀不到：不讀工具結果、不分類任何發現；閘門的每個控制 untested 並寫明未完成原因（incomplete ≠ pass）。
-    mode 讀不到 → 視同 enforce（與 gate_verdict 相同；阻擋判定另讀受信任樹的 mode）。"""
+    """政策檔讀不到：不讀工具結果、不分類任何發現；閘門的每個控制 untested 並寫明未完成原因（incomplete ≠ pass），
+    tool 列只有本程式一列 error（GateRun.unreadable）。mode 讀不到或不合法 → 視同 enforce（GateRun.unreadable；
+    阻擋判定另讀受信任樹的 mode）。"""
     try:
         mode = _yaml(ROOT / "vibesec.yaml").get("mode")
     except Exception:
         mode = None
-    coverage = [{"control_id": ctl, "state": "untested", "reason": problem} for ctl in GATE_CONTROLS[gate]]
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-    from gate_verdict import verdict
-    status, status_reason = verdict(blocking=0, coverage=coverage, problems=[problem])
-    return {"gate": gate, "status": status, "status_reason": status_reason,
-            "mode": mode if mode in ("shadow", "enforce") else "enforce", "scope": scope, "diff_base": None,
-            "commit": None, "started_at": started or _now(), "finished_at": _now(), "tools": [],
-            "findings_count": {"blocking": 0, "advisory": 0}, "coverage": coverage}
+    run = GateRun(gate, controls=list(GATE_CONTROLS[gate]), mode=mode, scope=scope, started_at=started)
+    return run.unreadable(problem, tool_name=SELF_TOOL)
 
 
 def context_or_unreadable(gate: str, policy_root: pathlib.Path, started: str, **gate_fields) -> tuple[dict | None, dict | None]:
@@ -236,23 +231,23 @@ def context_or_unreadable(gate: str, policy_root: pathlib.Path, started: str, **
 def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | None, pol: dict,
            project: ProjectPolicy, started: str | None = None) -> dict:
     """project：受驗樹的政策例外（Policy.for_project），必填；外部專案的 project 沒有任何例外。"""
-    started = started or _now()
-    tool_rows, findings, problems = [], [], []
+    run = GateRun(gate, controls=list(GATE_CONTROLS[gate]), mode=pol["mode"], scope="diff",
+                  risk_tier=pol["risk_tier"], started_at=started)
+    findings = []
     ran: set[str] = set()
     # 閘門的每個負責工具都必須提供結果：沒列在 --tool 的工具以前被當成「不需要」而 pass（第四次審視 S-3）
     required = {o for owners in GATE_CONTROLS.get(gate, {}).values() for o in owners}
     for name in sorted(required - set(tools) - {"envcheck"}):
-        tool_rows.append({"name": name, "version": None, "state": "missing", "exit_code": None, "output_ref": None, "duration_seconds": None})
-        problems.append(f"{name}：未提供結果檔（--tool {name}=… 缺席）")
+        run.tool(name, "missing")
+        run.problem(f"{name}：未提供結果檔（--tool {name}=… 缺席）")
     if "envcheck" in required and envcheck is None:
-        problems.append("envcheck：未提供 g2-envcheck.json")
+        run.problem("envcheck：未提供 g2-envcheck.json")
     for name, path in tools.items():
         results, err = read_sarif(path)
         state = "ran" if err is None else ("missing" if results is None and "不存在" in err else "error")
-        tool_rows.append({"name": name, "version": None, "state": state, "exit_code": None,
-                          "output_ref": str(path), "duration_seconds": None})
+        run.tool(name, state, output_ref=str(path))
         if err:
-            problems.append(f"{name}：{err}")
+            run.problem(f"{name}：{err}")
         if results is None:
             continue
         if err is None:   # 工具自報失敗：發現照算，但不算跑完（負責的控制記 untested）
@@ -265,42 +260,33 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
                 raise json.JSONDecodeError("缺 env_gitignore_fail 欄位", "", 0)   # 空物件不是「檢查通過」
             # error：git 無法列出追蹤檔，不知道有沒有提交 .env → 工具未完成（incomplete），不是「沒有已提交的檔」
             if d.get("error"):
-                problems.append(f"envcheck：{d['error']}")
+                run.problem(f"envcheck：{d['error']}")
             else:
                 ran.add("envcheck")
-            tool_rows.append({"name": "envcheck", "version": None, "state": "error" if d.get("error") else "ran",
-                              "exit_code": None, "output_ref": str(envcheck), "duration_seconds": None})
+            run.tool("envcheck", "error" if d.get("error") else "ran", output_ref=str(envcheck))
             findings += env_findings(d, pol)
         except (OSError, json.JSONDecodeError) as e:
-            tool_rows.append({"name": "envcheck", "version": None, "state": "missing" if isinstance(e, OSError) else "error",
-                              "exit_code": None, "output_ref": str(envcheck), "duration_seconds": None})
-            problems.append(f"envcheck：{envcheck.name} 缺席或無法解析")
+            run.tool("envcheck", "missing" if isinstance(e, OSError) else "error", output_ref=str(envcheck))
+            run.problem(f"envcheck：{envcheck.name} 缺席或無法解析")
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     advisory = len(findings) - len(blocking)
-    coverage = []
-    for ctl, owners in GATE_CONTROLS.get(gate, {}).items():
+    for ctl, owners in GATE_CONTROLS[gate].items():
         if not all(o in ran for o in owners):
             state, why = "untested", "負責工具未完成：" + "、".join(o for o in owners if o not in ran)
         elif any(ctl in pol["controls"].get(f["rule_id"], []) for f in blocking):
             state, why = "fail", None
         else:
             state, why = "pass", None
-        coverage.append({"control_id": ctl, "state": state, "reason": why})
-    # 狀態由 gate_verdict.verdict 判定（blocking 優先 fail、工具未完成或控制未實測 → incomplete）；
+        run.cover(ctl, state, why)
+    # 狀態由 gate_verdict.verdict 判定（GateRun.result；blocking 優先 fail、工具未完成或控制未實測 → incomplete）；
     # blocking 摘要與例外說明只是附註，不影響狀態
-    notes = []
+    run.count(blocking=len(blocking), advisory=advisory)
     if blocking:
         top = collections.Counter(f["rule_id"] for f in blocking).most_common(5)
-        notes.append("blocking：" + "、".join(f"{r}×{n}" for r, n in top))
-    notes += project.report(findings, gate)   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-    from gate_verdict import verdict
-    status, status_reason = verdict(blocking=len(blocking), coverage=coverage,
-                                    problems=list(dict.fromkeys(problems)), notes=notes)
-    return {"gate": gate, "status": status, "status_reason": status_reason,
-            "mode": pol["mode"], "risk_tier": pol["risk_tier"], "scope": "diff", "diff_base": None, "commit": None,
-            "started_at": started, "finished_at": _now(), "tools": tool_rows,
-            "findings_count": {"blocking": len(blocking), "advisory": advisory}, "coverage": coverage}
+        run.note("blocking：" + "、".join(f"{r}×{n}" for r, n in top))
+    for n in project.report(findings, gate):   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
+        run.note(n)
+    return run.result()
 
 
 # ------------------------------------------------------------------ selftest
@@ -468,6 +454,8 @@ def selftest() -> list[str]:
     # 政策檔讀不到 → 命令列不推導：G2／G3 incomplete、控制 untested 並寫明未完成原因、沒有任何發現
     import contextlib, io
     from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    from gate_result import tool
+    UNREADABLE_TOOLS = [tool(SELF_TOOL, "error")]
     with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
         for gate in ("G2", "G3"):
             o = pathlib.Path(d, f"{gate}.json")
@@ -475,8 +463,10 @@ def selftest() -> list[str]:
             g = json.loads(o.read_text(encoding="utf-8"))
             if rc != 0 or g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in (g["status_reason"] or "") \
                     or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
-                    or list(schema.iter_errors(g)):
-                fails.append(f"政策檔讀不到 → {gate} incomplete、控制 untested、寫明原因、沒有發現（得到 {rc}、{g}）")
+                    or [c["control_id"] for c in g["coverage"]] != list(GATE_CONTROLS[gate]) \
+                    or g["tools"] != UNREADABLE_TOOLS or list(schema.iter_errors(g)):
+                fails.append(f"政策檔讀不到 → {gate} incomplete、宣告的控制全部 untested、寫明原因、沒有發現、"
+                             f"只有 vibesec-sarif-gate 一列 error（得到 {rc}、{g}）")
     return fails
 
 
