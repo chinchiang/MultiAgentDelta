@@ -37,13 +37,13 @@ import datetime, pathlib, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+from gate_verdict import COVERAGE_STATES, verdict  # noqa: E402  狀態判定與覆蓋 state 的唯一來源
 
 GATES = ("G0", "G1", "G2", "G3", "G4", "G5", "G6")
 MODES = ("shadow", "enforce")
 SCOPES = ("diff", "full")
 RISK_TIERS = ("L1", "L2", "L3")
 TOOL_STATES = ("ran", "missing", "timeout", "error")
-COVERAGE_STATES = ("pass", "fail", "pending", "untested", "not_applicable")
 SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 NOT_RUN = "未執行"
 
@@ -120,7 +120,9 @@ class GateRun:
         declared = self.controls + self.deferred
         if len(set(declared)) != len(declared):
             raise ValueError(f"控制重複宣告：{declared}")
-        self.mode = mode               # result() 才驗證：unreadable() 對不合法的 mode 記為 enforce（#180）
+        # mode 在這裡不驗證：result() 遇到不合法的 mode 拋 ValueError，unreadable() 則記為 enforce（#180 的決定），
+        # 建立時就驗證的話，政策讀不到的路徑會在產出結果之前拋例外
+        self.mode = mode
         self.scope = _choice("scope", scope, SCOPES)
         self.risk_tier = None if risk_tier is None else _choice("risk_tier", risk_tier, RISK_TIERS)
         self.commit, self.diff_base = commit, diff_base
@@ -161,10 +163,10 @@ class GateRun:
         self._na = _text("not_applicable", reason)
 
     # ---- 產出
-    def _coverage(self) -> list[dict]:
-        """控制覆蓋不變式：依宣告順序；沒有 cover 的 controls → untested（未執行）、deferred → pending。"""
-        out = [self._cover.get(c) or {"control_id": c, "state": "untested", "reason": NOT_RUN} for c in self.controls]
-        out += [self._cover.get(c) or {"control_id": c, "state": "pending", "reason": None} for c in self.deferred]
+    def _coverage(self, covered, untested_reason) -> list[dict]:
+        """依宣告順序列出控制：covered 裡有的照回報值；沒有的 controls → untested（untested_reason）、deferred → pending。"""
+        out = [covered.get(c) or {"control_id": c, "state": "untested", "reason": untested_reason} for c in self.controls]
+        out += [covered.get(c) or {"control_id": c, "state": "pending", "reason": None} for c in self.deferred]
         return out
 
     def _gate(self, mode, status, status_reason, tools, blocking, advisory, coverage) -> dict:
@@ -177,9 +179,8 @@ class GateRun:
         return g
 
     def result(self) -> dict:
-        from gate_verdict import verdict
         mode = _choice("mode", self.mode, MODES)
-        coverage = self._coverage()
+        coverage = self._coverage(self._cover, NOT_RUN)   # 控制覆蓋不變式：漏回報 → untested
         status, status_reason = verdict(blocking=self._blocking, coverage=coverage, problems=self._problems,
                                         awaiting_human=self._awaiting, not_applicable=self._na, notes=self._notes)
         return self._gate(mode, status, status_reason, list(self._tools), self._blocking, self._advisory, coverage)
@@ -187,12 +188,10 @@ class GateRun:
     def unreadable(self, problem, *, tool_name, version=None) -> dict:
         """政策讀不到：不使用已累積的內容；controls 全部 untested（原因＝problem）、deferred 維持 pending、
         只有閘門自己的一列 tool（error）。mode 不合法 → enforce（與 gate_verdict 相同；阻擋判定另讀受信任樹的 mode）。"""
-        from gate_verdict import verdict
         _text("problem", problem)
         row = tool(tool_name, "error", version=version)
         mode = self.mode if self.mode in MODES else "enforce"
-        coverage = [{"control_id": c, "state": "untested", "reason": problem} for c in self.controls]
-        coverage += [{"control_id": c, "state": "pending", "reason": None} for c in self.deferred]
+        coverage = self._coverage({}, problem)            # 不使用已累積的回報
         status, status_reason = verdict(blocking=0, coverage=coverage, problems=[problem])
         return self._gate(mode, status, status_reason, [row], 0, 0, coverage)
 

@@ -17,7 +17,7 @@ _避免_：關卡、stage、check（check 專指閘門內的單項檢查）
 _避免_：報告、gate report
 
 **閘門執行（gate run）**：
-閘門單次執行的累積過程：先宣告本閘門的控制，再逐步記下 tool、控制覆蓋、發現計數與未完成原因，最後產出閘門結果。宣告了卻沒有回報的控制視同未實測。
+閘門單次執行的累積過程：先宣告本閘門的控制，再逐步記下 tool、控制覆蓋、發現計數與未完成原因，最後產出閘門結果。宣告了卻沒有回報的控制視同未實測；宣告為由後續步驟併入的控制則記為待併入。
 _避免_：job、step（那是 workflow 的單位）
 
 **發現（finding）**：
@@ -130,7 +130,7 @@ The record of one gate run: gate status, status reason, finding counts, and cove
 _Avoid_: report, gate report
 
 **Gate run**:
-The accumulation for one execution of a gate: the gate first declares its controls, then records tools, coverage, finding counts, and problems, and finally produces the gate result. A declared control that is never reported counts as untested.
+The accumulation for one execution of a gate: the gate first declares its controls, then records tools, coverage, finding counts, and problems, and finally produces the gate result. A declared control that is never reported counts as untested; a control declared as merged by a later step is recorded as pending merge.
 _Avoid_: job, step (those are workflow units)
 
 **Finding**:
