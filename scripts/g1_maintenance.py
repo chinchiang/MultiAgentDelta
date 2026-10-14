@@ -24,6 +24,8 @@ import argparse, datetime, json, os, pathlib, re, ssl, sys, time, urllib.error, 
 
 RULE = "vibesec.g1.unmaintained-dependency"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+import gate_result  # noqa: E402  自產 SARIF 骨架只有一份寫法（#182）；不依賴 PyYAML
 API_BASE = "https://api.deps.dev"
 API_PATH = "/v3/systems/{system}/packages/{name}"
 SYSTEMS = {"pypi": "pypi", "npm": "npm", "golang": "go", "maven": "maven", "cargo": "cargo", "nuget": "nuget"}
@@ -277,11 +279,7 @@ def to_sarif(hits: list[dict], policy: "Policy") -> dict:
                 "properties": {"policy_tier": _TIER, "purl": h["purl"], "signals": [s["signal"] for s in h["signals"]],
                                "latest_version": h["latest_version"], "latest_published_at": h["latest_published_at"]}}
                for h in hits]
-    return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-            "version": "2.1.0",
-            "runs": [{"tool": {"driver": {"name": "vibesec-g1-maintenance", "version": "1.0.0",
-                                          "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                          "rules": [rule]}}, "results": results}]}
+    return gate_result.sarif({"name": "vibesec-g1-maintenance", "version": "1.0.0"}, [rule], results)
 
 
 def selftest() -> list[str]:

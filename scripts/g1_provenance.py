@@ -56,6 +56,8 @@ def run(sbom: pathlib.Path, repo: str, signer_workflow: str, verify=gh_verify) -
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+import gate_result  # noqa: E402  自產 SARIF 骨架只有一份寫法（#182）；不依賴 PyYAML
 
 
 def to_sarif(summary: dict, hit: bool, policy: "Policy") -> dict:
@@ -71,11 +73,7 @@ def to_sarif(summary: dict, hit: bool, policy: "Policy") -> dict:
                         "locations": [{"physicalLocation": {"artifactLocation": {"uri": ".github/workflows/nightly-full.yml"}}}],
                         "properties": {"policy_tier": _TIER, "subject": summary["subject"],
                                        "signer_workflow": summary["signer_workflow"]}})
-    return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-            "version": "2.1.0",
-            "runs": [{"tool": {"driver": {"name": "vibesec-g1-provenance", "version": "1.0.0",
-                                          "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                          "rules": [rule]}}, "results": results}]}
+    return gate_result.sarif({"name": "vibesec-g1-provenance", "version": "1.0.0"}, [rule], results)
 
 
 def selftest() -> list[str]:
