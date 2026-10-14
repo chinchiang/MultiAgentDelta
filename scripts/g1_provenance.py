@@ -18,7 +18,7 @@ nightly 以 actions/attest-build-provenance 為 reports/sbom.cdx.json 簽發來�
 退出碼：0 已完成（有無命中皆是）；2 incomplete。
 """
 from __future__ import annotations
-import argparse, datetime, json, pathlib, re, shutil, subprocess, sys
+import argparse, datetime, json, os, pathlib, re, shlex, shutil, subprocess, sys
 
 RULE = "vibesec.g1.sbom-missing-provenance"
 TOOL_NAME, TOOL_VERSION = "vibesec-g1-provenance", "1.0.0"
@@ -139,38 +139,47 @@ def selftest() -> list[str]:
     # 一般 incomplete（缺 SBOM、gh 缺席、gh 失敗且無法判定原因）：沒有驗證任何東西 → 刪掉舊 SARIF、不寫新檔（#192）。
     # 以前寫一份只有 rule、沒有 result 的 SARIF，Code Scanning 會當成「驗證過、沒有發現」而關閉既有 alert。
     # 從 main() 實測：以 PATH 控制 gh（空目錄 → 缺 gh；假 gh 腳本 → 指定的退出碼與訊息），不新增命令列參數。
-    import os
     def fake_gh(bindir, code, text):
         g = pathlib.Path(bindir, "gh")
-        g.write_text(f"#!/bin/sh\necho {json.dumps(text)} >&2\nexit {code}\n", encoding="utf-8")
+        g.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(text)} >&2\nexit {code}\n", encoding="utf-8")
         g.chmod(0o755)
-    path0 = os.environ.get("PATH", "")
+    path0 = os.environ.get("PATH")
     with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        D = pathlib.Path(d)
-        sb = D / "sbom.json"; sb.write_text("{}", encoding="utf-8")
-        (D / "empty").mkdir(); (D / "bin").mkdir()
+        tmp = pathlib.Path(d)
+        sb = tmp / "sbom.json"; sb.write_text("{}", encoding="utf-8")
+        empty, bindir = tmp / "empty", tmp / "bin"
+        empty.mkdir(); bindir.mkdir()
+        with_fake = f"{bindir}{os.pathsep}{path0 or ''}"
         def run_main(label, sbom, path):
-            js, sf = D / f"{label}.json", D / f"{label}.sarif"
+            js, sf = tmp / f"{label}.json", tmp / f"{label}.sarif"
             sf.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF（合法 JSON：留著時斷言回報失敗，不是解析崩潰）
             os.environ["PATH"] = path
             try:
                 rc = main(["--sbom", str(sbom), "--repo", "o/r", "--signer-workflow", "o/r/w.yml", "--sarif", str(sf), "--json", str(js)])
-            finally:
-                os.environ["PATH"] = path0
+            finally:   # 還原 PATH：原本沒設定 → 移除，不留下空字串
+                if path0 is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = path0
             sarif = json.loads(sf.read_text(encoding="utf-8")) if sf.exists() else None
             return rc, json.loads(js.read_text(encoding="utf-8")), sarif, sf.exists()
-        for label, sbom, path in (("缺 SBOM", D / "none.json", path0), ("gh 缺席", sb, str(D / "empty")),
-                                  ("gh 失敗且無法判定", sb, f"{D / 'bin'}{os.pathsep}{path0}")):
-            if label == "gh 失敗且無法判定":
-                fake_gh(D / "bin", 1, "HTTP 403: Resource not accessible by integration")
+        def results_of(sarif):
+            runs = sarif.get("runs") if isinstance(sarif, dict) else None
+            return runs[0].get("results") if isinstance(runs, list) and runs and isinstance(runs[0], dict) else None
+        # (label, SBOM, PATH, 假 gh 的 (退出碼, 訊息) 或 None)
+        for label, sbom, path, gh in (("缺 SBOM", tmp / "none.json", path0 or "", None),
+                                      ("gh 缺席", sb, str(empty), None),
+                                      ("gh 失敗且無法判定", sb, with_fake, (1, "HTTP 403: Resource not accessible by integration"))):
+            if gh:
+                fake_gh(bindir, *gh)
             rc, sm, _, exists = run_main(label, sbom, path)
             if rc != 2 or sm.get("status") != "incomplete" or exists:
                 fails.append(f"來源證明：{label} → 退出碼 2、incomplete、舊 SARIF 刪掉且不寫新檔（得到 {rc}、{sm.get('status')}、SARIF 存在：{exists}）")
         # 正常路徑照常寫出 SARIF：驗證成功 → 有 rule、沒有 result；找不到證明 → 1 筆 advisory
         for label, code, text, n in (("驗證成功", 0, "[]", 0), ("找不到證明", 1, "Error: no attestations found", 1)):
-            fake_gh(D / "bin", code, text)
-            rc, sm, sarif, _ = run_main(label, sb, f"{D / 'bin'}{os.pathsep}{path0}")
-            res = (sarif or {}).get("runs", [{}])[0].get("results") if isinstance(sarif, dict) else None
+            fake_gh(bindir, code, text)
+            rc, sm, sarif, _ = run_main(label, sb, with_fake)
+            res = results_of(sarif)
             if rc != 0 or sm.get("status") != "pass" or res is None or len(res) != n:
                 fails.append(f"來源證明：{label} → 退出碼 0、pass、SARIF 照常寫出且有 {n} 筆結果（得到 {rc}、{sm.get('status')}、{res}）")
     return fails
