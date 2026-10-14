@@ -88,9 +88,10 @@ def _load_ruling(ref: str) -> dict | None:
 
 # ------------------------------------------------------------------ 規則
 def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pathlib.Path | None = None,
-             ruling_loader=_load_ruling) -> dict:
+             ruling_loader=_load_ruling, policy_load: tuple | None = None) -> dict:
     """純邏輯（不碰 git）。回傳 {"errors": [...], "incomplete": [...], "findings": [有效狀態], "families": n}。
-    errors = 紀錄本身自相矛盾或違規（不得採用）；incomplete = 誠實的缺口（紀錄可採用，但閘門不能 pass）。"""
+    errors = 紀錄本身自相矛盾或違規（不得採用）；incomplete = 誠實的缺口（紀錄可採用，但閘門不能 pass）。
+    policy_load：vibesec_policy.load_policy 的結果；逐一評估多份紀錄的進入點建立一次傳入，沒給 → 這裡載入。"""
     v = Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")), format_checker=Draft202012Validator.FORMAT_CHECKER)
     errors = [f"schema：{e.message} @ {'/'.join(map(str, e.path)) or '(root)'}" for e in sorted(v.iter_errors(record), key=str)]
     if errors:
@@ -138,19 +139,18 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
     # findings：意見只能來自實際執行的 provider；分歧／少數意見／family 不足必須 requires_human；結論只能來自人工裁決
     effective = []
     # tier 只來自本工具樹（ROOT，受信任）的 blocking-policy.yaml＋risk_tier；紀錄（作者可寫）只能更嚴、不能降級
-    try:
-        from vibesec_policy import Policy
-        policy = Policy(ROOT)
-    except Exception as e:   # 政策讀不到 → 一律視為 blocking（fail closed）
-        policy = None
-        incomplete.append(f"阻擋政策無法載入（{type(e).__name__}: {e}），LLM 發現一律以 blocking 處理")
+    from vibesec_policy import load_policy
+    policy, problem = policy_load if policy_load is not None else load_policy(ROOT)
+    if problem:   # 政策讀不到 → 記未完成原因、不產出任何發現（不以 blocking 照樣判定）→ 閘門 incomplete
+        incomplete.append(problem)
     for f in record["findings"]:
         fid = f["id"]
-        pol_tier = policy.tier(f["rule_id"]) if policy is not None else "blocking"
+        # 政策讀不到：紀錄的違規檢查照樣執行（external-trust 只看 errors），以較嚴的 blocking 驗證（requires_human 等）
+        pol_tier = policy.tier(f["rule_id"]) if policy else "blocking"
         tier = "blocking" if "blocking" in (pol_tier, f["policy_tier"]) else "advisory"
-        if f["policy_tier"] != tier:
+        if policy and f["policy_tier"] != tier:
             incomplete.append(f"{fid}: 紀錄宣告 policy_tier={f['policy_tier']}，但 {f['rule_id']} 依阻擋政策（risk_tier "
-                              f"{policy.risk_tier if policy else '?'}）為 {tier}；以政策為準，紀錄不得降級（請修正紀錄）")
+                              f"{policy.risk_tier}）為 {tier}；以政策為準，紀錄不得降級（請修正紀錄）")
         for o in f["opinions"]:
             if o["provider"] not in ran:
                 errors.append(f"{fid}: 意見來自未執行的 provider {o['provider']}")
@@ -213,8 +213,9 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
             req_human = dec == "defer"
         else:
             status, req_human = f["validation_status"], f["requires_human"] or needs_human
-        effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": tier,
-                          "validation_status": status, "requires_human": req_human, "ruling_ref": f.get("ruling_ref")})
+        if policy:   # 政策讀不到 → 不分類：tier 只用來驗證，不產出發現
+            effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": tier,
+                              "validation_status": status, "requires_human": req_human, "ruling_ref": f.get("ruling_ref")})
     return {"errors": errors, "incomplete": incomplete, "findings": effective, "families": len(families)}
 
 
@@ -340,13 +341,16 @@ def trusted_approvers(reviews: list[dict], pr_author: str, head_sha: str) -> lis
 
 
 def external_trust(records: dict[str, dict | None], pr_author: str, approvers: list[str],
-                   cfg: dict, controls: set[str]) -> list[str]:
-    """本 PR 新增／修改的外部紀錄 {路徑: 內容（無法解析為 None）} → 問題清單（空 = 全部可信）。"""
-    problems = []
+                   cfg: dict, controls: set[str], policy_load: tuple | None = None) -> list[str]:
+    """本 PR 新增／修改的外部紀錄 {路徑: 內容（無法解析為 None）} → 問題清單（空 = 全部可信）。
+    policy_load：vibesec_policy.load_policy 的結果（沒給 → 這裡載入一次）；政策讀不到 → 無法判定，一律不可信（fail closed）。"""
+    from vibesec_policy import load_policy
+    policy_load = policy_load if policy_load is not None else load_policy(ROOT)
+    problems = [f"{policy_load[1]}：無法判定外部紀錄是否可信"] if policy_load[1] and records else []
     for ref, rec in sorted(records.items()):
         if rec is None:
             problems.append(f"{ref}：無法解析"); continue
-        ev = evaluate(rec, cfg, controls, pathlib.Path(ref))
+        ev = evaluate(rec, cfg, controls, pathlib.Path(ref), policy_load=policy_load)
         if ev["errors"]:
             problems.append(f"{ref}：違規：{ev['errors'][0]}"); continue
         cap = trust_cap(True, (rec.get("recorded_by") or {}).get("handle", ""), pr_author, approvers)
@@ -427,8 +431,12 @@ def comment_markdown(gate: dict, record_ref: str | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def find_record(head: str, cfg: dict, controls: set[str]) -> tuple[dict | None, dict | None, str | None, str | None]:
-    """對 head 有效、距離最近的紀錄。回傳 (record, evaluation, record_ref, 無紀錄時的理由)。"""
+def find_record(head: str, cfg: dict, controls: set[str],
+                policy_load: tuple | None = None) -> tuple[dict | None, dict | None, str | None, str | None]:
+    """對 head 有效、距離最近的紀錄。回傳 (record, evaluation, record_ref, 無紀錄時的理由)。
+    policy_load：vibesec_policy.load_policy 的結果（沒給 → 這裡載入一次，所有紀錄共用）。"""
+    from vibesec_policy import load_policy
+    policy_load = policy_load if policy_load is not None else load_policy(ROOT)
     best = None; notes: list[str] = []
     for p in sorted(REVIEWS_DIR.glob("*.yaml")):
         rel = str(p.relative_to(PROJECT))
@@ -436,7 +444,7 @@ def find_record(head: str, cfg: dict, controls: set[str]) -> tuple[dict | None, 
             rec = _yaml(p)
         except yaml.YAMLError as e:
             notes.append(f"{rel} 無法解析（{type(e).__name__}）"); continue
-        ev = evaluate(rec, cfg, controls, p)
+        ev = evaluate(rec, cfg, controls, p, policy_load=policy_load)
         if ev["errors"]:
             notes.append(f"{rel} 違規：{ev['errors'][0]}"); continue
         ok, why, dist = freshness(rec["commit"], head)
@@ -546,15 +554,19 @@ def selftest() -> list[str]:
     evs = evaluate(rs, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
     if evs["findings"][0]["policy_tier"] != "blocking" or any("不得降級" in e for e in evs["incomplete"]):
         fails.append("紀錄宣告比政策嚴的 tier → 應採 blocking、不記降級")
-    # 政策載入失敗 → fail closed（blocking）
-    def _broken(*a, **k): raise OSError("blocking-policy.yaml 不存在")
-    vibesec_policy.Policy = _broken
-    try:
-        evb = evaluate(r2, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid))
-    finally:
-        vibesec_policy.Policy = saved_policy
-    if evb["findings"][0]["policy_tier"] != "blocking" or not any("阻擋政策無法載入" in e for e in evb["incomplete"]):
-        fails.append("阻擋政策無法載入 → LLM 發現應以 blocking 處理並記 incomplete")
+    # 政策載入失敗 → 不分類任何發現、記未完成原因、閘門 incomplete（以前 LLM 發現一律以 blocking 照樣判定：
+    # 經裁決 confirm 就報 fail，原因寫錯）。紀錄本身的違規檢查照樣執行：external-trust 只看 errors，
+    # 跳過檢查會讓違規的紀錄被判為可信
+    with vibesec_policy.broken_policy_root() as bpr:
+        broken = vibesec_policy.load_policy(bpr)
+    evb = evaluate(r2, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid), policy_load=broken)
+    if evb["findings"] or evb["errors"] or not any(e.startswith(vibesec_policy.POLICY_UNREADABLE + "（") for e in evb["incomplete"]) \
+            or gate_of(r2, evb)["status"] != "incomplete":
+        fails.append(f"阻擋政策無法載入 → 不分類 LLM 發現、記 incomplete、閘門 incomplete（得到 {evb}）")
+    rbad = copy.deepcopy(r2); rbad["findings"][0]["opinions"][0]["provider"] = "ghost-provider"
+    evbad = evaluate(rbad, cfg, controls, None, ruling_loader=lambda ref: _example_ruling(fid), policy_load=broken)
+    if not any("未執行的 provider" in e for e in evbad["errors"]) or evbad["findings"]:
+        fails.append(f"阻擋政策無法載入 → 紀錄的違規檢查照樣執行（意見來自未執行的 provider 應記入 errors；得到 {evbad['errors']}）")
     # 無發現、兩 family、coverage pass → pass
     r4 = copy.deepcopy(rec); r4["findings"] = []; r4["coverage"] = [{"control_id": LLM_CONTROL, "state": "pass", "reason": None}]
     ev4 = evaluate(r4, cfg, controls, None)
@@ -720,6 +732,10 @@ def selftest() -> list[str]:
         fails.append("外部紀錄：檔名與 commit 不符 → 應違規")
     if not external_trust({ref: None}, "author", ["reviewer"], cfg, controls):
         fails.append("外部紀錄：無法解析 → 應不可信")
+    # 政策讀不到 → 無法判定紀錄是否可信（fail closed）：合法、已 approve 的紀錄也不可信
+    got = external_trust({ref: ext}, "author", ["reviewer"], cfg, controls, policy_load=broken)
+    if not any(vibesec_policy.POLICY_UNREADABLE in x for x in got):
+        fails.append(f"外部紀錄：政策讀不到 → 應不可信並寫明原因（得到 {got}）")
     return fails
 
 

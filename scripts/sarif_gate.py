@@ -39,16 +39,21 @@ except ImportError:
     sys.exit(2)
 
 sys.path.insert(0, str(ROOT / "scripts"))
-from vibesec_policy import Policy, ProjectPolicy  # noqa: E402  tier 的唯一來源
+from vibesec_policy import Policy, ProjectPolicy, load_policy  # noqa: E402  tier 的唯一來源
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _yaml(p: pathlib.Path) -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
 
-def load_policy() -> dict:
+def load_context(policy: Policy) -> dict:
+    """推導 gate JSON 用的資料：mode、tier、規則對應（cwe-map implemented_by）、控制。policy 由進入點建立一次傳入
+    （vibesec_policy.load_policy；讀不到 → 呼叫端改用 unreadable_gate，不推導）。"""
     vb = _yaml(ROOT / "vibesec.yaml")
-    policy = Policy(ROOT)
     tier = policy.risk_tier
     blocking = policy.effective_blocking()
     rules = (_yaml(ROOT / "config/catalogs/cwe-map.yaml").get("rules") or {})
@@ -202,11 +207,36 @@ def env_findings(d: dict, pol: dict) -> list[dict]:
     return out
 
 
+def unreadable_gate(gate: str, problem: str, *, scope: str, started: str | None = None) -> dict:
+    """政策檔讀不到：不讀工具結果、不分類任何發現；閘門的每個控制 untested 並寫明未完成原因（incomplete ≠ pass）。
+    mode 讀不到 → 視同 enforce（與 gate_verdict 相同；阻擋判定另讀受信任樹的 mode）。"""
+    try:
+        mode = _yaml(ROOT / "vibesec.yaml").get("mode")
+    except Exception:
+        mode = None
+    coverage = [{"control_id": ctl, "state": "untested", "reason": problem} for ctl in GATE_CONTROLS[gate]]
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from gate_verdict import verdict
+    status, status_reason = verdict(blocking=0, coverage=coverage, problems=[problem])
+    return {"gate": gate, "status": status, "status_reason": status_reason,
+            "mode": mode if mode in ("shadow", "enforce") else "enforce", "scope": scope, "diff_base": None,
+            "commit": None, "started_at": started or _now(), "finished_at": _now(), "tools": [],
+            "findings_count": {"blocking": 0, "advisory": 0}, "coverage": coverage}
+
+
+def context_or_unreadable(gate: str, policy_root: pathlib.Path, started: str, **gate_fields) -> tuple[dict | None, dict | None]:
+    """掃描入口（g2_secrets、g3_sast）：以 policy_root 的政策建立一次推導資料 → (load_context 的結果, None)；
+    政策讀不到 → (None, unreadable_gate 加上 gate_fields)，呼叫端直接回傳它、不跑工具。"""
+    policy, problem = load_policy(policy_root)
+    if problem:
+        return None, dict(unreadable_gate(gate, problem, scope="full", started=started), **gate_fields)
+    return load_context(policy), None
+
+
 def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | None, pol: dict,
            project: ProjectPolicy, started: str | None = None) -> dict:
     """project：受驗樹的政策例外（Policy.for_project），必填；外部專案的 project 沒有任何例外。"""
-    now = lambda: datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
-    started = started or now()
+    started = started or _now()
     tool_rows, findings, problems = [], [], []
     ran: set[str] = set()
     # 閘門的每個負責工具都必須提供結果：沒列在 --tool 的工具以前被當成「不需要」而 pass（第四次審視 S-3）
@@ -269,7 +299,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
                                     problems=list(dict.fromkeys(problems)), notes=notes)
     return {"gate": gate, "status": status, "status_reason": status_reason,
             "mode": pol["mode"], "risk_tier": pol["risk_tier"], "scope": "diff", "diff_base": None, "commit": None,
-            "started_at": started, "finished_at": now(), "tools": tool_rows,
+            "started_at": started, "finished_at": _now(), "tools": tool_rows,
             "findings_count": {"blocking": len(blocking), "advisory": advisory}, "coverage": coverage}
 
 
@@ -279,7 +309,7 @@ def selftest() -> list[str]:
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")),
                                   format_checker=Draft202012Validator.FORMAT_CHECKER)
-    pol = load_policy()
+    pol = load_context(Policy(ROOT))
     sarif = lambda *res: {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": list(res)}]}
     res = lambda rid, uri="app/x.py": {"ruleId": rid, "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}}}]}
     with tempfile.TemporaryDirectory() as d:
@@ -431,10 +461,23 @@ def selftest() -> list[str]:
         g = run("G2", {"gitleaks": sarif()})
         if g["status"] != "incomplete":
             fails.append("G2 未提供 envcheck → incomplete")
+    # 政策檔讀不到 → 命令列不推導：G2／G3 incomplete、控制 untested 並寫明未完成原因、沒有任何發現
+    import contextlib, io
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        for gate in ("G2", "G3"):
+            o = pathlib.Path(d, f"{gate}.json")
+            rc = main(["--gate", gate, "--out", str(o)], policy_root=pr)
+            g = json.loads(o.read_text(encoding="utf-8"))
+            if rc != 0 or g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in (g["status_reason"] or "") \
+                    or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
+                    or list(schema.iter_errors(g)):
+                fails.append(f"政策檔讀不到 → {gate} incomplete、控制 untested、寫明原因、沒有發現（得到 {rc}、{g}）")
     return fails
 
 
-def main(argv=None) -> int:
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if argv is None:
         argv = sys.argv[1:]
     if argv[:1] == ["selftest"]:
@@ -452,9 +495,13 @@ def main(argv=None) -> int:
     for spec in a.tool:
         name, _, path = spec.partition("=")
         tools[name] = pathlib.Path(path)
-    pol = load_policy()
-    # 命令列只用於本 repo 的 CI：SARIF 來自本 repo 的受驗樹 → 綁定政策所在的 repo（G2／G3 掃其他專案走 g2_secrets／g3_sast）
-    g = derive(a.gate, tools, pathlib.Path(a.envcheck) if a.envcheck else None, pol, pol["policy"].for_project(pol["policy"].root))
+    policy, problem = load_policy(policy_root)   # 只建立一次；讀不到 → 不推導，閘門 incomplete
+    if problem:
+        g = unreadable_gate(a.gate, problem, scope="diff")   # 與 derive 相同：命令列推導的是 PR 的變更
+    else:
+        # 命令列只用於本 repo 的 CI：SARIF 來自本 repo 的受驗樹 → 綁定政策所在的 repo（G2／G3 掃其他專案走 g2_secrets／g3_sast）
+        g = derive(a.gate, tools, pathlib.Path(a.envcheck) if a.envcheck else None, load_context(policy),
+                   policy.for_project(policy.root))
     pathlib.Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.out).write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"{a.gate} {g['status']}：blocking={g['findings_count']['blocking']} advisory={g['findings_count']['advisory']}"

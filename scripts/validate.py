@@ -494,11 +494,13 @@ try:
         _s4 = json.load(open(_gs)); _V.check_schema(_s4); ok("schema 合法: g4-review")
         import g4_review as _g4
         _cfg4 = _g4.load_cfg()
+        from vibesec_policy import load_policy as _load_policy
+        _g4_policy_load = _load_policy(CODE.parent)   # 只建立一次；讀不到 → 紀錄照樣驗證，未完成原因記在 incomplete
         for _f in ([ROOT / "docs/templates/g4-review.example.yaml"] + sorted((ROOT / "reviews/g4").glob("*.yaml"))
                    + sorted((ROOT / "reviews/g4/external").glob("*.yaml"))):
             if not _f.exists():
                 err(f"缺 {_f.relative_to(ROOT)}"); continue
-            _ev = _g4.evaluate(load_yaml(_f), _cfg4, known_controls, _f)
+            _ev = _g4.evaluate(load_yaml(_f), _cfg4, known_controls, _f, policy_load=_g4_policy_load)
             for e in _ev["errors"]: err(f"{_f.relative_to(ROOT)}: {e}")
             if not _ev["errors"]: ok(f"G4 審查紀錄 ok: {_f.relative_to(ROOT)}")
         import subprocess

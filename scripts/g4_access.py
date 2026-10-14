@@ -69,6 +69,15 @@ def run_static(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path
         except OSError as e:
             return None, f"G4 靜態檢查無法執行（{type(e).__name__}）", notes
         gate_p, sarif_p = reports / "g4-gate.json", reports / "g4-static.sarif"
+        # 靜態檢查自己回報沒有執行（例如政策檔讀不到：tool error、不留 SARIF）→ 採用它寫明的未完成原因
+        if p.returncode == 0 and gate_p.is_file() and not sarif_p.is_file():
+            try:
+                reported = json.loads(gate_p.read_text(encoding="utf-8"))
+                tool = next(t for t in reported["tools"] if t.get("name") == "vibesec-g4-static")
+            except (ValueError, KeyError, TypeError, StopIteration):
+                reported, tool = None, {}
+            if tool.get("state") == "error" and reported.get("status_reason"):
+                return None, f"G4 靜態檢查未執行：{reported['status_reason']}", notes
         # enforce 且有 blocking 時腳本以 exit 1 結束（CI 用來擋 merge），結果仍有效；其餘非零、或沒寫出結果 → 失敗
         if p.returncode not in (0, 1) or not gate_p.is_file() or not sarif_p.is_file():
             return None, f"G4 靜態檢查 exit {p.returncode}：{(p.stderr or p.stdout).strip()[-200:]}", notes
@@ -300,6 +309,19 @@ def selftest() -> list[str]:
         g = check(scan(repo, out, wrapped("boom", "print('boom', file=sys.stderr); sys.exit(3)")), "腳本失敗")   # 結果已寫出，但以非零結束
         if g["status"] != "incomplete" or "exit 3" not in (g["status_reason"] or "") or (out / "g4-static.sarif").exists():
             fails.append("靜態檢查失敗 → incomplete，且不留下舊的 SARIF")
+        # 靜態檢查回報政策檔讀不到（g4_static：gate JSON 寫明未完成原因、tool error、不留 SARIF）→ 採用它的原因
+        # （以前落到「exit 0：stdout 最後 200 字」，只是剛好被當成 incomplete）
+        unreadable = ("import json\n"
+                      "g = json.loads((out / 'g4-gate.json').read_text(encoding='utf-8'))\n"
+                      "g.update(status='incomplete', status_reason='blocking-policy 無法讀取（ParserError），無法決定發現的 tier')\n"
+                      "g['tools'][0].update(state='error', exit_code=None, output_ref=None)\n"
+                      "(out / 'g4-gate.json').write_text(json.dumps(g), encoding='utf-8')\n"
+                      "(out / 'g4-static.sarif').unlink()\n"
+                      "sys.exit(rc)")
+        g = check(scan(repo, out, wrapped("unreadable", unreadable)), "政策讀不到")
+        why = g["status_reason"] or ""
+        if g["status"] != "incomplete" or "blocking-policy 無法讀取" not in why or "exit 0" in why:
+            fails.append(f"靜態檢查回報政策讀不到 → incomplete 並採用它的未完成原因（得到 {g['status']}：{why}）")
         g = check(scan(repo / "supabase", out, script), "子目錄")
         if g["status"] != "incomplete" or "根目錄" not in (g["status_reason"] or ""):
             fails.append("--target 不是 repo 根目錄 → incomplete")

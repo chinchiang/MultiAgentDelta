@@ -14,17 +14,42 @@ import argparse, json, os, pathlib, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path) -> None:
-    """在目前目錄（受測專案根目錄）執行靜態檢查，結果寫到 REPORTS。主體逐行沿用原 pr-gates.yml 的 inline（純搬遷）。"""
+# G4 gate JSON 的控制（順序同 coverage）；政策檔讀不到時全部記 untested
+CONTROLS = ("VS-G4-RULES-FILE-UNICODE", "ASVS5-V8.2", "ASVS5-V8.3", "VS-G4-AGENT-TOOL-ALLOWLIST", "ASVS5-V2.3",
+            "VS-G4-MCP-RESOURCE-INDICATOR", "VS-G4-LLM-REVIEW")
+
+
+def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: pathlib.Path = ROOT) -> None:
+    """在目前目錄（受測專案根目錄）執行靜態檢查，結果寫到 REPORTS。主體逐行沿用原 pr-gates.yml 的 inline（純搬遷）。
+    policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔；不開命令列參數）。"""
     # G4 靜態檢查：隱形 Unicode（Rules File Backdoor）、Supabase RLS、Agent 工具 allow-list、單層 middleware 授權
     import json, re, pathlib, os, datetime, glob, sys
     NOW = datetime.datetime.now(datetime.timezone.utc)
     def iso(dt): return dt.replace(microsecond=0).isoformat()
     # tier 只來自 blocking-policy（含 risk_tier 的 tier_overrides）；ROOT 為本腳本所在的樹（CI 中為 _trusted/）
     sys.path.insert(0, str(ROOT / "scripts"))
-    from vibesec_policy import Policy
-    POLICY = Policy(ROOT)
+    from vibesec_policy import load_policy
+    from gate_verdict import verdict
     REPORTS.mkdir(parents=True, exist_ok=True)
+
+    def write_gate(status, status_reason, blocking, advisory, coverage, tool_state, sarif_ref):
+        gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "full",
+                "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
+                "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
+                "tools": [{"name": "vibesec-g4-static", "version": "1.0.0", "state": tool_state,
+                           "exit_code": 0 if tool_state == "ran" else None, "output_ref": sarif_ref, "duration_seconds": None}],
+                "findings_count": {"blocking": blocking, "advisory": advisory},
+                "coverage": coverage}
+        (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    POLICY, problem = load_policy(policy_root)   # 只建立一次；讀不到 → incomplete，不分類任何發現
+    if problem:
+        (REPORTS / "g4-static.sarif").unlink(missing_ok=True)   # 不讓上一次的結果被當成這次的
+        coverage = [{"control_id": c, "state": "untested", "reason": problem} for c in CONTROLS]
+        status, status_reason = verdict(blocking=0, coverage=coverage, problems=[problem])
+        write_gate(status, status_reason, 0, 0, coverage, "error", None)
+        print(f"G4 static: incomplete（{problem}）")
+        return
     # _trusted/ 是 default branch 的判定程式副本，不是被掃描的專案內容
     def _skip(p): return str(p).startswith(("_trusted/", "./_trusted/", ".git/")) or "/node_modules/" in str(p)
     # 列檔一律用 os.walk：glob 的 ** 會跳過 .agents/、.cursor/ 等隱藏目錄，PR 把高危工具放進隱藏目錄就看不到
@@ -250,7 +275,7 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path) -> None:
         return "untested" if ctl in READ_ERR else "pass"
     def _why(ctl):
         return ("無法讀取：" + "、".join(READ_ERR[ctl][:5])) if ctl in READ_ERR else None
-    coverage = [
+    entries = [
         {"control_id": "VS-G4-RULES-FILE-UNICODE", "state": _state("vibesec.g4.rules-file-invisible-unicode"), "reason": None},
         ({"control_id": "ASVS5-V8.2", "state": _state("vibesec.g4.supabase-rls-disabled", "vibesec.g4.supabase-table-without-rls", ctl="ASVS5-V8.2"), "reason": _why("ASVS5-V8.2")}
          if SQL_MIGRATIONS else
@@ -261,18 +286,15 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path) -> None:
         MCP_COV,
         {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
     ]
+    # 依 CONTROLS 排列（政策檔讀不到時用同一份清單）：多一個、少一個控制都直接失敗，不靠兩份清單手動同步
+    by_id = {e["control_id"]: e for e in entries}
+    if sorted(by_id) != sorted(CONTROLS) or len(by_id) != len(entries):
+        raise SystemExit(f"G4 coverage 與 CONTROLS 不一致：{sorted(by_id)} vs {sorted(CONTROLS)}")
+    coverage = [by_id[c] for c in CONTROLS]
     # 狀態由受信任的 gate_verdict.verdict 判定：blocking → fail；否則 LLM 審查未完成 → incomplete（無法讀取的檔案、
     # MCP 檢查無法執行等 untested 控制一併寫進 status_reason）。下一步 g4_review.py 依審查紀錄重新判定。
-    from gate_verdict import verdict
     status, status_reason = verdict(blocking=blocking, coverage=coverage, problems=[LLM_PENDING])
-    gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "full",
-            "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
-            "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
-            "tools": [{"name": "vibesec-g4-static", "version": "1.0.0", "state": "ran", "exit_code": 0,
-                       "output_ref": "reports/g4-static.sarif", "duration_seconds": None}],
-            "findings_count": {"blocking": blocking, "advisory": advisory},
-            "coverage": coverage}
-    (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_gate(status, status_reason, blocking, advisory, coverage, "ran", "reports/g4-static.sarif")
     print(f"G4 static: blocking={blocking} advisory={advisory}")
     if MODE == "enforce" and blocking:
         raise SystemExit(1)
@@ -374,6 +396,33 @@ def selftest() -> list[str]:
         rc = run("--target", "clean", "--out", "rel-out", "--mode", "shadow", cwd=D)
         if rc != 0 or outputs(D / "rel-out")[1] is None or (clean / "rel-out").exists() or (clean / "reports").exists():
             fails.append(f"相對 --out 應寫到呼叫端 cwd 下，不寫進受測專案（exit {rc}）")
+    # CONTROLS 與正常路徑的 coverage 是同一組（政策檔讀不到時全部記 untested）
+    with tempfile.TemporaryDirectory() as d:
+        out = pathlib.Path(d, "out")
+        run("--target", d, "--out", out, "--mode", "shadow", cwd=d)
+        got = [c["control_id"] for c in (outputs(out)[1] or {}).get("coverage", [])]
+        if got != list(CONTROLS):
+            fails.append(f"CONTROLS 應與 coverage 的控制相同（得到 {got}）")
+    # 政策檔讀不到 → scan 一開始就停：G4 gate incomplete 並寫明未完成原因、沒有任何發現、控制 untested、
+    # 不留 SARIF（以前 Policy(ROOT) 拋出例外、整支結束，gate JSON 沒有寫出）。在同一個行程呼叫：不為測試開命令列參數
+    import contextlib, io
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    cwd = os.getcwd()
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
+        out = pathlib.Path(d, "out"); out.mkdir()
+        (out / "g4-static.sarif").write_text("上一次的結果", encoding="utf-8")
+        try:
+            os.chdir(d)
+            with contextlib.redirect_stdout(io.StringIO()):
+                scan("shadow", None, out, policy_root=pr)
+        finally:
+            os.chdir(cwd)
+        g = json.loads((out / "g4-gate.json").read_text(encoding="utf-8"))
+        if g["status"] != "incomplete" or not (g["status_reason"] or "").startswith(POLICY_UNREADABLE + "（") \
+                or g["findings_count"] != {"blocking": 0, "advisory": 0} or {c["state"] for c in g["coverage"]} != {"untested"} \
+                or g["tools"][0]["state"] != "error" or (out / "g4-static.sarif").exists() or list(schema.iter_errors(g)):
+            fails.append(f"政策檔讀不到 → G4 incomplete、寫明原因、控制 untested、tool error、不留 SARIF（得到 {g}）")
     return fails
 
 
