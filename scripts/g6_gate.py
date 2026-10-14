@@ -65,13 +65,14 @@ def load_catalog() -> tuple[dict, dict]:
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from vibesec_policy import Policy  # noqa: E402
-POLICY = Policy(pathlib.Path(__file__).resolve().parent.parent)
+from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
 
 
 class Collector:
-    def __init__(self, catalog: dict, prefixes: dict | None = None):
+    def __init__(self, catalog: dict, prefixes: dict | None = None, policy=None):
+        """policy：本 repo 的 Policy（進入點建立一次）；None ＝ 政策讀不到，不得呼叫 finding()。"""
         self.cat = catalog
+        self.policy = policy
         self.prefixes = prefixes or {}
         self.results: list[dict] = []
         self.rules: dict[str, dict] = {}
@@ -82,7 +83,7 @@ class Collector:
 
     def tier(self, rule_id: str) -> str:
         # tier 只來自 blocking-policy（vibesec_policy.Policy）；cwe-map 的 policy_tier 只是預設建議
-        return POLICY.tier(rule_id)
+        return self.policy.tier(rule_id)
 
     def control(self, rule_id: str, fallback: str) -> str:
         ids = (self.cat.get(rule_id) or {}).get("control_ids") or []
@@ -683,10 +684,24 @@ def selftest() -> list[str]:
         for m in ("shadow", "enforce"):
             if run(cost_ok, ["--mode", m], base=ev + red2 + gk)["mode"] != m:
                 fails.append(f"--mode {m} → gate JSON 的 mode 應為 {m}")
+    schema = __import__("jsonschema").Draft202012Validator(
+        json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
+    # 政策檔讀不到 → 進入點就停：不讀任何結果、G6 incomplete 並寫明未完成原因、沒有任何發現
+    # （以前在 import 時就建立 Policy：讀不到時整支無法執行，連 selftest 都跑不起來）
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        gp = pathlib.Path(d, "G6.json")
+        rc = main(["--gate", str(gp), "--mode", "shadow"], policy_root=pr)
+        g = json.loads(gp.read_text(encoding="utf-8"))
+    if rc != 0 or g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in (g["status_reason"] or "") \
+            or g["findings_count"] != {"blocking": 0, "advisory": 0} or {c["state"] for c in g["coverage"]} != {"untested"} \
+            or list(schema.iter_errors(g)):
+        fails.append(f"政策檔讀不到 → G6 incomplete、寫明原因、沒有發現、控制 untested（得到 {rc}、{g}）")
     return fails
 
 
-def main(argv=None) -> int:
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if argv is None:
         argv = sys.argv[1:]
     if argv[:1] == ["selftest"]:
@@ -713,8 +728,12 @@ def main(argv=None) -> int:
                     help="取自 vibesec.yaml 的 mode；必填，漏帶不得默默以 shadow 執行")
     a = ap.parse_args(argv)
     started = now()
-    c = Collector(*load_catalog())
-    if a.target_denied:
+    policy, problem = load_policy(policy_root)   # 只建立一次；讀不到 → 不讀任何結果、閘門 incomplete
+    c = Collector(*load_catalog(), policy=policy)
+    if problem:
+        c.cover("blocking_policy", "LLM01:2025", "untested", problem)
+        c.reasons.append(problem)
+    elif a.target_denied:
         why = f"目標未通過授權檢查：{a.target_denied}"
         c.cover("target_authorization", "LLM01:2025", "untested", why)
         c.reasons.append(why)

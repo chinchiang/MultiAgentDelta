@@ -582,6 +582,16 @@ def selftest() -> list[str]:
             rc = main(["enforce", "--trusted-root", str(ROOT), "--gate", "G3=" + str(D / "g3.json"), "--github-output", str(out)])
         if rc != 0 or "g3_status=pass" not in out.read_text():
             fails.append(f"CLI enforce：exit 0 並寫出 outputs（得到 {rc}）")
+        # 受信任樹的政策檔讀不到 → enforce 下阻擋（退出碼 2），即使閘門自己報 pass：閘門腳本在政策讀不到時記 incomplete，
+        # 不在 incomplete_gate_is_blocking_in_enforce 的閘門（G0、G3–G6）就靠這一道擋下（#170、#171）
+        from vibesec_policy import broken_policy_root
+        with broken_policy_root() as pr:
+            md = D / "status.md"
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = main(["enforce", "--trusted-root", str(pr), "--mode", "enforce", "--gate", "G3=" + str(D / "g3.json"),
+                           "--markdown-out", str(md)])
+            if rc != 2 or "**判定：阻擋**" not in md.read_text(encoding="utf-8") or "blocking-policy 無法讀取" not in md.read_text(encoding="utf-8"):
+                fails.append(f"CLI enforce：受信任樹的政策檔讀不到 → 退出碼 2、判定阻擋並寫明原因（得到 {rc}）")
         out.write_text("")
         with contextlib.redirect_stdout(io.StringIO()):
             main(["blackbox", "--trusted-root", str(ROOT), "--gate", "G5=" + str(D / "none.json"), "--github-output", str(out)])

@@ -150,6 +150,18 @@ def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl:
     return {"coverage": coverage, "tools": tools, "rules": rules, "results": results}
 
 
+def unreadable(problem: str, reports: dict[str, pathlib.Path | None]) -> dict:
+    """政策檔讀不到：沒有執行轉換、沒有分類任何結果；每個掃描 untested 並寫明未完成原因（incomplete ≠ pass）。
+    tool 照實記錄 ZAP 是否留下報告（ZAP 本身有沒有跑與政策無關）。"""
+    tools = []
+    for scan, (_, tool_name) in SCANS.items():
+        path = reports.get(scan)
+        tools.append({"name": tool_name, "version": None, "state": "ran" if path and path.is_file() else "missing",
+                      "exit_code": None, "output_ref": str(path) if path else None, "duration_seconds": None})
+    return {"coverage": {cov_key: {"state": "untested", "reason": problem} for cov_key, _ in SCANS.values()},
+            "tools": tools, "rules": {}, "results": []}
+
+
 def selftest() -> list[str]:
     import tempfile
     from vibesec_policy import Policy
@@ -269,10 +281,26 @@ def selftest() -> list[str]:
             fails.append("config/zap/api-scan.conf 解析結果不符預期")
     except Exception as e:
         fails.append(f"讀取 repo 設定失敗：{type(e).__name__}: {e}")
+    # 政策檔讀不到 → 進入點就停：每個掃描 untested 並寫明未完成原因、tool error、沒有任何結果（不再以例外結束）
+    import contextlib, io
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    # tool 照實記錄 ZAP 是否有報告（ZAP 本身有沒有跑與政策無關），只有 coverage 記 untested
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        out, api = pathlib.Path(d, "g5-zap.json"), pathlib.Path(d, "api.json")
+        api.write_text(json.dumps(rep_api), encoding="utf-8")
+        rc = main(["--report", f"api={api}", "--conf", str(pathlib.Path(d, "none.conf")), "--target", T, "--out", str(out)],
+                  policy_root=pr)
+        r = json.loads(out.read_text(encoding="utf-8"))
+    states = {k: (v["state"], (v["reason"] or "").startswith(POLICY_UNREADABLE + "（")) for k, v in r["coverage"].items()}
+    tools = {t["name"]: t["state"] for t in r["tools"]}
+    if rc != 0 or states != {k: ("untested", True) for k, _ in SCANS.values()} or r["results"] or r["rules"] \
+            or tools != {"zap-api-scan": "ran", "zap-baseline": "missing"}:
+        fails.append(f"政策檔讀不到 → 每個掃描 untested 並寫明原因、tool 照實記錄、沒有結果（得到 {rc}、{r}）")
     return fails
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["selftest"]:
         fails = selftest()
@@ -292,16 +320,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"--report 格式錯誤：{spec!r}（應為 api=<path> 或 baseline=<path>）", file=sys.stderr)
             return 2
         reports[k] = pathlib.Path(v)
-    from vibesec_policy import Policy
-    try:
-        conf = load_conf(pathlib.Path(a.conf))
-    except OSError as e:
-        print(f"無法讀取 {a.conf}：{e}（ZAP 掃描記 untested）", file=sys.stderr)
-        conf = None
-    if conf is None:
-        r = convert({k: None for k in SCANS}, {}, {}, Policy(ROOT), target=a.target)
+    from vibesec_policy import load_policy
+    policy, problem = load_policy(policy_root)   # 進入點只建立一次；讀不到 → 每個掃描 untested，不分類任何結果
+    if problem:
+        print(f"{problem}（ZAP 掃描記 untested）", file=sys.stderr)
+        r = unreadable(problem, reports)
     else:
-        r = convert(reports, conf, load_impl(ROOT), Policy(ROOT), target=a.target)
+        try:
+            conf = load_conf(pathlib.Path(a.conf))
+        except OSError as e:
+            print(f"無法讀取 {a.conf}：{e}（ZAP 掃描記 untested）", file=sys.stderr)
+            conf = None
+        if conf is None:
+            r = convert({k: None for k in SCANS}, {}, {}, policy, target=a.target)
+        else:
+            r = convert(reports, conf, load_impl(ROOT), policy, target=a.target)
     try:
         out = pathlib.Path(a.out); out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")

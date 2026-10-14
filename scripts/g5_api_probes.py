@@ -14,7 +14,7 @@ VIBESEC_TOKEN_DIR、HAS_A、HAS_B、VIBESEC_MODE。輸出：reports/g5-api-probe
 import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.error, urllib.parse, hashlib, hmac, sys
 # 自身所在的 scripts/ 放到 path 最前，不論 cwd 都能 import 同層模組（selftest 由 validate.py 以子行程在 repo 根執行）
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from vibesec_policy import Policy
+from vibesec_policy import load_policy
 from target_guard import GuardConfigError, check as guard_check, same_origin
 
 def iso(dt): return dt.replace(microsecond=0).isoformat()
@@ -33,6 +33,10 @@ coverage_reasons = {}  # control_id -> reason（not_applicable 必填，untested
 JWKS_SKIPPED = []  # discovery 給的非同源 jwks_uri：不抓（規則 8），寫進 jwt_alg_confusion 的原因
 # JWT 探針（alg:none、alg confusion）嘗試的受保護端點：合法 token 須回 200 才拿來送偽造 token
 JWT_PROBE_PATHS = ("/me", "/api/me", "/profile", "/users/me", "/account")
+# 探針的 check（同 vibesec.yaml gates.g5_dast_api.checks，selftest 核對）；政策檔讀不到時與 ZAP 掃描一起記 untested
+CHECKS = ("bola_idor", "jwt_alg_none", "jwt_alg_confusion", "ssrf_metadata", "swagger_exposed", "graphql_introspection",
+          "debug_stacktrace", "rate_limit", "session_check", "cors_reflect_origin")
+ZAP_SCANS = ("zap_api_scan", "zap_baseline")   # scripts/g5_zap.py 的 coverage key
 
 def _read(name):
     d = os.environ.get("VIBESEC_TOKEN_DIR", "")
@@ -156,13 +160,13 @@ def _cors_paths():
             seen.add(p); out.append(p)
     return out
 
-def _write_gate(gstatus, status_reason, blocking, advisory, cov, zap_tools, started, probe_state="ran"):
+def _write_gate(gstatus, status_reason, blocking, advisory, cov, zap_tools, started, probe_state="ran", exit_code=0):
     gate = {"gate": "G5", "status": gstatus, "status_reason": status_reason,
             "mode": os.environ.get("VIBESEC_MODE", "shadow"), "scope": "full", "diff_base": None,
             "commit": None, "started_at": iso(started),
             "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
             "tools": [{"name": "vibesec-g5-api-probes", "version": "1.0.0", "state": probe_state,
-                       "exit_code": 0, "output_ref": "reports/g5-api-probes.sarif", "duration_seconds": None}] + zap_tools,
+                       "exit_code": exit_code, "output_ref": "reports/g5-api-probes.sarif", "duration_seconds": None}] + zap_tools,
             "findings_count": {"blocking": blocking, "advisory": advisory},
             "coverage": cov}
     REPORTS.mkdir(exist_ok=True)
@@ -197,7 +201,14 @@ def main():
     URL = target.rstrip("/")
     # tier 只來自 blocking-policy（含 risk_tier 的 tier_overrides）；VIBESEC_CONFIG 指向 repo 的 vibesec.yaml
     ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
-    POLICY = Policy(ROOT)
+    POLICY, problem = load_policy(ROOT)   # 只建立一次；讀不到 → incomplete，不送探針、不分類任何發現
+    if problem:
+        from gate_verdict import verdict
+        cov = [{"control_id": k, "state": "untested", "reason": problem} for k in (*CHECKS, *ZAP_SCANS)]
+        gstatus, status_reason = verdict(blocking=0, coverage=cov, problems=[f"{problem}；未送出任何探針"])
+        _write_gate(gstatus, status_reason, 0, 0, cov, [], started, probe_state="error", exit_code=None)
+        print(f"G5 api-probes: status=incomplete（{problem}）")
+        return 0
     TA = _read("a"); TB = _read("b")
     HAS_A = os.environ.get("HAS_A") == "true"; HAS_B = os.environ.get("HAS_B") == "true"
 
@@ -545,7 +556,7 @@ def main():
         results.extend(_z["results"])
         ZAP_TOOLS = list(_z.get("tools") or [])
     except Exception as e:
-        for _k in ("zap_api_scan", "zap_baseline"):
+        for _k in ZAP_SCANS:
             coverage[_k] = "untested"
             coverage_reasons[_k] = f"沒有 ZAP 彙整結果（reports/g5-zap.json：{type(e).__name__}）"
 
@@ -641,6 +652,23 @@ def selftest():
             fails.append(f"缺環境變數的 gate 不符 schema：{list(schema.iter_errors(g))[0].message}")
         elif g["tools"][0]["state"] != "missing":
             fails.append("缺環境變數時探針工具 state 應為 missing")
+
+    # 政策檔讀不到 → 進入點就停：incomplete gate 並寫明未完成原因、探針工具 state error、沒有任何發現、不送任何請求
+    # （以前 Policy(ROOT) 拋出例外、整支結束，gate JSON 沒有寫出）
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
+        code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example", "VIBESEC_CONFIG": str(pr / "vibesec.yaml")})
+        cov = {c["control_id"]: (c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE + "（")) for c in (g or {}).get("coverage", [])}
+        if code != 0 or not g or g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in (g.get("status_reason") or "") \
+                or g["tools"][0]["state"] != "error" or g["tools"][0]["exit_code"] is not None \
+                or cov != {k: ("untested", True) for k in (*CHECKS, "zap_api_scan", "zap_baseline")} \
+                or g["findings_count"] != {"blocking": 0, "advisory": 0} or list(schema.iter_errors(g)):
+            fails.append(f"政策檔讀不到 → incomplete gate、每個控制 untested 並寫明原因、tool error、沒有發現（得到 code={code}, gate={g}）")
+    # CHECKS 與 vibesec.yaml 宣告的 G5 checks 相同（政策讀不到時全部記 untested）
+    import yaml
+    declared = ((yaml.safe_load((repo / "vibesec.yaml").read_text(encoding="utf-8")) or {}).get("gates") or {}).get("g5_dast_api", {}).get("checks")
+    if list(CHECKS) != list(declared or []):
+        fails.append(f"CHECKS 應與 vibesec.yaml gates.g5_dast_api.checks 相同（得到 {CHECKS}、{declared}）")
 
     # 目標不在 config/targets.yaml 允許清單 → 授權檢查擋下 → incomplete，不送任何請求（離線）
     with tempfile.TemporaryDirectory() as d:

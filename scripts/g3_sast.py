@@ -125,12 +125,17 @@ def _run(tool: str, binary: str | None, cmd: list[str], cwd: pathlib.Path, sarif
 
 
 def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | None = None,
-         timeout: int = 900, pol: dict | None = None) -> dict:
-    """掃描目標專案並回傳 G3 gate JSON（schemas/gate-result.schema.json）。"""
+         timeout: int = 900, pol: dict | None = None, policy_root: pathlib.Path = ROOT) -> dict:
+    """掃描目標專案並回傳 G3 gate JSON（schemas/gate-result.schema.json）。
+    pol：sarif_gate.load_context 的結果（selftest 注入）；沒給 → 以 policy_root 的政策建立，讀不到 → 不掃描、incomplete。"""
     started = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
     target = target.resolve()
     out_dir = out_dir.resolve()                # semgrep 在目標目錄執行：相對路徑會寫進被測專案
-    pol = dict(pol or sarif_gate.load_policy())
+    if pol is None:   # 只建立一次；政策讀不到 → 不跑工具，直接回傳 incomplete
+        pol, unreadable = sarif_gate.context_or_unreadable("G3", policy_root, started, diff_base=base)
+        if unreadable:
+            return unreadable
+    pol = dict(pol)
     external = not pol["policy"].is_this_repo(target)   # 與例外是否套用同一份判斷（Policy；含 VIBESEC_PROJECT_ROOT）
     project = pol["policy"].for_project(target)          # 受驗樹的政策例外：外部專案 → 沒有任何例外，note 說明
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -234,7 +239,7 @@ def selftest() -> list[str]:
     # 合成例外（不依賴政策檔現有例外與其到期日）：暫存 root 放本 repo 政策的副本，只換掉 exceptions；外部目標必須忽略它
     with temp_policy_root([{"rule_id": "vibesec.g3.command-injection", "path_glob": "app/**", "reason": "selftest",
                            "approved_by": "selftest", "expires": "2099-12-31"}]) as PR:
-        pol = dict(sarif_gate.load_policy(), policy=Policy(PR, project_root=None))   # 建構時讀完政策檔；不受 VIBESEC_PROJECT_ROOT 影響
+        pol = sarif_gate.load_context(Policy(PR, project_root=None))   # 建構時讀完政策檔；不受 VIBESEC_PROJECT_ROOT 影響
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True)
     with tempfile.TemporaryDirectory() as d:
@@ -327,6 +332,15 @@ def selftest() -> list[str]:
             fails.append("輸出不得寫進被測專案")
         if subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=repo).stdout.strip():
             fails.append("掃描不得改動被測專案的工作目錄")
+    # 政策檔讀不到 → scan 一開始就停：不跑工具、G3 incomplete、控制 untested 並寫明未完成原因、沒有任何發現
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
+        g = scan(pathlib.Path(d), pathlib.Path(d, "out"), {}, policy_root=pr)
+        why = g["status_reason"] or ""
+        if g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in why or "不是 git repo" in why \
+                or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
+                or list(schema.iter_errors(g)):
+            fails.append(f"政策檔讀不到 → 不跑工具、G3 incomplete、控制 untested、寫明原因（得到 {g}）")
     return fails
 
 
