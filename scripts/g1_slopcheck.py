@@ -22,6 +22,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent      # VibeSec 本身：設定、清單、政策
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份寫法（#181）；不依賴 PyYAML
 CFG_DIR = ROOT / "config" / "slopsquat"
 TIMEOUT = 8
 WORKERS = 8                                        # registry 並行查詢數
@@ -1025,6 +1027,7 @@ def added_packages(path, base):
     return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
 
 LEVEL = {"blocking": "error", "advisory": "warning"}
+TOOL_NAME, TOOL_VERSION = "vibesec-slopcheck", "2.0.0"
 
 def write_sarif(path, findings):
     rules, results = {}, []
@@ -1042,13 +1045,11 @@ def write_sarif(path, findings):
                           | ({"exception": f["exception"]} if f.get("exception") else {})
                           | ({"allowlist": f["allowlist"]} if f.get("allowlist") else {}),
         })
-    sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", "version": "2.1.0",
-             "runs": [{"tool": {"driver": {"name": "vibesec-slopcheck", "version": "2.0.0",
-                                           "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                           "rules": list(rules.values())}},
-                       "results": results}]}
+    sarif = gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(rules.values()), results)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+
+CONTROLS = ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK")
 
 CONTROL_OF = {
     "vibesec.g1.hallucinated-package": "VS-G1-SLOPSQUAT",
@@ -1061,7 +1062,7 @@ CONTROL_OF = {
 def gate_coverage(findings, incomplete, pypi_checked=0):
     """G1 快篩三個控制的 coverage（VS-G1-SBOM 由 g1_sbom.py 併入，不在此列）。"""
     coverage = []
-    for ctl in ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK"):
+    for ctl in CONTROLS:
         hit = [f for f in findings if CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
         if incomplete:
             state, why = "untested", None
@@ -1084,28 +1085,36 @@ def gate_status(findings, incomplete, coverage, notes=()):
     return verdict(blocking=sum(f["policy_tier"] == "blocking" for f in findings), coverage=coverage,
                    problems=list(dict.fromkeys(incomplete)), notes=list(notes))
 
-def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0, tool_state="ran"):
-    """tool_state：slopcheck 本身沒有執行（例如政策檔讀不到）→ "error"，sarif_ref 傳 None。"""
+def gate_run(started, base, scope):
+    """G1 的閘門執行（gate_result.GateRun）：SBOM 與 KEV 由 g1_sbom.py、g1_kev.py 併入（依 control_id 取代），
+    宣告為 deferred（清單直接取自 gate_verdict.REQUIRED_CONTROLS，不另外維護）；沒併入就維持 pending，最終判定視同未實測。"""
+    from gate_verdict import REQUIRED_CONTROLS
     vb = read_vibesec() or {}
-    mode = vb.get("mode", "shadow"); tier = vb.get("risk_tier", "L2")
-    blocking = sum(f["policy_tier"] == "blocking" for f in findings)
-    advisory = sum(f["policy_tier"] == "advisory" for f in findings)
-    coverage = gate_coverage(findings, incomplete, pypi_checked)
-    status, reason = gate_status(findings, incomplete, coverage, notes)
-    # SBOM 與 KEV 由 g1_sbom.py、g1_kev.py 併入（依 control_id 取代）；沒併入就維持 pending，最終判定視同未實測
-    coverage += [{"control_id": "VS-G1-SBOM", "state": "pending", "reason": None},
-                 {"control_id": "ASVS5-V15.2", "state": "pending", "reason": None}]
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=TARGET).stdout.strip() or None
     except Exception:
         commit = None
-    gate = {"gate": "G1", "status": status, "status_reason": reason, "mode": mode, "risk_tier": tier,
-            "scope": scope, "diff_base": base, "commit": commit,
-            "started_at": started, "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "tools": [{"name": "vibesec-slopcheck", "version": "2.0.0", "state": tool_state, "exit_code": None,
-                       "output_ref": sarif_ref, "duration_seconds": None}],
-            "findings_count": {"blocking": blocking, "advisory": advisory},
-            "coverage": coverage}
+    return gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=vb.get("mode", "shadow"), scope=scope,
+                   commit=commit, diff_base=base, risk_tier=vb.get("risk_tier", "L2"), started_at=started)
+
+def write_unreadable_gate(path, problem, started, base, scope):
+    """政策檔讀不到：slopcheck 沒有執行 → 三個控制 untested（原因＝problem）、SBOM／KEV pending、tool 列只有一列 error。"""
+    _write_json(path, gate_run(started, base, scope).unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
+
+def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0):
+    run = gate_run(started, base, scope)
+    run.tool(TOOL_NAME, "ran", version=TOOL_VERSION, output_ref=sarif_ref)
+    for c in gate_coverage(findings, incomplete, pypi_checked):
+        run.cover(c["control_id"], c["state"], c["reason"])
+    run.count(blocking=sum(f["policy_tier"] == "blocking" for f in findings),
+              advisory=sum(f["policy_tier"] == "advisory" for f in findings))
+    for p in dict.fromkeys(incomplete):
+        run.problem(p)
+    for n in notes:
+        run.note(n)
+    _write_json(path, run.result())
+
+def _write_json(path, gate):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1746,14 +1755,46 @@ def selftest():
         _POLICY = None
         with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            gp = Path(d, "G1.json")
+            gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
+            sp.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF：讀不到政策時要刪掉（#181）
             code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp),
-                         "--sarif", str(Path(d, "G1.sarif"))], policy_root=pr)
+                         "--sarif", str(sp)], policy_root=pr)
             g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
-        tool = (g.get("tools") or [{}])[0]
+            stale = sp.exists()
+        cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g.get("coverage") or []]
+        iso = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
         if code != 2 or g.get("status") != "incomplete" or POLICY_UNREADABLE not in (g.get("status_reason") or "") \
-                or g.get("findings_count") != {"blocking": 0, "advisory": 0} or tool.get("state") != "error" or tool.get("output_ref"):
-            fails.append(f"政策檔讀不到 → 退出碼 2、G1 incomplete 並寫明原因、沒有發現、tool 記 error（得到 {code}、{g}）")
+                or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
+                or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
+                or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
+                           ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False), ("ASVS5-V15.2", "pending", False)] \
+                or stale or list(schema.iter_errors(g)) \
+                or not (iso.match(g.get("started_at") or "") and iso.match(g.get("finished_at") or "")):
+            fails.append(f"政策檔讀不到 → 退出碼 2、G1 incomplete 並寫明原因、沒有發現、tool 只有一列 error、三個控制 untested"
+                         f"（原因＝政策讀不到）、SBOM／KEV pending、舊 SARIF 刪掉、時間戳 +00:00（得到 {code}、舊 SARIF 存在={stale}、{g}）")
+        # risk_tier 打錯 → load_policy 回報政策讀不到 → 照樣寫出 incomplete 閘門結果、省略 risk_tier 欄位，不拋例外（#181 決定）
+        from vibesec_policy import temp_policy_root
+        saved_vb = VIBESEC_FILE
+        _POLICY = None
+        with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            vbp = pr / "vibesec.yaml"
+            # 不依賴 vibesec.yaml 現在的值：把最上層的 risk_tier 覆寫成打錯的 l3，並確認真的換到了
+            text, n = re.subn(r"(?m)^risk_tier:.*$", "risk_tier: l3", vbp.read_text(encoding="utf-8"), count=1)
+            if n != 1:
+                fails.append("selftest 前置：vibesec.yaml 找不到最上層的 risk_tier，無法製造打錯的情境")
+            vbp.write_text(text, encoding="utf-8")
+            VIBESEC_FILE = vbp
+            gp = Path(d, "G1.json")
+            try:
+                code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp)], policy_root=pr)
+                g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
+                if code != 2 or g.get("status") != "incomplete" or "risk_tier" in g:
+                    fails.append(f"risk_tier 打錯 → 退出碼 2、incomplete、沒有 risk_tier 欄位（得到 {code}、{g.get('status')}、{g.get('risk_tier')!r}）")
+            except Exception as e:
+                fails.append(f"risk_tier 打錯 → 不得拋例外（得到 {type(e).__name__}：{e}）")
+            finally:
+                VIBESEC_FILE = saved_vb
     finally:
         _POLICY = saved
 
@@ -1772,7 +1813,7 @@ def main(argv, policy_root=ROOT):
             print(f"FAIL {f}")
         print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
         return 1 if fails else 0
-    started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    started = gate_result.now()   # 時間戳一律 +00:00（以前 G1 寫 Z，#181）
     target = (_opt(args, "--target") or [None])[-1]
     if target:
         TARGET = Path(target).expanduser().resolve()
@@ -1793,8 +1834,10 @@ def main(argv, policy_root=ROOT):
         _POLICY, problem = load_policy(policy_root)
         if problem:
             print(f"⚠️ G1 無法完成檢查：{problem} → incomplete。", file=sys.stderr)
+            if sarif_out:
+                gate_result.remove_stale(sarif_out)   # 不讓上一次的 SARIF 被當成這一次的結果（#181）
             if gate_out:
-                write_gate(gate_out, [], [problem], started, base, scope, None, tool_state="error")
+                write_unreadable_gate(gate_out, problem, started, base, scope)
             return 2
     if "--staged" in args:
         staged, why = staged_files()

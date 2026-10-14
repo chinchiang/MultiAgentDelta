@@ -12,6 +12,7 @@
       .cover(control_id, state, reason=None)
       .count(blocking=0, advisory=0)  累加發現計數
       .problem(text) / .note(text) / .awaiting_human(text) / .not_applicable(reason)   原樣轉給 verdict
+      .fail_condition()               不是發現、卻讓閘門 fail（verdict 的 blocking +1，不計入 findings_count；G0 用）
       .result() -> dict               記下 finished_at、套用控制覆蓋不變式、呼叫 verdict，回傳閘門結果
       .unreadable(problem, *, tool_name, version=None) -> dict
                                       政策讀不到：controls 全部 untested（原因＝problem）、deferred 維持 pending、
@@ -26,6 +27,8 @@
 
 mode：result() 只接受 shadow／enforce，不合法 → ValueError；unreadable() 遇到不合法的 mode 記為 enforce、不拋例外
 （使用者 2026-10-14 決定，#180：拋例外會讓閘門結果缺席，與「讀不到 → 更嚴」的既有語意不同）。
+risk_tier 同理：result() 不合法 → ValueError；unreadable() 遇到不合法的值省略該欄位（#181；risk_tier 打錯時
+load_policy 本來就回報政策讀不到）。
 
 只回傳 dict，不寫閘門 JSON，也不在執行時跑 jsonschema（jsonschema 在部分環境可能缺席）；輸入不合法 → ValueError，
 那是閘門程式的 bug。schema 符合性由本檔的 selftest 以 jsonschema 驗證。
@@ -124,12 +127,12 @@ class GateRun:
         # 建立時就驗證的話，政策讀不到的路徑會在產出結果之前拋例外
         self.mode = mode
         self.scope = _choice("scope", scope, SCOPES)
-        self.risk_tier = None if risk_tier is None else _choice("risk_tier", risk_tier, RISK_TIERS)
+        self.risk_tier = risk_tier     # 同 mode：result() 才驗證；unreadable() 遇到不合法的值省略該欄位（#181 決定）
         self.commit, self.diff_base = commit, diff_base
         self.started_at = started_at or now()
         self._tools, self._cover = [], {}
         self._problems, self._notes, self._awaiting = [], [], []
-        self._blocking = self._advisory = 0
+        self._blocking = self._advisory = self._fail_conditions = 0
         self._na = None
 
     # ---- 累積
@@ -150,6 +153,11 @@ class GateRun:
         self._blocking += _count("blocking", blocking)
         self._advisory += _count("advisory", advisory)
 
+    def fail_condition(self) -> None:
+        """不是發現、卻要讓閘門 fail 的條件：閘門判定的 blocking +1，不計入 findings_count；理由由呼叫端以 note() 加入。
+        目前只有 G0 的 risk_tier 不一致使用（維持既有行為；改成正式規則須另開政策 PR，CLAUDE.md 規則 1）。"""
+        self._fail_conditions += 1
+
     def problem(self, text) -> None:
         self._problems.append(_text("problem", text))
 
@@ -169,10 +177,10 @@ class GateRun:
         out += [covered.get(c) or {"control_id": c, "state": "pending", "reason": None} for c in self.deferred]
         return out
 
-    def _gate(self, mode, status, status_reason, tools, blocking, advisory, coverage) -> dict:
+    def _gate(self, mode, risk_tier, status, status_reason, tools, blocking, advisory, coverage) -> dict:
         g = {"gate": self.gate, "status": status, "status_reason": status_reason, "mode": mode}
-        if self.risk_tier is not None:
-            g["risk_tier"] = self.risk_tier
+        if risk_tier is not None:
+            g["risk_tier"] = risk_tier
         g.update({"scope": self.scope, "diff_base": self.diff_base, "commit": self.commit,
                   "started_at": self.started_at, "finished_at": now(), "tools": tools,
                   "findings_count": {"blocking": blocking, "advisory": advisory}, "coverage": coverage})
@@ -180,10 +188,11 @@ class GateRun:
 
     def result(self) -> dict:
         mode = _choice("mode", self.mode, MODES)
+        tier = None if self.risk_tier is None else _choice("risk_tier", self.risk_tier, RISK_TIERS)
         coverage = self._coverage(self._cover, NOT_RUN)   # 控制覆蓋不變式：漏回報 → untested
-        status, status_reason = verdict(blocking=self._blocking, coverage=coverage, problems=self._problems,
+        status, status_reason = verdict(blocking=self._blocking + self._fail_conditions, coverage=coverage, problems=self._problems,
                                         awaiting_human=self._awaiting, not_applicable=self._na, notes=self._notes)
-        return self._gate(mode, status, status_reason, list(self._tools), self._blocking, self._advisory, coverage)
+        return self._gate(mode, tier, status, status_reason, list(self._tools), self._blocking, self._advisory, coverage)
 
     def unreadable(self, problem, *, tool_name, version=None) -> dict:
         """政策讀不到：不使用已累積的內容；controls 全部 untested（原因＝problem）、deferred 維持 pending、
@@ -191,9 +200,10 @@ class GateRun:
         _text("problem", problem)
         row = tool(tool_name, "error", version=version)
         mode = self.mode if self.mode in MODES else "enforce"
+        tier = self.risk_tier if self.risk_tier in RISK_TIERS else None   # 不合法 → 省略（政策讀不到的成因之一）
         coverage = self._coverage({}, problem)            # 不使用已累積的回報
         status, status_reason = verdict(blocking=0, coverage=coverage, problems=[problem])
-        return self._gate(mode, status, status_reason, [row], 0, 0, coverage)
+        return self._gate(mode, tier, status, status_reason, [row], 0, 0, coverage)
 
 
 # ------------------------------------------------------------------ selftest
@@ -318,6 +328,20 @@ def selftest() -> list[str]:
             return "not_applicable 沒附理由應拋 ValueError"
     check("not_applicable 附理由", t_na)
 
+    def t_fail_condition():
+        from gate_verdict import verdict
+        r = run(); r.cover("C1", "fail", "宣告 L1 低於推導值 L3"); r.cover("C2", "pass"); r.count(advisory=1)
+        r.note("risk_tier：宣告 L1 低於推導值 L3"); r.fail_condition()
+        g = r.result()
+        want = verdict(blocking=1, coverage=g["coverage"], notes=["risk_tier：宣告 L1 低於推導值 L3"])
+        if (g["status"], g["status_reason"]) != want or g["findings_count"] != {"blocking": 0, "advisory": 1}:
+            return f"fail_condition → verdict 的 blocking +1、findings_count 不計入（得到 {g['status']}、{g['findings_count']}）"
+        r = run(); r.cover("C1", "pass"); r.cover("C2", "pass"); r.count(blocking=2); r.fail_condition()
+        g = r.result()
+        if g["status"] != "fail" or g["findings_count"]["blocking"] != 2:
+            return f"有發現又有 fail_condition → fail、findings_count 只算發現（得到 {g['findings_count']}）"
+    check("fail_condition()：不是發現、卻讓閘門 fail（G0 tier_fail 的暫行作法）", t_fail_condition)
+
     # ---- 控制覆蓋不變式
     def t_invariant():
         r = GateRun("G1", controls=["A", "B"], deferred=["S", "K"], mode="shadow", scope="full")
@@ -350,7 +374,7 @@ def selftest() -> list[str]:
         cases = {
             "gate": lambda: GateRun("G9", **ok),
             "scope": lambda: GateRun("G3", **dict(ok, scope="partial")),
-            "risk_tier": lambda: GateRun("G3", **dict(ok, risk_tier="l3")),
+            "risk_tier": lambda: GateRun("G3", **dict(ok, risk_tier="l3")).result(),
             "mode": lambda: GateRun("G3", **dict(ok, mode="Enforce")).result(),
             "mode None": lambda: GateRun("G3", **dict(ok, mode=None)).result(),
             "count 負數": lambda: GateRun("G3", **ok).count(blocking=-1),
@@ -393,6 +417,15 @@ def selftest() -> list[str]:
         g = GateRun("G2", controls=["C"], mode="shadow", scope="diff").unreadable(PROBLEM, tool_name="vibesec-sarif-gate")
         return None if g["mode"] == "shadow" else "合法的 mode 照原值"
     check("unreadable()：不合法 mode → enforce、不拋例外（#180 決定）", t_unreadable_mode)
+
+    def t_unreadable_tier():
+        for t in ("l3", "L4", 3):
+            g = GateRun("G1", controls=["C"], mode="shadow", scope="full", risk_tier=t).unreadable(PROBLEM, tool_name="vibesec-slopcheck")
+            if "risk_tier" in g or errs(g):
+                return f"risk_tier={t!r} → 省略 risk_tier 欄位、不拋例外（得到 {g.get('risk_tier')!r}、{errs(g)}）"
+        g = GateRun("G1", controls=["C"], mode="shadow", scope="full", risk_tier="L3").unreadable(PROBLEM, tool_name="vibesec-slopcheck")
+        return None if g.get("risk_tier") == "L3" else "合法的 risk_tier 照原值"
+    check("unreadable()：不合法 risk_tier → 省略欄位、不拋例外（#181 決定）", t_unreadable_tier)
 
     def t_unreadable_bad():
         r = run()
