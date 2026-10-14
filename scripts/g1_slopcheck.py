@@ -1143,7 +1143,7 @@ def selftest():
                           "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"},
                          {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "nowhere/**",
                           "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"},
-                         {"rule_id": "vibesec.g2.hardcoded-secret", "path_glob": "nowhere/**",   # 別的閘門：G1 不列
+                         {"rule_id": "vibesec.g2.hardcoded-secret", "path_glob": "nowhere/**",   # 別的閘門：status_reason 不列、stdout 照列
                           "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"}]
     (PR / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump(pol, allow_unicode=True), encoding="utf-8")
     shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
@@ -1445,6 +1445,7 @@ def selftest():
         if out.get("ignored_exceptions") != ["vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期",
                                              "vibesec.g2.hardcoded-secret @ nowhere/**：已於 2020-01-01 過期"]:
             fails.append(f"stdout 的 ignored_exceptions 列出全部忽略的例外：{out.get('ignored_exceptions')}")
+        # 接線：report 收到的是本閘門 ID（G1）→ status_reason 只列 G1 忽略的例外、不列 G2 的
         why = json.loads(gate.read_text(encoding="utf-8")).get("status_reason") or ""
         if "忽略的例外：vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期" not in why or "hardcoded-secret" in why:
             fails.append(f"G1 的 status_reason 列出本閘門忽略的例外、不列其他閘門的：{why}")

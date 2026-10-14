@@ -142,9 +142,10 @@ def selftest() -> list[str]:
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
     from vibesec_policy import Policy, temp_policy_root
     # 合成例外（不依賴政策檔現有例外與其到期日）：暫存 root 放本 repo 政策的副本，只換掉 exceptions；外部目標必須忽略它
-    with temp_policy_root([{"rule_id": r, "path_glob": "examples/vulnapp/app/main.py", "reason": "selftest",
-                           "approved_by": "selftest", "expires": "2099-12-31"}
-                          for r in ("vibesec.g2.hardcoded-secret", "vibesec.g2.hardcoded-llm-key")]) as PR:
+    synthetic = [{"rule_id": r, "path_glob": "examples/vulnapp/app/main.py", "reason": "selftest",
+                  "approved_by": "selftest", "expires": "2099-12-31"}
+                 for r in ("vibesec.g2.hardcoded-secret", "vibesec.g2.hardcoded-llm-key")]
+    with temp_policy_root(synthetic) as PR:
         pol = sarif_gate.load_context(Policy(PR, project_root=None))   # 建構時讀完政策檔；不受 VIBESEC_PROJECT_ROOT 影響
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True)
@@ -187,6 +188,18 @@ def selftest() -> list[str]:
         g = run(repo, env={"FAKE_SARIF": sarif(hit("examples/vulnapp/app/main.py"))})
         if g["status"] != "fail" or not g["findings_count"]["blocking"]:
             fails.append("外部目標：本 repo 對 examples/vulnapp/app/main.py 的例外不得套用（仍為 blocking → fail）")
+        # 接線：目標是本 repo（project_root 指向它）→ scan 以受驗樹綁定的例外照常套用：命中的發現降為 advisory、
+        # status_reason 註明命中筆數（gate JSON 只有計數；逐筆的 exception 紀錄由 sarif_gate 的 selftest 檢查）
+        with temp_policy_root(synthetic) as PR2:
+            pol_ext, pol = pol, sarif_gate.load_context(Policy(PR2, project_root=repo))
+        try:
+            g = run(repo, env={"FAKE_SARIF": sarif(hit("examples/vulnapp/app/main.py"))})
+        finally:
+            pol = pol_ext
+        n = g["findings_count"]["advisory"]   # 一筆 gitleaks 命中經 implemented_by 對到 hardcoded-secret 與 hardcoded-llm-key
+        if g["status"] != "pass" or g["findings_count"]["blocking"] or not n \
+                or f"{n} 筆命中 blocking-policy 例外" not in (g["status_reason"] or ""):
+            fails.append(f"本 repo：命中例外 → advisory、status_reason 註明命中筆數（得到 {g['status']}：{g['findings_count']}、{g['status_reason']}）")
         g = run(repo, binary=None)
         if g["status"] != "incomplete" or "not found" not in (g["status_reason"] or "") or g["tools"][0]["state"] != "missing":
             fails.append("gitleaks 缺席 → incomplete（state missing），不是 pass")
