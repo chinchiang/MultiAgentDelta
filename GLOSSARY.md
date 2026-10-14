@@ -104,7 +104,7 @@ _避免_：目標、target（target 專指 G5／G6 的受測服務）
 _避免_：allowlist（專指 G1 的套件允許清單）、抑制註解、suppression（受驗方自己寫的抑制註解不採信）
 
 **外部專案（external project）**：
-不是本 repo 的受驗樹，例如以 harness 掃描的其他專案；本 repo 的政策例外對它不套用。目前以「受驗樹不是受信任樹所在的目錄」判斷，所以 CI 上本 repo 的 PR head 也被當成外部專案。
+不是本 repo 的受驗樹，例如以 harness 掃描的其他專案；本 repo 的政策例外對它不套用。
 _避免_：外部目標、external target（target 專指 G5／G6 的受測服務）
 
 ---
@@ -213,5 +213,5 @@ A human-approved, expiring waiver in the blocking policy: findings of a given ru
 _Avoid_: allowlist (that means G1's package allowlist), suppression comment (suppression comments written by the project under test are not trusted)
 
 **External project**:
-A project tree that is not this repo, such as another project scanned by the harness; this repo's exceptions do not apply to it. It is currently decided by "the project tree is not the directory that holds the trusted tree", so in CI this repo's own PR head is also treated as an external project.
+A project tree that is not this repo, such as another project scanned by the harness; this repo's exceptions do not apply to it.
 _Avoid_: external target (target means the service under test in G5/G6)

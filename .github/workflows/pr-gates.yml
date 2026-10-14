@@ -75,7 +75,10 @@ jobs:
         run: |
           # 與 pre-commit 共用同一支腳本：diff-aware、套用 blocking-policy exceptions、
           # 掃描變更的 agent 規則檔；輸出 SARIF 與 gate-result。exit 1 = blocking、2 = incomplete。
-          python3 _trusted/scripts/g1_slopcheck.py --target . \
+          # VIBESEC_PROJECT_ROOT：判定程式與政策在 _trusted/、受驗樹在 workspace，兩者都是本 repo（#157）。
+          # 沒設定時 G1 會把 PR head 判成外部專案、例外不套用；設定後例外照常套用，status_reason 註明命中筆數。
+          # 路徑型例外可被 PR 借用的風險見 #163（緩解：CODEOWNERS /examples/ ＋ branch protection）。
+          VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/g1_slopcheck.py --target . \
             --changed-files reports/_changed-files.txt \
             --base "$DIFF_BASE" \
             --sarif reports/g1-slopcheck.sarif \
