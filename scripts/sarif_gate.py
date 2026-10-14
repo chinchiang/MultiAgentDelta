@@ -424,11 +424,15 @@ def selftest() -> list[str]:
         g = run("G2", {"gitleaks": sarif(res("vibesec-openai-api-key", "examples/vulnapp/app/main.py"))}, env={"env_gitignore_fail": 0})
         if g["status"] != "pass" or g["findings_count"]["advisory"] < 1 or "例外" not in (g["status_reason"] or ""):
             fails.append("blocking-policy 例外 → 降為 advisory、發現保留、理由註明")
-        # 忽略的例外只列本閘門的規則：G1 的過期例外不出現在 G2（以前每個閘門都列全部）
+        hits = to_findings("gitleaks", [res("vibesec-openai-api-key", "examples/vulnapp/app/main.py")], pol, pol["policy"].for_project(ROOT))
+        if not hits or any(f["policy_tier"] != "advisory" or sorted(f.get("exception") or {}) !=
+                           ["agent_id", "approved_by", "expires", "path_glob", "reason"] for f in hits):
+            fails.append(f"命中例外的發現帶 exception 紀錄（固定 5 欄，finding.schema.json）：{hits}")
+        # 接線：derive 把閘門 ID 傳給 report → 只列本閘門忽略的例外（G1 的過期例外不出現在 G2）
         e = D / "env.json"; e.write_text(json.dumps({"env_gitignore_fail": 0}), encoding="utf-8")
         (D / "G2-gitleaks.sarif").write_text(json.dumps(sarif()), encoding="utf-8")
         ignored = ProjectPolicy(pol["policy"], [], [("vibesec.g1.cooldown-violation", "G1 的過期例外"),
-                                                    ("vibesec.g2.hardcoded-secret", "G2 的過期例外")], [])
+                                                    ("vibesec.g2.hardcoded-secret", "G2 的過期例外")])
         why = derive("G2", {"gitleaks": D / "G2-gitleaks.sarif"}, e, pol, ignored)["status_reason"] or ""
         if "忽略的例外：G2 的過期例外" not in why or "G1 的過期例外" in why:
             fails.append(f"G2 只列本閘門忽略的例外（不列 G1 的）：{why}")
