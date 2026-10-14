@@ -88,8 +88,8 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, binary: str | None, timeou
     """掃描目標專案並回傳 G2 gate JSON（schemas/gate-result.schema.json）。"""
     started = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
     target = target.resolve()
-    external = target != ROOT.resolve()
     pol = dict(pol or sarif_gate.load_policy())
+    external = not pol["policy"].is_this_repo(target)   # 與例外是否套用同一份判斷（Policy；含 VIBESEC_PROJECT_ROOT）
     notes = []
     if external:
         pol.update(exceptions=pol["policy"].exceptions_for(target))   # 外部專案 → 不套用任何例外
@@ -136,9 +136,10 @@ def selftest() -> list[str]:
     from jsonschema import Draft202012Validator
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    from vibesec_policy import Exceptions
+    from vibesec_policy import Exceptions, Policy
     # 合成例外（不依賴政策檔現有例外與其到期日）：外部目標必須忽略它
-    pol = dict(sarif_gate.load_policy(), exceptions=Exceptions([
+    pol = dict(sarif_gate.load_policy(), policy=Policy(ROOT, project_root=None),   # 不受 VIBESEC_PROJECT_ROOT 影響
+               exceptions=Exceptions([
         {"rule_id": r, "path_glob": "examples/vulnapp/app/main.py", "reason": "selftest", "approved_by": "selftest",
          "expires": "2099-12-31"} for r in ("vibesec.g2.hardcoded-secret", "vibesec.g2.hardcoded-llm-key")], []))
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,

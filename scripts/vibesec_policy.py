@@ -16,7 +16,9 @@ base_tier；所有發出 finding 的元件（workflow 內嵌探針、scripts/*.p
 
 exceptions：欄位（rule_id、path_glob、reason、approved_by、expires）缺一、expires 格式無效、已過期（expires < today；
 到期當日仍有效）→ 不套用並列入 ignored；path_glob 以 fnmatch.fnmatchcase 比對（單一 * 也會跨越 /）。
-target 不是本 repo（resolve 後與 root 不同）→ 外部專案，全部不套用（例外只核准給本 repo 路徑）；None → 本 repo。
+p.is_this_repo(target)：None、root，或 project_root（存在的目錄）→ 本 repo；其他 → 外部專案，例外全部不套用
+（例外只核准給本 repo 路徑）。project_root 是「判定程式與受驗樹分開」時的受驗樹（CI：_trusted/ 與 workspace），
+預設取環境變數 VIBESEC_PROJECT_ROOT（由受信任的 workflow 設定）；明確傳 None ＝ 沒有（selftest 用）。
 
   python3 scripts/vibesec_policy.py <rule_id>...    # 每行印出「<rule_id> <有效 tier>」（給 shell 步驟用）
   python3 scripts/vibesec_policy.py selftest
@@ -25,7 +27,7 @@ target 不是本 repo（resolve 後與 root 不同）→ 外部專案，全部�
 不合法 → 例外（incomplete ≠ pass，CLAUDE.md #2）；要改政策必須由人類在獨立 PR 決定（規則 1）。
 """
 from __future__ import annotations
-import fnmatch, pathlib, sys
+import fnmatch, os, pathlib, sys
 from datetime import date
 
 try:
@@ -35,6 +37,8 @@ except ImportError:
     sys.exit(2)
 
 DEFAULT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+# Policy(project_root=…) 的預設：取環境變數 VIBESEC_PROJECT_ROOT；明確傳 None ＝ 沒有 project_root（selftest 用，不受環境影響）
+FROM_ENV = object()
 TIERS = ("blocking", "advisory")
 GATES = ("G0", "G1", "G2", "G3", "G4", "G5", "G6")
 EXCEPTION_FIELDS = ("rule_id", "path_glob", "reason", "approved_by", "expires")   # exceptions 必填（缺一 → 不套用）
@@ -53,8 +57,12 @@ def rule_gate(rule_id: str) -> str | None:
 
 
 class Policy:
-    def __init__(self, root: pathlib.Path | str | None = None, risk_tier: str | None = None):
+    def __init__(self, root: pathlib.Path | str | None = None, risk_tier: str | None = None,
+                 project_root: pathlib.Path | str | None | object = FROM_ENV):
         self.root = pathlib.Path(root) if root else DEFAULT_ROOT
+        if project_root is FROM_ENV:
+            project_root = os.environ.get("VIBESEC_PROJECT_ROOT")
+        self.project_root = pathlib.Path(project_root) if project_root else None
         pol = yaml.safe_load((self.root / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8")) or {}
         if risk_tier is None:
             vb = yaml.safe_load((self.root / "vibesec.yaml").read_text(encoding="utf-8")) or {}
@@ -119,9 +127,19 @@ class Policy:
     def effective_blocking(self) -> set[str]:
         return {r for r in (self.blocking_base | self.promoted) - self.demoted if self.gate_applies(rule_gate(r))}
 
+    def is_this_repo(self, target) -> bool:
+        """target 是本 repo：None、root，或 project_root（判定程式與受驗樹分開的本 repo，例如 CI 的 _trusted/ 與 workspace）。"""
+        if target is None:
+            return True
+        t = pathlib.Path(target).resolve()
+        if t == self.root.resolve():
+            return True
+        # project_root 必須是存在的目錄：打錯或未取出時不因此認定本 repo（fail closed）
+        return self.project_root is not None and self.project_root.is_dir() and t == self.project_root.resolve()
+
     def exceptions_for(self, target=None, today=None) -> "Exceptions":
         # 外部專案（target 不是本 repo）：例外只核准給本 repo 路徑 → 全部不套用（fail closed）
-        if target is not None and pathlib.Path(target).resolve() != self.root.resolve():
+        if not self.is_this_repo(target):
             return Exceptions([], [], note=f"目標專案 {pathlib.Path(target).name}：blocking-policy exceptions 只核准給本 repo 路徑，未套用")
         today = today or date.today()
         valid, ignored = [], []
@@ -236,7 +254,7 @@ def selftest() -> list[str]:
 
         def exs(entries, target=None, today=date(2026, 10, 13)):
             (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"exceptions": entries}))
-            return Policy(root, risk_tier="L2").exceptions_for(target, today=today)
+            return Policy(root, risk_tier="L2", project_root=None).exceptions_for(target, today=today)
 
         e = exs([ok_ex])
         hit = e.match("vibesec.g9.a", "lab/app/main.py")
@@ -282,6 +300,33 @@ def selftest() -> list[str]:
             e = exs([ok_ex], target=same)
             if not e.applies or e.note is not None or not e.match("vibesec.g9.a", "lab/x"):
                 fails.append(f"target={same!r} 是本 repo → 套用例外")
+        # project_root（CI：判定程式在 _trusted/、受驗樹在 workspace，兩者都是本 repo）：等於它的 target 也算本 repo
+        (root / "proj").mkdir()
+        pp = Policy(root, risk_tier="L2", project_root=root / "proj")
+        got = [pp.is_this_repo(t) for t in (None, root, root / "proj", root / "other" / ".." / "proj", root / "other")]
+        if got != [True, True, True, True, False]:
+            fails.append(f"is_this_repo（None、root、project_root、project_root 別名、其他目錄）應為 T T T T F；得到 {got}")
+        e = pp.exceptions_for(root / "proj", today=date(2026, 10, 13))
+        if not e.applies or e.note is not None or not e.match("vibesec.g9.a", "lab/x"):
+            fails.append("target 等於 project_root → 本 repo，套用例外")
+        # project_root 不是存在的目錄（打錯、未取出）→ 不因此認定本 repo（fail closed：例外不套用）
+        for bad in (root / "nope", root / "vibesec.yaml"):
+            if Policy(root, risk_tier="L2", project_root=bad).is_this_repo(bad):
+                fails.append(f"project_root={bad.name} 不是存在的目錄 → 不算本 repo")
+        # 沒傳 project_root → 取環境變數 VIBESEC_PROJECT_ROOT（CI 由受信任的 workflow 設定）；明確傳 None → 不讀（selftest 用）
+        saved = os.environ.pop("VIBESEC_PROJECT_ROOT", None)
+        try:
+            if Policy(root, risk_tier="L2").is_this_repo(root / "proj"):
+                fails.append("未設定 VIBESEC_PROJECT_ROOT → 只有 root 是本 repo")
+            os.environ["VIBESEC_PROJECT_ROOT"] = str(root / "proj")
+            if not Policy(root, risk_tier="L2").is_this_repo(root / "proj"):
+                fails.append("沒傳 project_root → 取 VIBESEC_PROJECT_ROOT")
+            if Policy(root, risk_tier="L2", project_root=None).is_this_repo(root / "proj"):
+                fails.append("明確傳 project_root=None → 不讀 VIBESEC_PROJECT_ROOT")
+        finally:
+            os.environ.pop("VIBESEC_PROJECT_ROOT", None)
+            if saved is not None:
+                os.environ["VIBESEC_PROJECT_ROOT"] = saved
         # incomplete_gate_is_blocking_in_enforce 打錯（G7、小寫、非清單）→ 例外：以前靜默忽略，該閘門 incomplete 就不阻擋了
         for bad_gates in (["G1", "G7"], ["g1"], "G1"):
             (root / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump({"incomplete_gate_is_blocking_in_enforce": bad_gates}))
