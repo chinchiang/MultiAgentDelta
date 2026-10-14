@@ -23,7 +23,10 @@ from __future__ import annotations
 import argparse, datetime, json, os, pathlib, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
 
 RULE = "vibesec.g1.unmaintained-dependency"
+TOOL_NAME, TOOL_VERSION = "vibesec-g1-maintenance", "1.0.0"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+import gate_result  # noqa: E402  自產 SARIF 骨架只有一份寫法（#182）；不依賴 PyYAML
 API_BASE = "https://api.deps.dev"
 API_PATH = "/v3/systems/{system}/packages/{name}"
 SYSTEMS = {"pypi": "pypi", "npm": "npm", "golang": "go", "maven": "maven", "cargo": "cargo", "nuget": "nuget"}
@@ -126,7 +129,7 @@ def fetch_deps_dev(system: str, name: str, retries: int = 3) -> dict | None:
     for i in range(retries):
         # 每次重試都建新的 Request：ProxyHandler 會改寫傳入的 Request，重用時經 http:// proxy 的重試會以
         # 「unknown url type: http」失敗（同 g1_slopcheck.http_json）
-        req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1-maintenance", "Accept": "application/json"})
+        req = urllib.request.Request(url, headers={"User-Agent": TOOL_NAME, "Accept": "application/json"})
         try:
             with opener.open(req, timeout=30) as r:
                 return json.loads(r.read().decode("utf-8"))
@@ -277,11 +280,7 @@ def to_sarif(hits: list[dict], policy: "Policy") -> dict:
                 "properties": {"policy_tier": _TIER, "purl": h["purl"], "signals": [s["signal"] for s in h["signals"]],
                                "latest_version": h["latest_version"], "latest_published_at": h["latest_published_at"]}}
                for h in hits]
-    return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-            "version": "2.1.0",
-            "runs": [{"tool": {"driver": {"name": "vibesec-g1-maintenance", "version": "1.0.0",
-                                          "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                          "rules": [rule]}}, "results": results}]}
+    return gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, [rule], results)
 
 
 def selftest() -> list[str]:

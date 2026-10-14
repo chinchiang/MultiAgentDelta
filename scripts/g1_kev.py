@@ -25,6 +25,9 @@ import argparse, datetime, json, pathlib, re, sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RULE = "vibesec.g1.kev-hit"
 VULN_RULE = "vibesec.g1.vulnerable-dependency"
+TOOL_NAME, TOOL_VERSION = "vibesec-g1-kev", "1.0.0"
+sys.path.insert(0, str(ROOT / "scripts"))
+import gate_result  # noqa: E402  併入的 tool 列與自產 SARIF 骨架只有一份寫法（#182）；不依賴 PyYAML
 CVE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
 # Code Scanning 只收 repo 內檔案：套件位置取不到時，指向產生此結果的 workflow（與 G5 探針一致）
 FALLBACK_URI = ".github/workflows/nightly-full.yml"
@@ -140,11 +143,7 @@ def to_sarif(hits: list[dict], vulns: list[dict] | None, policy: "Policy") -> di
                        "grype_severity": h["severity"], "cvss": h["cvss"],
                        "package": h["package"], "version": h["version"], "ecosystem": h["ecosystem"]},
     } for h in (vulns or [])]
-    return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-            "version": "2.1.0",
-            "runs": [{"tool": {"driver": {"name": "vibesec-g1-kev", "version": "1.0.0",
-                                          "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                          "rules": [rule, vrule]}}, "results": results}]}
+    return gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, [rule, vrule], results)
 
 
 def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[dict]]:
@@ -173,8 +172,8 @@ KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 
 def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | None, policy: "Policy | None") -> dict:
     """把 KEV 結果（子結果）併入既有 G1 gate-result，狀態由 gate_verdict.merge 判定（只升不降、blocking 優先）。
     KEV 無法判定 → 控制 untested；命中 → 控制 fail，閘門是否 fail 依 vibesec.g1.kev-hit 的政策 tier。
-    policy：None ＝ 政策讀不到（summary 為 incomplete、沒有任何發現可分類）。"""
-    sys.path.insert(0, str(ROOT / "scripts"))
+    policy：None ＝ 政策讀不到（summary 為 incomplete、沒有任何發現可分類）→ tool 列為 gate_result 的統一形狀
+    （error、exit_code／output_ref null，#182 決定 2）；一般 incomplete 維持 ran／exit_code 2。"""
     from gate_verdict import merge
     kev_status = summary["status"]
     n_vuln = len(summary.get("vulnerable") or [])
@@ -190,9 +189,9 @@ def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | Non
                             "reason": summary.get("status_reason") if kev_status == "incomplete" else None}],
                  problems=[f"KEV：{summary['status_reason']}"] if kev_status == "incomplete" else [],
                  notes=[f"KEV 命中 {len(hits)} 筆（{', '.join(sorted({h['cve'] for h in hits}))}）"] if hits else [],
-                 tools=[{"name": "vibesec-g1-kev", "version": "1.0.0", "state": "ran",
-                         "exit_code": {"pass": 0, "fail": 1, "incomplete": 2}[kev_status],
-                         "output_ref": sarif_ref, "duration_seconds": None}])
+                 tools=[gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION) if policy is None else
+                        gate_result.tool(TOOL_NAME, "ran", version=TOOL_VERSION,
+                                         exit_code={"pass": 0, "fail": 1, "incomplete": 2}[kev_status], output_ref=sarif_ref)])
 
 
 def selftest() -> list[str]:
@@ -304,14 +303,29 @@ def selftest() -> list[str]:
     with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
         js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
         gp.write_text(json.dumps({**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}), encoding="utf-8")
+        sf.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF
         rc = main(["--grype", str(pathlib.Path(d, "g.json")), "--kev-feed", str(pathlib.Path(d, "k.json")),
                        "--sarif", str(sf), "--json", str(js), "--merge-gate", str(gp)], policy_root=pr)
         sm, g = json.loads(js.read_text(encoding="utf-8")), json.loads(gp.read_text(encoding="utf-8"))
         st = [c["state"] for c in g["coverage"] if c["control_id"] == KEV_CONTROL]
+        # 接線（#182）：併入的 tool 列是 gate_result.tool 的統一形狀（error、exit_code／output_ref null）；舊 SARIF 刪掉（以前留著）
         if rc != 2 or sm.get("status") != "incomplete" or not str(sm.get("status_reason")).startswith(POLICY_UNREADABLE + "（") \
                 or g["status"] != "incomplete" or POLICY_UNREADABLE not in (g["status_reason"] or "") or st != ["untested"] \
-                or g["findings_count"] != base["findings_count"]:
-            fails.append(f"KEV：政策檔讀不到 → 退出碼 2、incomplete、G1 incomplete 且控制 untested（得到 {rc}、{sm}、{g}）")
+                or g["findings_count"] != base["findings_count"] \
+                or g["tools"][-1:] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] or sf.exists():
+            fails.append(f"KEV：政策檔讀不到 → 退出碼 2、incomplete、G1 incomplete 且控制 untested、tool 列 error、"
+                         f"舊 SARIF 刪掉（得到 {rc}、SARIF 存在={sf.exists()}、{sm}、{g}）")
+    # 一般 incomplete（grype 結果缺席）：tool 列維持 ran／exit_code 2；舊 SARIF 同樣刪掉（#182 決定 1）
+    with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
+        gp.write_text(json.dumps({**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}), encoding="utf-8")
+        sf.write_text('{"stale": true}', encoding="utf-8")
+        rc = main(["--grype", str(pathlib.Path(d, "g.json")), "--kev-feed", str(pathlib.Path(d, "k.json")),
+                   "--sarif", str(sf), "--json", str(js), "--merge-gate", str(gp)])
+        g = json.loads(gp.read_text(encoding="utf-8"))
+        if rc != 2 or g["status"] != "incomplete" \
+                or g["tools"][-1:] != [gate_result.tool(TOOL_NAME, "ran", version=TOOL_VERSION, exit_code=2)] or sf.exists():
+            fails.append(f"KEV：一般 incomplete → tool 列 ran／exit_code 2、舊 SARIF 刪掉（得到 {rc}、SARIF 存在={sf.exists()}、{g['tools']}）")
     return fails
 
 
@@ -353,6 +367,8 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
         else:
             print(f"::warning::{gp} 不存在，KEV 結果未併入 G1 gate（summary 會顯示 G1 untested）")
     if summary["status"] == "incomplete":
+        # 沒有判定任何發現：刪掉上一次的 SARIF（以前留著，會被當成這一次的結果；上傳步驟以 hashFiles 略過，#182 決定 1）
+        gate_result.remove_stale(a.sarif)
         print(f"::error::KEV 檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
         return 2
     vulns = summary.get("vulnerable") or []

@@ -31,6 +31,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 RULE = "vibesec.g1.sbom-incomplete"
 CONTROL = "VS-G1-SBOM"
 VERSION = "1.0.0"
+TOOL_NAME = "vibesec-g1-sbom"
+sys.path.insert(0, str(ROOT / "scripts"))
+import gate_result  # noqa: E402  併入的 tool 列與自產 SARIF 骨架只有一份寫法（#182）；不依賴 PyYAML
 SPEC = re.compile(r"^1\.(\d+)$")
 # 與 g1_slopcheck.REQUIREMENTS_RE 一致：檔名含 requirements 的 .txt（locks/python-requirements.txt），
 # 或 requirements/ 目錄下的 .txt（requirements/base.txt）
@@ -220,23 +223,21 @@ def findings(summary: dict, policy: "Policy") -> list[dict]:
 
 def to_sarif(found: list[dict]) -> dict:
     level = {"blocking": "error", "advisory": "warning"}
-    return {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", "version": "2.1.0",
-            "runs": [{"tool": {"driver": {"name": "vibesec-g1-sbom", "version": VERSION,
-                                          "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                          "rules": [{"id": RULE, "name": RULE, "shortDescription": {"text": "SBOM 缺少鎖定檔釘選的套件"}}]
-                                          if found else []}},
-                      "results": [{"ruleId": f["rule_id"], "level": level.get(f["policy_tier"], "warning"),
-                                   "message": {"text": f["message"]},
-                                   "locations": [{"physicalLocation": {"artifactLocation": {"uri": f["path"]}}}],
-                                   "partialFingerprints": {"vibesecSbom": f"{RULE}|{f['path']}"},
-                                   "properties": {"policy_tier": f["policy_tier"], "missing": f["missing"], "pinned": f["pinned"]}}
-                                  for f in found]}]}
+    rules = [{"id": RULE, "name": RULE, "shortDescription": {"text": "SBOM 缺少鎖定檔釘選的套件"}}] if found else []
+    results = [{"ruleId": f["rule_id"], "level": level.get(f["policy_tier"], "warning"),
+                "message": {"text": f["message"]},
+                "locations": [{"physicalLocation": {"artifactLocation": {"uri": f["path"]}}}],
+                "partialFingerprints": {"vibesecSbom": f"{RULE}|{f['path']}"},
+                "properties": {"policy_tier": f["policy_tier"], "missing": f["missing"], "pinned": f["pinned"]}}
+               for f in found]
+    return gate_result.sarif({"name": TOOL_NAME, "version": VERSION}, rules, results)
 
 
-def merge_gate(gate: dict, summary: dict, found: list[dict], sarif_ref: str | None) -> dict:
+def merge_gate(gate: dict, summary: dict, found: list[dict], sarif_ref: str | None, *, policy_unreadable: bool = False) -> dict:
     """SBOM 結果（子結果）併入 G1 gate-result：取代 VS-G1-SBOM 的 coverage，狀態由 gate_verdict.merge 判定。
-    只有 blocking 發現會讓 G1 變 fail；advisory 發現只計數，但 VS-G1-SBOM 仍記 fail（控制本身沒有達成）。"""
-    sys.path.insert(0, str(ROOT / "scripts"))
+    只有 blocking 發現會讓 G1 變 fail；advisory 發現只計數，但 VS-G1-SBOM 仍記 fail（控制本身沒有達成）。
+    policy_unreadable：政策讀不到、SBOM 沒有執行 → tool 列為 gate_result 的統一形狀（error、exit_code／output_ref null，
+    #182 決定 2）；一般 incomplete 維持 ran／exit_code 2。"""
     from gate_verdict import merge
     st = summary["status"]
     blocking = sum(f["policy_tier"] == "blocking" for f in found)
@@ -246,9 +247,9 @@ def merge_gate(gate: dict, summary: dict, found: list[dict], sarif_ref: str | No
                             "reason": reason}],
                  problems=[f"SBOM：{reason}"] if st == "incomplete" and reason else [],
                  notes=[f"SBOM：{reason}"] if st != "incomplete" and reason else [],
-                 tools=[{"name": "vibesec-g1-sbom", "version": VERSION, "state": "ran",
-                         "exit_code": 2 if st == "incomplete" else (1 if blocking else 0),
-                         "output_ref": sarif_ref, "duration_seconds": None}])
+                 tools=[gate_result.tool(TOOL_NAME, "error", version=VERSION) if policy_unreadable else
+                        gate_result.tool(TOOL_NAME, "ran", version=VERSION,
+                                         exit_code=2 if st == "incomplete" else (1 if blocking else 0), output_ref=sarif_ref)])
 
 
 def run(target: pathlib.Path, commit: str, out: pathlib.Path, syft=run_syft) -> dict:
@@ -398,14 +399,30 @@ def selftest() -> list[str]:
     with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
         js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
         gp.write_text(json.dumps({**base, "coverage": [{"control_id": "VS-G1-SBOM", "state": "pending", "reason": None}]}), encoding="utf-8")
+        sf.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF
         rc = main(["--target", d, "--sbom", str(pathlib.Path(d, "s.cdx.json")), "--sarif", str(sf), "--json", str(js),
                        "--merge-gate", str(gp)], policy_root=pr)
         sm, g = json.loads(js.read_text(encoding="utf-8")), json.loads(gp.read_text(encoding="utf-8"))
         st = [c["state"] for c in g["coverage"] if c["control_id"] == "VS-G1-SBOM"]
+        # 接線（#182）：併入的 tool 列是 gate_result.tool 的統一形狀（error、exit_code／output_ref null）；
+        # 舊 SARIF 刪掉、不寫新檔（以前寫一份空檔，看起來像「掃過、沒有發現」）
         if rc != 2 or sm.get("status") != "incomplete" or not str(sm.get("status_reason")).startswith(POLICY_UNREADABLE + "（") \
                 or g["status"] != "incomplete" or POLICY_UNREADABLE not in (g["status_reason"] or "") or st != ["untested"] \
-                or g["findings_count"] != base["findings_count"] or json.loads(sf.read_text(encoding="utf-8"))["runs"][0]["results"]:
-            fails.append(f"SBOM：政策檔讀不到 → 退出碼 2、incomplete、G1 incomplete 且控制 untested（得到 {rc}、{sm}、{g}）")
+                or g["findings_count"] != base["findings_count"] \
+                or g["tools"][-1:] != [gate_result.tool(TOOL_NAME, "error", version=VERSION)] or sf.exists():
+            fails.append(f"SBOM：政策檔讀不到 → 退出碼 2、incomplete、G1 incomplete 且控制 untested、tool 列 error、"
+                         f"舊 SARIF 刪掉（得到 {rc}、SARIF 存在={sf.exists()}、{sm}、{g}）")
+    # 一般 incomplete（目標不是 git repo → SBOM 產生失敗）：tool 列維持 ran／exit_code 2；舊 SARIF 同樣刪掉、不寫新檔（#182 決定 1）
+    with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
+        gp.write_text(json.dumps({**base, "coverage": [{"control_id": "VS-G1-SBOM", "state": "pending", "reason": None}]}), encoding="utf-8")
+        sf.write_text('{"stale": true}', encoding="utf-8")
+        rc = main(["--target", d, "--sbom", str(pathlib.Path(d, "s.cdx.json")), "--sarif", str(sf), "--json", str(js),
+                   "--merge-gate", str(gp)])
+        sm, g = json.loads(js.read_text(encoding="utf-8")), json.loads(gp.read_text(encoding="utf-8"))
+        if rc != 2 or sm.get("status") != "incomplete" or g["status"] != "incomplete" \
+                or g["tools"][-1:] != [gate_result.tool(TOOL_NAME, "ran", version=VERSION, exit_code=2)] or sf.exists():
+            fails.append(f"SBOM：一般 incomplete → tool 列 ran／exit_code 2、舊 SARIF 刪掉（得到 {rc}、SARIF 存在={sf.exists()}、{g['tools']}）")
     return fails
 
 
@@ -436,12 +453,17 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     for p in (a.sarif, a.json):
         pathlib.Path(p).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(found), ensure_ascii=False, indent=2), encoding="utf-8")
+    if summary["status"] == "incomplete":
+        # 沒有判定任何發現：刪掉上一次的 SARIF、不寫新檔（以前寫一份空檔，看起來像「掃過、沒有發現」；
+        # 上傳步驟以 hashFiles 略過，#182 決定 1）
+        gate_result.remove_stale(a.sarif)
+    else:
+        pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(found), ensure_ascii=False, indent=2), encoding="utf-8")
     if a.merge_gate:
         gp = pathlib.Path(a.merge_gate)
         if gp.is_file():
             merged = merge_gate(json.loads(gp.read_text(encoding="utf-8")), summary, found,
-                                a.sarif if summary["status"] != "incomplete" else None)
+                                a.sarif if summary["status"] != "incomplete" else None, policy_unreadable=bool(problem))
             gp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
         else:
             print(f"::warning::{gp} 不存在，SBOM 結果未併入 G1 gate")
