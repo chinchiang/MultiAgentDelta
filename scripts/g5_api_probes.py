@@ -3,10 +3,12 @@
 
 由 .github/workflows/staging-blackbox.yml 的「G5 api-probes」步驟執行，scripts/run_evals.py 的 vulnapp 評測走同一個步驟，
 所以 CI 與評測跑的是同一份程式碼。原本以 heredoc 內嵌在 workflow 中，搬成檔案後邏輯不變（第一輪審查／#69 移植 ⑤）；
-之後包成 main()／selftest() 以便 validate.py 離線把關，並在缺必填環境變數時 fail-closed（incomplete，不 traceback）。
+之後包成 main()／selftest() 以便 validate.py 離線把關，並在缺必填環境變數時 fail-closed（incomplete，不 traceback）；
+VIBESEC_MODE 例外：缺席或不合法 → 退出碼 2、不寫 gate JSON（#186）。
 
 輸入（環境變數）：VIBESEC_TARGET_URL（必填，須在 config/targets.yaml 允許清單）、VIBESEC_CONFIG（受信任的 vibesec.yaml）、
-VIBESEC_TOKEN_DIR、HAS_A、HAS_B、VIBESEC_MODE。輸出：reports/g5-api-probes.sarif、reports/g5-gate.json（目前目錄）。
+VIBESEC_TOKEN_DIR、HAS_A、HAS_B、VIBESEC_MODE（必填，shadow／enforce；缺席或不合法 → 退出碼 2、不送探針、
+不寫 gate JSON）。輸出：reports/g5-api-probes.sarif、reports/g5-gate.json（目前目錄）。
 """
 # G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（CLAUDE.md #8）。
 # checks: bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata,
@@ -25,6 +27,7 @@ TA = TB = ""
 HAS_A = HAS_B = False
 POLICY = None
 ROOT = None
+MODES = ("shadow", "enforce")
 REPORTS = pathlib.Path("reports")
 results = []      # SARIF results
 rules = {}        # ruleId -> rule 物件
@@ -160,9 +163,9 @@ def _cors_paths():
             seen.add(p); out.append(p)
     return out
 
-def _write_gate(gstatus, status_reason, blocking, advisory, cov, zap_tools, started, probe_state="ran", exit_code=0):
+def _write_gate(mode, gstatus, status_reason, blocking, advisory, cov, zap_tools, started, probe_state="ran", exit_code=0):
     gate = {"gate": "G5", "status": gstatus, "status_reason": status_reason,
-            "mode": os.environ.get("VIBESEC_MODE", "shadow"), "scope": "full", "diff_base": None,
+            "mode": mode, "scope": "full", "diff_base": None,
             "commit": None, "started_at": iso(started),
             "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
             "tools": [{"name": "vibesec-g5-api-probes", "version": "1.0.0", "state": probe_state,
@@ -185,17 +188,28 @@ def _gate_status(blocking, incomplete_reason, has_a, has_b, coverage):
 
 
 def main():
-    """執行所有探針並寫出 reports/g5-api-probes.sarif 與 reports/g5-gate.json。缺必填環境變數 → incomplete（不 traceback）。"""
+    """執行所有探針並寫出 reports/g5-api-probes.sarif 與 reports/g5-gate.json。缺必填環境變數 → incomplete（不 traceback）；
+    VIBESEC_MODE 缺席或不合法例外：退出碼 2、不寫 gate JSON（寫不出合法的 mode 欄位）。"""
     global URL, TA, TB, HAS_A, HAS_B, POLICY, ROOT, REPORTS
     started = datetime.datetime.now(datetime.timezone.utc)
     # 可重入：清掉上一輪（selftest 會呼叫多次）
     results.clear(); rules.clear(); coverage.clear(); coverage_reasons.clear(); JWKS_SKIPPED.clear()
     REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
 
+    # VIBESEC_MODE 必填（#186，同 G6 的 #161）：以前預設 shadow、不驗證值，enforce 環境漏帶時沒有人會發現。
+    # 缺席或不合法 → 不送探針、不寫 gate JSON（舊檔刪掉，下游不會讀到上一次的結果），退出碼 2；
+    # 阻擋判定與黑箱健康把缺席的閘門結果記成 incomplete（incomplete ≠ pass）。
+    mode = os.environ.get("VIBESEC_MODE")
+    if mode not in MODES:
+        (REPORTS / "g5-gate.json").unlink(missing_ok=True)
+        print(f"G5 api-probes：VIBESEC_MODE 未設定或不合法（{mode!r}；須為 {'／'.join(MODES)}），未送出任何探針、"
+              f"未寫出 gate JSON", file=sys.stderr)
+        return 2
+
     # 必填環境變數缺失 → 乾淨寫出 incomplete gate（incomplete ≠ pass；不以 KeyError traceback 收場）
     target = os.environ.get("VIBESEC_TARGET_URL")
     if not target:
-        _write_gate("incomplete", "VIBESEC_TARGET_URL 未設定；未送出任何探針", 0, 0, [], [], started, probe_state="missing")
+        _write_gate(mode, "incomplete", "VIBESEC_TARGET_URL 未設定；未送出任何探針", 0, 0, [], [], started, probe_state="missing")
         print("G5 api-probes: status=incomplete（VIBESEC_TARGET_URL 未設定）")
         return 0
     URL = target.rstrip("/")
@@ -206,7 +220,7 @@ def main():
         from gate_verdict import verdict
         cov = [{"control_id": k, "state": "untested", "reason": problem} for k in (*CHECKS, *ZAP_SCANS)]
         gstatus, status_reason = verdict(blocking=0, coverage=cov, problems=[f"{problem}；未送出任何探針"])
-        _write_gate(gstatus, status_reason, 0, 0, cov, [], started, probe_state="error", exit_code=None)
+        _write_gate(mode, gstatus, status_reason, 0, 0, cov, [], started, probe_state="error", exit_code=None)
         print(f"G5 api-probes: status=incomplete（{problem}）")
         return 0
     TA = _read("a"); TB = _read("b")
@@ -580,7 +594,7 @@ def main():
            for k, v in coverage.items()]
     gstatus, status_reason = _gate_status(blocking, incomplete_reason, HAS_A, HAS_B, cov)
     # schema：not_applicable 才強制 reason；untested 可無 reason，但附上更佳
-    _write_gate(gstatus, status_reason, blocking, advisory, cov, ZAP_TOOLS, started)
+    _write_gate(mode, gstatus, status_reason, blocking, advisory, cov, ZAP_TOOLS, started)
     print(f"G5 api-probes: status={gstatus} blocking={blocking} advisory={advisory}")
     print(json.dumps(coverage, ensure_ascii=False))
     return 0
@@ -629,19 +643,63 @@ def selftest():
     except Exception as ex:
         fails.append(f"_spki_pem 應可產生合法 DER：{ex}")
 
-    def run_in(tmp, env):
-        """在暫存 cwd 以指定環境變數跑 main()，回傳 (exit_code, gate dict or None)。"""
+    def run_in(tmp, env, mode="shadow"):
+        """在暫存 cwd 以指定環境變數跑 main()，回傳 (exit_code, gate dict or None)。mode=None → 不設定 VIBESEC_MODE。
+        stderr 擷取到 last_stderr[0]（失敗訊息可引用）。"""
         cwd0 = os.getcwd(); env0 = dict(os.environ)
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         try:
             os.chdir(tmp)
             os.environ.clear(); os.environ.update(env)
-            with contextlib.redirect_stdout(out):
+            if mode is not None:
+                os.environ["VIBESEC_MODE"] = mode
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = main()
             gp = pathlib.Path(tmp) / "reports/g5-gate.json"
             return code, (json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else None)
         finally:
+            last_stderr[0] = err.getvalue()
             os.chdir(cwd0); os.environ.clear(); os.environ.update(env0)
+    last_stderr = [""]
+
+    # VIBESEC_MODE 缺席或不合法 → exit 2、不寫 gate JSON（舊的也刪掉）、不送任何探針（#186，同 G6 的 #161）。
+    # 以前預設 shadow、不驗證值：enforce 環境漏帶時沒有人會發現，不合法的值會原樣寫進 gate JSON。
+    # 目標指向會計數請求的本機假目標（127.0.0.1 在允許清單），所以「沒送探針」是實測的，不是因為授權檢查擋下。
+    import http.server, threading
+    hits = []
+
+    class _Count(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def _reply(self):
+            hits.append(self.path)
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(b"{}")
+        do_GET = do_POST = do_OPTIONS = _reply
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Count)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        counted = {"VIBESEC_TARGET_URL": f"http://127.0.0.1:{srv.server_address[1]}", "VIBESEC_CONFIG": str(repo / "vibesec.yaml")}
+        for label, mode, env in [("未設定", None, counted), ("Enforce（大小寫錯）", "Enforce", counted),
+                                 ('"enforce"（帶引號）', '"enforce"', counted), ("空字串", "", counted),
+                                 ("未設定且缺 VIBESEC_TARGET_URL", None, {}),
+                                 ("不合法且政策讀不到", "x", {**counted, "VIBESEC_CONFIG": "/nonexistent/vibesec.yaml"})]:
+            hits.clear()
+            with tempfile.TemporaryDirectory() as d:
+                (pathlib.Path(d) / "reports").mkdir()
+                (pathlib.Path(d) / "reports/g5-gate.json").write_text('{"stale": true}')
+                code, g = run_in(d, env, mode=mode)
+                if code != 2 or g is not None or hits or "VIBESEC_MODE" not in last_stderr[0]:
+                    fails.append(f"VIBESEC_MODE {label} → 應 exit 2、沒有 gate JSON（舊檔刪掉）、不送探針、stderr 寫明原因"
+                                 f"（得到 code={code}, gate={g}, 請求={hits}, stderr={last_stderr[0]!r}）")
+        # shadow／enforce 照常執行，gate JSON 的 mode 等於設定值（未授權目標：離線、不送請求）
+        for mode in ("shadow", "enforce"):
+            with tempfile.TemporaryDirectory() as d:
+                code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example",
+                                     "VIBESEC_CONFIG": str(repo / "vibesec.yaml")}, mode=mode)
+                if code != 0 or not g or g.get("mode") != mode:
+                    fails.append(f"VIBESEC_MODE={mode} → 應照常寫出 gate JSON 且 mode={mode}（得到 code={code}, mode={g and g.get('mode')}）")
+    finally:
+        srv.shutdown(); srv.server_close()
 
     # 缺 VIBESEC_TARGET_URL → incomplete gate、exit 0、不 traceback、不送任何請求
     with tempfile.TemporaryDirectory() as d:
