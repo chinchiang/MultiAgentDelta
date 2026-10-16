@@ -846,9 +846,8 @@ def main(argv=None) -> int:
         pathlib.Path(a.comment).write_text(md, encoding="utf-8")
     print(f"G4 {gate['status']}：{gate.get('status_reason')}")
     # 退出碼依受信任政策的 mode（#201；以前取 --mode、預設 shadow）。政策讀不到 → mode 不明 → 視同 enforce（較嚴）
-    from vibesec_policy import load_policy
-    policy, _ = load_policy(ROOT)
-    if (policy.mode if policy else "enforce") == "enforce" and gate["status"] == "fail":
+    from vibesec_policy import effective_mode, load_policy
+    if effective_mode(load_policy(ROOT)[0]) == "enforce" and gate["status"] == "fail":
         return 1
     return 0
 

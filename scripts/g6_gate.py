@@ -20,8 +20,9 @@
        | --redteam-skipped "未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret"] \
       [--garak-glob 'reports/g6-garak*.report.jsonl'] \
       --cost reports/g6-cost.json --observations reports/g6-observations.json \
-      --gate reports/g6-gate.json --sarif reports/g6.sarif --mode shadow|enforce
-  python3 scripts/g6_gate.py --target-denied "<原因>" --gate … --sarif … --mode …   # 目標未通過 scripts/target_guard.py
+      --gate reports/g6-gate.json --sarif reports/g6.sarif
+  python3 scripts/g6_gate.py --target-denied "<原因>" --gate … --sarif …   # 目標未通過 scripts/target_guard.py
+  （mode 取自受信任政策，ADR 0002；--mode 已不使用、傳了也忽略，將在 #199 的第二階段移除）
   python3 scripts/g6_gate.py selftest
 成本面（LLM10 denial_of_wallet_cost）由 scripts/g6_cost_probe.py 實測後以 --cost 帶入；未提供或無法解析 → untested。
 工具事件（LLM06 excessive_agency_telemetry）由 scripts/g6_observe.py 實測後以 --observations 帶入：高影響工具未經人工核准
@@ -65,8 +66,7 @@ def load_catalog() -> tuple[dict, dict]:
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
-from vibesec_mode import MODES  # noqa: E402  mode 的合法值只有一份（#200）
+from vibesec_policy import effective_mode, load_policy  # noqa: E402  tier 與 mode 的唯一來源
 import gate_result  # noqa: E402  tool 列、自產 SARIF 骨架與時間戳只有一份寫法（#184）；coverage 與判定仍在 build()
 
 # G6 自己的 tool 名稱與版本：SARIF driver，以及政策讀不到時閘門結果唯一的一列 tool
@@ -676,19 +676,41 @@ def selftest() -> list[str]:
         g = run({"state": "pass"}, ["--target-denied", "example.com 不在允許清單"])
         if g["status"] != "incomplete" or "授權" not in (g["status_reason"] or "") or g["tools"]:
             fails.append(f"--target-denied → incomplete 且不讀任何結果；實際 {g['status']} tools={g['tools']}")
-        # --mode 必填：漏帶時不得默默以 shadow 寫出結果（呼叫端必須明講 mode，取自 vibesec.yaml）
-        for extra in ([], ["--target-denied", "x"]):
+        # mode 取自受信任政策（#202，ADR 0002）：--mode 已不使用、傳了也忽略（以前必填，#161；#199 第二階段移除）。
+        # 一般路徑與 --target-denied 都一樣：沒帶、帶 shadow、帶不合法的值，閘門結果都記政策的 mode（enforce）
+        from vibesec_policy import POLICY_UNREADABLE, mode_policy_root, modeless_policy_root
+
+        def run_with(pr, extra):
             (dp / "gate.json").unlink(missing_ok=True)
             try:
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    main(ev + red2 + gk + ["--gate", str(dp / "gate.json")] + extra)
-                fails.append(f"未帶 --mode{'（--target-denied）' if extra else ''} → 應以 argparse 錯誤結束，實際照常執行")
+                    rc = main(ev + red2 + gk + ["--gate", str(dp / "gate.json")] + extra, policy_root=pr)
+                return rc, json.loads((dp / "gate.json").read_text(encoding="utf-8"))
             except SystemExit as e:
-                if e.code != 2 or (dp / "gate.json").exists():
-                    fails.append(f"未帶 --mode → 退出碼 2 且不寫 gate JSON；實際 {e.code}，gate JSON {'存在' if (dp / 'gate.json').exists() else '不存在'}")
-        for m in ("shadow", "enforce"):
-            if run(cost_ok, ["--mode", m], base=ev + red2 + gk)["mode"] != m:
-                fails.append(f"--mode {m} → gate JSON 的 mode 應為 {m}")
+                return f"SystemExit {e.code}", {}
+        with mode_policy_root("mode: enforce") as pr:
+            for path_extra in ([], ["--target-denied", "x"]):
+                for cli in ([], ["--mode", "shadow"], ["--mode", "x"]):
+                    rc, g = run_with(pr, path_extra + cli)
+                    if rc != 0 or g.get("mode") != "enforce":
+                        fails.append(f"--mode {cli[1:] or '未帶'}{'（--target-denied）' if path_extra else ''} → 忽略、照常寫出結果、"
+                                     f"mode 取自政策（enforce）（得到 {rc}、mode={g.get('mode')}）")
+        # 反方向：政策 shadow、--mode enforce → 記 shadow（寫死成 enforce 會被抓到）
+        with mode_policy_root("mode: shadow") as pr:
+            for path_extra in ([], ["--target-denied", "x"]):
+                rc, g = run_with(pr, path_extra + ["--mode", "enforce"])
+                if rc != 0 or g.get("mode") != "shadow":
+                    fails.append(f"政策 shadow、--mode enforce{'（--target-denied）' if path_extra else ''} → mode 記 shadow"
+                                 f"（得到 {rc}、mode={g.get('mode')}）")
+        # 受信任政策缺 mode → 政策讀不到：incomplete、mode 記 enforce（mode 不明）、寫明原因；--target-denied 也一樣
+        with modeless_policy_root() as pr:
+            for path_extra in ([], ["--target-denied", "x"]):
+                rc, g = run_with(pr, path_extra + ["--mode", "shadow"])
+                why = g.get("status_reason") or ""
+                if rc != 0 or g.get("status") != "incomplete" or g.get("mode") != "enforce" \
+                        or POLICY_UNREADABLE + "（" not in why or "mode" not in why:
+                    fails.append(f"受信任政策缺 mode{'（--target-denied）' if path_extra else ''} → incomplete、mode 記 enforce、"
+                                 f"寫明原因（得到 {rc}、{g.get('status')}、mode={g.get('mode')}：{why}）")
     schema = __import__("jsonschema").Draft202012Validator(
         json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
     # 政策檔讀不到 → 進入點就停：不讀任何結果、G6 incomplete 並寫明未完成原因、沒有任何發現
@@ -747,8 +769,7 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     ap.add_argument("--cost", help="scripts/g6_cost_probe.py 的輸出（denial_of_wallet_cost）")
     ap.add_argument("--observations", help="scripts/g6_observe.py 的觀測檔（excessive_agency_telemetry）")
     ap.add_argument("--target-denied", help="目標未通過 scripts/target_guard.py 的原因：不讀任何結果，閘門 incomplete")
-    ap.add_argument("--mode", required=True, choices=MODES,
-                    help="取自 vibesec.yaml 的 mode；必填，漏帶不得默默以 shadow 執行")
+    ap.add_argument("--mode", help="已不使用、傳了也忽略：mode 取自受信任政策（ADR 0002），將在 #199 的第二階段移除")
     a = ap.parse_args(argv)
     started = now()
     policy, problem = load_policy(policy_root)   # 只建立一次；讀不到 → 不讀任何結果、閘門 incomplete
@@ -774,7 +795,8 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
         ingest_cost(c, a.cost)
         ingest_observations(c, a.observations)
         require_checks(c, declared_checks())
-    gate, sarif = build(c, a.mode, started)
+    # mode 取自受信任政策（#202；以前取必填的 --mode，#161）。政策讀不到（含 mode 缺席或不合法）→ mode 不明，記 enforce
+    gate, sarif = build(c, effective_mode(policy), started)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     if a.sarif:

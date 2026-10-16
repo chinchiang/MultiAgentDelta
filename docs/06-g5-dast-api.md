@@ -184,7 +184,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 1. 以 `.github/actions/vibesec-trusted` 取出 default branch 的判定程式、政策與 `mode`（`_trusted/`）。
 2. 決定目標（`vars.VIBESEC_TARGET_URL`，未設定則啟動本機靶場），以 `scripts/target_guard.py` 比對 `config/targets.yaml`；被拒 → 之後打目標的步驟全部略過，G5／G6 `incomplete`。
 3. 取得雙帳號 token（缺 → `incomplete`；已有 blocking 發現則 `fail`）。
-4. 依序：ZAP api-scan → ZAP baseline（各自把 `report_json.json` 搬到 `reports/zap-*.json`）→ `scripts/g5_zap.py` → `api-probes`（雙帳號 BOLA、JWT、SSRF、設定外溢、rate limit；腳本內再查一次授權，並合併 `reports/g5-zap.json`）。`api-probes` 的環境變數 `VIBESEC_MODE`（取自步驟 1 的 `mode`）為必填：缺席或不是 `shadow`／`enforce` → 退出碼 2、不送探針、不寫 `reports/g5-gate.json`（舊檔刪掉），缺席的閘門結果由下游記為閘門狀態 `incomplete`。
+4. 依序：ZAP api-scan → ZAP baseline（各自把 `report_json.json` 搬到 `reports/zap-*.json`）→ `scripts/g5_zap.py` → `api-probes`（雙帳號 BOLA、JWT、SSRF、設定外溢、rate limit；腳本內再查一次授權，並合併 `reports/g5-zap.json`）。`api-probes` 的 mode 取自受信任政策（`VIBESEC_CONFIG` 所在的受信任樹的 `vibesec.yaml`，ADR 0002）：mode 缺席或不是 `shadow`／`enforce` → 政策讀不到，照樣寫出 `incomplete` 的 `reports/g5-gate.json`（mode 記 `enforce`、未送出任何探針）。環境變數 `VIBESEC_MODE` 已不使用、傳了也忽略（#202；以前必填，#186），將在 #199 的第二階段移除。
 5. 產出 `reports/g5-gate.json` 與 `reports/g5-api-probes.sarif`。
 6. 「黑箱彙整與判定」：shadow 或目標是靶場 → 只報告；enforce 且外部目標 → G5／G6 有 blocking 發現（或政策列為 enforce 下 incomplete 也擋的閘門 incomplete）就讓 job 失敗。
 7. harness 把每筆黑箱發現嘗試回填白箱位置（docs/00 §4）。

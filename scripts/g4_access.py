@@ -179,9 +179,9 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
         # incomplete。coverage 是完整的宣告清單：靜態控制沒有回報 → untested（未執行），LLM 審查控制 pending 並寫明原因。
         # mode 取自政策（#201；以前自己讀 vibesec.yaml、缺席時預設 shadow）。政策讀不到（含 mode 缺席或不合法）→ mode 不明，
         # 記為 enforce（較嚴）並寫明原因，不拋例外（#183 決定 1：g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）
-        from vibesec_policy import load_policy
+        from vibesec_policy import effective_mode, load_policy
         policy, policy_problem = load_policy(policy_root)
-        mode = policy.mode if policy else "enforce"
+        mode = effective_mode(policy)
         problems = [why] + ([policy_problem] if policy_problem and policy_problem not in why else [])
         run = gate_result.GateRun("G4", controls=[c for c in g4_static.CONTROLS if c != g4_static.LLM_CONTROL],
                                   deferred=[g4_static.LLM_CONTROL], mode=mode, scope="full", commit=commit, started_at=started)
