@@ -345,17 +345,21 @@ def selftest() -> list[str]:
         if subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=repo).stdout.strip():
             fails.append("掃描不得改動被測專案的工作目錄")
     # 政策檔讀不到 → scan 一開始就停：不跑工具、G3 incomplete、控制 untested 並寫明未完成原因、沒有任何發現
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    # 政策 root 的 vibesec.yaml 缺 mode 也是政策讀不到（#200）；兩種情況 mode 都記 enforce（mode 不明）
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, modeless_policy_root
     import gate_result
-    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
-        g = scan(pathlib.Path(d), pathlib.Path(d, "out"), {}, policy_root=pr)
-        why = g["status_reason"] or ""
-        if g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in why or "不是 git repo" in why \
-                or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
-                or [c["control_id"] for c in g["coverage"]] != list(sarif_gate.GATE_CONTROLS["G3"]) \
-                or g["tools"] != [gate_result.tool(sarif_gate.SELF_TOOL, "error")] \
-                or list(schema.iter_errors(g)):
-            fails.append(f"政策檔讀不到（只有 vibesec-sarif-gate 一列 error）→ 不跑工具、G3 incomplete、控制 untested、寫明原因（得到 {g}）")
+    for make_root in (broken_policy_root, modeless_policy_root):
+        with make_root() as pr, tempfile.TemporaryDirectory() as d:
+            g = scan(pathlib.Path(d), pathlib.Path(d, "out"), {}, policy_root=pr)
+            why = g["status_reason"] or ""
+            if g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in why or "不是 git repo" in why or g["mode"] != "enforce" \
+                    or (make_root is modeless_policy_root and "mode" not in why) \
+                    or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
+                    or [c["control_id"] for c in g["coverage"]] != list(sarif_gate.GATE_CONTROLS["G3"]) \
+                    or g["tools"] != [gate_result.tool(sarif_gate.SELF_TOOL, "error")] \
+                    or list(schema.iter_errors(g)):
+                fails.append(f"政策讀不到（{make_root.__name__}；只有 vibesec-sarif-gate 一列 error）→ 不跑工具、G3 incomplete、"
+                             f"控制 untested、寫明原因、mode 記 enforce（得到 {g}）")
     return fails
 
 

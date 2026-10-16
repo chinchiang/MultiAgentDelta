@@ -17,6 +17,7 @@ import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.err
 # 自身所在的 scripts/ 放到 path 最前，不論 cwd 都能 import 同層模組（selftest 由 validate.py 以子行程在 repo 根執行）
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from vibesec_policy import load_policy
+from vibesec_mode import MODES  # mode 的合法值只有一份（#200）
 import gate_result  # 閘門結果、tool 列、自產 SARIF 骨架只有一份寫法（#184）
 from target_guard import GuardConfigError, check as guard_check, same_origin
 
@@ -28,7 +29,6 @@ TA = TB = ""
 HAS_A = HAS_B = False
 POLICY = None
 ROOT = None
-MODES = ("shadow", "enforce")
 REPORTS = pathlib.Path("reports")
 results = []      # SARIF results
 rules = {}        # ruleId -> rule 物件

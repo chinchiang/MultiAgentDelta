@@ -209,13 +209,9 @@ def env_findings(d: dict, pol: dict) -> list[dict]:
 
 def unreadable_gate(gate: str, problem: str, *, scope: str, started: str | None = None) -> dict:
     """政策檔讀不到：不讀工具結果、不分類任何發現；閘門的每個控制 untested 並寫明未完成原因（incomplete ≠ pass），
-    tool 列只有本程式一列 error（GateRun.unreadable）。mode 讀不到或不合法 → 視同 enforce（GateRun.unreadable；
-    阻擋判定另讀受信任樹的 mode）。"""
-    try:
-        mode = _yaml(ROOT / "vibesec.yaml").get("mode")
-    except Exception:
-        mode = None
-    run = GateRun(gate, controls=list(GATE_CONTROLS[gate]), mode=mode, scope=scope, started_at=started)
+    tool 列只有本程式一列 error（GateRun.unreadable）。mode 取自政策，政策讀不到（含 mode 缺席或不合法，#200）就是 mode
+    不明 → 記為 enforce（GateRun.unreadable；阻擋判定另讀受信任樹的 mode）。以前另讀 ROOT 的 vibesec.yaml。"""
+    run = GateRun(gate, controls=list(GATE_CONTROLS[gate]), mode=None, scope=scope, started_at=started)
     return run.unreadable(problem, tool_name=SELF_TOOL)
 
 

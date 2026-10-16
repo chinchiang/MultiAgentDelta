@@ -35,6 +35,9 @@ PR head 送進來的 gate JSON 由 CLI 先以 schema 驗證，不合法記 incom
 from __future__ import annotations
 import argparse, copy, json, pathlib, re, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from vibesec_mode import MODES, apply_override, read_mode  # noqa: E402  mode 的語意只有一份（#200）；只用標準函式庫
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 STATUSES = ("pass", "fail", "incomplete", "pending", "not_applicable")
 COVERAGE_STATES = ("pass", "fail", "pending", "untested", "not_applicable")
@@ -205,17 +208,17 @@ def _row(gid, g) -> dict:
             "tools_ran": {t.get("name") for t in f.get("tools") or [] if t.get("state") == "ran"}, "valid": True}
 
 
-def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="VibeSec 閘門狀態", errors=()):
+def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="VibeSec 閘門狀態", errors=(), notes=()):
     """阻擋判定。gates：{閘門 ID: gate dict | Invalid | None（缺席）}；mode 為 None 表示讀不到（視同 enforce）；
-    incomplete_blocking_gates 為 None 表示政策讀不到（未完成的閘門一律擋）。"""
+    incomplete_blocking_gates 為 None 表示政策讀不到（未完成的閘門一律擋）。notes：附註（例如忽略的 --mode 降級），不影響判定。"""
     errors = list(errors)
-    if mode not in ("shadow", "enforce"):
+    if mode not in MODES:
         errors.append(f"mode 無法取得（{mode!r}），視同 enforce")
         mode = "enforce"
     if incomplete_blocking_gates is None:
         errors.append("blocking-policy 無法讀取：未完成的閘門一律視為阻擋")
     rows = [_row(gid, g) for gid, g in gates.items()]
-    block, notes = [], []
+    block, notes = [], list(notes)
     code = 0
     if mode == "enforce" and not report_only:
         for r in rows:
@@ -326,28 +329,37 @@ def _load_gates(specs, trusted_root: pathlib.Path):
 
 
 def _read_settings(trusted_root: pathlib.Path, requested_mode):
-    """(mode, incomplete_blocking_gates, cfg, errors)。--mode 只能把 shadow 升為 enforce，不能降級。"""
-    errors, cfg, mode = [], None, None
+    """(mode, incomplete_blocking_gates, cfg, errors, notes)。mode 與「--mode 只能把 shadow 升為 enforce」都由
+    vibesec_policy.load_policy 決定（#200：以前這裡自己讀 mode、自己寫升級規則）；讀不到（含 mode 缺席或不合法、
+    --mode 不合法）→ incomplete_blocking_gates None（未完成的閘門一律擋）、記為錯誤。mode 仍以同一份 read_mode／
+    apply_override 單獨讀出（政策檔壞掉不等於 mode 不明：shadow 下維持只報告，與 #200 之前相同）；mode 本身讀不到 → None
+    （enforce() 視同 enforce）。cfg 是 vibesec.yaml 的內容，只給 blackbox 的 required_tools 用。"""
+    errors, notes, cfg, text = [], [], None, None
     try:
+        text = (trusted_root / "vibesec.yaml").read_text(encoding="utf-8")
         import yaml
-        cfg = yaml.safe_load((trusted_root / "vibesec.yaml").read_text(encoding="utf-8")) or {}
-        mode = cfg.get("mode") if cfg.get("mode") in ("shadow", "enforce") else None
-        if mode is None:
-            errors.append(f"受信任的 vibesec.yaml mode 缺席或不合法（{cfg.get('mode')!r}）")
+        cfg = yaml.safe_load(text) or {}
     except Exception as e:
         errors.append(f"受信任的 vibesec.yaml 無法讀取（{type(e).__name__}）")
-    if requested_mode not in (None, "", "shadow", "enforce"):
-        errors.append(f"--mode 不合法（{requested_mode!r}）")
-    elif requested_mode == "enforce":
-        mode = "enforce"
     try:
         sys.path.insert(0, str(trusted_root / "scripts"))
-        from vibesec_policy import Policy
-        inc = set(Policy(trusted_root).incomplete_blocking_gates)
+        from vibesec_policy import load_policy
+        policy, problem = load_policy(trusted_root, project_root=None, mode_override=requested_mode)
     except Exception as e:
-        inc = None
-        errors.append(f"blocking-policy 無法讀取（{type(e).__name__}）")
-    return mode, inc, cfg, errors
+        policy, problem = None, f"blocking-policy 無法讀取（{type(e).__name__}）"
+    if problem:
+        errors.append(problem)
+        mode, mode_problem = read_mode(text) if text is not None else (None, "vibesec.yaml 無法讀取")
+        if mode_problem is None:
+            try:
+                mode, note = apply_override(mode, requested_mode)
+                notes += [note] if note else []
+            except ValueError:
+                mode = None
+        return mode, None, cfg, errors, notes
+    if policy.mode_note:
+        notes.append(policy.mode_note)
+    return policy.mode, set(policy.incomplete_blocking_gates), cfg, errors, notes
 
 
 def _write_outputs(path, pairs: dict):
@@ -379,14 +391,15 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     gates = _load_gates(a.gate, a.trusted_root)
     if a.cmd == "enforce":
-        mode, inc, _, errs = _read_settings(a.trusted_root, a.mode)
-        d = enforce(gates, mode=mode, incomplete_blocking_gates=inc, report_only=a.report_only, title=a.title, errors=errs)
+        mode, inc, _, errs, notes = _read_settings(a.trusted_root, a.mode)
+        d = enforce(gates, mode=mode, incomplete_blocking_gates=inc, report_only=a.report_only, title=a.title, errors=errs,
+                    notes=notes)
         print(d["markdown"])
         if a.markdown_out:
             pathlib.Path(a.markdown_out).write_text(d["markdown"] + "\n", encoding="utf-8")
         _write_outputs(a.github_output, d["outputs"])
         return d["code"]
-    _, _, cfg, _ = _read_settings(a.trusted_root, None)
+    cfg = _read_settings(a.trusted_root, None)[2]
     problems = blackbox_health(gates, lab=a.lab, required_tools=required_tools(cfg) if a.lab else None,
                                job_result=a.job_result)
     print(json.dumps(problems, ensure_ascii=False, indent=1))
@@ -567,15 +580,43 @@ def selftest() -> list[str]:
         if not isinstance(gates["G3"], dict) or not isinstance(gates["G1"], Invalid) or not isinstance(gates["G2"], Invalid) \
                 or gates["G4"] is not None:
             fails.append(f"_load_gates：合法 → dict；無法解析／不符 schema → Invalid；缺檔 → None（得到 {gates}）")
-        mode, inc, _, errs = _read_settings(ROOT, "shadow")
+        mode, inc, _, errs, notes = _read_settings(ROOT, None)
         real = __import__("yaml").safe_load((ROOT / "vibesec.yaml").read_text(encoding="utf-8")).get("mode")
-        if mode != real or errs:
-            fails.append(f"_read_settings：mode 取自受信任設定（{real}）（得到 {mode}，{errs}）")
+        if mode != real or errs or notes:
+            fails.append(f"_read_settings：mode 取自受信任設定（{real}）（得到 {mode}，{errs}，{notes}）")
         if _read_settings(ROOT, "enforce")[0] != "enforce":
             fails.append("--mode enforce 可以升級")
-        (D / "vibesec.yaml").write_text("mode: enforce\n")
-        if _read_settings(D, "shadow")[0] != "enforce":
-            fails.append("--mode shadow 不得降級受信任設定的 enforce")
+        # 受信任設定是 enforce：--mode shadow 不得降級，並在 summary 註明已忽略（#200：規則在 vibesec_policy，只有一份）
+        from vibesec_policy import POLICY_UNREADABLE, temp_policy_root
+        with temp_policy_root() as tr:
+            vbp = tr / "vibesec.yaml"
+            text = vbp.read_text(encoding="utf-8")
+            vbp.write_text(re.sub(r"(?m)^mode:.*$", "mode: enforce", text, count=1), encoding="utf-8")
+            mode, inc, _, errs, notes = _read_settings(tr, "shadow")
+            if mode != "enforce" or errs or not any("降級" in n for n in notes):
+                fails.append(f"--mode shadow 不得降級受信任設定的 enforce，並附註（得到 {mode}，{errs}，{notes}）")
+            d = enforce({"G3": good}, mode=mode, incomplete_blocking_gates=inc, errors=errs, notes=notes)
+            if not any("降級" in n for n in d["notes"]) or "降級" not in d["markdown"] or d["code"] != 0:
+                fails.append(f"忽略降級的附註寫進 summary、不影響退出碼（得到 {d['code']}：{d['markdown'][-200:]}）")
+            # 受信任的 mode 缺席或不合法 → 記為錯誤（政策讀不到）、視同 enforce、退出碼 2
+            for line in ("", "mode: Enforce"):
+                vbp.write_text(re.sub(r"(?m)^mode:.*$", line, text, count=1), encoding="utf-8")
+                mode, inc, _, errs, notes = _read_settings(tr, None)
+                d = enforce({"G3": good}, mode=mode, incomplete_blocking_gates=inc, errors=errs, notes=notes)
+                if d["code"] != 2 or d["mode"] != "enforce" or not any(e.startswith(POLICY_UNREADABLE + "（") for e in errs):
+                    fails.append(f"受信任的 mode {line or '缺席'} → 錯誤、視同 enforce、退出碼 2（得到 {d['code']}、{d['mode']}、{errs}）")
+            vbp.write_text(text, encoding="utf-8")
+            # 政策檔壞掉但 mode 合法：mode 照樣讀得到（shadow 下只報告，與 #200 之前相同），未完成的閘門一律擋
+            pol = tr / "config/policy/blocking-policy.yaml"
+            pol_text = pol.read_text(encoding="utf-8")
+            pol.write_text("blocking: [\n", encoding="utf-8")
+            for req, want in ((None, real), ("enforce", "enforce")):
+                mode, inc, _, errs, _ = _read_settings(tr, req)
+                if mode != want or inc is not None or not errs:
+                    fails.append(f"政策檔壞掉、--mode {req!r} → mode {want}、未完成的閘門一律擋、記為錯誤（得到 {mode}、{inc}、{errs}）")
+            pol.write_text(pol_text, encoding="utf-8")
+            if _read_settings(tr, "x")[3] == [] or _read_settings(tr, "x")[0] is not None:
+                fails.append("--mode 不合法 → 記為錯誤，不得忽略")
         out = D / "out.txt"
         import contextlib, io
         with contextlib.redirect_stdout(io.StringIO()):

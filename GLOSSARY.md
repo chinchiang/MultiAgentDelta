@@ -96,7 +96,7 @@ _避免_：靶場測試、lab test
 _避免_：嚴重度、severity（嚴重度是 CVSS 的範疇）
 
 **執行模式（mode）**：
-shadow（只報告、不阻擋）或 enforce（依阻擋政策阻擋）；只能由受信任設定升級，不能被降級。
+shadow（只報告、不阻擋）或 enforce（依阻擋政策阻擋）。唯一的來源是受信任樹 `vibesec.yaml` 最上層的 `mode`，沒有預設值：缺席或不合法視為政策讀不到，閘門記 incomplete。只有阻擋判定可以把 shadow 升為 enforce，不能降級；閘門結果的 `mode` 只是紀錄（ADR 0002）。
 _避免_：dry-run
 
 **受信任樹（trusted tree）**：
@@ -213,7 +213,7 @@ A rule's blocking level, blocking or advisory, whose only sources are the blocki
 _Avoid_: severity (severity belongs to CVSS)
 
 **Mode**:
-shadow (report only, never block) or enforce (block according to the blocking policy); it can only be raised by the trusted configuration, never lowered.
+shadow (report only, never block) or enforce (block according to the blocking policy). Its only source is the top-level `mode` in the trusted tree's `vibesec.yaml`, with no default: a missing or invalid value counts as an unreadable policy and the gate records incomplete. Only the blocking decision can raise shadow to enforce, never lower it; the `mode` in a gate result is only a record (ADR 0002).
 _Avoid_: dry-run
 
 **Trusted tree**:
