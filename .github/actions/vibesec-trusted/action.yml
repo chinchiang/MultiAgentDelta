@@ -50,7 +50,7 @@ runs:
       run: |
         python3 -I - <<'PY' >> "$GITHUB_OUTPUT"
         import sys, pathlib
-        sys.path.insert(0, str(pathlib.Path("_trusted/scripts").resolve()))   # -I 之下只採用受信任樹的 module
+        sys.path.insert(0, str(pathlib.Path("_trusted/scripts").resolve()))   # -I：不含工作目錄（PR head）；受信任樹優先，其次標準函式庫
         from vibesec_mode import read_mode, top_scalar
         p = pathlib.Path("_trusted/vibesec.yaml")
         if not p.is_file():

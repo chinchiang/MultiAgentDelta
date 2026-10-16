@@ -166,14 +166,16 @@ def trusted_action_mode_reader(action: dict) -> list[str]:
 
 def gate_mode_channels(wf: dict) -> list[str]:
     """呼叫閘門腳本的步驟不得以 --mode 或 VIBESEC_MODE 傳 mode（#203、ADR 0002：mode 只取自受信任政策）。
-    阻擋判定（gate_verdict）的 --mode 可以升級，不檢查；不呼叫閘門腳本的步驟（例如 G2 的 .env 檢查）不檢查。"""
+    阻擋判定（gate_verdict）的 --mode 可以升級，不檢查；不呼叫閘門腳本的步驟（例如 G2 的 .env 檢查）不檢查。
+    job 與 workflow 層級的 env 也會傳進步驟：有呼叫閘門腳本的 job，這兩層也不得有 VIBESEC_MODE。"""
     out = []
     for jname, job in (wf.get("jobs") or {}).items():
+        inherited = "VIBESEC_MODE" in (wf.get("env") or {}) or "VIBESEC_MODE" in ((job or {}).get("env") or {})
         for st in (job or {}).get("steps") or []:
             run = str(st.get("run") or "")
             if not any(f"scripts/{g}" in run for g in GATE_SCRIPTS):
                 continue
-            if re.search(r"--mode\b", run) or "VIBESEC_MODE" in run or "VIBESEC_MODE" in (st.get("env") or {}):
+            if inherited or re.search(r"--mode\b", run) or "VIBESEC_MODE" in run or "VIBESEC_MODE" in (st.get("env") or {}):
                 out.append(f"{jname}：{st.get('name') or st.get('id') or '（無名步驟）'}")
     return out
 
@@ -285,6 +287,19 @@ def selftest() -> list[str]:
     ]:
         try:
             got = gate_mode_channels({"jobs": {"a": {"steps": steps}}})
+        except Exception as e:
+            got = None, f"例外 {type(e).__name__}：{e}"
+        if isinstance(got, tuple) or len(got) != want:
+            fails.append(f"gate_mode_channels「{label}」應回報 {want} 項（得到 {got}）")
+    # job 或 workflow 層級的 env 也會傳進步驟：有呼叫閘門腳本的 job，這兩層都不得有 VIBESEC_MODE
+    g5 = step("python3 _trusted/scripts/g5_api_probes.py")
+    for label, wf, want in [
+        ("job 層級 env", {"jobs": {"a": {"env": {"VIBESEC_MODE": "x"}, "steps": [g5]}}}, 1),
+        ("workflow 層級 env", {"env": {"VIBESEC_MODE": "x"}, "jobs": {"a": {"steps": [g5]}}}, 1),
+        ("job 層級 env、但沒有閘門腳本", {"jobs": {"a": {"env": {"VIBESEC_MODE": "x"}, "steps": [step("echo")]}}}, 0),
+    ]:
+        try:
+            got = gate_mode_channels(wf)
         except Exception as e:
             got = None, f"例外 {type(e).__name__}：{e}"
         if isinstance(got, tuple) or len(got) != want:

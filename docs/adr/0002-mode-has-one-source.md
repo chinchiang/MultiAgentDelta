@@ -33,7 +33,8 @@
 依 #199 分階段落地，已全部完成：
 - #200：mode module、`load_policy` 回報 mode 錯誤、阻擋判定共用覆寫規則。
 - #201、#202：G2–G6 改取 `policy.mode`，閘門層級的 `--mode`、`VIBESEC_MODE` 先改成接受但忽略（PR CI 以 PR head 的 workflow 呼叫受信任樹的腳本，兩邊版本錯開時不能讓 CI 失敗）。
-- #203：workflow 不再傳 mode、移除這些參數；受信任設定 action 改用 `vibesec_mode`。`ci_invariants` 有兩條不變式把關：action 不得內嵌自己的 mode 規則；workflow 不得把 mode 傳給閘門腳本。
+- #203：workflow 不再傳 mode、移除這些參數；受信任設定 action 改用 `vibesec_mode`。`ci_invariants` 有兩條不變式把關：action 不得內嵌自己的 mode 規則；workflow 不得把 mode 傳給閘門腳本。action 要用的 `top_scalar` 先以 prefactor PR 進 main（action 從 PR head 執行，卻 import main 的受信任樹）。
+- #203 合併之後，在那之前開的 PR 要 rebase：它們的 workflow 仍會傳 `--mode`，而受信任樹的閘門腳本已經沒有這個參數（argparse exit 2）。這是第二階段刻意接受的結果。
 
 唯一的例外是 G2 的 `.env` 檢查步驟：它在 workflow 的 bash 裡依 `VIBESEC_MODE` 自己做阻擋判定，屬於「阻擋判定集中化」的問題，另案處理（#199 Out of Scope）。
 
@@ -80,7 +81,8 @@ In CI, the gate-level `--mode` and `VIBESEC_MODE` all carry the same trusted val
 This landed in phases, as #199 describes, and is complete:
 - #200: the mode module, `load_policy` reporting mode errors, and one override rule shared with the blocking decision.
 - #201, #202: G2–G6 take `policy.mode`; the gate-level `--mode` and `VIBESEC_MODE` were first made accepted-but-ignored (PR CI runs the trusted tree's scripts from the PR head's workflow, so a version skew between the two must not break CI).
-- #203: the workflows stop passing mode and these parameters are removed; the trusted-configuration action uses `vibesec_mode`. Two `ci_invariants` checks guard this: the action must not embed its own mode rule, and workflows must not pass mode to gate scripts.
+- #203: the workflows stop passing mode and these parameters are removed; the trusted-configuration action uses `vibesec_mode`. Two `ci_invariants` checks guard this: the action must not embed its own mode rule, and workflows must not pass mode to gate scripts. The `top_scalar` the action needs went into main first in a prefactor PR (the action runs from the PR head but imports main's trusted tree).
+- After #203 is merged, PRs opened before it must be rebased: their workflows still pass `--mode`, while the trusted tree's gate scripts no longer accept it (argparse exits 2). This is an accepted consequence of the second phase.
 
 The only exception is G2's `.env` check step: it makes its own blocking decision in workflow bash based on `VIBESEC_MODE`. That is a "centralize the blocking decision" problem and is handled separately (#199 Out of Scope).
 
