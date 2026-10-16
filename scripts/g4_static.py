@@ -2,11 +2,12 @@
 """VibeSec G4 靜態檢查：隱形 Unicode（Rules File Backdoor）、Supabase RLS、Agent 工具 allow-list、HITL、
 單層 middleware 授權、MCP resource indicator。
 
-  python3 -I scripts/g4_static.py --target <受測專案> --out <輸出目錄> --mode shadow|enforce [--commit <sha>]
+  python3 -I scripts/g4_static.py --target <受測專案> --out <輸出目錄> [--commit <sha>]
   python3 scripts/g4_static.py selftest
 
 輸出：<out>/g4-static.sarif、<out>/g4-gate.json（VS-G4-LLM-REVIEW 為 pending，由 scripts/g4_review.py 接續判定）。
-退出碼：enforce 且有 blocking 發現 → 1；其餘 0；參數不合法 → 2（argparse）。
+退出碼：受信任政策的 mode 是 enforce 且有 blocking 發現 → 1；其餘 0；參數不合法 → 2（argparse）。
+mode 一律取自受信任政策（vibesec_policy.load_policy，ADR 0002）；--mode 已不使用、傳了也忽略，將在 #199 的第二階段移除。
 """
 from __future__ import annotations
 import argparse, json, os, pathlib, subprocess, sys, tempfile
@@ -23,7 +24,7 @@ CONTROLS = ("VS-G4-RULES-FILE-UNICODE", "ASVS5-V8.2", "ASVS5-V8.3", "VS-G4-AGENT
             "VS-G4-MCP-RESOURCE-INDICATOR", LLM_CONTROL)
 
 
-def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: pathlib.Path = ROOT) -> None:
+def scan(COMMIT: str | None, REPORTS: pathlib.Path, policy_root: pathlib.Path = ROOT) -> None:
     """在目前目錄（受測專案根目錄）執行靜態檢查，結果寫到 REPORTS。主體逐行沿用原 pr-gates.yml 的 inline（純搬遷）。
     policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔；不開命令列參數）。"""
     # G4 靜態檢查：隱形 Unicode（Rules File Backdoor）、Supabase RLS、Agent 工具 allow-list、單層 middleware 授權
@@ -38,7 +39,7 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
 
     # 閘門結果由 GateRun 產出（#183）：LLM 審查控制由 g4_review.py 接續判定 → 宣告為 deferred
     run = gate_result.GateRun("G4", controls=[c for c in CONTROLS if c != LLM_CONTROL], deferred=[LLM_CONTROL],
-                              mode=MODE, scope="full", commit=COMMIT, started_at=iso(NOW))
+                              mode=None, scope="full", commit=COMMIT, started_at=iso(NOW))   # mode 讀到政策後才知道
 
     def write_gate(gate):
         (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -46,12 +47,12 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
     POLICY, problem = load_policy(policy_root)   # 只建立一次；讀不到 → incomplete，不分類任何發現
     if problem:
         gate_result.remove_stale(REPORTS / "g4-static.sarif")   # 不讓上一次的結果被當成這次的
-        # 靜態控制 untested（原因＝problem）、LLM 審查控制維持 pending、tool 列只有一列 error。mode 取自政策：
-        # 政策讀不到（含 mode 缺席或不合法，#200）＝ mode 不明 → unreadable() 記 enforce，不採用 --mode 傳進來的值
-        run.mode = None
+        # 靜態控制 untested（原因＝problem）、LLM 審查控制維持 pending、tool 列只有一列 error。
+        # 政策讀不到（含 mode 缺席或不合法，#200）＝ mode 不明 → unreadable() 記 enforce
         write_gate(run.unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
         print(f"G4 static: incomplete（{problem}）")
         return
+    run.mode = POLICY.mode   # 閘門結果與退出碼都依受信任政策的 mode（#201）
     # _trusted/ 是 default branch 的判定程式副本，不是被掃描的專案內容
     def _skip(p): return str(p).startswith(("_trusted/", "./_trusted/", ".git/")) or "/node_modules/" in str(p)
     # 列檔一律用 os.walk：glob 的 ** 會跳過 .agents/、.cursor/ 等隱藏目錄，PR 把高危工具放進隱藏目錄就看不到
@@ -298,7 +299,7 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
     run.problem(LLM_PENDING)
     write_gate(run.result())
     print(f"G4 static: blocking={blocking} advisory={advisory}")
-    if MODE == "enforce" and blocking:
+    if POLICY.mode == "enforce" and blocking:
         raise SystemExit(1)
 
 
@@ -310,17 +311,15 @@ def main(argv=None) -> int:
             print(f"FAIL {f}")
         print("selftest 通過" if not fails else f"selftest 失敗 {len(fails)} 項")
         return 1 if fails else 0
-    sys.path.insert(0, str(ROOT / "scripts"))   # CI 以 python3 -I 執行：import 必須在 sys.path.insert 之後
-    from vibesec_mode import MODES                # mode 的合法值只有一份（#200）
     ap = argparse.ArgumentParser(description="VibeSec G4 靜態檢查")
     ap.add_argument("--target", required=True, type=pathlib.Path, help="受測專案根目錄")
     ap.add_argument("--out", required=True, type=pathlib.Path, help="輸出目錄（g4-static.sarif、g4-gate.json）")
-    ap.add_argument("--mode", required=True, choices=MODES, help="沒有預設值：預設 shadow 等於靜默放行")
+    ap.add_argument("--mode", help="已不使用、傳了也忽略：mode 一律取自受信任政策（ADR 0002），將在 #199 的第二階段移除")
     ap.add_argument("--commit", default=None, help="受測 commit（寫入 gate JSON；沒給記 null）")
     a = ap.parse_args(argv)
     out = a.out.resolve()                 # 先以呼叫端 cwd 解析，再切換到受測專案
     os.chdir(a.target)
-    scan(a.mode, (a.commit or "")[:40] or None, out)
+    scan((a.commit or "")[:40] or None, out)
     return 0
 
 
@@ -332,9 +331,22 @@ def selftest() -> list[str]:
     me = pathlib.Path(__file__).resolve()
     rls = "alter table notes disable row level security;\n"     # vibesec.g4.supabase-rls-disabled（blocking）
 
-    def run(*args, cwd):
-        p = subprocess.run([sys.executable, "-I", str(me), *map(str, args)], cwd=cwd, capture_output=True, text=True, timeout=300)
+    def run(*args, cwd, script=me):
+        p = subprocess.run([sys.executable, "-I", str(script), *map(str, args)], cwd=cwd, capture_output=True, text=True, timeout=300)
         return p.returncode
+
+    import re, shutil
+    real_mode = re.search(r"(?m)^mode:\s*(\S+)", (ROOT / "vibesec.yaml").read_text(encoding="utf-8")).group(1)
+
+    def trusted_tree(base: pathlib.Path, mode: str) -> pathlib.Path:
+        """mode 為 mode 的受信任樹副本（CLI 不能注入 policy_root）：scripts、config、schemas，加上改寫 mode 的 vibesec.yaml。"""
+        t = base / f"trusted-{mode}"
+        if not t.exists():
+            for sub in ("scripts", "config", "schemas"):
+                shutil.copytree(ROOT / sub, t / sub, ignore=shutil.ignore_patterns("__pycache__"))
+            (t / "vibesec.yaml").write_text(re.sub(r"(?m)^mode:.*$", f"mode: {mode}", (ROOT / "vibesec.yaml").read_text(encoding="utf-8"),
+                                                   count=1), encoding="utf-8")
+        return t / "scripts/g4_static.py"
 
     def outputs(out: pathlib.Path):
         try:
@@ -357,14 +369,19 @@ def selftest() -> list[str]:
             (hidden / sub / "supabase/migrations").mkdir(parents=True)
             (hidden / sub / "supabase/migrations/001.sql").write_text(rls, encoding="utf-8")
 
-        # 參數：--target／--out／--mode 必填，--mode 只收 shadow／enforce（沒有預設 shadow：預設等於靜默放行）
-        for label, args in [("沒有參數", []), ("缺 --mode", ["--target", clean, "--out", D / "o0"]),
-                            ("--mode 不合法", ["--target", clean, "--out", D / "o0", "--mode", "audit"]),
-                            ("缺 --target", ["--out", D / "o0", "--mode", "shadow"]),
-                            ("缺 --out", ["--target", clean, "--mode", "shadow"])]:
+        # 參數：--target／--out 必填。--mode 已不使用（#201，#199 第二階段移除）：mode 一律取自受信任政策，
+        # 缺席或不合法的 --mode 都不影響執行（以前 argparse 擋下 → G4 incomplete）
+        for label, args in [("沒有參數", []), ("缺 --target", ["--out", D / "o0"]),
+                            ("缺 --out", ["--target", clean])]:
             rc = run(*args, cwd=D)
             if rc != 2:
                 fails.append(f"參數：{label} → exit 2（得到 {rc}）")
+        for label, extra in [("缺 --mode", []), ("--mode 不合法", ["--mode", "audit"])]:
+            out = D / f"o0-{len(extra)}"
+            rc = run("--target", clean, "--out", out, *extra, cwd=D)
+            gate = outputs(out)[1] or {}
+            if rc != 0 or gate.get("mode") != real_mode:
+                fails.append(f"參數：{label} → 照常執行、mode 取自政策（{real_mode}）（得到 exit {rc}、mode={gate.get('mode')}）")
 
         # 沒有發現：exit 0、寫出 SARIF 與符合 schema 的 gate JSON；--commit 寫入 commit，沒給則為 null
         rc = run("--target", clean, "--out", D / "o1", "--mode", "enforce", "--commit", "a" * 40, cwd=D)
@@ -375,20 +392,23 @@ def selftest() -> list[str]:
             errs = list(schema.iter_errors(gate))
             if errs:
                 fails.append(f"gate JSON 不符 schema：{errs[0].message[:120]}")
-            if gate.get("gate") != "G4" or gate.get("mode") != "enforce" or gate.get("commit") != "a" * 40:
+            if gate.get("gate") != "G4" or gate.get("mode") != real_mode or gate.get("commit") != "a" * 40:
                 fails.append(f"gate JSON 應記 gate G4、mode、commit（得到 {gate.get('gate')}、{gate.get('mode')}、{gate.get('commit')}）")
-        run("--target", clean, "--out", D / "o2", "--mode", "shadow", cwd=D)
+        run("--target", clean, "--out", D / "o2", cwd=D)
         if (outputs(D / "o2")[1] or {}).get("commit", "缺") is not None:
             fails.append("沒給 --commit → gate JSON 的 commit 為 null")
 
-        # 有 blocking 發現：shadow 只報告（exit 0）、enforce exit 1；兩者都要寫出結果
-        for mode, want in (("shadow", 0), ("enforce", 1)):
-            out = D / f"o-{mode}"
-            rc = run("--target", risky, "--out", out, "--mode", mode, cwd=D)
+        # 有 blocking 發現：受信任政策 shadow 只報告（exit 0）、enforce exit 1；兩者都要寫出結果。退出碼與閘門結果的 mode
+        # 都取自政策，--mode 傳反了也一樣（#201：以前由 --mode 決定）
+        for mode, passed, want in (("shadow", "enforce", 0), ("enforce", "shadow", 1), ("enforce", None, 1)):
+            out = D / f"o-{mode}-{passed}"
+            rc = run("--target", risky, "--out", out, *(["--mode", passed] if passed else []), cwd=D,
+                     script=trusted_tree(D, mode))
             hits, gate = outputs(out)
             if rc != want or "vibesec.g4.supabase-rls-disabled" not in (hits or set()) \
-                    or (gate or {}).get("findings_count", {}).get("blocking") != 1:
-                fails.append(f"blocking 發現、{mode} → exit {want} 並回報（exit {rc}，發現 {hits}）")
+                    or (gate or {}).get("findings_count", {}).get("blocking") != 1 or (gate or {}).get("mode") != mode:
+                fails.append(f"blocking 發現、政策 {mode}、--mode {passed} → exit {want}、mode 記 {mode} 並回報"
+                             f"（exit {rc}，mode={(gate or {}).get('mode')}，發現 {hits}）")
 
         # 排除：只出現在 _trusted／.git／node_modules 的發現不回報
         rc = run("--target", hidden, "--out", D / "o3", "--mode", "enforce", cwd=D)
@@ -397,13 +417,13 @@ def selftest() -> list[str]:
             fails.append(f"_trusted／.git／node_modules 不得掃描（exit {rc}，發現 {hits}）")
 
         # 相對路徑的 --out 以呼叫端的 cwd 為準（腳本會切換到 --target，但輸出不得寫進受測專案）
-        rc = run("--target", "clean", "--out", "rel-out", "--mode", "shadow", cwd=D)
+        rc = run("--target", "clean", "--out", "rel-out", cwd=D)
         if rc != 0 or outputs(D / "rel-out")[1] is None or (clean / "rel-out").exists() or (clean / "reports").exists():
             fails.append(f"相對 --out 應寫到呼叫端 cwd 下，不寫進受測專案（exit {rc}）")
     # CONTROLS 與正常路徑的 coverage 是同一組（政策檔讀不到時全部記 untested）
     with tempfile.TemporaryDirectory() as d:
         out = pathlib.Path(d, "out")
-        run("--target", d, "--out", out, "--mode", "shadow", cwd=d)
+        run("--target", d, "--out", out, cwd=d)
         got = [c["control_id"] for c in (outputs(out)[1] or {}).get("coverage", [])]
         if got != list(CONTROLS):
             fails.append(f"CONTROLS 應與 coverage 的控制相同（得到 {got}）")
@@ -421,7 +441,7 @@ def selftest() -> list[str]:
             try:
                 os.chdir(d)
                 with contextlib.redirect_stdout(io.StringIO()):
-                    scan("shadow", None, out, policy_root=pr)
+                    scan(None, out, policy_root=pr)
             finally:
                 os.chdir(cwd)
             g = json.loads((out / "g4-gate.json").read_text(encoding="utf-8"))

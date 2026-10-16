@@ -4,7 +4,7 @@
 子命令：
   check <record.yaml> [--head <sha>] [--no-git]       驗證紀錄（schema + 規則），並報告對 head 是否仍有效
   gate  --static reports/g4-gate.json --head <sha>    找出對 head 有效的紀錄，推導 G4 狀態並寫回 gate JSON 與 PR 留言
-        [--out reports/g4-gate.json] [--comment reports/g4-comment.md] [--mode shadow|enforce]
+        [--out reports/g4-gate.json] [--comment reports/g4-comment.md]
   external-trust --base <sha> --head <sha> --pr-author <login> --reviews <reviews.json>
                                                       本 PR 新增／修改的 reviews/g4/external/*.yaml 不能自證：
                                                       recorded_by 須是在目前 head 上 approve 的非作者（CI 用）
@@ -19,7 +19,7 @@ reviews/ 由 CODEOWNERS 審核。此工具不呼叫任何模型、不裁決、�
   否則無紀錄／紀錄過期／family < min／必要角色缺席／coverage 有 pending、untested → incomplete
   否則                                                                         → pass
 「有效」= 紀錄的 commit 是 head 的祖先，且兩者之間只動過 reviews/g4/ 與 rulings/。
-退出碼：check 0 通過、1 違規；gate 0（shadow 或非 fail）、1（enforce 且 fail）；兩者 2 = 工具缺席（不放行）。
+退出碼：check 0 通過、1 違規；gate 0（受信任政策的 mode 是 shadow，或非 fail）、1（受信任政策的 mode 是 enforce 且 fail）；兩者 2 = 工具缺席（不放行）。
 """
 from __future__ import annotations
 import argparse, copy, json, os, pathlib, re, subprocess, sys
@@ -735,6 +735,31 @@ def selftest() -> list[str]:
     got = external_trust({ref: ext}, "author", ["reviewer"], cfg, controls, policy_load=broken)
     if not any(vibesec_policy.POLICY_UNREADABLE in x for x in got):
         fails.append(f"外部紀錄：政策讀不到 → 應不可信並寫明原因（得到 {got}）")
+    # gate 子指令的退出碼依受信任政策的 mode（#201）：--mode 已不使用、傳了也忽略（以前預設 shadow）。
+    # 閘門結果是 fail 時：政策 enforce → exit 1（即使 --mode shadow）；政策 shadow → exit 0（即使 --mode enforce）
+    import contextlib, io, re as _re, tempfile as _tf
+    import vibesec_policy
+    real_load = vibesec_policy.load_policy
+    with vibesec_policy.temp_policy_root() as pr, _tf.TemporaryDirectory() as d:
+        vbp = pr / "vibesec.yaml"
+        text = vbp.read_text(encoding="utf-8")
+        failing = dict(_static(), status="fail", findings_count={"blocking": 1, "advisory": 0},
+                       coverage=[{"control_id": "VS-G4-RULES-FILE-UNICODE", "state": "fail", "reason": None},
+                                 {"control_id": LLM_CONTROL, "state": "pending", "reason": "x"}])
+        sp = pathlib.Path(d, "static.json"); sp.write_text(json.dumps(failing), encoding="utf-8")
+        vibesec_policy.load_policy = lambda root=None, **kw: real_load(pr, **kw)
+        try:
+            for mode, passed, want in (("enforce", "shadow", 1), ("enforce", None, 1), ("shadow", "enforce", 0)):
+                vbp.write_text(_re.sub(r"(?m)^mode:.*$", f"mode: {mode}", text, count=1), encoding="utf-8")
+                out = pathlib.Path(d, f"gate-{mode}-{passed}.json")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--out", str(out),
+                               *(["--mode", passed] if passed else [])])
+                g = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else {}
+                if rc != want or g.get("status") != "fail":
+                    fails.append(f"gate：閘門結果 fail、政策 {mode}、--mode {passed} → exit {want}（得到 exit {rc}、{g.get('status')}）")
+        finally:
+            vibesec_policy.load_policy = real_load
     return fails
 
 
@@ -744,7 +769,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check"); c.add_argument("record"); c.add_argument("--head", default="HEAD"); c.add_argument("--no-git", action="store_true")
     g = sub.add_parser("gate"); g.add_argument("--static", required=True); g.add_argument("--head", required=True)
-    g.add_argument("--out"); g.add_argument("--comment"); g.add_argument("--mode", default="shadow")
+    g.add_argument("--out"); g.add_argument("--comment"); g.add_argument("--mode", help="已不使用、傳了也忽略：退出碼依受信任政策的 mode（ADR 0002），將在 #199 的第二階段移除")
     g.add_argument("--base", help="PR base SHA；有值時檢查紀錄是否由本 PR 新增／修改")
     g.add_argument("--pr-author", default="")
     g.add_argument("--approvers", default="", help="在目前 head SHA 上 approve 的帳號，逗號分隔")
@@ -822,7 +847,10 @@ def main(argv=None) -> int:
     if a.comment:
         pathlib.Path(a.comment).write_text(md, encoding="utf-8")
     print(f"G4 {gate['status']}：{gate.get('status_reason')}")
-    if a.mode == "enforce" and gate["status"] == "fail":
+    # 退出碼依受信任政策的 mode（#201；以前取 --mode、預設 shadow）。政策讀不到 → mode 不明 → 視同 enforce（較嚴）
+    from vibesec_policy import load_policy
+    policy, _ = load_policy(ROOT)
+    if (policy.mode if policy else "enforce") == "enforce" and gate["status"] == "fail":
         return 1
     return 0
 

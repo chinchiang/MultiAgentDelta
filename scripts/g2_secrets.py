@@ -277,6 +277,14 @@ def selftest() -> list[str]:
     with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d:   # 對照組：政策讀得到時替身確實會被執行
         if sarif_gate.main_with_policy(sys.modules[__name__], pr, pathlib.Path(d), "VIBESEC_GITLEAKS")[1] != ["VIBESEC_GITLEAKS"]:
             fails.append("對照組：政策讀得到時 gitleaks 替身應被執行（否則上面的「不執行」檢查沒有意義）")
+    # mode 取自政策（#201）：受信任政策是 enforce（ROOT 的 vibesec.yaml 是 shadow）→ 閘門結果記 enforce
+    import re as _re
+    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d:
+        vbp = pr / "vibesec.yaml"
+        vbp.write_text(_re.sub(r"(?m)^mode:.*$", "mode: enforce", vbp.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+        g = scan(pathlib.Path(d), pathlib.Path(d, "out"), None, 60, policy_root=pr)
+        if g["mode"] != "enforce" or POLICY_UNREADABLE in (g["status_reason"] or ""):
+            fails.append(f"G2：閘門結果的 mode 取自政策（enforce），不讀 ROOT 的 vibesec.yaml（得到 {g['mode']}：{g['status_reason']}）")
     return fails
 
 

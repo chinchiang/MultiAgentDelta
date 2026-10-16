@@ -52,8 +52,8 @@ def _yaml(p: pathlib.Path) -> dict:
 
 def load_context(policy: Policy) -> dict:
     """推導 gate JSON 用的資料：mode、tier、規則對應（cwe-map implemented_by）、控制。policy 由進入點建立一次傳入
-    （vibesec_policy.load_policy；讀不到 → 呼叫端改用 unreadable_gate，不推導）。"""
-    vb = _yaml(ROOT / "vibesec.yaml")
+    （vibesec_policy.load_policy；讀不到 → 呼叫端改用 unreadable_gate，不推導）。mode 取自 policy.mode（#201；以前另讀
+    ROOT 的 vibesec.yaml、缺席時預設 shadow）。"""
     tier = policy.risk_tier
     blocking = policy.effective_blocking()
     rules = (_yaml(ROOT / "config/catalogs/cwe-map.yaml").get("rules") or {})
@@ -64,7 +64,7 @@ def load_context(policy: Policy) -> dict:
         for ref in (meta or {}).get("implemented_by") or []:
             t, _, ext = str(ref).partition(":")
             impl[f"{t}:{ext}"].add(rid)
-    return {"mode": vb.get("mode", "shadow"), "risk_tier": tier, "blocking": blocking, "policy": policy,
+    return {"mode": policy.mode, "risk_tier": tier, "blocking": blocking, "policy": policy,
             "default_tier": policy.default_tier, "impl": impl, "controls": controls,
             "semgrep_aliases": load_semgrep_aliases()}   # 政策例外不在這裡：呼叫端以 Policy.for_project(受驗樹) 傳入
 
@@ -488,6 +488,17 @@ def selftest() -> list[str]:
                     or g["tools"] != UNREADABLE_TOOLS or list(schema.iter_errors(g)):
                 fails.append(f"政策檔讀不到 → {gate} incomplete、宣告的控制全部 untested、寫明原因、沒有發現、"
                              f"只有 vibesec-sarif-gate 一列 error（得到 {rc}、{g}）")
+    # mode 取自政策（#201）：load_context 記 policy.mode，不再自己讀 ROOT 的 vibesec.yaml（以前缺席時預設 shadow）
+    import re as _re
+    from vibesec_policy import load_policy as _load_policy, temp_policy_root as _temp_root
+    with _temp_root() as pr:
+        vbp = pr / "vibesec.yaml"
+        text = vbp.read_text(encoding="utf-8")
+        for m in ("enforce", "shadow"):   # ROOT 的 vibesec.yaml 是 shadow：enforce 那一輪才分得出來源
+            vbp.write_text(_re.sub(r"(?m)^mode:.*$", f"mode: {m}", text, count=1), encoding="utf-8")
+            pol, _ = _load_policy(pr, project_root=None)
+            if load_context(pol)["mode"] != m:
+                fails.append(f"load_context：mode 取自政策（{m}），不讀 ROOT 的 vibesec.yaml（得到 {load_context(pol)['mode']}）")
     return fails
 
 
