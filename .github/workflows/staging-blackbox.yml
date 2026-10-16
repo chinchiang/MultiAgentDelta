@@ -223,7 +223,7 @@ jobs:
           python3 "$S"
 
       - name: Upload G5 api-probes SARIF
-        if: always()
+        if: always() && hashFiles('reports/g5-api-probes.sarif') != ''
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
@@ -403,7 +403,7 @@ jobs:
           python3 _trusted/scripts/g6_gate.py "${args[@]}"
 
       - name: Upload G6 SARIF
-        if: always()
+        if: always() && hashFiles('reports/g6.sarif') != ''
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:

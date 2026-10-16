@@ -17,6 +17,7 @@ import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.err
 # 自身所在的 scripts/ 放到 path 最前，不論 cwd 都能 import 同層模組（selftest 由 validate.py 以子行程在 repo 根執行）
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from vibesec_policy import load_policy
+import gate_result  # 閘門結果、tool 列、自產 SARIF 骨架只有一份寫法（#184）
 from target_guard import GuardConfigError, check as guard_check, same_origin
 
 def iso(dt): return dt.replace(microsecond=0).isoformat()
@@ -40,6 +41,11 @@ JWT_PROBE_PATHS = ("/me", "/api/me", "/profile", "/users/me", "/account")
 CHECKS = ("bola_idor", "jwt_alg_none", "jwt_alg_confusion", "ssrf_metadata", "swagger_exposed", "graphql_introspection",
           "debug_stacktrace", "rate_limit", "session_check", "cors_reflect_origin")
 ZAP_SCANS = ("zap_api_scan", "zap_baseline")   # scripts/g5_zap.py 的 coverage key
+# 正常路徑的 coverage 順序＝探針的執行順序（main() 依序寫入）；與 CHECKS＋ZAP_SCANS 是同一組控制（selftest 驗證），
+# 只差順序：閘門結果的 coverage 各路徑維持既有順序（#184 決定 5）
+EXEC_ORDER = ("swagger_exposed", "graphql_introspection", "cors_reflect_origin", "debug_stacktrace", "jwt_alg_none",
+              "jwt_alg_confusion", "bola_idor", "ssrf_metadata", "session_check", "rate_limit", *ZAP_SCANS)
+TOOL_NAME, TOOL_VERSION = "vibesec-g5-api-probes", "1.0.0"
 
 def _read(name):
     d = os.environ.get("VIBESEC_TOKEN_DIR", "")
@@ -163,28 +169,27 @@ def _cors_paths():
             seen.add(p); out.append(p)
     return out
 
-def _write_gate(mode, gstatus, status_reason, blocking, advisory, cov, zap_tools, started, probe_state="ran", exit_code=0):
-    gate = {"gate": "G5", "status": gstatus, "status_reason": status_reason,
-            "mode": mode, "scope": "full", "diff_base": None,
-            "commit": None, "started_at": iso(started),
-            "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
-            "tools": [{"name": "vibesec-g5-api-probes", "version": "1.0.0", "state": probe_state,
-                       "exit_code": exit_code, "output_ref": "reports/g5-api-probes.sarif", "duration_seconds": None}] + zap_tools,
-            "findings_count": {"blocking": blocking, "advisory": advisory},
-            "coverage": cov}
+SARIF_REF = "reports/g5-api-probes.sarif"   # tool 列的 output_ref（相對於工作目錄；與實際輸出路徑相同）
+
+
+def _gate_run(mode, started, controls):
+    """G5 的閘門執行（gate_result.GateRun）。controls 的順序就是閘門結果 coverage 的順序（#184 決定 5）。"""
+    return gate_result.GateRun("G5", controls=list(controls), mode=mode, scope="full", started_at=iso(started))
+
+
+def _write_gate(gate):
     REPORTS.mkdir(exist_ok=True)
     (REPORTS / "g5-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     return gate
 
 
-def _gate_status(blocking, incomplete_reason, has_a, has_b, coverage):
-    """G5 整體狀態與 status_reason：由 gate_verdict.verdict 判定（blocking 優先 fail、untested 不得 pass）。
-    coverage 為 [{control_id, state, reason}]；缺 token、目標無法連線是未完成原因。"""
-    from gate_verdict import verdict
+def _problems(incomplete_reason, has_a, has_b):
+    """G5 的未完成原因：目標無法連線（或未授權）、缺雙帳號 token。"""
     problems = [incomplete_reason] if incomplete_reason else []
     if not (has_a and has_b):
         problems.append(f"雙帳號測試需兩個 token（has_a={has_a}, has_b={has_b}）；缺 token 的 BOLA/JWT 檢查記為 untested")
-    return verdict(blocking=blocking, coverage=coverage, problems=problems)
+    return problems
+
 
 
 def main():
@@ -209,7 +214,12 @@ def main():
     # 必填環境變數缺失 → 乾淨寫出 incomplete gate（incomplete ≠ pass；不以 KeyError traceback 收場）
     target = os.environ.get("VIBESEC_TARGET_URL")
     if not target:
-        _write_gate(mode, "incomplete", "VIBESEC_TARGET_URL 未設定；未送出任何探針", 0, 0, [], [], started, probe_state="missing")
+        # 經過閘門判定（#184）：coverage 是完整的宣告清單（全部 untested）；沒有送出任何探針 → 舊 SARIF 刪掉、不寫新檔
+        gate_result.remove_stale(REPORTS / "g5-api-probes.sarif")
+        run = _gate_run(mode, started, (*CHECKS, *ZAP_SCANS))
+        run.tool(TOOL_NAME, "missing", version=TOOL_VERSION, exit_code=0, output_ref=SARIF_REF)
+        run.problem("VIBESEC_TARGET_URL 未設定；未送出任何探針")
+        _write_gate(run.result())
         print("G5 api-probes: status=incomplete（VIBESEC_TARGET_URL 未設定）")
         return 0
     URL = target.rstrip("/")
@@ -217,10 +227,15 @@ def main():
     ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
     POLICY, problem = load_policy(ROOT)   # 只建立一次；讀不到 → incomplete，不送探針、不分類任何發現
     if problem:
-        from gate_verdict import verdict
-        cov = [{"control_id": k, "state": "untested", "reason": problem} for k in (*CHECKS, *ZAP_SCANS)]
-        gstatus, status_reason = verdict(blocking=0, coverage=cov, problems=[f"{problem}；未送出任何探針"])
-        _write_gate(mode, gstatus, status_reason, 0, 0, cov, [], started, probe_state="error", exit_code=None)
+        # 每個控制 untested（原因＝problem）、tool 列只有探針一列 error、舊 SARIF 刪掉（#184）。不用 GateRun.unreadable：
+        # 它只收一段文字，status_reason 會少掉「未送出任何探針」；這裡逐字維持既有的理由
+        gate_result.remove_stale(REPORTS / "g5-api-probes.sarif")
+        run = _gate_run(mode, started, (*CHECKS, *ZAP_SCANS))
+        run.tool(TOOL_NAME, "error", version=TOOL_VERSION)
+        for k in (*CHECKS, *ZAP_SCANS):
+            run.cover(k, "untested", problem)
+        run.problem(f"{problem}；未送出任何探針")
+        _write_gate(run.result())
         print(f"G5 api-probes: status=incomplete（{problem}）")
         return 0
     TA = _read("a"); TB = _read("b")
@@ -575,11 +590,7 @@ def main():
             coverage_reasons[_k] = f"沒有 ZAP 彙整結果（reports/g5-zap.json：{type(e).__name__}）"
 
     # ---- 輸出 SARIF ----
-    sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-             "version": "2.1.0",
-             "runs": [{"tool": {"driver": {"name": "vibesec-g5-api-probes", "version": "1.0.0",
-                                           "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                           "rules": list(rules.values())}}, "results": results}]}
+    sarif = gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(rules.values()), results)
     (REPORTS / "g5-api-probes.sarif").write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
 
     blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
@@ -592,9 +603,20 @@ def main():
         return None
     cov = [{"control_id": k, "state": v, "reason": _cov_reason(k, v)}
            for k, v in coverage.items()]
-    gstatus, status_reason = _gate_status(blocking, incomplete_reason, HAS_A, HAS_B, cov)
-    # schema：not_applicable 才強制 reason；untested 可無 reason，但附上更佳
-    _write_gate(mode, gstatus, status_reason, blocking, advisory, cov, ZAP_TOOLS, started)
+    # schema：not_applicable 才強制 reason；untested 可無 reason，但附上更佳。狀態由 GateRun.result（gate_verdict.verdict）判定；
+    # 以執行順序宣告（#184 決定 5），沒有回報的控制（例如目標未授權時沒跑的探針）補 untested（#184 決定 4）
+    run = _gate_run(mode, started, EXEC_ORDER)
+    run.tool(TOOL_NAME, "ran", version=TOOL_VERSION, exit_code=0, output_ref=SARIF_REF)
+    for t in ZAP_TOOLS:   # scripts/g5_zap.py 的 tool 列照原樣併入
+        run.tool(t["name"], t["state"], version=t.get("version"), exit_code=t.get("exit_code"),
+                 output_ref=t.get("output_ref"), duration_seconds=t.get("duration_seconds"))
+    for c in cov:
+        run.cover(c["control_id"], c["state"], c["reason"])
+    run.count(blocking=blocking, advisory=advisory)
+    for p in _problems(incomplete_reason, HAS_A, HAS_B):
+        run.problem(p)
+    g = _write_gate(run.result())
+    gstatus = g["status"]
     print(f"G5 api-probes: status={gstatus} blocking={blocking} advisory={advisory}")
     print(json.dumps(coverage, ensure_ascii=False))
     return 0
@@ -701,27 +723,43 @@ def selftest():
     finally:
         srv.shutdown(); srv.server_close()
 
-    # 缺 VIBESEC_TARGET_URL → incomplete gate、exit 0、不 traceback、不送任何請求
+    # 接線（#184）：閘門結果由 GateRun 產出。正常路徑的宣告（EXEC_ORDER）與政策讀不到／缺 target 的宣告（CHECKS＋ZAP_SCANS）
+    # 必須是同一組控制，只差順序
+    import gate_result
+    if sorted(EXEC_ORDER) != sorted((*CHECKS, *ZAP_SCANS)) or len(set(EXEC_ORDER)) != len(EXEC_ORDER):
+        fails.append(f"EXEC_ORDER 應與 CHECKS＋ZAP_SCANS 是同一組控制（得到 {EXEC_ORDER}）")
+    # 缺 VIBESEC_TARGET_URL：incomplete、exit 0、符合 schema；coverage 是完整的宣告清單（CHECKS＋ZAP_SCANS 的順序，
+    # 全部 untested）、探針 tool 列 missing、舊 SARIF 刪掉（#184 決定 3；取代原本只檢查 incomplete／schema／tool missing 的測試）
     with tempfile.TemporaryDirectory() as d:
+        (pathlib.Path(d) / "reports").mkdir(); sf = pathlib.Path(d) / "reports/g5-api-probes.sarif"; sf.write_text('{"stale": true}')
         code, g = run_in(d, {})
-        if code != 0 or not g or g["status"] != "incomplete":
-            fails.append(f"缺 VIBESEC_TARGET_URL → 應寫出 incomplete gate 並回 0（得到 code={code}, gate={g}）")
-        elif list(schema.iter_errors(g)):
-            fails.append(f"缺環境變數的 gate 不符 schema：{list(schema.iter_errors(g))[0].message}")
-        elif g["tools"][0]["state"] != "missing":
-            fails.append("缺環境變數時探針工具 state 應為 missing")
+        cov = [(c["control_id"], c["state"]) for c in (g or {}).get("coverage", [])]
+        if code != 0 or not g or g["status"] != "incomplete" or cov != [(k, "untested") for k in (*CHECKS, *ZAP_SCANS)] \
+                or g["tools"] != [gate_result.tool(TOOL_NAME, "missing", version=TOOL_VERSION, exit_code=0, output_ref="reports/g5-api-probes.sarif")] \
+                or sf.exists() or list(schema.iter_errors(g)):
+            fails.append(f"缺 VIBESEC_TARGET_URL → coverage 為完整的宣告清單（untested）、tool 列 missing、舊 SARIF 刪掉（得到 {code}、{cov}、"
+                         f"{(g or {}).get('tools')}、SARIF 存在：{sf.exists()}）")
+    # 目標未授權（或連不上）：以前 coverage 只有 6 項；現在 12 個控制都在（沒有回報的補 untested，#184 決定 4），依執行順序
+    with tempfile.TemporaryDirectory() as d:
+        code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example", "VIBESEC_CONFIG": str(repo / "vibesec.yaml")})
+        ids = [c["control_id"] for c in (g or {}).get("coverage", [])]
+        if ids != list(EXEC_ORDER) or g["status"] != "incomplete":
+            fails.append(f"未授權目標 → coverage 依執行順序列出全部 12 個控制、incomplete（得到 {ids}）")
+
 
     # 政策檔讀不到 → 進入點就停：incomplete gate 並寫明未完成原因、探針工具 state error、沒有任何發現、不送任何請求
     # （以前 Policy(ROOT) 拋出例外、整支結束，gate JSON 沒有寫出）
     from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
     with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
+        (pathlib.Path(d) / "reports").mkdir(); (pathlib.Path(d) / "reports/g5-api-probes.sarif").write_text('{"stale": true}')
         code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example", "VIBESEC_CONFIG": str(pr / "vibesec.yaml")})
+        stale = (pathlib.Path(d) / "reports/g5-api-probes.sarif").exists()   # 舊 SARIF 刪掉（#184）
         cov = {c["control_id"]: (c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE + "（")) for c in (g or {}).get("coverage", [])}
         if code != 0 or not g or g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in (g.get("status_reason") or "") \
-                or g["tools"][0]["state"] != "error" or g["tools"][0]["exit_code"] is not None \
+                or g["tools"] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] or stale \
                 or cov != {k: ("untested", True) for k in (*CHECKS, "zap_api_scan", "zap_baseline")} \
                 or g["findings_count"] != {"blocking": 0, "advisory": 0} or list(schema.iter_errors(g)):
-            fails.append(f"政策檔讀不到 → incomplete gate、每個控制 untested 並寫明原因、tool error、沒有發現（得到 code={code}, gate={g}）")
+            fails.append(f"政策檔讀不到 → incomplete gate、每個控制 untested 並寫明原因、tool 列只有一列 error、舊 SARIF 刪掉、沒有發現（得到 code={code}, 舊 SARIF 存在={stale}, gate={g}）")
     # CHECKS 與 vibesec.yaml 宣告的 G5 checks 相同（政策讀不到時全部記 untested）
     import yaml
     declared = ((yaml.safe_load((repo / "vibesec.yaml").read_text(encoding="utf-8")) or {}).get("gates") or {}).get("g5_dast_api", {}).get("checks")
@@ -851,12 +889,24 @@ def selftest():
         elif want == "untested" and not got.get("reason"):
             fails.append(f"{control}（{name}）untested 時應說明原因")
 
-    # 接線：G5 把缺 token／無法連線當未完成原因、coverage 原樣交給 gate_verdict.verdict（真值表在 gate_verdict.py selftest）
-    st, why = _gate_status(1, "目標 x 無法連線", True, False, [{"control_id": "bola_idor", "state": "untested", "reason": "缺 token"}])
-    if st != "fail" or not all(x in (why or "") for x in ("目標 x 無法連線", "has_b=False", "bola_idor 未實測")):
-        fails.append(f"_gate_status 接線：blocking＋缺 token＋無法連線 → fail，理由列出全部未完成項目（得到 {st}：{why}）")
-    if _gate_status(0, None, True, True, [{"control_id": "rate_limit", "state": "untested", "reason": None}])[0] != "incomplete":
-        fails.append("_gate_status 接線：控制未實測 → incomplete")
+    # 接線：G5 把缺 token／無法連線當未完成原因（_problems），狀態由 GateRun（gate_verdict.verdict）判定；
+    # 與 main() 正常路徑相同的組裝方式（真值表在 gate_verdict.py selftest）
+    def _assemble(blocking, incomplete_reason, has_a, has_b, covered):
+        run = _gate_run("shadow", datetime.datetime.now(datetime.timezone.utc), EXEC_ORDER)
+        for k, st, why in covered:
+            run.cover(k, st, why)
+        for k in EXEC_ORDER:
+            if k not in {c[0] for c in covered}:
+                run.cover(k, "pass")
+        run.count(blocking=blocking)
+        for p in _problems(incomplete_reason, has_a, has_b):
+            run.problem(p)
+        return run.result()
+    g = _assemble(1, "目標 x 無法連線", True, False, [("bola_idor", "untested", "缺 token")])
+    if g["status"] != "fail" or not all(x in (g["status_reason"] or "") for x in ("目標 x 無法連線", "has_b=False", "bola_idor 未實測")):
+        fails.append(f"接線：blocking＋缺 token＋無法連線 → fail，理由列出全部未完成項目（得到 {g['status']}：{g['status_reason']}）")
+    if _assemble(0, None, True, True, [("rate_limit", "untested", None)])["status"] != "incomplete":
+        fails.append("接線：控制未實測 → incomplete")
     # 端到端：沒有任何 token，但 /me 反射 Origin（blocking）→ gate 應為 fail，不是 incomplete
     srv = serve_routes(lambda m, p, h: base(m, p, h, lambda m, p, full, h: (200, reflect(h), "{}") if p == "/me" else None))
     try:

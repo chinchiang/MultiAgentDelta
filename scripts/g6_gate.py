@@ -30,7 +30,7 @@ usage 只在觀測檔分欄記錄，不併入任何分數（CLAUDE.md 規則 4�
 退出碼：0 已寫出結果（不論 pass/fail/incomplete；是否阻擋由 workflow 的彙整步驟依 mode 與政策決定）。
 """
 from __future__ import annotations
-import argparse, datetime, glob, json, pathlib, sys
+import argparse, glob, json, pathlib, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SARIF_URI = ".github/workflows/staging-blackbox.yml"
@@ -52,7 +52,7 @@ GARAK_RULES = {
 
 
 def now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    return gate_result.now()
 
 
 def load_catalog() -> tuple[dict, dict]:
@@ -66,6 +66,10 @@ def load_catalog() -> tuple[dict, dict]:
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
+import gate_result  # noqa: E402  tool 列、自產 SARIF 骨架與時間戳只有一份寫法（#184）；coverage 與判定仍在 build()
+
+# G6 自己的 tool 名稱與版本：SARIF driver，以及政策讀不到時閘門結果唯一的一列 tool
+TOOL_NAME, TOOL_VERSION = "vibesec-g6", "1.0.0"
 
 
 class Collector:
@@ -115,8 +119,7 @@ class Collector:
 
 
 def ingest_promptfoo_eval(c: Collector, path: str | None, exit_code: int | None):
-    tool = {"name": "promptfoo-eval", "version": None, "state": "ran", "exit_code": exit_code,
-            "output_ref": path, "duration_seconds": None}
+    tool = gate_result.tool("promptfoo-eval", "ran", exit_code=exit_code, output_ref=path)
     try:
         data = json.loads(pathlib.Path(path).read_text(encoding="utf-8")) if path else None
         rows = data["results"]["results"]
@@ -175,15 +178,13 @@ def redteam_expected_plugins(config_path: str | None) -> list[str] | None:
 def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None,
                              exit_code: int | None = None, config_path: str | None = None):
     if skipped:
-        c.tools.append({"name": "promptfoo-redteam", "version": None, "state": "missing", "exit_code": None,
-                        "output_ref": None, "duration_seconds": None})
+        c.tools.append(gate_result.tool("promptfoo-redteam", "missing"))
         c.cover("promptfoo-redteam", "LLM01:2025", "untested", skipped)
         c.reasons.append(f"redteam 生成層未執行：{skipped}")
         return
     if not path:
         why = "redteam 生成層沒有結果（未提供 --redteam 或 --redteam-skipped）"
-        c.tools.append({"name": "promptfoo-redteam", "version": None, "state": "missing", "exit_code": None,
-                        "output_ref": None, "duration_seconds": None})
+        c.tools.append(gate_result.tool("promptfoo-redteam", "missing"))
         c.cover("promptfoo-redteam", "LLM01:2025", "untested", why)
         c.reasons.append(why)
         return
@@ -192,13 +193,11 @@ def ingest_promptfoo_redteam(c: Collector, path: str | None, skipped: str | None
         if not isinstance(rows, list):
             raise TypeError("results.results")
     except Exception as e:
-        c.tools.append({"name": "promptfoo-redteam", "version": None, "state": "error", "exit_code": None,
-                        "output_ref": path, "duration_seconds": None})
+        c.tools.append(gate_result.tool("promptfoo-redteam", "error", output_ref=path))
         c.cover("promptfoo-redteam", "LLM01:2025", "untested", f"redteam 輸出無法解析（{type(e).__name__}）")
         c.reasons.append("promptfoo redteam 輸出無法解析")
         return
-    c.tools.append({"name": "promptfoo-redteam", "version": None, "state": "ran", "exit_code": None,
-                    "output_ref": path, "duration_seconds": None})
+    c.tools.append(gate_result.tool("promptfoo-redteam", "ran", output_ref=path))
     rows = [r for r in rows if isinstance(r, dict)]
     if not rows:
         c.cover("promptfoo-redteam", "LLM01:2025", "untested", "redteam 結果沒有任何測試（空結果不算通過）")
@@ -252,8 +251,7 @@ COST_RULE, COST_CHECK = "vibesec.g6.denial-of-wallet", "denial_of_wallet"
 
 def ingest_cost(c: Collector, path: str | None):
     """scripts/g6_cost_probe.py 的輸出 → denial_of_wallet_cost 覆蓋與 finding。缺席或無法解析 → untested。"""
-    tool = {"name": "vibesec-g6-cost-probe", "version": None, "state": "ran", "exit_code": None,
-            "output_ref": path, "duration_seconds": None}
+    tool = gate_result.tool("vibesec-g6-cost-probe", "ran", output_ref=path)
     try:
         d = json.loads(pathlib.Path(path).read_text(encoding="utf-8")) if path else None
         state = d["state"]
@@ -286,8 +284,7 @@ def ingest_observations(c: Collector, path: str | None):
     """scripts/g6_observe.py 的觀測檔 → excessive_agency_telemetry 覆蓋與 finding。
     以 scripts/llm_observations.py 從逐探針紀錄重新判定（不信任檔內已寫好的結論）；缺席或無法解析 → untested。"""
     import llm_observations as lo
-    tool = {"name": "vibesec-g6-observe", "version": None, "state": "ran", "exit_code": None,
-            "output_ref": path, "duration_seconds": None}
+    tool = gate_result.tool("vibesec-g6-observe", "ran", output_ref=path)
     ctrl = c.control(lo.RULE, lo.CONTROL)
     try:
         d = json.loads(pathlib.Path(path).read_text(encoding="utf-8")) if path else None
@@ -356,22 +353,19 @@ def garak_expected_specs(config_path: str | None) -> list[str]:
 def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None, config_path: str | None = None):
     if not pattern:
         why = "garak 沒有結果（未提供 --garak-glob）"
-        c.tools.append({"name": "garak", "version": None, "state": "missing", "exit_code": None,
-                        "output_ref": None, "duration_seconds": None})
+        c.tools.append(gate_result.tool("garak", "missing"))
         c.cover("garak", "LLM01:2025", "untested", why)
         c.reasons.append(why)
         return
     files = sorted(glob.glob(pattern))
     if not files:
         why = garak_abort_reason(log_path)
-        c.tools.append({"name": "garak", "version": None, "state": "error" if why else "missing", "exit_code": None,
-                        "output_ref": log_path if why else None, "duration_seconds": None})
+        c.tools.append(gate_result.tool("garak", "error" if why else "missing", output_ref=log_path if why else None))
         detail = f"garak 中止：{why}" if why else "garak 未產生報告（未安裝、無法連線靶場或執行失敗）"
         c.cover("garak", "LLM01:2025", "untested", detail)
         c.reasons.append(detail)
         return
-    c.tools.append({"name": "garak", "version": None, "state": "ran", "exit_code": None,
-                    "output_ref": files[0], "duration_seconds": None})
+    c.tools.append(gate_result.tool("garak", "ran", output_ref=files[0]))
     evals = 0
     seen_families: set[str] = set()
     seen_probes: set[str] = set()       # 有 eval 紀錄的 probe（dan.Dan_11_0）
@@ -452,6 +446,11 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None,
         c.reasons.append(f"garak 未完成：{', '.join(missing)}{suffix}")
 
 
+def check_rule(check: str) -> str:
+    """vibesec.yaml 的 check 名稱 → 規則 ID（vibesec.g6.<kebab>）。"""
+    return "vibesec.g6." + check.replace("_", "-")
+
+
 def declared_checks() -> list[str] | None:
     """vibesec.yaml gates.g6_ai_red_team.checks；讀不到 → None（呼叫端記 untested）。"""
     try:
@@ -472,7 +471,7 @@ def require_checks(c: Collector, checks: list[str] | None):
         return
     missing = [ck for ck in checks if ck not in c.tested]
     for ck in missing:
-        rule = "vibesec.g6." + ck.replace("_", "-")
+        rule = check_rule(ck)
         prev = c.coverage.get(ck)
         why = (prev or {}).get("reason") or "vibesec.yaml 宣告的 check 沒有任何實測結果"
         c.cover(ck, (prev or {}).get("control_id") or c.control(rule, "LLM01:2025"), "untested", why)
@@ -495,11 +494,7 @@ def build(c: Collector, mode: str, started: str) -> tuple[dict, dict]:
             "diff_base": None, "commit": None, "started_at": started, "finished_at": now(),
             "tools": c.tools, "findings_count": {"blocking": blocking, "advisory": advisory},
             "coverage": cov}
-    sarif = {"version": "2.1.0",
-             "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-             "runs": [{"tool": {"driver": {"name": "vibesec-g6", "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                           "rules": list(c.rules.values())}},
-                       "results": c.results}]}
+    sarif = gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(c.rules.values()), c.results)
     return gate, sarif
 
 
@@ -509,7 +504,7 @@ def selftest() -> list[str]:
     with tempfile.TemporaryDirectory() as d:
         dp = pathlib.Path(d)
         row = lambda ck, ok=True: {"success": ok, "failureReason": 0 if ok else PF_ASSERT, "testCase": {"description": ck,
-            "metadata": {"vibesec_check": ck, "vibesec_rule_id": "vibesec.g6." + ck.replace("_", "-")}}}
+            "metadata": {"vibesec_check": ck, "vibesec_rule_id": check_rule(ck)}}}
         all_checks = declared_checks() or []
         ok_rows = [row(ck) for ck in all_checks]
         (dp / "eval.json").write_text(json.dumps({"results": {"results": ok_rows}}), encoding="utf-8")
@@ -543,6 +538,15 @@ def selftest() -> list[str]:
         g = run({"state": "pass", "reason": "HTTP 413"})
         if g["status"] != "pass":
             fails.append(f"各層皆通過且成本探針 pass → G6 應為 pass，實際 {g['status']}（{g['status_reason']}）")
+        # 自產 SARIF：gate_result 的骨架（$schema 排第一、driver 帶 version，#184）
+        import contextlib as _cl, io as _io
+        with _cl.redirect_stdout(_io.StringIO()):
+            main(["--eval", str(dp / "eval.json"), "--redteam", str(dp / "red.json"), "--garak-glob", str(dp / "g6-garak*.report.jsonl"),
+                  "--gate", str(dp / "gate-s.json"), "--sarif", str(dp / "g6.sarif"), "--mode", "shadow"])
+        doc = json.loads((dp / "g6.sarif").read_text(encoding="utf-8"))
+        drv = doc["runs"][0]["tool"]["driver"]
+        if list(doc)[:2] != ["$schema", "version"] or drv.get("name") != TOOL_NAME or drv.get("version") != TOOL_VERSION:
+            fails.append(f"G6 SARIF 應為 gate_result 的骨架：$schema 第一、driver 有 name／version（得到 {list(doc)}、{drv.get('name')}、{drv.get('version')}）")
         g = run({"state": "fail", "reason": "接受超長輸入"})
         cov = [x for x in g["coverage"] if x["control_id"] == "LLM10:2025"]
         # denial-of-wallet 為 advisory：控制 fail、計入 advisory；閘門狀態依 gate_verdict 只在有 blocking 時 fail
@@ -689,14 +693,32 @@ def selftest() -> list[str]:
     # 政策檔讀不到 → 進入點就停：不讀任何結果、G6 incomplete 並寫明未完成原因、沒有任何發現
     # （以前在 import 時就建立 Policy：讀不到時整支無法執行，連 selftest 都跑不起來）
     from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    import gate_result
     with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        gp = pathlib.Path(d, "G6.json")
-        rc = main(["--gate", str(gp), "--mode", "shadow"], policy_root=pr)
+        gp, sp = pathlib.Path(d, "G6.json"), pathlib.Path(d, "G6.sarif")
+        sp.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF
+        rc = main(["--gate", str(gp), "--sarif", str(sp), "--mode", "shadow"], policy_root=pr)
         g = json.loads(gp.read_text(encoding="utf-8"))
+        stale = sp.exists()
+    # 接線（#184 決定 2）：coverage 是 vibesec.yaml 宣告的 5 個 check（untested、原因＝政策讀不到；control_id 取自 catalog）、
+    # tool 列只有 G6 自己的一列 error、舊 SARIF 刪掉（以前寫空檔）
+    declared = declared_checks() or []
+    ids = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g["coverage"]]
+    want = [(Collector(*load_catalog()).control(check_rule(ck), "LLM01:2025"), "untested", True) for ck in declared]
     if rc != 0 or g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in (g["status_reason"] or "") \
-            or g["findings_count"] != {"blocking": 0, "advisory": 0} or {c["state"] for c in g["coverage"]} != {"untested"} \
+            or g["findings_count"] != {"blocking": 0, "advisory": 0} or not declared or ids != want \
+            or g["tools"] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] or stale \
             or list(schema.iter_errors(g)):
-        fails.append(f"政策檔讀不到 → G6 incomplete、寫明原因、沒有發現、控制 untested（得到 {rc}、{g}）")
+        fails.append(f"政策檔讀不到 → G6 incomplete、寫明原因、沒有發現、宣告的 check 全部 untested、tool 列只有一列 error、"
+                     f"舊 SARIF 刪掉（得到 {rc}、SARIF 存在：{stale}、{g}）")
+    # --target-denied：沒有讀任何結果 → 舊 SARIF 刪掉、不寫新檔（#184 決定 3；tools 維持 []）
+    with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        gp, sp = pathlib.Path(d, "G6.json"), pathlib.Path(d, "G6.sarif")
+        sp.write_text('{"stale": true}', encoding="utf-8")
+        main(["--target-denied", "example.com 不在允許清單", "--gate", str(gp), "--sarif", str(sp), "--mode", "shadow"])
+        g = json.loads(gp.read_text(encoding="utf-8"))
+        if g["status"] != "incomplete" or g["tools"] or sp.exists():
+            fails.append(f"--target-denied → incomplete、tools 為 []、舊 SARIF 刪掉（得到 {g['status']}、{g['tools']}、SARIF 存在：{sp.exists()}）")
     return fails
 
 
@@ -731,7 +753,14 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     policy, problem = load_policy(policy_root)   # 只建立一次；讀不到 → 不讀任何結果、閘門 incomplete
     c = Collector(*load_catalog(), policy=policy)
     if problem:
-        c.cover("blocking_policy", "LLM01:2025", "untested", problem)
+        # 政策讀不到（#184 決定 2）：vibesec.yaml 宣告的 check 全部 untested（原因＝problem，control_id 取自 catalog）、
+        # tool 列只有 G6 自己的一列 error；宣告讀不到時與 require_checks 相同，記一列 declared_checks
+        declared = declared_checks()
+        if declared is None:
+            c.cover("declared_checks", "LLM01:2025", "untested", problem)
+        for ck in declared or []:
+            c.cover(ck, c.control(check_rule(ck), "LLM01:2025"), "untested", problem)
+        c.tools.append(gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION))
         c.reasons.append(problem)
     elif a.target_denied:
         why = f"目標未通過授權檢查：{a.target_denied}"
@@ -748,7 +777,11 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     if a.sarif:
-        pathlib.Path(a.sarif).write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+        if problem or a.target_denied:
+            # 沒有讀任何結果：刪掉上一次的 SARIF、不寫新檔（以前寫空檔，看起來像「測過、沒有發現」；上傳步驟以 hashFiles 略過，#184）
+            gate_result.remove_stale(a.sarif)
+        else:
+            pathlib.Path(a.sarif).write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"G6: status={gate['status']} blocking={gate['findings_count']['blocking']} "
           f"advisory={gate['findings_count']['advisory']}" + (f" reason={gate['status_reason']}" if gate["status_reason"] else ""))
     return 0
