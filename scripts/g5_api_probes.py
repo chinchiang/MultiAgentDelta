@@ -7,7 +7,7 @@
 mode 取自受信任政策（VIBESEC_CONFIG 所在的樹，ADR 0002）；mode 缺席或不合法 → 政策讀不到 → incomplete、未送出任何探針。
 
 輸入（環境變數）：VIBESEC_TARGET_URL（必填，須在 config/targets.yaml 允許清單）、VIBESEC_CONFIG（受信任的 vibesec.yaml）、
-VIBESEC_TOKEN_DIR、HAS_A、HAS_B。VIBESEC_MODE 已不使用、傳了也忽略（#202；以前必填，#186），將在 #199 的第二階段移除。
+VIBESEC_TOKEN_DIR、HAS_A、HAS_B。不讀 VIBESEC_MODE（#203 移除；以前必填，#186）。
 輸出：reports/g5-api-probes.sarif、reports/g5-gate.json（目前目錄）。
 """
 # G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（CLAUDE.md #8）。
@@ -201,7 +201,7 @@ def main():
     REPORTS = pathlib.Path("reports"); REPORTS.mkdir(exist_ok=True)
 
     # mode 取自受信任政策（#202，ADR 0002）：政策在進入點就讀一次（只讀檔、不送請求），缺 target 的路徑也用得到它的 mode。
-    # VIBESEC_MODE 已不使用（以前必填，#186）。政策讀不到（含 mode 缺席或不合法）→ mode 不明，記 enforce；下面照舊依序判斷
+    # 不讀 VIBESEC_MODE（#203 移除；以前必填，#186）。政策讀不到（含 mode 缺席或不合法）→ mode 不明，記 enforce；下面照舊依序判斷
     # 缺 target → 政策讀不到，理由逐字不變。tier 只來自 blocking-policy；VIBESEC_CONFIG 指向受信任的 vibesec.yaml
     ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
     POLICY, problem = load_policy(ROOT)   # 只建立一次；讀不到 → incomplete，不送探針、不分類任何發現
@@ -658,16 +658,13 @@ def selftest():
     except Exception as ex:
         fails.append(f"_spki_pem 應可產生合法 DER：{ex}")
 
-    def run_in(tmp, env, mode="shadow"):
-        """在暫存 cwd 以指定環境變數跑 main()，回傳 (exit_code, gate dict or None)。mode=None → 不設定 VIBESEC_MODE。
-        stderr 擷取到 last_stderr[0]（失敗訊息可引用）。"""
+    def run_in(tmp, env):
+        """在暫存 cwd 以指定環境變數跑 main()，回傳 (exit_code, gate dict or None)。stderr 擷取到 last_stderr[0]（失敗訊息可引用）。"""
         cwd0 = os.getcwd(); env0 = dict(os.environ)
         out, err = io.StringIO(), io.StringIO()
         try:
             os.chdir(tmp)
             os.environ.clear(); os.environ.update(env)
-            if mode is not None:
-                os.environ["VIBESEC_MODE"] = mode
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 try:
                     code = main()
@@ -680,8 +677,8 @@ def selftest():
             os.chdir(cwd0); os.environ.clear(); os.environ.update(env0)
     last_stderr = [""]
 
-    # mode 取自受信任政策（#202；VIBESEC_CONFIG 所在的樹，ADR 0002）：VIBESEC_MODE 已不使用、傳了也忽略（#199 第二階段移除）。
-    # 以前 VIBESEC_MODE 必填、缺席或不合法 → exit 2、不寫 gate JSON（#186）。受信任政策缺 mode → 政策讀不到：照樣寫出
+    # mode 取自受信任政策（#202；VIBESEC_CONFIG 所在的樹，ADR 0002）。VIBESEC_MODE 已移除（#203）；
+    # 以前必填、缺席或不合法 → exit 2、不寫 gate JSON（#186）。受信任政策缺 mode → 政策讀不到：照樣寫出
     # incomplete（mode 記 enforce、未送出任何探針），不再缺席。目標指向會計數請求的本機假目標（127.0.0.1 在允許清單），
     # 所以「沒送探針」是實測的，不是因為授權檢查擋下
     import http.server, threading
@@ -701,41 +698,36 @@ def selftest():
         local = f"http://127.0.0.1:{srv.server_address[1]}"
         with trusted_tree("mode: enforce") as enforce_tree, trusted_tree("mode: shadow") as shadow_tree, \
                 trusted_tree("") as modeless_tree:
-            # A：VIBESEC_MODE 不論有沒有、合不合法都忽略；閘門結果的 mode 取自受信任政策。兩個方向都測（寫死成 enforce 會被抓到）
-            for tree, want, env_modes in [(enforce_tree, "enforce", (None, "shadow", "Enforce", "")),
-                                          (shadow_tree, "shadow", (None, "enforce", "x"))]:
-                for env_mode in env_modes:
-                    with tempfile.TemporaryDirectory() as d:
-                        code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example",
-                                             "VIBESEC_CONFIG": str(tree / "vibesec.yaml")}, mode=env_mode)
-                        if code != 0 or not g or g.get("mode") != want or POLICY_UNREADABLE in (g.get("status_reason") or ""):
-                            fails.append(f"VIBESEC_MODE {env_mode!r}、政策 {want} → 忽略、照常寫出 gate JSON、mode 取自政策（{want}）"
-                                         f"（得到 code={code}, mode={g and g.get('mode')}）")
-            # A'：照常執行是真的送出探針：授權過的本機假目標、VIBESEC_MODE 缺席或不合法、受信任政策合法
+            # A：閘門結果的 mode 取自受信任政策；兩個方向都測（寫死會被抓到）。環境變數 VIBESEC_MODE 已不讀（#203；以前必填，
+            # #186）：殘留在環境裡也不影響
+            for tree, want, extra_env in [(enforce_tree, "enforce", {}), (shadow_tree, "shadow", {}),
+                                          (enforce_tree, "enforce", {"VIBESEC_MODE": "shadow"})]:
+                with tempfile.TemporaryDirectory() as d:
+                    code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example",
+                                         "VIBESEC_CONFIG": str(tree / "vibesec.yaml"), **extra_env})
+                    if code != 0 or not g or g.get("mode") != want or POLICY_UNREADABLE in (g.get("status_reason") or ""):
+                        fails.append(f"政策 {want}{'、環境殘留 VIBESEC_MODE=shadow' if extra_env else ''} → 照常寫出 gate JSON、"
+                                     f"mode 取自政策（{want}）（得到 code={code}, mode={g and g.get('mode')}）")
+            # A'：照常執行是真的送出探針：授權過的本機假目標、受信任政策合法
             # （trusted_tree 才有 config/targets.yaml：只放政策檔的暫存 root 會讓授權檢查先擋下，「有送／沒送」就看不出來）
-            for env_mode in (None, "x"):
-                hits.clear()
-                with tempfile.TemporaryDirectory() as d:
-                    code, g = run_in(d, {"VIBESEC_TARGET_URL": local, "VIBESEC_CONFIG": str(enforce_tree / "vibesec.yaml")},
-                                     mode=env_mode)
-                    if code != 0 or not g or g.get("mode") != "enforce" or not hits:
-                        fails.append(f"VIBESEC_MODE {env_mode!r}、政策合法、授權目標 → 照常送出探針（得到 code={code}, "
-                                     f"mode={g and g.get('mode')}, 請求 {len(hits)} 筆）")
+            hits.clear()
+            with tempfile.TemporaryDirectory() as d:
+                code, g = run_in(d, {"VIBESEC_TARGET_URL": local, "VIBESEC_CONFIG": str(enforce_tree / "vibesec.yaml")})
+                if code != 0 or not g or g.get("mode") != "enforce" or not hits:
+                    fails.append(f"政策合法、授權目標 → 照常送出探針（得到 code={code}, mode={g and g.get('mode')}, 請求 {len(hits)} 筆）")
             # B：受信任政策缺 mode → 政策讀不到：寫出 incomplete、mode 記 enforce、未送出任何探針；退出碼同政策讀不到（0）
-            for label, env_mode in [("VIBESEC_MODE 未設定", None), ("VIBESEC_MODE=shadow", "shadow")]:
-                hits.clear()
-                with tempfile.TemporaryDirectory() as d:
-                    code, g = run_in(d, {"VIBESEC_TARGET_URL": local, "VIBESEC_CONFIG": str(modeless_tree / "vibesec.yaml")},
-                                     mode=env_mode)
-                    why = (g or {}).get("status_reason") or ""
-                    if code != 0 or not g or g.get("status") != "incomplete" or g.get("mode") != "enforce" or hits \
-                            or not why.startswith(POLICY_UNREADABLE + "（") or "mode" not in why or "未送出任何探針" not in why:
-                        fails.append(f"受信任政策缺 mode（{label}）→ incomplete（政策讀不到、未送出任何探針）、mode 記 enforce、不送探針"
-                                     f"（得到 code={code}, {g and (g.get('status'), g.get('mode'))}, 請求={hits}：{why}）")
+            hits.clear()
+            with tempfile.TemporaryDirectory() as d:
+                code, g = run_in(d, {"VIBESEC_TARGET_URL": local, "VIBESEC_CONFIG": str(modeless_tree / "vibesec.yaml")})
+                why = (g or {}).get("status_reason") or ""
+                if code != 0 or not g or g.get("status") != "incomplete" or g.get("mode") != "enforce" or hits \
+                        or not why.startswith(POLICY_UNREADABLE + "（") or "mode" not in why or "未送出任何探針" not in why:
+                    fails.append(f"受信任政策缺 mode → incomplete（政策讀不到、未送出任何探針）、mode 記 enforce、不送探針"
+                                 f"（得到 code={code}, {g and (g.get('status'), g.get('mode'))}, 請求={hits}：{why}）")
             # C：缺 VIBESEC_TARGET_URL → 理由不變、mode 取自政策；政策又讀不到 → mode 不明，記 enforce
             for label, tree in [("政策 enforce", enforce_tree), ("政策缺 mode", modeless_tree)]:
                 with tempfile.TemporaryDirectory() as d:
-                    code, g = run_in(d, {"VIBESEC_CONFIG": str(tree / "vibesec.yaml")}, mode="shadow")
+                    code, g = run_in(d, {"VIBESEC_CONFIG": str(tree / "vibesec.yaml")})
                     if code != 0 or not g or g.get("mode") != "enforce" \
                             or not (g.get("status_reason") or "").startswith("VIBESEC_TARGET_URL 未設定；未送出任何探針"):
                         fails.append(f"缺 VIBESEC_TARGET_URL（{label}）→ 理由不變、mode 記 enforce（得到 code={code}, "

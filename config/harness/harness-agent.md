@@ -55,7 +55,7 @@ role: harness
 | G3 | `semgrep scan --config <rules> --sarif`（diff 時加 `--baseline-commit <base>`）→ `checkov -d . -o sarif` → `trivy config . --format sarif` | semgrep 缺席（checkov / trivy-config 缺席只標 untested 對應控制） |
 | G4 | 六項靜態檢查（`static_checks`）+ LLM 審查（`roles: [architecture, identity-authz]`） | 靜態檢查腳本缺席；或審查 family < 2 |
 | G5 | **先** `python3 scripts/target_guard.py check "$VIBESEC_TARGET_URL"`（非 0 → 不送任何請求）→ 健康檢查 `GET $VIBESEC_TARGET_URL/healthz` → `zap-baseline.py -t $URL -J`（`-c config/zap/api-scan.conf`）→ `zap-api-scan.py` → `scripts/g5_zap.py` → 自製 api-probes（雙帳號 BOLA、JWT、SSRF、設定外溢、rate limit） | URL 未設 / 不在 `config/targets.yaml` / 不可達；缺任一 token（`two_account_test: required`）；ZAP 報告缺席 |
-| G6 | 同 G5 的目標授權檢查 → `promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json`（不需金鑰；redteam 生成層另用 `promptfooconfig.yaml`）→ `garak --config config/garak/vibesec.probes.yaml` → `python3 scripts/g6_cost_probe.py`（成本面）→ `python3 scripts/g6_gate.py --cost … --mode <有效 mode>`（`--mode` 必填） | URL 未設 / 不在 `config/targets.yaml` / 不可達；promptfoo 與 garak 全缺；成本探針無法實測 |
+| G6 | 同 G5 的目標授權檢查 → `promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json`（不需金鑰；redteam 生成層另用 `promptfooconfig.yaml`）→ `garak --config config/garak/vibesec.probes.yaml` → `python3 scripts/g6_cost_probe.py`（成本面）→ `python3 scripts/g6_gate.py --cost …`（mode 取自受信任設定，閘門腳本沒有 `--mode`，ADR 0002） | URL 未設 / 不在 `config/targets.yaml` / 不可達；promptfoo 與 garak 全缺；成本探針無法實測 |
 
 工具是否存在以 `command -v <bin>` 判定；缺席記 `state: missing`，**不要**嘗試安裝工具（安裝本身就是 G1 要防的事）。
 

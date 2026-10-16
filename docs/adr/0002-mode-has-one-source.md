@@ -28,12 +28,14 @@
 3. **閘門層級不接受 mode 管道。** 閘門結果的 `mode` 一律記設定值，只是紀錄；阻擋判定另讀受信任樹，不採信 gate JSON 的 `mode`。閘門層級的 `--mode` 和 `VIBESEC_MODE` 依 #199 分兩階段移除。
 4. **只有阻擋判定可以把 shadow 升為 enforce。** 理由是：阻擋判定是唯一決定是否阻擋的地方，閘門結果只是它的輸入；在閘門層級升級不會讓任何東西更嚴，只會多一個可能跟設定不一致的來源。覆寫規則：覆寫成 enforce 會生效；試圖降級時忽略並附註；覆寫值不合法視為錯誤（mode 視同 enforce），不會默默改以設定值執行。
 
-## 過渡期
+## 落地過程
 
-依 #199 分階段落地。#200 合併後，mode 缺席或不合法時 `load_policy` 會先失敗，各閘門自己殘留的 mode 讀法就走不到了。但在 #201、#202、#203 完成之前，下列地方仍有自己的讀法或管道：
-- G4 存取審查的 shadow 預設值，以及 G4 審查 `gate --mode`（#201）。
-- G5 的 `VIBESEC_MODE`、G6 的 `--mode`（#202）。
-- workflow 傳給閘門的 mode，以及受信任設定 action 內嵌的 regex（#203）。
+依 #199 分階段落地，已全部完成：
+- #200：mode module、`load_policy` 回報 mode 錯誤、阻擋判定共用覆寫規則。
+- #201、#202：G2–G6 改取 `policy.mode`，閘門層級的 `--mode`、`VIBESEC_MODE` 先改成接受但忽略（PR CI 以 PR head 的 workflow 呼叫受信任樹的腳本，兩邊版本錯開時不能讓 CI 失敗）。
+- #203：workflow 不再傳 mode、移除這些參數；受信任設定 action 改用 `vibesec_mode`。`ci_invariants` 有兩條不變式把關：action 不得內嵌自己的 mode 規則；workflow 不得把 mode 傳給閘門腳本。
+
+唯一的例外是 G2 的 `.env` 檢查步驟：它在 workflow 的 bash 裡依 `VIBESEC_MODE` 自己做阻擋判定，屬於「阻擋判定集中化」的問題，另案處理（#199 Out of Scope）。
 
 ## 後果
 
@@ -73,12 +75,14 @@ In CI, the gate-level `--mode` and `VIBESEC_MODE` all carry the same trusted val
 3. **Gates accept no mode channel.** The `mode` in a gate result always records the configured value and is only a record; the blocking decision reads the trusted tree on its own and does not trust the `mode` in gate JSON. The gate-level `--mode` and `VIBESEC_MODE` are removed in two phases, as #199 describes.
 4. **Only the blocking decision can raise shadow to enforce.** The reason: the blocking decision is the only place that decides whether to block, and gate results are just its input; raising mode at the gate level makes nothing stricter and only adds another source that can disagree with the configuration. The override rule: an enforce override takes effect; a downgrade attempt is ignored with a note; an invalid override is an error (mode is treated as enforce) and never silently falls back to the configured value.
 
-## Transition
+## Rollout
 
-This lands in phases, as #199 describes. Once #200 is merged, a missing or invalid mode makes `load_policy` fail first, so the mode readings still left in individual gates can no longer be reached. Until #201, #202, and #203 are done, these places still have their own reading or channel:
-- the G4 access review's shadow default and the G4 review's `gate --mode` (#201);
-- G5's `VIBESEC_MODE` and G6's `--mode` (#202);
-- the mode the workflows pass to gates, and the regex embedded in the trusted-configuration action (#203).
+This landed in phases, as #199 describes, and is complete:
+- #200: the mode module, `load_policy` reporting mode errors, and one override rule shared with the blocking decision.
+- #201, #202: G2–G6 take `policy.mode`; the gate-level `--mode` and `VIBESEC_MODE` were first made accepted-but-ignored (PR CI runs the trusted tree's scripts from the PR head's workflow, so a version skew between the two must not break CI).
+- #203: the workflows stop passing mode and these parameters are removed; the trusted-configuration action uses `vibesec_mode`. Two `ci_invariants` checks guard this: the action must not embed its own mode rule, and workflows must not pass mode to gate scripts.
+
+The only exception is G2's `.env` check step: it makes its own blocking decision in workflow bash based on `VIBESEC_MODE`. That is a "centralize the blocking decision" problem and is handled separately (#199 Out of Scope).
 
 ## Consequences
 

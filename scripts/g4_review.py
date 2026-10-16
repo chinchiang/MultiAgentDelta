@@ -735,8 +735,8 @@ def selftest() -> list[str]:
     got = external_trust({ref: ext}, "author", ["reviewer"], cfg, controls, policy_load=broken)
     if not any(vibesec_policy.POLICY_UNREADABLE in x for x in got):
         fails.append(f"外部紀錄：政策讀不到 → 應不可信並寫明原因（得到 {got}）")
-    # gate 子指令的退出碼依受信任政策的 mode（#201）：--mode 已不使用、傳了也忽略（以前預設 shadow）。
-    # 閘門結果是 fail 時：政策 enforce → exit 1（即使 --mode shadow）；政策 shadow → exit 0（即使 --mode enforce）
+    # gate 子指令的退出碼依受信任政策的 mode（#201；以前取 --mode、預設 shadow）：閘門結果是 fail 時，政策 enforce → exit 1、
+    # 政策 shadow → exit 0。--mode 已移除（#203，ADR 0002）：傳了 → argparse exit 2
     import contextlib, io, tempfile as _tf
     import vibesec_policy
     real_load = vibesec_policy.load_policy
@@ -746,16 +746,22 @@ def selftest() -> list[str]:
                                  {"control_id": LLM_CONTROL, "state": "pending", "reason": "x"}])
         sp = pathlib.Path(d, "static.json"); sp.write_text(json.dumps(failing), encoding="utf-8")
         try:
-            for mode, cli_mode, want in (("enforce", "shadow", 1), ("enforce", None, 1), ("shadow", "enforce", 0)):
+            for mode, want in (("enforce", 1), ("shadow", 0)):
                 with vibesec_policy.mode_policy_root(f"mode: {mode}") as pr:
                     vibesec_policy.load_policy = lambda root=None, **kw: real_load(pr, **kw)
-                    out = pathlib.Path(d, f"gate-{mode}-{cli_mode}.json")
+                    out = pathlib.Path(d, f"gate-{mode}.json")
                     with contextlib.redirect_stdout(io.StringIO()):
-                        rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--out", str(out),
-                                   *(["--mode", cli_mode] if cli_mode else [])])
+                        rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--out", str(out)])
                 g = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else {}
                 if rc != want or g.get("status") != "fail":
-                    fails.append(f"gate：閘門結果 fail、政策 {mode}、--mode {cli_mode} → exit {want}（得到 exit {rc}、{g.get('status')}）")
+                    fails.append(f"gate：閘門結果 fail、政策 {mode} → exit {want}（得到 exit {rc}、{g.get('status')}）")
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--mode", "shadow"])
+            except SystemExit as e:
+                rc = e.code
+            if rc != 2:
+                fails.append(f"gate：帶已移除的 --mode → argparse exit 2（得到 {rc}）")
         finally:
             vibesec_policy.load_policy = real_load
     return fails
@@ -767,7 +773,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check"); c.add_argument("record"); c.add_argument("--head", default="HEAD"); c.add_argument("--no-git", action="store_true")
     g = sub.add_parser("gate"); g.add_argument("--static", required=True); g.add_argument("--head", required=True)
-    g.add_argument("--out"); g.add_argument("--comment"); g.add_argument("--mode", help="已不使用、傳了也忽略：退出碼依受信任政策的 mode（ADR 0002），將在 #199 的第二階段移除")
+    g.add_argument("--out"); g.add_argument("--comment")   # 退出碼依受信任政策的 mode，沒有 --mode（ADR 0002、#203）
     g.add_argument("--base", help="PR base SHA；有值時檢查紀錄是否由本 PR 新增／修改")
     g.add_argument("--pr-author", default="")
     g.add_argument("--approvers", default="", help="在目前 head SHA 上 approve 的帳號，逗號分隔")

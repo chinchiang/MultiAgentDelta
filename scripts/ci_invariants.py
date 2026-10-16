@@ -8,6 +8,8 @@
   sed_target_substitution(text)           不得以 sed 把受測目標 URL 代入設定（URL 含 # 或 & 會壞）
   sarif_jobs_without_permission(wf)       有 upload-sarif 的 job，有效權限須含 security-events: write
   self_sarif_uploads_without_hashfiles(wf)  上傳自產 SARIF 的步驟須以 hashFiles(<該檔>) 為條件（閘門沒有判定任何發現時不寫 SARIF）
+  trusted_action_mode_reader(action)      受信任設定 action 以受信任樹的 vibesec_mode 讀 mode，不內嵌自己的 regex（ADR 0002）
+  gate_mode_channels(wf)                  workflow 不得以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）
 
   python3 scripts/ci_invariants.py selftest
 """
@@ -139,6 +141,43 @@ def g4_static_wiring(pr_gates: dict) -> list[str]:
     return out
 
 
+TRUSTED_CFG_STEP = "讀取受信任的 mode"
+GATE_SCRIPTS = ("g4_static.py", "g4_review.py", "g5_api_probes.py", "g6_gate.py")   # 不含 gate_verdict.py（阻擋判定可以升級）
+
+
+def trusted_action_mode_reader(action: dict) -> list[str]:
+    """受信任設定 action 讀 mode 的步驟（#203）：以 python3 -I import 受信任樹的 vibesec_mode（read_mode、top_scalar），
+    不得內嵌 regex 或合法值清單。以前 action 自己寫一份 regex，與閘門讀 mode 的規則可能漂移（ADR 0002）。"""
+    steps = [st for st in ((action.get("runs") or {}).get("steps") or [])
+             if str(st.get("name", "")).startswith(TRUSTED_CFG_STEP)]
+    if len(steps) != 1:
+        return [f"受信任設定 action 應恰有一個「{TRUSTED_CFG_STEP}」步驟（得到 {len(steps)} 個）"]
+    run, out = str(steps[0].get("run") or ""), []
+    if not re.search(r"^\s*from vibesec_mode import .*\bread_mode\b", run, re.M):
+        out.append(f"「{TRUSTED_CFG_STEP}」步驟沒有 import vibesec_mode 的 read_mode")
+    if re.search(r"^\s*import .*\bre\b|\bre\.(search|match|sub|compile)\(", run, re.M):
+        out.append(f"「{TRUSTED_CFG_STEP}」步驟內嵌了自己的 regex（mode 的規則只能在 vibesec_mode）")
+    if re.search(r"""[\(\[]\s*["']shadow["']\s*,\s*["']enforce["']""", run):
+        out.append(f"「{TRUSTED_CFG_STEP}」步驟寫死了合法值清單（只能用 vibesec_mode 的 MODES）")
+    if "python3 -I" not in run:
+        out.append(f"「{TRUSTED_CFG_STEP}」步驟沒有以 python3 -I 執行（工作目錄是 PR head，可蓋掉標準函式庫）")
+    return out
+
+
+def gate_mode_channels(wf: dict) -> list[str]:
+    """呼叫閘門腳本的步驟不得以 --mode 或 VIBESEC_MODE 傳 mode（#203、ADR 0002：mode 只取自受信任政策）。
+    阻擋判定（gate_verdict）的 --mode 可以升級，不檢查；不呼叫閘門腳本的步驟（例如 G2 的 .env 檢查）不檢查。"""
+    out = []
+    for jname, job in (wf.get("jobs") or {}).items():
+        for st in (job or {}).get("steps") or []:
+            run = str(st.get("run") or "")
+            if not any(f"scripts/{g}" in run for g in GATE_SCRIPTS):
+                continue
+            if re.search(r"--mode\b", run) or "VIBESEC_MODE" in run or "VIBESEC_MODE" in (st.get("env") or {}):
+                out.append(f"{jname}：{st.get('name') or st.get('id') or '（無名步驟）'}")
+    return out
+
+
 def selftest() -> list[str]:
     fails: list[str] = []
     wf_ok = "on: push\npermissions:\n  contents: read\n\njobs:\n  a:\n    permissions:\n      security-events: write\n"
@@ -197,13 +236,12 @@ def selftest() -> list[str]:
     if len(verdict_wiring({}, {})) != 4:
         fails.append("verdict_wiring：找不到步驟也要回報")
     st = lambda run: {"jobs": {"g4": {"steps": [{"name": "G4 靜態檢查（Unicode / RLS）", "run": run}]}}}
-    ok_run = ("python3 -I _trusted/scripts/g4_static.py --target . --out reports \\\n"
-              "  --mode \"$VIBESEC_MODE\" --commit \"$COMMIT_SHA\"\n")
+    ok_run = "python3 -I _trusted/scripts/g4_static.py --target . --out reports --commit \"$COMMIT_SHA\"\n"
     for label, wf, want in [
         ("以受信任腳本執行", st(ok_run), 0),
         ("inline heredoc（舊版）", st("python3 -I - <<'EOF'\nimport json\nEOF\n"), 2),
-        ("執行 PR head 的 scripts/", st("python3 -I scripts/g4_static.py --target . --out reports --mode shadow\n"), 1),
-        ("拿掉 -I", st("python3 _trusted/scripts/g4_static.py --target . --out reports --mode shadow\n"), 1),
+        ("執行 PR head 的 scripts/", st("python3 -I scripts/g4_static.py --target . --out reports\n"), 1),
+        ("拿掉 -I", st("python3 _trusted/scripts/g4_static.py --target . --out reports\n"), 1),
         ("步驟缺席", {"jobs": {"g4": {"steps": [{"name": "別的步驟", "run": ok_run}]}}}, 1),
         ("步驟重複", {"jobs": {"a": st(ok_run)["jobs"]["g4"], "b": st(ok_run)["jobs"]["g4"]}}, 1),
     ]:
@@ -216,6 +254,41 @@ def selftest() -> list[str]:
         fails.append(f"pre-commit 與 CI 一致時不應回報差異（得到 {precommit_semgrep_drift(pc, rules)}）")
     if precommit_semgrep_drift(pc.replace('          - "--config=p/security-audit"   # 與 CI 一致\n', ""), rules) != (["p/security-audit"], []):
         fails.append("pre-commit 少了 p/security-audit 應回報")
+    # 受信任設定 action 讀 mode：只能 import 受信任樹的 vibesec_mode（不依賴 PyYAML），不得內嵌 regex 或合法值清單
+    good_cfg = ("python3 -I - <<'PY' >> \"$GITHUB_OUTPUT\"\nimport sys, pathlib\n"
+                "sys.path.insert(0, str(pathlib.Path('_trusted/scripts').resolve()))\n"
+                "from vibesec_mode import read_mode, top_scalar\nPY\n")
+    act = lambda run, sid="cfg": {"runs": {"steps": [{"name": "讀取受信任的 mode / risk_tier", "id": sid, "run": run}]}}
+    for label, a, want in [
+        ("以 vibesec_mode 讀", act(good_cfg), 0),
+        ("內嵌 regex（舊版）", act("python3 -I - <<'PY'\nimport sys, re, pathlib\nm = re.search(r'^mode', t)\n"
+                                  "if mode not in (\"shadow\", \"enforce\"): sys.exit(2)\nPY\n"), 3),
+        ("拿掉 -I", act(good_cfg.replace("python3 -I -", "python3 -")), 1),
+        ("步驟缺席", {"runs": {"steps": []}}, 1),
+    ]:
+        try:
+            got = trusted_action_mode_reader(a)
+        except Exception as e:
+            got = None, f"例外 {type(e).__name__}：{e}"
+        if isinstance(got, tuple) or len(got) != want:
+            fails.append(f"trusted_action_mode_reader「{label}」應回報 {want} 項（得到 {got}）")
+    # 閘門腳本不得經 --mode／VIBESEC_MODE 收到 mode；阻擋判定（gate_verdict）的 --mode 與不呼叫閘門腳本的步驟不檢查
+    step = lambda run, env=None: {"name": "s", "run": run, **({"env": env} if env else {})}
+    for label, steps, want in [
+        ("沒有 mode 管道", [step("python3 -I _trusted/scripts/g4_static.py --target . --out reports --commit x")], 0),
+        ("g4_static 帶 --mode", [step('python3 -I _trusted/scripts/g4_static.py --target . --mode "$M"')], 1),
+        ("g6_gate 帶 --mode", [step("python3 _trusted/scripts/g6_gate.py --gate g.json --mode shadow")], 1),
+        ("g5 有 VIBESEC_MODE 環境變數", [step("python3 _trusted/scripts/g5_api_probes.py", {"VIBESEC_MODE": "${{ x }}"})], 1),
+        ("g4_review gate 帶 --mode", [step("python3 _trusted/scripts/g4_review.py gate --static s --mode \"$VIBESEC_MODE\"")], 1),
+        ("阻擋判定的 --mode 不檢查", [step("python3 _trusted/scripts/gate_verdict.py enforce --mode enforce")], 0),
+        ("不呼叫閘門腳本的步驟不檢查", [step('if [ "$VIBESEC_MODE" = enforce ]; then exit 1; fi', {"VIBESEC_MODE": "x"})], 0),
+    ]:
+        try:
+            got = gate_mode_channels({"jobs": {"a": {"steps": steps}}})
+        except Exception as e:
+            got = None, f"例外 {type(e).__name__}：{e}"
+        if isinstance(got, tuple) or len(got) != want:
+            fails.append(f"gate_mode_channels「{label}」應回報 {want} 項（得到 {got}）")
     return fails
 
 

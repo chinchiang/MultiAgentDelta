@@ -98,7 +98,7 @@ harness **不得**因 `tools[]` 中第一個工具缺席就跳到下一個閘門
 
 shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行**完全相同**的閘門、工具、審查與評分；差別只在最後的 exit code。試點期的召回率 / 精確率數據（`docs/12-pilot-and-evaluation.md`）必須來自 shadow 模式的完整輸出。
 
-模式只能由 `vibesec.yaml` 的 `mode` 或 CLI `--mode` 參數決定；harness agent 不得自行改寫。`mode` 沒有預設值：缺席或不是 `shadow`／`enforce` 時，G0、G1 照樣寫出 `incomplete` 的閘門結果（`mode` 記 `enforce`、本閘門的控制 `untested`、由後續步驟併入的控制維持 `pending`、不執行任何檢查、exit 2），不會默默當成 shadow（#190）。`--mode` 只能把 shadow 升為 enforce（例如在 staging 工作流強制），**不得**把 enforce 降為 shadow。
+模式只能由 `vibesec.yaml` 的 `mode` 或 CLI `--mode` 參數決定；harness agent 不得自行改寫。閘門腳本沒有 mode 參數，閘門結果的 `mode` 一律記受信任設定的值；`--mode` 只交給阻擋判定（`gate_verdict.py enforce --mode`），由它決定是否升為 enforce（ADR 0002）。`mode` 沒有預設值：缺席或不是 `shadow`／`enforce` 時，G0、G1 照樣寫出 `incomplete` 的閘門結果（`mode` 記 `enforce`、本閘門的控制 `untested`、由後續步驟併入的控制維持 `pending`、不執行任何檢查、exit 2），不會默默當成 shadow（#190）。`--mode` 只能把 shadow 升為 enforce（例如在 staging 工作流強制），**不得**把 enforce 降為 shadow。
 
 ## 6. Diff-aware 與 full
 

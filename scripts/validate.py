@@ -752,6 +752,14 @@ for _name, _t in _wf.items():
     for _s in _ci.self_sarif_uploads_without_hashfiles(yaml.safe_load(_t) or {}):
         err(f".github/workflows/{_name}: {_s} 上傳自產 SARIF 卻沒有 hashFiles 條件（閘門沒有判定任何發現時不寫 SARIF，"
             f"上傳步驟會失敗）"); _n_ci += 1
+    for _s in _ci.gate_mode_channels(yaml.safe_load(_t) or {}):
+        err(f".github/workflows/{_name}: {_s} 以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）"); _n_ci += 1
+_action = ROOT / ".github/actions/vibesec-trusted/action.yml"
+if _action.is_file():
+    for _p in _ci.trusted_action_mode_reader(yaml.safe_load(_action.read_text(encoding="utf-8")) or {}):
+        err(f".github/actions/vibesec-trusted/action.yml: {_p}"); _n_ci += 1
+else:
+    err("缺 .github/actions/vibesec-trusted/action.yml：無法確認受信任設定 action 讀 mode 的方式"); _n_ci += 1
 for _f in sorted(set(glob.glob(str(ROOT / ".github/**/*.yml"), recursive=True) + glob.glob(str(ROOT / ".github/**/*.js"), recursive=True))):
     for _i in _ci.unpaginated_list_comments(pathlib.Path(_f).read_text(encoding="utf-8")):
         err(f"{pathlib.Path(_f).relative_to(ROOT)}:{_i}: issues.listComments 未經 github.paginate（只會拿到第一頁 30 則）"); _n_ci += 1
