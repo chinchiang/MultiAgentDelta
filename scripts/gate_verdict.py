@@ -330,10 +330,11 @@ def _load_gates(specs, trusted_root: pathlib.Path):
 
 def _read_settings(trusted_root: pathlib.Path, requested_mode):
     """(mode, incomplete_blocking_gates, cfg, errors, notes)。mode 與「--mode 只能把 shadow 升為 enforce」都由
-    vibesec_policy.load_policy 決定（#200：以前這裡自己讀 mode、自己寫升級規則）；讀不到（含 mode 缺席或不合法、
-    --mode 不合法）→ incomplete_blocking_gates None（未完成的閘門一律擋）、記為錯誤。mode 仍以同一份 read_mode／
-    apply_override 單獨讀出（政策檔壞掉不等於 mode 不明：shadow 下維持只報告，與 #200 之前相同）；mode 本身讀不到 → None
-    （enforce() 視同 enforce）。cfg 是 vibesec.yaml 的內容，只給 blackbox 的 required_tools 用。"""
+    vibesec_policy.load_policy 決定（#200：以前這裡自己讀 mode、自己寫升級規則）。
+    - 政策讀不到（含 mode 缺席或不合法）→ incomplete_blocking_gates None（未完成的閘門一律擋）、記為錯誤；mode 仍以同一份
+      read_mode／apply_override 單獨讀出（政策檔壞掉不等於 mode 不明：shadow 下維持只報告，與 #200 之前相同）。
+    - --mode 不合法 → 記為「mode 覆寫值不合法」（操作者的錯誤，不是政策讀不到）；政策照常讀取。
+    mode 讀不到或 --mode 不合法 → None（enforce() 視同 enforce）。cfg 是 vibesec.yaml 的內容，只給 blackbox 的 required_tools 用。"""
     errors, notes, cfg, text = [], [], None, None
     try:
         text = (trusted_root / "vibesec.yaml").read_text(encoding="utf-8")
@@ -341,6 +342,12 @@ def _read_settings(trusted_root: pathlib.Path, requested_mode):
         cfg = yaml.safe_load(text) or {}
     except Exception as e:
         errors.append(f"受信任的 vibesec.yaml 無法讀取（{type(e).__name__}）")
+    override_ok = True
+    try:   # --mode 打錯是操作者的錯誤，不是政策讀不到：先用同一份 apply_override 驗證，記成覆寫值不合法、mode 視同 enforce
+        apply_override("shadow", requested_mode)
+    except ValueError as e:
+        errors.append(str(e))
+        override_ok, requested_mode = False, None
     try:
         sys.path.insert(0, str(trusted_root / "scripts"))
         from vibesec_policy import load_policy
@@ -349,17 +356,16 @@ def _read_settings(trusted_root: pathlib.Path, requested_mode):
         policy, problem = None, f"blocking-policy 無法讀取（{type(e).__name__}）"
     if problem:
         errors.append(problem)
-        mode, mode_problem = read_mode(text) if text is not None else (None, "vibesec.yaml 無法讀取")
-        if mode_problem is None:
-            try:
-                mode, note = apply_override(mode, requested_mode)
+        mode = None
+        if text is not None and override_ok:
+            config_mode, mode_problem = read_mode(text)
+            if mode_problem is None:
+                mode, note = apply_override(config_mode, requested_mode)
                 notes += [note] if note else []
-            except ValueError:
-                mode = None
         return mode, None, cfg, errors, notes
     if policy.mode_note:
         notes.append(policy.mode_note)
-    return policy.mode, set(policy.incomplete_blocking_gates), cfg, errors, notes
+    return policy.mode if override_ok else None, set(policy.incomplete_blocking_gates), cfg, errors, notes
 
 
 def _write_outputs(path, pairs: dict):
@@ -615,8 +621,14 @@ def selftest() -> list[str]:
                 if mode != want or inc is not None or not errs:
                     fails.append(f"政策檔壞掉、--mode {req!r} → mode {want}、未完成的閘門一律擋、記為錯誤（得到 {mode}、{inc}、{errs}）")
             pol.write_text(pol_text, encoding="utf-8")
-            if _read_settings(tr, "x")[3] == [] or _read_settings(tr, "x")[0] is not None:
-                fails.append("--mode 不合法 → 記為錯誤，不得忽略")
+            # --mode 打錯 → 記為錯誤（寫明是覆寫值，不是政策讀不到）、mode 視同 enforce，不得默默以設定值執行；政策照常讀取
+            try:
+                mode, inc, _, errs, _ = _read_settings(tr, "x")
+            except Exception as e:
+                mode, inc, errs = f"例外 {type(e).__name__}", None, []
+            if mode is not None or inc is None or len(errs) != 1 or "mode 覆寫值不合法：'x'" not in errs[0] \
+                    or errs[0].startswith(POLICY_UNREADABLE):
+                fails.append(f"--mode 不合法 → 記為錯誤（覆寫值，不是政策讀不到）、mode 不明、政策照常讀取（得到 {mode}、{inc}、{errs}）")
         out = D / "out.txt"
         import contextlib, io
         with contextlib.redirect_stdout(io.StringIO()):
