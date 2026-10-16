@@ -37,7 +37,6 @@ FRESH_PREFIXES = ("reviews/g4/", "rulings/")
 PROVIDER_ALIASES = {"claude-code-subagent": "anthropic"}
 # sub-agent 的內容送到 Anthropic 雲端：資料分級比照 providers.yaml 的 anthropic-cloud（SKILL.md 步驟 4）
 ALIAS_DATA_CLASSES = {"claude-code-subagent": ["public", "internal"]}
-LLM_CONTROL = "VS-G4-LLM-REVIEW"
 GRADE = {"E0": 0, "E1": 1, "E2": 2, "E3": 3}
 
 try:
@@ -49,7 +48,8 @@ except ImportError as e:  # incomplete ≠ pass
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import ruling as ruling_tool  # noqa: E402  人工裁決的規則（rulings/）與本工具共用同一份檢查
-import gate_result  # noqa: E402  tool 列與時間戳只有一份寫法（#183）；組裝邏輯仍在 derive_gate（候選 C）
+import gate_result  # noqa: E402  tool 列與時間戳只有一份寫法（#183）；判定與組裝邏輯仍在 derive_gate，另案處理
+from g4_static import LLM_CONTROL  # noqa: E402  LLM 審查控制 ID 的唯一來源（g4_static 不依賴 PyYAML）
 
 
 def _yaml(p: pathlib.Path) -> dict:
@@ -661,7 +661,6 @@ def selftest() -> list[str]:
     if any(t["state"] == "refused" for t in g6["tools"]):
         fails.append("gate 的 tools 不得出現 refused（gate-result schema 沒有此值）")
     # 接線（#183）：provider 的 tool 列是 gate_result.tool 的形狀；refused → missing、exit_code 3，其餘照實記錄
-    import gate_result
     want = [gate_result.tool(p["provider"], "missing" if p["state"] == "refused" else p["state"], version=p.get("model"),
                              exit_code=3 if p["state"] == "refused" else None, output_ref="reviews/g4/x.yaml")
             for p in r6["providers"]]

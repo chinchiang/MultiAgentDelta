@@ -14,11 +14,13 @@ import argparse, json, os, pathlib, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-# G4 gate JSON 的控制（順序同 coverage）；政策檔讀不到時全部記 untested
 TOOL_NAME, TOOL_VERSION = "vibesec-g4-static", "1.0.0"
-LLM_CONTROL = "VS-G4-LLM-REVIEW"   # 與 g4_review.LLM_CONTROL 相同；由 g4_review.py 依審查紀錄判定
+# LLM 審查控制：由 g4_review.py 依審查紀錄判定（GateRun 的 deferred）。本檔不依賴 PyYAML，是這個 ID 的唯一來源，
+# g4_review、g4_access 都從這裡取用
+LLM_CONTROL = "VS-G4-LLM-REVIEW"
+# G4 gate JSON 的控制（順序同 coverage）；政策檔讀不到時靜態控制記 untested、LLM_CONTROL 維持 pending
 CONTROLS = ("VS-G4-RULES-FILE-UNICODE", "ASVS5-V8.2", "ASVS5-V8.3", "VS-G4-AGENT-TOOL-ALLOWLIST", "ASVS5-V2.3",
-            "VS-G4-MCP-RESOURCE-INDICATOR", "VS-G4-LLM-REVIEW")
+            "VS-G4-MCP-RESOURCE-INDICATOR", LLM_CONTROL)
 
 
 def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: pathlib.Path = ROOT) -> None:
@@ -278,7 +280,7 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
         {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure", ctl="VS-G4-AGENT-TOOL-ALLOWLIST"), "reason": _why("VS-G4-AGENT-TOOL-ALLOWLIST")},
         {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl", ctl="ASVS5-V2.3"), "reason": _why("ASVS5-V2.3")},
         MCP_COV,
-        {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
+        {"control_id": LLM_CONTROL, "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
     ]
     # 依 CONTROLS 排列（政策檔讀不到時用同一份清單）：多一個、少一個控制都直接失敗，不靠兩份清單手動同步
     by_id = {e["control_id"]: e for e in entries}
@@ -421,10 +423,10 @@ def selftest() -> list[str]:
         # LLM 審查控制（deferred）維持 pending、tool 列只有一列 error
         import gate_result
         cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g["coverage"]]
-        want = [(c, "untested", True) for c in CONTROLS if c != "VS-G4-LLM-REVIEW"] + [("VS-G4-LLM-REVIEW", "pending", False)]
+        want = [(c, "untested", True) for c in CONTROLS if c != LLM_CONTROL] + [(LLM_CONTROL, "pending", False)]
         if g["status"] != "incomplete" or not (g["status_reason"] or "").startswith(POLICY_UNREADABLE + "（") \
                 or g["findings_count"] != {"blocking": 0, "advisory": 0} or cov != want \
-                or g["tools"] != [gate_result.tool("vibesec-g4-static", "error", version="1.0.0")] \
+                or g["tools"] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
                 or (out / "g4-static.sarif").exists() or list(schema.iter_errors(g)):
             fails.append(f"政策檔讀不到 → G4 incomplete、寫明原因、靜態控制 untested、LLM 審查 pending、tool error、不留 SARIF（得到 {g}）")
     return fails
