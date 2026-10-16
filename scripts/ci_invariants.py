@@ -7,6 +7,7 @@
   untrusted_script_runs(text)             workflow 不得執行本分支的 scripts/（判定程式只採用 _trusted/）
   sed_target_substitution(text)           不得以 sed 把受測目標 URL 代入設定（URL 含 # 或 & 會壞）
   sarif_jobs_without_permission(wf)       有 upload-sarif 的 job，有效權限須含 security-events: write
+  self_sarif_uploads_without_hashfiles(wf)  上傳自產 SARIF 的步驟須以 hashFiles(<該檔>) 為條件（閘門沒有判定任何發現時不寫 SARIF）
 
   python3 scripts/ci_invariants.py selftest
 """
@@ -71,6 +72,26 @@ def sarif_jobs_without_permission(wf: dict) -> list[str]:
         eff = job.get("permissions", top)
         if eff != "write-all" and not (isinstance(eff, dict) and eff.get("security-events") == "write"):
             out.append(name)
+    return out
+
+
+# 本 repo 閘門程式自產的 SARIF（gate_result.sarif）：沒有判定任何發現時會刪掉舊檔、不寫新檔（#179、#182、#184），
+# 上傳步驟必須在檔案缺席時略過；第三方工具（grype、trivy、semgrep、checkov）的 SARIF 不在此列
+SELF_SARIF = ("g1-slopcheck.sarif", "g1-sbom.sarif", "g1-kev.sarif", "g1-maintenance.sarif", "g1-provenance.sarif",
+              "g4-static.sarif", "g5-api-probes.sarif", "g6.sarif")
+
+
+def self_sarif_uploads_without_hashfiles(wf: dict) -> list[str]:
+    """上傳自產 SARIF、但 if 條件沒有 hashFiles('<sarif_file>') 的步驟（「job：步驟名稱」）。
+    沒有這個條件時，檔案缺席只會讓上傳步驟失敗（多半 continue-on-error），job 紀錄出現假的錯誤。"""
+    out = []
+    for name, job in (wf.get("jobs") or {}).items():
+        for st in (job or {}).get("steps") or []:
+            if "github/codeql-action/upload-sarif" not in str(st.get("uses", "")):
+                continue
+            sf = str((st.get("with") or {}).get("sarif_file") or "")
+            if sf.rsplit("/", 1)[-1] in SELF_SARIF and f"hashFiles('{sf}')" not in str(st.get("if", "")):
+                out.append(f"{name}：{st.get('name') or sf}")
     return out
 
 
@@ -150,6 +171,18 @@ def selftest() -> list[str]:
     ]:
         if sarif_jobs_without_permission(wf) != want:
             fails.append(f"sarif_jobs_without_permission「{label}」：預期 {want}，得到 {sarif_jobs_without_permission(wf)}")
+    # 自產 SARIF 的上傳步驟要以 hashFiles(<該檔>) 為條件；第三方 SARIF 不檢查
+    sup = lambda f, cond=None: {"name": f, "uses": "github/codeql-action/upload-sarif@abc", "with": {"sarif_file": f},
+                                **({"if": cond} if cond else {})}
+    for label, steps, want in [
+        ("自產、有 hashFiles", [sup("reports/g6.sarif", "always() && hashFiles('reports/g6.sarif') != ''")], []),
+        ("自產、只有 always()", [sup("reports/g6.sarif", "always()")], ["a：reports/g6.sarif"]),
+        ("自產、hashFiles 指向別的檔", [sup("reports/g6.sarif", "always() && hashFiles('reports/x.sarif') != ''")], ["a：reports/g6.sarif"]),
+        ("第三方不檢查", [sup("reports/grype.sarif", "always()")], []),
+    ]:
+        got = self_sarif_uploads_without_hashfiles({"jobs": {"a": {"steps": steps}}})
+        if got != want:
+            fails.append(f"self_sarif_uploads_without_hashfiles（{label}）：預期 {want}，得到 {got}")
     pr_ok = {"jobs": {"summary": {"steps": [{"name": "彙整 gate-status 矩陣",
                                              "run": "python3 _trusted/scripts/gate_verdict.py enforce --trusted-root _trusted"}]}}}
     st_ok = {"jobs": {"blackbox": {"outputs": {"blackbox_problems": "${{ steps.verdict.outputs.blackbox_problems }}"},

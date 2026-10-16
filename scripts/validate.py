@@ -749,6 +749,9 @@ for _name, _t in _wf.items():
         err(f".github/workflows/{_name}: workflow 層級 permissions 有 {_p}（寫入權限須在 job 層級宣告）"); _n_ci += 1
     for _j in _ci.sarif_jobs_without_permission(yaml.safe_load(_t) or {}):
         err(f".github/workflows/{_name}: job {_j} 上傳 SARIF 但有效權限沒有 security-events: write（上傳會失敗）"); _n_ci += 1
+    for _s in _ci.self_sarif_uploads_without_hashfiles(yaml.safe_load(_t) or {}):
+        err(f".github/workflows/{_name}: {_s} 上傳自產 SARIF 卻沒有 hashFiles 條件（閘門沒有判定任何發現時不寫 SARIF，"
+            f"上傳步驟會失敗）"); _n_ci += 1
 for _f in sorted(set(glob.glob(str(ROOT / ".github/**/*.yml"), recursive=True) + glob.glob(str(ROOT / ".github/**/*.js"), recursive=True))):
     for _i in _ci.unpaginated_list_comments(pathlib.Path(_f).read_text(encoding="utf-8")):
         err(f"{pathlib.Path(_f).relative_to(ROOT)}:{_i}: issues.listComments 未經 github.paginate（只會拿到第一頁 30 則）"); _n_ci += 1
