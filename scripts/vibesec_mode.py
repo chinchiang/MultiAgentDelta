@@ -10,7 +10,7 @@ exit 2，所以 action 不能依賴它）。閘門不直接呼叫本 module，�
                                      合法 → (mode, None)；缺席或不合法 → (None, 原因)，不合法時附上讀到的值。沒有預設值。
   apply_override(mode, override) -> (mode, note)
                                      覆寫只能把 shadow 升為 enforce（GLOSSARY.md「執行模式」）：None／空字串 → 不覆寫；
-                                     enforce → enforce；shadow 遇到 enforce → 維持 enforce 並附註；不合法 → ValueError
+                                     覆寫 enforce → enforce；設定 enforce 遇到覆寫 shadow → 維持 enforce 並附註；不合法 → ValueError
                                      （打錯的覆寫值不得默默以設定值執行）。Policy 與阻擋判定共用這一份。
 
   python3 scripts/vibesec_mode.py selftest

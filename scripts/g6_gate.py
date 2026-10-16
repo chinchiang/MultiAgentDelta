@@ -66,6 +66,7 @@ def load_catalog() -> tuple[dict, dict]:
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
+from vibesec_mode import MODES  # noqa: E402  mode 的合法值只有一份（#200）
 import gate_result  # noqa: E402  tool 列、自產 SARIF 骨架與時間戳只有一份寫法（#184）；coverage 與判定仍在 build()
 
 # G6 自己的 tool 名稱與版本：SARIF driver，以及政策讀不到時閘門結果唯一的一列 tool
@@ -746,7 +747,7 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     ap.add_argument("--cost", help="scripts/g6_cost_probe.py 的輸出（denial_of_wallet_cost）")
     ap.add_argument("--observations", help="scripts/g6_observe.py 的觀測檔（excessive_agency_telemetry）")
     ap.add_argument("--target-denied", help="目標未通過 scripts/target_guard.py 的原因：不讀任何結果，閘門 incomplete")
-    ap.add_argument("--mode", required=True, choices=["shadow", "enforce"],
+    ap.add_argument("--mode", required=True, choices=MODES,
                     help="取自 vibesec.yaml 的 mode；必填，漏帶不得默默以 shadow 執行")
     a = ap.parse_args(argv)
     started = now()

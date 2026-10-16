@@ -360,6 +360,16 @@ def selftest() -> list[str]:
                     or list(schema.iter_errors(g)):
                 fails.append(f"政策讀不到（{make_root.__name__}；只有 vibesec-sarif-gate 一列 error）→ 不跑工具、G3 incomplete、"
                              f"控制 untested、寫明原因、mode 記 enforce（得到 {g}）")
+            # 經 main()：退出碼 2（同政策讀不到）、semgrep／checkov／trivy 都沒有執行（替身被呼叫會留下記號檔）
+            rc, ran = sarif_gate.main_with_policy(sys.modules[__name__], pr, pathlib.Path(d), *(f"VIBESEC_{t.upper()}" for t in TOOLS))
+            if rc != 2 or ran:
+                fails.append(f"政策讀不到（{make_root.__name__}）→ main 退出碼 2、不執行任何工具（得到 {rc}、執行了 {ran}）")
+    from vibesec_policy import temp_policy_root
+    envs = [f"VIBESEC_{t.upper()}" for t in TOOLS]
+    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d:   # 對照組：政策讀得到時替身確實會被執行
+        ran = sarif_gate.main_with_policy(sys.modules[__name__], pr, pathlib.Path(d), *envs)[1]
+        if not ran:
+            fails.append(f"對照組：政策讀得到時工具替身應被執行（否則上面的「不執行」檢查沒有意義；得到 {ran}）")
     return fails
 
 

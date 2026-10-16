@@ -21,10 +21,19 @@
 
 ## 決定
 
-1. **唯一的來源是受信任樹 `vibesec.yaml` 最上層的 `mode`，沒有預設值。** 合法值清單與解析規則只有一份，放在只用標準函式庫的 mode module（`read_mode`）。之所以不放在政策 module，是因為政策 module 在缺 PyYAML 時 import 就會 exit 2（這是刻意的行為），受信任設定 action 無法依賴它。
+1. **唯一的來源是受信任樹 `vibesec.yaml` 最上層的 `mode`，沒有預設值。** 合法值清單、解析規則（`read_mode`）和覆寫規則（`apply_override`）只有一份，放在只用標準函式庫的 mode module。之所以不放在政策 module，有兩個原因：
+   - 政策 module 在缺 PyYAML 時 import 就會 exit 2（這是刻意的行為），受信任設定 action 無法依賴它。
+   - 政策檔壞掉時，阻擋判定仍要能讀出 mode（shadow 下只報告），不能因為政策讀不到就連 mode 也不明。
 2. **閘門透過 `load_policy` 取得 mode。** mode 缺席或不合法是「政策讀不到」的一種，走同一個前綴、同一條 incomplete 路徑，閘門不另寫檢查。
 3. **閘門層級不接受 mode 管道。** 閘門結果的 `mode` 一律記設定值，只是紀錄；阻擋判定另讀受信任樹，不採信 gate JSON 的 `mode`。閘門層級的 `--mode` 和 `VIBESEC_MODE` 依 #199 分兩階段移除。
-4. **只有阻擋判定可以把 shadow 升為 enforce。** 覆寫規則（`apply_override`）也只有一份：覆寫成 enforce 會生效；試圖降級時忽略並附註；覆寫值不合法視為錯誤，不會默默改以設定值執行。
+4. **只有阻擋判定可以把 shadow 升為 enforce。** 理由是：阻擋判定是唯一決定是否阻擋的地方，閘門結果只是它的輸入；在閘門層級升級不會讓任何東西更嚴，只會多一個可能跟設定不一致的來源。覆寫規則：覆寫成 enforce 會生效；試圖降級時忽略並附註；覆寫值不合法視為錯誤（mode 視同 enforce），不會默默改以設定值執行。
+
+## 過渡期
+
+依 #199 分階段落地。#200 合併後，mode 缺席或不合法時 `load_policy` 會先失敗，各閘門自己殘留的 mode 讀法就走不到了。但在 #201、#202、#203 完成之前，下列地方仍有自己的讀法或管道：
+- G4 存取審查的 shadow 預設值，以及 G4 審查 `gate --mode`（#201）。
+- G5 的 `VIBESEC_MODE`、G6 的 `--mode`（#202）。
+- workflow 傳給閘門的 mode，以及受信任設定 action 內嵌的 regex（#203）。
 
 ## 後果
 
@@ -57,10 +66,19 @@ In CI, the gate-level `--mode` and `VIBESEC_MODE` all carry the same trusted val
 
 ## Decision
 
-1. **The only source is the top-level `mode` in the trusted tree's `vibesec.yaml`, with no default.** The list of valid values and the parsing rule exist once, in a standard-library-only mode module (`read_mode`). It is not in the policy module because the policy module exits 2 at import time when PyYAML is missing (on purpose), so the trusted-configuration action cannot depend on it.
+1. **The only source is the top-level `mode` in the trusted tree's `vibesec.yaml`, with no default.** The list of valid values, the parsing rule (`read_mode`), and the override rule (`apply_override`) exist once, in a standard-library-only mode module. They are not in the policy module for two reasons:
+   - The policy module exits 2 at import time when PyYAML is missing (on purpose), so the trusted-configuration action cannot depend on it.
+   - When the policy file is broken, the blocking decision must still read mode (report only under shadow); an unreadable policy must not also make mode unknown.
 2. **Gates get mode through `load_policy`.** A missing or invalid mode is one kind of "policy unreadable": same prefix, same incomplete path, and no separate check in each gate.
 3. **Gates accept no mode channel.** The `mode` in a gate result always records the configured value and is only a record; the blocking decision reads the trusted tree on its own and does not trust the `mode` in gate JSON. The gate-level `--mode` and `VIBESEC_MODE` are removed in two phases, as #199 describes.
-4. **Only the blocking decision can raise shadow to enforce.** The override rule (`apply_override`) also exists once: an enforce override takes effect; a downgrade attempt is ignored with a note; an invalid override is an error and never silently falls back to the configured value.
+4. **Only the blocking decision can raise shadow to enforce.** The reason: the blocking decision is the only place that decides whether to block, and gate results are just its input; raising mode at the gate level makes nothing stricter and only adds another source that can disagree with the configuration. The override rule: an enforce override takes effect; a downgrade attempt is ignored with a note; an invalid override is an error (mode is treated as enforce) and never silently falls back to the configured value.
+
+## Transition
+
+This lands in phases, as #199 describes. Once #200 is merged, a missing or invalid mode makes `load_policy` fail first, so the mode readings still left in individual gates can no longer be reached. Until #201, #202, and #203 are done, these places still have their own reading or channel:
+- the G4 access review's shadow default and the G4 review's `gate --mode` (#201);
+- G5's `VIBESEC_MODE` and G6's `--mode` (#202);
+- the mode the workflows pass to gates, and the regex embedded in the trusted-configuration action (#203).
 
 ## Consequences
 
