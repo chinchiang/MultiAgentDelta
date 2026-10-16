@@ -478,18 +478,20 @@ def selftest() -> list[str]:
                 g = run(ROOT, pathlib.Path(d), vibesec=dict(vb_ok, mode=m))
             if g["status"] != "pass" or g["mode"] != m:
                 fails.append(f"mode {m} → 照常判定（得到 {g['status']}、mode={g['mode']}）")
-        # 退出碼：經 main()，vibesec.yaml 的內容換成缺 mode
+        # 退出碼：經 main()，vibesec.yaml 的內容換成缺 mode 或 mode 不合法
         real_yaml = sarif_gate._yaml
-        sarif_gate._yaml = lambda p: dict(no_mode) if pathlib.Path(p) == ROOT / "vibesec.yaml" else real_yaml(p)
         try:
-            with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-                try:
-                    code = main(["--out-dir", d, "--gate", str(pathlib.Path(d) / "G0.json")])
-                    g = json.loads((pathlib.Path(d) / "G0.json").read_text(encoding="utf-8"))
-                except Exception as e:
-                    code, g = f"例外 {type(e).__name__}", {"status": None}
-            if code != 2 or g["status"] != "incomplete":
-                fails.append(f"mode 缺席 → main 退出碼 2（同政策讀不到）、寫出 incomplete 閘門結果（得到 {code}、{g['status']}）")
+            for label, vb in [("缺席", no_mode), ("x", dict(vb_ok, mode="x")), ("Enforce", dict(vb_ok, mode="Enforce")),
+                              ("空字串", dict(vb_ok, mode=""))]:
+                sarif_gate._yaml = lambda p, vb=vb: dict(vb) if pathlib.Path(p) == ROOT / "vibesec.yaml" else real_yaml(p)
+                with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+                    try:
+                        code = main(["--out-dir", d, "--gate", str(pathlib.Path(d) / "G0.json")])
+                        g = json.loads((pathlib.Path(d) / "G0.json").read_text(encoding="utf-8"))
+                    except Exception as e:
+                        code, g = f"例外 {type(e).__name__}", {"status": None}
+                if code != 2 or g["status"] != "incomplete":
+                    fails.append(f"mode {label} → main 退出碼 2（同政策讀不到）、寫出 incomplete 閘門結果（得到 {code}、{g['status']}）")
         finally:
             sarif_gate._yaml = real_yaml
     finally:

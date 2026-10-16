@@ -1820,10 +1820,14 @@ def selftest():
             if len(re.findall(r"(?m)^mode:.*$", real_text)) != 1:
                 fails.append("selftest 前置：vibesec.yaml 找不到唯一的最上層 mode，無法製造 mode 缺席或不合法的情境")
             for label, line in [("缺席", ""), ("x", "mode: x"), ("Enforce", "mode: Enforce"), ("空字串", 'mode: ""'),
-                                ("shadow", "mode: shadow"), ("enforce", "mode: enforce"), ("整個檔缺席", None)]:
+                                ("shadow", "mode: shadow"), ("enforce", "mode: enforce"), ("整個檔缺席", None),
+                                ("整個檔語法錯誤", ("gates: [\n",)), ("整個檔不是 mapping", ("- a\n",))]:
                 vbp, gp, sp = Path(d, "vibesec.yaml"), Path(d, "G1.json"), Path(d, "G1.sarif")
+                whole = line is None or isinstance(line, tuple)   # vibesec.yaml 整個讀不到
                 if line is None:
                     vbp.unlink(missing_ok=True)
+                elif whole:
+                    vbp.write_text(line[0], encoding="utf-8")
                 else:
                     vbp.write_text(re.sub(r"(?m)^mode:.*$", line, real_text, count=1), encoding="utf-8")
                 gp.unlink(missing_ok=True)
@@ -1836,10 +1840,10 @@ def selftest():
                 except Exception as e:
                     fails.append(f"mode {label} → 不得拋例外（得到 {type(e).__name__}：{e}）"); continue
                 g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
-                if line is None:   # 整個檔讀不到：照常執行、由 config_problems 記 incomplete，mode 記 enforce（#190 決定）
+                if whole:   # 整個檔讀不到：照常執行、由 config_problems 記 incomplete，mode 記 enforce（#190 決定）
                     if code != 2 or g.get("status") != "incomplete" or "vibesec.yaml" not in (g.get("status_reason") or "") \
                             or g.get("mode") != "enforce" or queried != ["express"]:
-                        fails.append(f"vibesec.yaml 整個缺席 → 照常執行、incomplete、mode 記 enforce（得到 exit {code}、"
+                        fails.append(f"vibesec.yaml {label} → 照常執行、incomplete、mode 記 enforce（得到 exit {code}、"
                                      f"{g.get('status')}：{g.get('status_reason')}、mode={g.get('mode')}、查詢 {queried}）")
                     continue
                 if label in ("shadow", "enforce"):
