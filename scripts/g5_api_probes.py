@@ -191,12 +191,6 @@ def _problems(incomplete_reason, has_a, has_b):
     return problems
 
 
-def _gate_status(blocking, incomplete_reason, has_a, has_b, coverage):
-    """G5 整體狀態與 status_reason：由 gate_verdict.verdict 判定（blocking 優先 fail、untested 不得 pass）。
-    coverage 為 [{control_id, state, reason}]；缺 token、目標無法連線是未完成原因。"""
-    from gate_verdict import verdict
-    return verdict(blocking=blocking, coverage=coverage, problems=_problems(incomplete_reason, has_a, has_b))
-
 
 def main():
     """執行所有探針並寫出 reports/g5-api-probes.sarif 與 reports/g5-gate.json。缺必填環境變數 → incomplete（不 traceback）；
@@ -734,13 +728,13 @@ def selftest():
     import gate_result
     if sorted(EXEC_ORDER) != sorted((*CHECKS, *ZAP_SCANS)) or len(set(EXEC_ORDER)) != len(EXEC_ORDER):
         fails.append(f"EXEC_ORDER 應與 CHECKS＋ZAP_SCANS 是同一組控制（得到 {EXEC_ORDER}）")
-    # 缺 VIBESEC_TARGET_URL：coverage 是完整的宣告清單（CHECKS＋ZAP_SCANS 的順序，全部 untested）、探針 tool 列 missing、
-    # 舊 SARIF 刪掉（#184 決定 3）
+    # 缺 VIBESEC_TARGET_URL：incomplete、exit 0、符合 schema；coverage 是完整的宣告清單（CHECKS＋ZAP_SCANS 的順序，
+    # 全部 untested）、探針 tool 列 missing、舊 SARIF 刪掉（#184 決定 3；取代原本只檢查 incomplete／schema／tool missing 的測試）
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "reports").mkdir(); sf = pathlib.Path(d) / "reports/g5-api-probes.sarif"; sf.write_text('{"stale": true}')
         code, g = run_in(d, {})
         cov = [(c["control_id"], c["state"]) for c in (g or {}).get("coverage", [])]
-        if code != 0 or not g or cov != [(k, "untested") for k in (*CHECKS, *ZAP_SCANS)] \
+        if code != 0 or not g or g["status"] != "incomplete" or cov != [(k, "untested") for k in (*CHECKS, *ZAP_SCANS)] \
                 or g["tools"] != [gate_result.tool(TOOL_NAME, "missing", version=TOOL_VERSION, exit_code=0, output_ref="reports/g5-api-probes.sarif")] \
                 or sf.exists() or list(schema.iter_errors(g)):
             fails.append(f"缺 VIBESEC_TARGET_URL → coverage 為完整的宣告清單（untested）、tool 列 missing、舊 SARIF 刪掉（得到 {code}、{cov}、"
@@ -752,15 +746,6 @@ def selftest():
         if ids != list(EXEC_ORDER) or g["status"] != "incomplete":
             fails.append(f"未授權目標 → coverage 依執行順序列出全部 12 個控制、incomplete（得到 {ids}）")
 
-    # 缺 VIBESEC_TARGET_URL → incomplete gate、exit 0、不 traceback、不送任何請求
-    with tempfile.TemporaryDirectory() as d:
-        code, g = run_in(d, {})
-        if code != 0 or not g or g["status"] != "incomplete":
-            fails.append(f"缺 VIBESEC_TARGET_URL → 應寫出 incomplete gate 並回 0（得到 code={code}, gate={g}）")
-        elif list(schema.iter_errors(g)):
-            fails.append(f"缺環境變數的 gate 不符 schema：{list(schema.iter_errors(g))[0].message}")
-        elif g["tools"][0]["state"] != "missing":
-            fails.append("缺環境變數時探針工具 state 應為 missing")
 
     # 政策檔讀不到 → 進入點就停：incomplete gate 並寫明未完成原因、探針工具 state error、沒有任何發現、不送任何請求
     # （以前 Policy(ROOT) 拋出例外、整支結束，gate JSON 沒有寫出）
@@ -904,12 +889,24 @@ def selftest():
         elif want == "untested" and not got.get("reason"):
             fails.append(f"{control}（{name}）untested 時應說明原因")
 
-    # 接線：G5 把缺 token／無法連線當未完成原因、coverage 原樣交給 gate_verdict.verdict（真值表在 gate_verdict.py selftest）
-    st, why = _gate_status(1, "目標 x 無法連線", True, False, [{"control_id": "bola_idor", "state": "untested", "reason": "缺 token"}])
-    if st != "fail" or not all(x in (why or "") for x in ("目標 x 無法連線", "has_b=False", "bola_idor 未實測")):
-        fails.append(f"_gate_status 接線：blocking＋缺 token＋無法連線 → fail，理由列出全部未完成項目（得到 {st}：{why}）")
-    if _gate_status(0, None, True, True, [{"control_id": "rate_limit", "state": "untested", "reason": None}])[0] != "incomplete":
-        fails.append("_gate_status 接線：控制未實測 → incomplete")
+    # 接線：G5 把缺 token／無法連線當未完成原因（_problems），狀態由 GateRun（gate_verdict.verdict）判定；
+    # 與 main() 正常路徑相同的組裝方式（真值表在 gate_verdict.py selftest）
+    def _assemble(blocking, incomplete_reason, has_a, has_b, covered):
+        run = _gate_run("shadow", datetime.datetime.now(datetime.timezone.utc), EXEC_ORDER)
+        for k, st, why in covered:
+            run.cover(k, st, why)
+        for k in EXEC_ORDER:
+            if k not in {c[0] for c in covered}:
+                run.cover(k, "pass")
+        run.count(blocking=blocking)
+        for p in _problems(incomplete_reason, has_a, has_b):
+            run.problem(p)
+        return run.result()
+    g = _assemble(1, "目標 x 無法連線", True, False, [("bola_idor", "untested", "缺 token")])
+    if g["status"] != "fail" or not all(x in (g["status_reason"] or "") for x in ("目標 x 無法連線", "has_b=False", "bola_idor 未實測")):
+        fails.append(f"接線：blocking＋缺 token＋無法連線 → fail，理由列出全部未完成項目（得到 {g['status']}：{g['status_reason']}）")
+    if _assemble(0, None, True, True, [("rate_limit", "untested", None)])["status"] != "incomplete":
+        fails.append("接線：控制未實測 → incomplete")
     # 端到端：沒有任何 token，但 /me 反射 Origin（blocking）→ gate 應為 fail，不是 incomplete
     srv = serve_routes(lambda m, p, h: base(m, p, h, lambda m, p, full, h: (200, reflect(h), "{}") if p == "/me" else None))
     try:

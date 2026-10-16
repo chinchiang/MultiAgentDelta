@@ -446,6 +446,11 @@ def ingest_garak(c: Collector, pattern: str | None, log_path: str | None = None,
         c.reasons.append(f"garak 未完成：{', '.join(missing)}{suffix}")
 
 
+def check_rule(check: str) -> str:
+    """vibesec.yaml 的 check 名稱 → 規則 ID（vibesec.g6.<kebab>）。"""
+    return "vibesec.g6." + check.replace("_", "-")
+
+
 def declared_checks() -> list[str] | None:
     """vibesec.yaml gates.g6_ai_red_team.checks；讀不到 → None（呼叫端記 untested）。"""
     try:
@@ -466,7 +471,7 @@ def require_checks(c: Collector, checks: list[str] | None):
         return
     missing = [ck for ck in checks if ck not in c.tested]
     for ck in missing:
-        rule = "vibesec.g6." + ck.replace("_", "-")
+        rule = check_rule(ck)
         prev = c.coverage.get(ck)
         why = (prev or {}).get("reason") or "vibesec.yaml 宣告的 check 沒有任何實測結果"
         c.cover(ck, (prev or {}).get("control_id") or c.control(rule, "LLM01:2025"), "untested", why)
@@ -499,7 +504,7 @@ def selftest() -> list[str]:
     with tempfile.TemporaryDirectory() as d:
         dp = pathlib.Path(d)
         row = lambda ck, ok=True: {"success": ok, "failureReason": 0 if ok else PF_ASSERT, "testCase": {"description": ck,
-            "metadata": {"vibesec_check": ck, "vibesec_rule_id": "vibesec.g6." + ck.replace("_", "-")}}}
+            "metadata": {"vibesec_check": ck, "vibesec_rule_id": check_rule(ck)}}}
         all_checks = declared_checks() or []
         ok_rows = [row(ck) for ck in all_checks]
         (dp / "eval.json").write_text(json.dumps({"results": {"results": ok_rows}}), encoding="utf-8")
@@ -699,7 +704,7 @@ def selftest() -> list[str]:
     # tool 列只有 G6 自己的一列 error、舊 SARIF 刪掉（以前寫空檔）
     declared = declared_checks() or []
     ids = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g["coverage"]]
-    want = [(Collector(*load_catalog()).control("vibesec.g6." + ck.replace("_", "-"), "LLM01:2025"), "untested", True) for ck in declared]
+    want = [(Collector(*load_catalog()).control(check_rule(ck), "LLM01:2025"), "untested", True) for ck in declared]
     if rc != 0 or g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in (g["status_reason"] or "") \
             or g["findings_count"] != {"blocking": 0, "advisory": 0} or not declared or ids != want \
             or g["tools"] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] or stale \
@@ -754,7 +759,7 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
         if declared is None:
             c.cover("declared_checks", "LLM01:2025", "untested", problem)
         for ck in declared or []:
-            c.cover(ck, c.control("vibesec.g6." + ck.replace("_", "-"), "LLM01:2025"), "untested", problem)
+            c.cover(ck, c.control(check_rule(ck), "LLM01:2025"), "untested", problem)
         c.tools.append(gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION))
         c.reasons.append(problem)
     elif a.target_denied:
