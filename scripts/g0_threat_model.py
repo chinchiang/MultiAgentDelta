@@ -32,7 +32,7 @@ import sarif_gate  # noqa: E402  缺 PyYAML 時以 exit 2 結束（無法判定�
 from g0_trifecta import policy_notes, trifecta_findings  # noqa: E402
 from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
 from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本
-from gate_result import GateRun  # noqa: E402  閘門結果的外層欄位、tool 列與時間戳（#181）
+from gate_result import MODES, GateRun  # noqa: E402  閘門結果的外層欄位、tool 列與時間戳（#181）
 
 CONTROLS = ["VS-G0-LETHAL-TRIFECTA", "VS-G0-RISK-TIER"]
 
@@ -129,7 +129,7 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
     # G0 進 CI、判定程式與受驗樹分開時，改認 VIBESEC_PROJECT_ROOT，並重新判斷 external 的其他用途（docs/adr/0001）
     external = target != ROOT.resolve()
     vb = vibesec if vibesec is not None else sarif_gate._yaml(ROOT / "vibesec.yaml")
-    mode, policy_tier = vb.get("mode", "shadow"), vb.get("risk_tier", "L2")
+    mode, policy_tier = vb.get("mode"), vb.get("risk_tier", "L2")   # mode 沒有預設值：缺席或不合法 → 下面記 incomplete（#190）
     out_dir.mkdir(parents=True, exist_ok=True)
     findings_ref = out_dir / "g0-findings.json"
     findings_ref.unlink(missing_ok=True)       # 不讓上一次的輸出被當成這次的結果
@@ -156,6 +156,9 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
             (gate.problem if status == "incomplete" else gate.note)(x)
         return gate.result()
 
+    if mode not in MODES:   # 以前缺席時默默記成 shadow（#190）；比照政策讀不到：mode 記 enforce、控制全部 untested、不讀威脅模型
+        return gate.unreadable("vibesec.yaml 缺 mode（須為 shadow／enforce）" if mode is None
+                               else f"vibesec.yaml 的 mode 不合法：{mode!r}（須為 shadow／enforce）", tool_name="vibesec-g0")
     policy, problem = load_policy(policy_root, project_root=project_root)   # 只建立一次；讀不到 → incomplete，不判定任何發現
     if problem:   # 控制全部 untested（原因＝problem）、tool 列只有 vibesec-g0 一列 error
         return gate.unreadable(problem, tool_name="vibesec-g0")
@@ -238,8 +241,9 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
 
 # ------------------------------------------------------------------ selftest
 def selftest() -> list[str]:
+    global locate_model
     from vibesec_policy import Policy
-    import yaml, subprocess
+    import contextlib, io, yaml, subprocess
     from jsonschema import Draft202012Validator
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
@@ -442,6 +446,54 @@ def selftest() -> list[str]:
                 fails.append(f"risk_tier 打錯 → incomplete、沒有 risk_tier 欄位（得到 {g['status']}、{g.get('risk_tier')!r}）")
         except Exception as e:
             fails.append(f"risk_tier 打錯 → 不得拋例外（得到 {type(e).__name__}：{e}）")
+    # mode 缺席或不合法（#190）：以前缺席時默默記成 shadow、照常判定，不合法時拋例外 → 照樣寫出 incomplete 閘門結果：
+    # mode 記 enforce、控制全部 untested、tool 列只有一列 error、不讀威脅模型；退出碼同政策讀不到（2）
+    real_locate, located = locate_model, []
+
+    def counting_locate(*a, **kw):
+        located.append(a)
+        return real_locate(*a, **kw)
+    vb_ok = sarif_gate._yaml(ROOT / "vibesec.yaml")
+    no_mode = {k: v for k, v in vb_ok.items() if k != "mode"}
+    import gate_result
+    locate_model = counting_locate
+    try:
+        for label, vb in [("缺席", no_mode), ("x", dict(vb_ok, mode="x")), ("Enforce", dict(vb_ok, mode="Enforce")),
+                          ("空字串", dict(vb_ok, mode=""))]:
+            located.clear()
+            with tempfile.TemporaryDirectory() as d:
+                try:
+                    g = run(ROOT, pathlib.Path(d), vibesec=vb)
+                except Exception as e:
+                    fails.append(f"mode {label} → 不得拋例外（得到 {type(e).__name__}：{e}）"); continue
+                findings_written = (pathlib.Path(d) / "g0-findings.json").exists()
+            if g["status"] != "incomplete" or "mode" not in (g["status_reason"] or "") or g["mode"] != "enforce" \
+                    or [(c["control_id"], c["state"], "mode" in (c["reason"] or "")) for c in g["coverage"]] \
+                    != [("VS-G0-LETHAL-TRIFECTA", "untested", True), ("VS-G0-RISK-TIER", "untested", True)] \
+                    or g["tools"] != [gate_result.tool("vibesec-g0", "error")] or located or findings_written:
+                fails.append(f"mode {label} → incomplete 並寫明 mode 的問題、mode 記 enforce、控制全部 untested、tool 列只有一列 "
+                             f"error、不讀威脅模型（得到 {g['status']}：{g['status_reason']}、mode={g['mode']}、讀了 {len(located)} 次）")
+        for m in ("shadow", "enforce"):
+            with tempfile.TemporaryDirectory() as d:
+                g = run(ROOT, pathlib.Path(d), vibesec=dict(vb_ok, mode=m))
+            if g["status"] != "pass" or g["mode"] != m:
+                fails.append(f"mode {m} → 照常判定（得到 {g['status']}、mode={g['mode']}）")
+        # 退出碼：經 main()，vibesec.yaml 的內容換成缺 mode
+        real_yaml = sarif_gate._yaml
+        sarif_gate._yaml = lambda p: dict(no_mode) if pathlib.Path(p) == ROOT / "vibesec.yaml" else real_yaml(p)
+        try:
+            with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    code = main(["--out-dir", d, "--gate", str(pathlib.Path(d) / "G0.json")])
+                    g = json.loads((pathlib.Path(d) / "G0.json").read_text(encoding="utf-8"))
+                except Exception as e:
+                    code, g = f"例外 {type(e).__name__}", {"status": None}
+            if code != 2 or g["status"] != "incomplete":
+                fails.append(f"mode 缺席 → main 退出碼 2（同政策讀不到）、寫出 incomplete 閘門結果（得到 {code}、{g['status']}）")
+        finally:
+            sarif_gate._yaml = real_yaml
+    finally:
+        locate_model = real_locate
     return fails
 
 
