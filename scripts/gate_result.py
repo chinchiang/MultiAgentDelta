@@ -253,7 +253,7 @@ def known_cves() -> set[str]:
     return set(((yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get("cves") or {}) if p.exists() else ())
 
 
-def _optional(name, v, allowed):
+def _optional_choice(name, v, allowed):
     return None if v is None else _choice(name, v, allowed)
 
 
@@ -300,7 +300,7 @@ def finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, locat
     _choice("policy_tier", policy_tier, POLICY_TIERS)
     for name, v, allowed in (("severity", severity, SEVERITIES), ("cvss_version", cvss_version, CVSS_VERSIONS),
                              ("priority", priority, PRIORITIES), ("retest_result", retest_result, RETEST_RESULTS)):
-        _optional(name, v, allowed)
+        _optional_choice(name, v, allowed)
     _in_catalog("control_id", control_id, known_controls)
     _in_catalog("cwe", cwe, known_cwes)
     _in_catalog("cve", cve, known_cves)
@@ -318,7 +318,7 @@ def finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, locat
         _text("commit", commit)
     if evidence_refs is not None and not isinstance(evidence_refs, list):
         raise ValueError(f"evidence_refs 必須是清單（得到 {evidence_refs!r}）")
-    created_at = created_at or now()
+    created_at = now() if created_at is None else created_at   # 空字串不當成「沒給」，交給 _utc_date 拒絕
     f = {"id": _finding_id(rule_id, path, line, commit, created_at), "gate": gate, "rule_id": rule_id, "title": title}
     if description is not None:
         f["description"] = description
@@ -333,12 +333,20 @@ def finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, locat
     return f
 
 
+def _finding_validator():
+    """finding schema 的 jsonschema 驗證器（CLI 與 selftest 共用；呼叫端負責 jsonschema 缺席的處理）。"""
+    import json
+    from jsonschema import Draft202012Validator
+    return Draft202012Validator(json.loads((ROOT / "schemas/finding.schema.json").read_text(encoding="utf-8")),
+                                format_checker=Draft202012Validator.FORMAT_CHECKER)
+
+
 def finding_cli(stdin, stdout, stderr) -> int:
     """`finding` 子指令：stdin 讀部分欄位的 JSON 物件，stdout 輸出完整發現；不合法 → exit 2、stderr 寫明原因。
     只組裝發現，不參與阻擋判定。輸出先以 jsonschema 驗證；jsonschema 缺席 → exit 2，不輸出沒驗證過的發現（#185 決定）。"""
     import json
     try:
-        from jsonschema import Draft202012Validator
+        schema = _finding_validator()
     except ImportError:
         print("finding：缺 jsonschema，無法驗證發現，未輸出（pip install jsonschema）", file=stderr)
         return 2
@@ -358,8 +366,6 @@ def finding_cli(stdin, stdout, stderr) -> int:
     except ValueError as e:
         print(f"finding：{e}", file=stderr)
         return 2
-    schema = Draft202012Validator(json.loads((ROOT / "schemas/finding.schema.json").read_text(encoding="utf-8")),
-                                  format_checker=Draft202012Validator.FORMAT_CHECKER)
     errors = sorted(schema.iter_errors(f), key=str)
     if errors:
         e = errors[0]
@@ -631,8 +637,7 @@ def selftest() -> list[str]:
 
     # ---- 發現與發現 ID（#185）
     import subprocess
-    fschema = Draft202012Validator(json.loads((ROOT / "schemas/finding.schema.json").read_text(encoding="utf-8")),
-                                   format_checker=Draft202012Validator.FORMAT_CHECKER)
+    fschema = _finding_validator()
 
     def ferrs(f):
         e = sorted(fschema.iter_errors(f), key=str)
@@ -741,6 +746,7 @@ def selftest() -> list[str]:
             "commit 非字串": lambda: finding(**{**base, "commit": 123}),
             "created_at 沒有時區": lambda: finding(**{**base, "created_at": "2026-10-16T01:02:03"}),
             "created_at 不是時間": lambda: finding(**{**base, "created_at": "yesterday"}),
+            "created_at 空字串": lambda: finding(**{**base, "created_at": ""}),
             "severity 不合法": lambda: finding(**base, severity="severe"),
         }
         bad = [k for k, fn in cases.items() if not raises(fn)]
@@ -783,6 +789,19 @@ def selftest() -> list[str]:
             if code == 0 or out.strip() or not err.strip():
                 return f"{name}：應以非零退出碼結束、stdout 為空、stderr 寫明原因（得到 {code}、{out!r}、{err!r}）"
     check("finding CLI：不合法輸入", t_cli_bad)
+
+    def t_cli_no_jsonschema():
+        import io
+        saved = sys.modules.get("jsonschema")
+        sys.modules["jsonschema"] = None          # import jsonschema → ImportError
+        try:
+            out, err = io.StringIO(), io.StringIO()
+            code = finding_cli(io.StringIO(json.dumps(base, ensure_ascii=False)), out, err)
+        finally:
+            sys.modules["jsonschema"] = saved
+        if code != 2 or out.getvalue() or "jsonschema" not in err.getvalue():
+            return f"缺 jsonschema → exit 2、不輸出沒驗證過的發現、stderr 寫明原因（得到 {code}、{out.getvalue()!r}）"
+    check("finding CLI：缺 jsonschema → exit 2、不輸出", t_cli_no_jsonschema)
     return fails
 
 
