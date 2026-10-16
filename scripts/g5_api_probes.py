@@ -16,7 +16,7 @@ VIBESEC_TOKEN_DIR、HAS_A、HAS_B。VIBESEC_MODE 已不使用、傳了也忽略�
 import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.error, urllib.parse, hashlib, hmac, sys
 # 自身所在的 scripts/ 放到 path 最前，不論 cwd 都能 import 同層模組（selftest 由 validate.py 以子行程在 repo 根執行）
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from vibesec_policy import load_policy
+from vibesec_policy import effective_mode, load_policy
 import gate_result  # 閘門結果、tool 列、自產 SARIF 骨架只有一份寫法（#184）
 from target_guard import GuardConfigError, check as guard_check, same_origin
 
@@ -205,7 +205,7 @@ def main():
     # 缺 target → 政策讀不到，理由逐字不變。tier 只來自 blocking-policy；VIBESEC_CONFIG 指向受信任的 vibesec.yaml
     ROOT = pathlib.Path(os.environ.get("VIBESEC_CONFIG", "vibesec.yaml")).resolve().parent
     POLICY, problem = load_policy(ROOT)   # 只建立一次；讀不到 → incomplete，不送探針、不分類任何發現
-    mode = POLICY.mode if POLICY else "enforce"
+    mode = effective_mode(POLICY)
 
     # 必填環境變數缺失 → 乾淨寫出 incomplete gate（incomplete ≠ pass；不以 KeyError traceback 收場）
     target = os.environ.get("VIBESEC_TARGET_URL")
@@ -699,15 +699,28 @@ def selftest():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         local = f"http://127.0.0.1:{srv.server_address[1]}"
-        with trusted_tree("mode: enforce") as enforce_tree, trusted_tree("") as modeless_tree:
-            # A：VIBESEC_MODE 不論有沒有、合不合法都忽略；閘門結果的 mode 取自受信任政策（enforce），照常執行
-            for label, env_mode in [("未設定", None), ("shadow", "shadow"), ("Enforce（大小寫錯）", "Enforce"), ("空字串", "")]:
+        with trusted_tree("mode: enforce") as enforce_tree, trusted_tree("mode: shadow") as shadow_tree, \
+                trusted_tree("") as modeless_tree:
+            # A：VIBESEC_MODE 不論有沒有、合不合法都忽略；閘門結果的 mode 取自受信任政策。兩個方向都測（寫死成 enforce 會被抓到）
+            for tree, want, env_modes in [(enforce_tree, "enforce", (None, "shadow", "Enforce", "")),
+                                          (shadow_tree, "shadow", (None, "enforce", "x"))]:
+                for env_mode in env_modes:
+                    with tempfile.TemporaryDirectory() as d:
+                        code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example",
+                                             "VIBESEC_CONFIG": str(tree / "vibesec.yaml")}, mode=env_mode)
+                        if code != 0 or not g or g.get("mode") != want or POLICY_UNREADABLE in (g.get("status_reason") or ""):
+                            fails.append(f"VIBESEC_MODE {env_mode!r}、政策 {want} → 忽略、照常寫出 gate JSON、mode 取自政策（{want}）"
+                                         f"（得到 code={code}, mode={g and g.get('mode')}）")
+            # A'：照常執行是真的送出探針：授權過的本機假目標、VIBESEC_MODE 缺席或不合法、受信任政策合法
+            # （trusted_tree 才有 config/targets.yaml：只放政策檔的暫存 root 會讓授權檢查先擋下，「有送／沒送」就看不出來）
+            for env_mode in (None, "x"):
+                hits.clear()
                 with tempfile.TemporaryDirectory() as d:
-                    code, g = run_in(d, {"VIBESEC_TARGET_URL": "http://unauthorized.example",
-                                         "VIBESEC_CONFIG": str(enforce_tree / "vibesec.yaml")}, mode=env_mode)
-                    if code != 0 or not g or g.get("mode") != "enforce" or POLICY_UNREADABLE in (g.get("status_reason") or ""):
-                        fails.append(f"VIBESEC_MODE {label} → 忽略、照常寫出 gate JSON、mode 取自政策（enforce）"
-                                     f"（得到 code={code}, mode={g and g.get('mode')}）")
+                    code, g = run_in(d, {"VIBESEC_TARGET_URL": local, "VIBESEC_CONFIG": str(enforce_tree / "vibesec.yaml")},
+                                     mode=env_mode)
+                    if code != 0 or not g or g.get("mode") != "enforce" or not hits:
+                        fails.append(f"VIBESEC_MODE {env_mode!r}、政策合法、授權目標 → 照常送出探針（得到 code={code}, "
+                                     f"mode={g and g.get('mode')}, 請求 {len(hits)} 筆）")
             # B：受信任政策缺 mode → 政策讀不到：寫出 incomplete、mode 記 enforce、未送出任何探針；退出碼同政策讀不到（0）
             for label, env_mode in [("VIBESEC_MODE 未設定", None), ("VIBESEC_MODE=shadow", "shadow")]:
                 hits.clear()

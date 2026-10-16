@@ -66,7 +66,7 @@ def load_catalog() -> tuple[dict, dict]:
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
+from vibesec_policy import effective_mode, load_policy  # noqa: E402  tier 與 mode 的唯一來源
 import gate_result  # noqa: E402  tool 列、自產 SARIF 骨架與時間戳只有一份寫法（#184）；coverage 與判定仍在 build()
 
 # G6 自己的 tool 名稱與版本：SARIF driver，以及政策讀不到時閘門結果唯一的一列 tool
@@ -695,14 +695,22 @@ def selftest() -> list[str]:
                     if rc != 0 or g.get("mode") != "enforce":
                         fails.append(f"--mode {cli[1:] or '未帶'}{'（--target-denied）' if path_extra else ''} → 忽略、照常寫出結果、"
                                      f"mode 取自政策（enforce）（得到 {rc}、mode={g.get('mode')}）")
-        # 受信任政策缺 mode → 政策讀不到：incomplete、mode 記 enforce（mode 不明）、寫明原因
+        # 反方向：政策 shadow、--mode enforce → 記 shadow（寫死成 enforce 會被抓到）
+        with mode_policy_root("mode: shadow") as pr:
+            for path_extra in ([], ["--target-denied", "x"]):
+                rc, g = run_with(pr, path_extra + ["--mode", "enforce"])
+                if rc != 0 or g.get("mode") != "shadow":
+                    fails.append(f"政策 shadow、--mode enforce{'（--target-denied）' if path_extra else ''} → mode 記 shadow"
+                                 f"（得到 {rc}、mode={g.get('mode')}）")
+        # 受信任政策缺 mode → 政策讀不到：incomplete、mode 記 enforce（mode 不明）、寫明原因；--target-denied 也一樣
         with modeless_policy_root() as pr:
-            rc, g = run_with(pr, ["--mode", "shadow"])
-            why = g.get("status_reason") or ""
-            if rc != 0 or g.get("status") != "incomplete" or g.get("mode") != "enforce" \
-                    or POLICY_UNREADABLE + "（" not in why or "mode" not in why:
-                fails.append(f"受信任政策缺 mode → incomplete、mode 記 enforce、寫明原因（得到 {rc}、{g.get('status')}、"
-                             f"mode={g.get('mode')}：{why}）")
+            for path_extra in ([], ["--target-denied", "x"]):
+                rc, g = run_with(pr, path_extra + ["--mode", "shadow"])
+                why = g.get("status_reason") or ""
+                if rc != 0 or g.get("status") != "incomplete" or g.get("mode") != "enforce" \
+                        or POLICY_UNREADABLE + "（" not in why or "mode" not in why:
+                    fails.append(f"受信任政策缺 mode{'（--target-denied）' if path_extra else ''} → incomplete、mode 記 enforce、"
+                                 f"寫明原因（得到 {rc}、{g.get('status')}、mode={g.get('mode')}：{why}）")
     schema = __import__("jsonschema").Draft202012Validator(
         json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
     # 政策檔讀不到 → 進入點就停：不讀任何結果、G6 incomplete 並寫明未完成原因、沒有任何發現
@@ -788,7 +796,7 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
         ingest_observations(c, a.observations)
         require_checks(c, declared_checks())
     # mode 取自受信任政策（#202；以前取必填的 --mode，#161）。政策讀不到（含 mode 缺席或不合法）→ mode 不明，記 enforce
-    gate, sarif = build(c, policy.mode if policy else "enforce", started)
+    gate, sarif = build(c, effective_mode(policy), started)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     if a.sarif:

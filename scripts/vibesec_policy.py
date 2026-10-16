@@ -11,6 +11,7 @@ base_tier；所有發出 finding 的元件（workflow 內嵌探針、scripts/*.p
   p.base_tier(rule_id)   # 基礎 tier：不含 tier_overrides（cwe-map／docs／evals 對齊用）
   p.cap(rule_id, req)    # 呼叫端只能把個別發現降為 advisory，不能升級到政策以上
   p, problem = load_policy(root)   # 閘門進入點：讀不到 → (None, 未完成原因)，閘門記 incomplete
+  effective_mode(p)      # 閘門結果記錄的 mode：p.mode；p 是 None（政策讀不到）→ enforce
   p.mode, p.mode_note    # 執行模式：受信任 vibesec.yaml 的 mode，沒有預設值（缺席或不合法 → 讀不到）；
                          # load_policy(root, mode_override=…) 只能把 shadow 升為 enforce（只有阻擋判定會傳），忽略降級時附註
   pp = p.for_project(project, today=None)       # 綁定受驗樹的政策例外（G0–G3 唯一的讀取與比對）；project 必填
@@ -236,6 +237,11 @@ def _record(ex: dict) -> dict:
             "expires": ex["expires"], "agent_id": ex.get("agent_id")}
 
 
+def effective_mode(policy: Policy | None) -> str:
+    """閘門結果記錄的 mode：policy.mode；政策讀不到（None，含 mode 缺席或不合法）→ mode 不明 → enforce（較嚴，ADR 0002）。"""
+    return policy.mode if policy is not None else "enforce"
+
+
 def load_policy(root: pathlib.Path | str | None = None, **kw) -> tuple[Policy | None, str | None]:
     """閘門開始時建立一次 Policy：(Policy, None)。政策檔缺席、無法解析或不合法 → (None, 未完成原因)；
     閘門記一筆未完成原因、狀態 incomplete，不分類任何發現（incomplete ≠ pass，CLAUDE.md #2）。kw 原樣交給 Policy。"""
@@ -296,7 +302,8 @@ def modeless_policy_root():
 @contextlib.contextmanager
 def trusted_tree(mode_line: str):
     """selftest 用：受信任樹副本（scripts、config、schemas、vibesec.yaml），vibesec.yaml 的 mode 行換成 mode_line（空字串 → 拿掉）。
-    給只能經命令列執行、無法注入 policy_root 的測試（例如 CI 以 python3 -I 執行的 g4_static）。yield 暫存 root。"""
+    給兩種測試用：只能經命令列執行、無法注入 policy_root 的（例如 CI 以 python3 -I 執行的 g4_static）；以及除了政策檔
+    還要讀同一棵樹其他設定的（例如 G5 的授權檢查讀 config/targets.yaml）。yield 暫存 root。"""
     import shutil, tempfile
     with tempfile.TemporaryDirectory(prefix="vibesec-tree-") as d:
         tree = pathlib.Path(d)
@@ -553,6 +560,10 @@ def selftest() -> list[str]:
     with modeless_policy_root() as tmp:
         if load_policy(tmp, project_root=None)[1] != f"{POLICY_UNREADABLE}（vibesec.yaml 缺 mode；須為 shadow／enforce）":
             fails.append("modeless_policy_root：load_policy 應回報 mode 缺席")
+    # effective_mode：政策讀不到 → mode 不明 → enforce（較嚴）；讀得到 → policy.mode
+    with mode_policy_root("mode: shadow") as tmp:
+        if effective_mode(load_policy(tmp, project_root=None)[0]) != "shadow" or effective_mode(None) != "enforce":
+            fails.append("effective_mode：讀得到 → policy.mode；None（政策讀不到）→ enforce")
     with mode_policy_root("mode: enforce") as tmp:
         if getattr(load_policy(tmp, project_root=None)[0], "mode", None) != "enforce":
             fails.append("mode_policy_root：mode 行換成 enforce")
