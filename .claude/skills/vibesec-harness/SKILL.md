@@ -33,7 +33,7 @@ for b in syft grype trivy gitleaks semgrep checkov zap-baseline.py promptfoo gar
 for v in VIBESEC_TARGET_URL VIBESEC_TOKEN_A VIBESEC_TOKEN_B ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GLM_API_KEY DEEPSEEK_API_KEY; do printf '%s: ' "$v"; [ -n "${!v}" ] && echo set || echo UNSET; done
 ```
 
-任一主設定（`vibesec.yaml`、blocking policy）缺席 → 寫 `reports/summary.md` 說明後停止，exit 2。缺的工具與環境變數先記下來，稍後對應閘門記 `incomplete`。**不要安裝任何工具或套件。**
+任一主設定（`vibesec.yaml`、blocking policy）缺席 → 寫 `reports/summary.md` 說明後停止，exit 2。`vibesec.yaml` 的 `mode` 缺席或不是 `shadow`／`enforce` → 不得自行補成 shadow；G0、G1 的腳本會寫出 `incomplete`（`mode` 記 `enforce`、不讀威脅模型、不查 registry、exit 2），照實記錄。缺的工具與環境變數先記下來，稍後對應閘門記 `incomplete`。**不要安裝任何工具或套件。**
 
 讀 `project.threat_model`（`--target` 時改讀目標的模型，見 G0）；不存在 → G0 `incomplete`，`risk_tier` 用 `vibesec.yaml` 的值並標「未核對」。存在 → 核對 `risk_tier`，計算每個 agent 的致命三要素。
 

@@ -1087,14 +1087,16 @@ def gate_status(findings, incomplete, coverage, notes=()):
 
 def gate_run(started, base, scope):
     """G1 的閘門執行（gate_result.GateRun）：SBOM 與 KEV 由 g1_sbom.py、g1_kev.py 併入（依 control_id 取代），
-    宣告為 deferred（清單直接取自 gate_verdict.REQUIRED_CONTROLS，不另外維護）；沒併入就維持 pending，最終判定視同未實測。"""
+    宣告為 deferred（清單直接取自 gate_verdict.REQUIRED_CONTROLS，不另外維護）；沒併入就維持 pending，最終判定視同未實測。
+    mode 沒有預設的 shadow（#190）：vibesec.yaml 整個讀不到時記 enforce（未完成原因由 config_problems 記）；
+    讀得到卻缺 mode 或不合法時，main() 在執行任何檢查之前就以 unreadable() 結束。"""
     from gate_verdict import REQUIRED_CONTROLS
     vb = read_vibesec() or {}
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=TARGET).stdout.strip() or None
     except Exception:
         commit = None
-    return gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=vb.get("mode", "shadow"), scope=scope,
+    return gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=vb.get("mode", "enforce"), scope=scope,
                    commit=commit, diff_base=base, risk_tier=vb.get("risk_tier", "L2"), started_at=started)
 
 def write_unreadable_gate(path, problem, started, base, scope):
@@ -1798,6 +1800,71 @@ def selftest():
     finally:
         _POLICY = saved
 
+    # mode 缺席或不合法（#190）：以前缺席時默默記成 shadow、照常判定，不合法時以 traceback 結束（沒有閘門結果）→
+    # 照樣寫出 incomplete 閘門結果：mode 記 enforce、三個控制 untested、SBOM／KEV pending、tool 列只有一列 error、
+    # 不查 registry、舊 SARIF 刪掉、退出碼 2（同政策讀不到）。shadow／enforce 照常執行
+    real_checks, queried = (npm_check, pypi_check, pypi_requires, _POLICY), []
+    def no_query(pkg, ver, c):
+        queried.append(pkg)
+        return [], None
+    npm_check = pypi_check = no_query
+    pypi_requires = lambda pkg, ver: set()
+    saved_vb = VIBESEC_FILE
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            D = Path(d) / "proj"
+            D.mkdir()
+            (D / "package.json").write_text(json.dumps({"dependencies": {"express": "4.21.2"}}))
+            git(D, "init", "-q"); git(D, "add", "package.json"); git(D, "commit", "-qm", "t")
+            real_text = (ROOT / "vibesec.yaml").read_text(encoding="utf-8")
+            if len(re.findall(r"(?m)^mode:.*$", real_text)) != 1:
+                fails.append("selftest 前置：vibesec.yaml 找不到唯一的最上層 mode，無法製造 mode 缺席或不合法的情境")
+            for label, line in [("缺席", ""), ("x", "mode: x"), ("Enforce", "mode: Enforce"), ("空字串", 'mode: ""'),
+                                ("shadow", "mode: shadow"), ("enforce", "mode: enforce"), ("整個檔缺席", None),
+                                ("整個檔語法錯誤", ("gates: [\n",)), ("整個檔不是 mapping", ("- a\n",))]:
+                vbp, gp, sp = Path(d, "vibesec.yaml"), Path(d, "G1.json"), Path(d, "G1.sarif")
+                whole = line is None or isinstance(line, tuple)   # vibesec.yaml 整個讀不到
+                if line is None:
+                    vbp.unlink(missing_ok=True)
+                elif whole:
+                    vbp.write_text(line[0], encoding="utf-8")
+                else:
+                    vbp.write_text(re.sub(r"(?m)^mode:.*$", line, real_text, count=1), encoding="utf-8")
+                gp.unlink(missing_ok=True)
+                sp.write_text('{"stale": true}', encoding="utf-8")
+                VIBESEC_FILE, _POLICY = vbp, None
+                queried.clear()
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        code = main(["g1_slopcheck.py", "--target", str(D), "--gate", str(gp), "--sarif", str(sp)])
+                except Exception as e:
+                    fails.append(f"mode {label} → 不得拋例外（得到 {type(e).__name__}：{e}）"); continue
+                g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
+                if whole:   # 整個檔讀不到：照常執行、由 config_problems 記 incomplete，mode 記 enforce（#190 決定）
+                    if code != 2 or g.get("status") != "incomplete" or "vibesec.yaml" not in (g.get("status_reason") or "") \
+                            or g.get("mode") != "enforce" or queried != ["express"]:
+                        fails.append(f"vibesec.yaml {label} → 照常執行、incomplete、mode 記 enforce（得到 exit {code}、"
+                                     f"{g.get('status')}：{g.get('status_reason')}、mode={g.get('mode')}、查詢 {queried}）")
+                    continue
+                if label in ("shadow", "enforce"):
+                    if code != 0 or g.get("status") != "pass" or g.get("mode") != label or queried != ["express"]:
+                        fails.append(f"mode {label} → 照常執行（得到 exit {code}、{g.get('status')}、mode={g.get('mode')}、查詢 {queried}）")
+                    continue
+                cov = [(c["control_id"], c["state"], "mode" in (c["reason"] or "")) for c in g.get("coverage") or []]
+                if code != 2 or g.get("status") != "incomplete" or "mode" not in (g.get("status_reason") or "") \
+                        or g.get("mode") != "enforce" or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
+                        or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
+                        or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
+                                   ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False),
+                                   ("ASVS5-V15.2", "pending", False)] \
+                        or queried or sp.exists() or list(schema.iter_errors(g)):
+                    fails.append(f"mode {label} → 退出碼 2、incomplete 並寫明 mode 的問題、mode 記 enforce、三個控制 untested、"
+                                 f"SBOM／KEV pending、tool 列只有一列 error、不查 registry、舊 SARIF 刪掉（得到 exit {code}、"
+                                 f"查詢 {queried}、舊 SARIF 存在={sp.exists()}、{g}）")
+    finally:
+        VIBESEC_FILE = saved_vb
+        npm_check, pypi_check, pypi_requires, _POLICY = real_checks
+
     return fails
 
 def main(argv, policy_root=ROOT):
@@ -1828,6 +1895,18 @@ def main(argv, policy_root=ROOT):
     changed = []
     # --staged／--changed-files／--base 只看變更 → scope diff（以前只有給 --base 才記 diff）
     scope = "diff" if base or "--staged" in args or _opt(args, "--changed-files") else "full"
+    vb = load_yaml(VIBESEC_FILE)
+    if isinstance(vb, dict) and vb.get("mode") not in gate_result.MODES:
+        # mode 缺席或不合法（#190）：以前缺席時默默記成 shadow、不合法時以 traceback 結束 → 比照政策讀不到，不查 registry。
+        # vibesec.yaml 整個讀不到（缺席、語法錯誤、不是 mapping）不在這裡：由 config_problems 記 incomplete（#190 決定）
+        problem = ("vibesec.yaml 缺 mode（須為 shadow／enforce）" if vb.get("mode") is None
+                   else f"vibesec.yaml 的 mode 不合法：{vb['mode']!r}（須為 shadow／enforce）")
+        print(f"⚠️ G1 無法完成檢查：{problem} → incomplete。", file=sys.stderr)
+        if sarif_out:
+            gate_result.remove_stale(sarif_out)
+        if gate_out:
+            write_unreadable_gate(gate_out, problem, started, base, scope)
+        return 2
     if _POLICY is None:   # 進入點只建立一次（selftest 可預先指定）；讀不到 → incomplete，不分類任何發現
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from vibesec_policy import load_policy
