@@ -14,9 +14,13 @@ import argparse, json, os, pathlib, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-# G4 gate JSON 的控制（順序同 coverage）；政策檔讀不到時全部記 untested
+TOOL_NAME, TOOL_VERSION = "vibesec-g4-static", "1.0.0"
+# LLM 審查控制：由 g4_review.py 依審查紀錄判定（GateRun 的 deferred）。本檔不依賴 PyYAML，是這個 ID 的唯一來源，
+# g4_review、g4_access 都從這裡取用
+LLM_CONTROL = "VS-G4-LLM-REVIEW"
+# G4 gate JSON 的控制（順序同 coverage）；政策檔讀不到時靜態控制記 untested、LLM_CONTROL 維持 pending
 CONTROLS = ("VS-G4-RULES-FILE-UNICODE", "ASVS5-V8.2", "ASVS5-V8.3", "VS-G4-AGENT-TOOL-ALLOWLIST", "ASVS5-V2.3",
-            "VS-G4-MCP-RESOURCE-INDICATOR", "VS-G4-LLM-REVIEW")
+            "VS-G4-MCP-RESOURCE-INDICATOR", LLM_CONTROL)
 
 
 def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: pathlib.Path = ROOT) -> None:
@@ -29,25 +33,21 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
     # tier 只來自 blocking-policy（含 risk_tier 的 tier_overrides）；ROOT 為本腳本所在的樹（CI 中為 _trusted/）
     sys.path.insert(0, str(ROOT / "scripts"))
     from vibesec_policy import load_policy
-    from gate_verdict import verdict
+    import gate_result   # 必須在上面的 sys.path.insert 之後：CI 以 python3 -I 執行，腳本目錄不在 sys.path（#183）
     REPORTS.mkdir(parents=True, exist_ok=True)
 
-    def write_gate(status, status_reason, blocking, advisory, coverage, tool_state, sarif_ref):
-        gate = {"gate": "G4", "status": status, "status_reason": status_reason, "mode": MODE, "scope": "full",
-                "diff_base": None, "commit": COMMIT, "started_at": iso(NOW),
-                "finished_at": iso(datetime.datetime.now(datetime.timezone.utc)),
-                "tools": [{"name": "vibesec-g4-static", "version": "1.0.0", "state": tool_state,
-                           "exit_code": 0 if tool_state == "ran" else None, "output_ref": sarif_ref, "duration_seconds": None}],
-                "findings_count": {"blocking": blocking, "advisory": advisory},
-                "coverage": coverage}
+    # 閘門結果由 GateRun 產出（#183）：LLM 審查控制由 g4_review.py 接續判定 → 宣告為 deferred
+    run = gate_result.GateRun("G4", controls=[c for c in CONTROLS if c != LLM_CONTROL], deferred=[LLM_CONTROL],
+                              mode=MODE, scope="full", commit=COMMIT, started_at=iso(NOW))
+
+    def write_gate(gate):
         (REPORTS / "g4-gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
 
     POLICY, problem = load_policy(policy_root)   # 只建立一次；讀不到 → incomplete，不分類任何發現
     if problem:
-        (REPORTS / "g4-static.sarif").unlink(missing_ok=True)   # 不讓上一次的結果被當成這次的
-        coverage = [{"control_id": c, "state": "untested", "reason": problem} for c in CONTROLS]
-        status, status_reason = verdict(blocking=0, coverage=coverage, problems=[problem])
-        write_gate(status, status_reason, 0, 0, coverage, "error", None)
+        gate_result.remove_stale(REPORTS / "g4-static.sarif")   # 不讓上一次的結果被當成這次的
+        # 靜態控制 untested（原因＝problem）、LLM 審查控制維持 pending、tool 列只有一列 error
+        write_gate(run.unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
         print(f"G4 static: incomplete（{problem}）")
         return
     # _trusted/ 是 default branch 的判定程式副本，不是被掃描的專案內容
@@ -256,11 +256,7 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
     for uri, line, msg in mcp_hits:
         add(MCP_RULE, "warning", msg, uri, line)
 
-    sarif = {"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-             "version": "2.1.0",
-             "runs": [{"tool": {"driver": {"name": "vibesec-g4-static", "version": "1.0.0",
-                                           "informationUri": "https://github.com/chinchiang/MultiAgentDelta",
-                                           "rules": list(rules.values())}}, "results": results}]}
+    sarif = gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(rules.values()), results)
     (REPORTS / "g4-static.sarif").write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
 
     blocking = sum(1 for r in results if r["properties"]["policy_tier"] == "blocking")
@@ -284,17 +280,21 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
         {"control_id": "VS-G4-AGENT-TOOL-ALLOWLIST", "state": _state("vibesec.g4.agent-tool-overexposure", ctl="VS-G4-AGENT-TOOL-ALLOWLIST"), "reason": _why("VS-G4-AGENT-TOOL-ALLOWLIST")},
         {"control_id": "ASVS5-V2.3", "state": _state("vibesec.g4.missing-hitl", ctl="ASVS5-V2.3"), "reason": _why("ASVS5-V2.3")},
         MCP_COV,
-        {"control_id": "VS-G4-LLM-REVIEW", "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
+        {"control_id": LLM_CONTROL, "state": "pending", "reason": "LLM 審查需由 /vibesec-harness 或人工執行"},
     ]
     # 依 CONTROLS 排列（政策檔讀不到時用同一份清單）：多一個、少一個控制都直接失敗，不靠兩份清單手動同步
     by_id = {e["control_id"]: e for e in entries}
     if sorted(by_id) != sorted(CONTROLS) or len(by_id) != len(entries):
         raise SystemExit(f"G4 coverage 與 CONTROLS 不一致：{sorted(by_id)} vs {sorted(CONTROLS)}")
     coverage = [by_id[c] for c in CONTROLS]
-    # 狀態由受信任的 gate_verdict.verdict 判定：blocking → fail；否則 LLM 審查未完成 → incomplete（無法讀取的檔案、
+    # 狀態由受信任的 gate_verdict.verdict 判定（GateRun.result）：blocking → fail；否則 LLM 審查未完成 → incomplete（無法讀取的檔案、
     # MCP 檢查無法執行等 untested 控制一併寫進 status_reason）。下一步 g4_review.py 依審查紀錄重新判定。
-    status, status_reason = verdict(blocking=blocking, coverage=coverage, problems=[LLM_PENDING])
-    write_gate(status, status_reason, blocking, advisory, coverage, "ran", "reports/g4-static.sarif")
+    run.tool(TOOL_NAME, "ran", version=TOOL_VERSION, exit_code=0, output_ref="reports/g4-static.sarif")
+    for c in coverage:
+        run.cover(c["control_id"], c["state"], c["reason"])
+    run.count(blocking=blocking, advisory=advisory)
+    run.problem(LLM_PENDING)
+    write_gate(run.result())
     print(f"G4 static: blocking={blocking} advisory={advisory}")
     if MODE == "enforce" and blocking:
         raise SystemExit(1)
@@ -419,10 +419,16 @@ def selftest() -> list[str]:
         finally:
             os.chdir(cwd)
         g = json.loads((out / "g4-gate.json").read_text(encoding="utf-8"))
+        # 接線（#183）：閘門結果由 GateRun.unreadable 產出 → 靜態控制依序 untested（原因＝政策讀不到）、
+        # LLM 審查控制（deferred）維持 pending、tool 列只有一列 error
+        import gate_result
+        cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g["coverage"]]
+        want = [(c, "untested", True) for c in CONTROLS if c != LLM_CONTROL] + [(LLM_CONTROL, "pending", False)]
         if g["status"] != "incomplete" or not (g["status_reason"] or "").startswith(POLICY_UNREADABLE + "（") \
-                or g["findings_count"] != {"blocking": 0, "advisory": 0} or {c["state"] for c in g["coverage"]} != {"untested"} \
-                or g["tools"][0]["state"] != "error" or (out / "g4-static.sarif").exists() or list(schema.iter_errors(g)):
-            fails.append(f"政策檔讀不到 → G4 incomplete、寫明原因、控制 untested、tool error、不留 SARIF（得到 {g}）")
+                or g["findings_count"] != {"blocking": 0, "advisory": 0} or cov != want \
+                or g["tools"] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
+                or (out / "g4-static.sarif").exists() or list(schema.iter_errors(g)):
+            fails.append(f"政策檔讀不到 → G4 incomplete、寫明原因、靜態控制 untested、LLM 審查 pending、tool error、不留 SARIF（得到 {g}）")
     return fails
 
 

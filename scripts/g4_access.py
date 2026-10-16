@@ -27,20 +27,18 @@ VS-G4-LLM-REVIEW（LLM 審查紀錄）：
 退出碼：0 無 blocking；1 有 blocking 發現；2 incomplete／pending（LLM 審查未完成時一律如此）。
 """
 from __future__ import annotations
-import argparse, datetime, json, os, pathlib, re, subprocess, sys, tempfile, time
+import argparse, json, os, pathlib, re, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import g4_review  # noqa: E402  審查紀錄的驗證與狀態推導（缺 PyYAML／jsonschema 時以 exit 2 結束）
 from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本
+import gate_result  # noqa: E402  閘門結果的外層欄位與 tool 列（#183）
+import g4_static  # noqa: E402  只取控制清單與 tool 名稱（靜態檢查本身以子行程執行 STATIC_SCRIPT）
 
 STATIC_SCRIPT = ROOT / "scripts/g4_static.py"   # G4 靜態檢查（與 run_evals.py 的 G4 評測同一支）
 STEP = "G4 靜態檢查"                             # 失敗理由中的名稱
 EXTERNAL_REVIEWS = "reviews/g4/external"
-
-
-def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
 # mcp_resource_indicator（docs/05 §7）已併入 scripts/g4_static.py（判定在 scripts/g4_mcp.py）；這裡只重新匯出名稱
@@ -166,7 +164,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
          review_root: pathlib.Path = ROOT) -> dict:
     """掃描目標專案並回傳 G4 gate JSON（schemas/gate-result.schema.json）。
     review_root：外部專案審查紀錄所在的 repo（本 repo；selftest 以暫存 repo 代替）。"""
-    started = _now()
+    started = gate_result.now()
     target, out_dir = target.resolve(), out_dir.resolve()
     external = target != g4_review.PROJECT   # 本 repo（或 VIBESEC_PROJECT_ROOT）= g4_review 讀 reviews/g4 的同一個 repo
     (out_dir / "g4-static.sarif").unlink(missing_ok=True)   # 不讓上一次的輸出被當成這次的結果
@@ -177,12 +175,21 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
     commit = _git(target, "rev-parse", "HEAD") if not problem else None
     static, why, notes = (None, problem, []) if problem else run_static(target, out_dir, script, commit, mode, timeout)
     if static is None:
-        return {"gate": "G4", "status": "incomplete", "status_reason": why, "mode": mode, "scope": "full",
-                "diff_base": None, "commit": commit, "started_at": started, "finished_at": _now(),
-                "tools": [{"name": "vibesec-g4-static", "version": None, "state": "error", "exit_code": None,
-                           "output_ref": None, "duration_seconds": None}],
-                "findings_count": {"blocking": 0, "advisory": 0},
-                "coverage": [{"control_id": g4_review.LLM_CONTROL, "state": "pending", "reason": why}]}
+        # 靜態檢查沒有產出結果（腳本不存在或失敗、目標不是 repo 根目錄）：經過閘門判定（GateRun，#183），不再手刻
+        # incomplete。coverage 是完整的宣告清單：靜態控制沒有回報 → untested（未執行），LLM 審查控制 pending 並寫明原因。
+        # mode 不合法時 g4_static 的 argparse 會擋下，一定走到這裡：記為 enforce（讀不到 → 更嚴）、寫明原因，
+        # 不拋例外（#183 決定 1：g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）
+        problems = [why]
+        if mode not in gate_result.MODES:
+            problems.append(f"vibesec.yaml 的 mode 不合法（{mode!r}；須為 {'／'.join(gate_result.MODES)}），閘門結果記為 enforce")
+            mode = "enforce"
+        run = gate_result.GateRun("G4", controls=[c for c in g4_static.CONTROLS if c != g4_static.LLM_CONTROL],
+                                  deferred=[g4_static.LLM_CONTROL], mode=mode, scope="full", commit=commit, started_at=started)
+        run.tool(g4_static.TOOL_NAME, "error")
+        run.cover(g4_static.LLM_CONTROL, "pending", why)
+        for p in problems:
+            run.problem(p)
+        return run.result()
     cfg, controls = g4_review.load_cfg(), g4_review.known_controls()
     if external:
         record, ev, ref, reason, cap = find_external_record(target, commit, cfg, controls, review_root)
@@ -306,6 +313,26 @@ def selftest() -> list[str]:
         g = check(scan(repo, out, pathlib.Path(_wrap_dir.name) / "none.py"), "找不到腳本")
         if g["status"] != "incomplete" or STEP not in (g["status_reason"] or ""):
             fails.append("找不到靜態檢查腳本 → incomplete")
+        # 接線（#183）：靜態檢查失敗的閘門結果經過閘門判定（GateRun），coverage 是完整的宣告清單：
+        # 靜態控制 untested（未執行）、LLM 審查控制 pending 並寫明原因；tool 列只有 vibesec-g4-static 一列 error
+        cov = [(c["control_id"], c["state"]) for c in g["coverage"]]
+        want = [(c, "untested") for c in g4_static.CONTROLS if c != g4_static.LLM_CONTROL] + [(g4_static.LLM_CONTROL, "pending")]
+        llm = next((c for c in g["coverage"] if c["control_id"] == g4_static.LLM_CONTROL), {})
+        if cov != want or STEP not in (llm.get("reason") or "") or g["tools"] != [gate_result.tool(g4_static.TOOL_NAME, "error")] \
+                or g["findings_count"] != {"blocking": 0, "advisory": 0}:
+            fails.append(f"靜態檢查失敗 → coverage 為完整的宣告清單（靜態控制 untested、LLM pending 寫明原因）、tool 列 error（得到 {g['coverage']}、{g['tools']}）")
+        # vibesec.yaml 的 mode 不合法：g4_static 的 argparse 擋下 → 靜態失敗路徑。閘門結果記 enforce、寫明原因、
+        # 照樣產出 incomplete，不拋例外（#183 決定 1；g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）
+        _yaml0 = g4_review._yaml
+        g4_review._yaml = lambda path: ({**(_yaml0(path) or {}), "mode": "x"} if pathlib.Path(path).name == "vibesec.yaml" else _yaml0(path))
+        try:
+            g = check(scan(repo, out, script), "mode 不合法")
+            if g["status"] != "incomplete" or g["mode"] != "enforce" or "mode 不合法" not in (g["status_reason"] or ""):
+                fails.append(f"vibesec.yaml 的 mode 不合法 → incomplete、mode 記 enforce、寫明原因（得到 {g['status']}、{g['mode']}：{g['status_reason']}）")
+        except Exception as e:
+            fails.append(f"vibesec.yaml 的 mode 不合法 → 不得拋例外（得到 {type(e).__name__}：{e}）")
+        finally:
+            g4_review._yaml = _yaml0
         g = check(scan(repo, out, wrapped("boom", "print('boom', file=sys.stderr); sys.exit(3)")), "腳本失敗")   # 結果已寫出，但以非零結束
         if g["status"] != "incomplete" or "exit 3" not in (g["status_reason"] or "") or (out / "g4-static.sarif").exists():
             fails.append("靜態檢查失敗 → incomplete，且不留下舊的 SARIF")
@@ -483,8 +510,9 @@ def selftest() -> list[str]:
         elif g:
             check(g, "靜態檢查腳本（無 MCP）")
         for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py", "scripts/gate_verdict.py",
-                    "scripts/g4_static.py"):
+                    "scripts/gate_result.py", "scripts/g4_static.py"):
             (trusted / rel).write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+        (proj / "reports/g4-gate.json").unlink(missing_ok=True)   # 不讓上一次的閘門結果被當成這一次的（腳本崩潰時會讀到舊檔）
         rc, g = run_step(proj, trusted / "scripts/g4_static.py")   # 受信任樹缺 g4_mcp.py（例如 default branch 尚未合併本模組）
         cov = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == MCP_CONTROL), None)
         if rc != 0 or not g or not cov or cov["state"] != "untested" or "g4_mcp" not in (g.get("status_reason") or ""):
