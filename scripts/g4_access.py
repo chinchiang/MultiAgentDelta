@@ -45,7 +45,7 @@ EXTERNAL_REVIEWS = "reviews/g4/external"
 from g4_mcp import MCP_CONTROL, MCP_RULE, mcp_resource_check  # noqa: E402,F401
 
 
-def run_static(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path, commit: str | None, mode: str,
+def run_static(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path, commit: str | None,
                timeout: int) -> tuple[dict | None, str | None, list[str]]:
     """在目標追蹤中檔案的副本上執行靜態檢查腳本。回傳 (靜態 gate JSON, 失敗原因, 附註)。"""
     if not pathlib.Path(script).is_file():
@@ -61,7 +61,7 @@ def run_static(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path
         t0 = time.monotonic()
         try:
             p = subprocess.run([sys.executable, "-I", str(script), "--target", str(copy), "--out", str(reports),
-                                "--mode", mode, "--commit", commit or ""], capture_output=True, text=True, timeout=timeout)
+                                "--commit", commit or ""], capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, f"G4 靜態檢查逾時（{timeout}s）", notes
         except OSError as e:
@@ -161,28 +161,28 @@ def find_self_record(target: pathlib.Path, commit: str, cfg: dict, controls: set
 
 
 def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STATIC_SCRIPT, timeout: int = 900,
-         review_root: pathlib.Path = ROOT) -> dict:
+         review_root: pathlib.Path = ROOT, policy_root: pathlib.Path = ROOT) -> dict:
     """掃描目標專案並回傳 G4 gate JSON（schemas/gate-result.schema.json）。
-    review_root：外部專案審查紀錄所在的 repo（本 repo；selftest 以暫存 repo 代替）。"""
+    review_root：外部專案審查紀錄所在的 repo（本 repo；selftest 以暫存 repo 代替）。
+    policy_root：靜態檢查失敗時，閘門結果的 mode 取自這裡的政策（selftest 用；靜態檢查本身讀它所在受信任樹的政策）。"""
     started = gate_result.now()
     target, out_dir = target.resolve(), out_dir.resolve()
     external = target != g4_review.PROJECT   # 本 repo（或 VIBESEC_PROJECT_ROOT）= g4_review 讀 reviews/g4 的同一個 repo
     (out_dir / "g4-static.sarif").unlink(missing_ok=True)   # 不讓上一次的輸出被當成這次的結果
-    mode = (g4_review._yaml(ROOT / "vibesec.yaml") or {}).get("mode", "shadow")
     top = _git(target, "rev-parse", "--show-toplevel")
     problem = (f"目標不是 git repo（{target}）" if top is None else
                None if pathlib.Path(top).resolve() == target else f"--target 必須是 git repo 根目錄（{top}）")
     commit = _git(target, "rev-parse", "HEAD") if not problem else None
-    static, why, notes = (None, problem, []) if problem else run_static(target, out_dir, script, commit, mode, timeout)
+    static, why, notes = (None, problem, []) if problem else run_static(target, out_dir, script, commit, timeout)
     if static is None:
         # 靜態檢查沒有產出結果（腳本不存在或失敗、目標不是 repo 根目錄）：經過閘門判定（GateRun，#183），不再手刻
         # incomplete。coverage 是完整的宣告清單：靜態控制沒有回報 → untested（未執行），LLM 審查控制 pending 並寫明原因。
-        # mode 不合法時 g4_static 的 argparse 會擋下，一定走到這裡：記為 enforce（讀不到 → 更嚴）、寫明原因，
-        # 不拋例外（#183 決定 1：g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）
-        problems = [why]
-        if mode not in gate_result.MODES:
-            problems.append(f"vibesec.yaml 的 mode 不合法（{mode!r}；須為 {'／'.join(gate_result.MODES)}），閘門結果記為 enforce")
-            mode = "enforce"
+        # mode 取自政策（#201；以前自己讀 vibesec.yaml、缺席時預設 shadow）。政策讀不到（含 mode 缺席或不合法）→ mode 不明，
+        # 記為 enforce（較嚴）並寫明原因，不拋例外（#183 決定 1：g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）
+        from vibesec_policy import load_policy
+        policy, policy_problem = load_policy(policy_root)
+        mode = policy.mode if policy else "enforce"
+        problems = [why] + ([policy_problem] if policy_problem and policy_problem not in why else [])
         run = gate_result.GateRun("G4", controls=[c for c in g4_static.CONTROLS if c != g4_static.LLM_CONTROL],
                                   deferred=[g4_static.LLM_CONTROL], mode=mode, scope="full", commit=commit, started_at=started)
         run.tool(g4_static.TOOL_NAME, "error")
@@ -244,7 +244,7 @@ def selftest() -> list[str]:
             for rel, body in files.items():
                 (pathlib.Path(d) / rel).parent.mkdir(parents=True, exist_ok=True)
                 (pathlib.Path(d) / rel).write_text(body, encoding="utf-8")
-            subprocess.run([sys.executable, "-I", str(script), "--target", d, "--out", f"{d}/reports", "--mode", "shadow"],
+            subprocess.run([sys.executable, "-I", str(script), "--target", d, "--out", f"{d}/reports"],
                            capture_output=True, text=True, timeout=120, check=True)
             sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
         return [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in sarif["runs"][0]["results"]
@@ -321,18 +321,29 @@ def selftest() -> list[str]:
         if cov != want or STEP not in (llm.get("reason") or "") or g["tools"] != [gate_result.tool(g4_static.TOOL_NAME, "error")] \
                 or g["findings_count"] != {"blocking": 0, "advisory": 0}:
             fails.append(f"靜態檢查失敗 → coverage 為完整的宣告清單（靜態控制 untested、LLM pending 寫明原因）、tool 列 error（得到 {g['coverage']}、{g['tools']}）")
-        # vibesec.yaml 的 mode 不合法：g4_static 的 argparse 擋下 → 靜態失敗路徑。閘門結果記 enforce、寫明原因、
-        # 照樣產出 incomplete，不拋例外（#183 決定 1；g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）
-        _yaml0 = g4_review._yaml
-        g4_review._yaml = lambda path: ({**(_yaml0(path) or {}), "mode": "x"} if pathlib.Path(path).name == "vibesec.yaml" else _yaml0(path))
-        try:
-            g = check(scan(repo, out, script), "mode 不合法")
-            if g["status"] != "incomplete" or g["mode"] != "enforce" or "mode 不合法" not in (g["status_reason"] or ""):
-                fails.append(f"vibesec.yaml 的 mode 不合法 → incomplete、mode 記 enforce、寫明原因（得到 {g['status']}、{g['mode']}：{g['status_reason']}）")
-        except Exception as e:
-            fails.append(f"vibesec.yaml 的 mode 不合法 → 不得拋例外（得到 {type(e).__name__}：{e}）")
-        finally:
-            g4_review._yaml = _yaml0
+        # 受信任政策的 vibesec.yaml 缺 mode（#200、#201）：靜態檢查回報政策讀不到 → 靜態失敗路徑。閘門結果 incomplete、
+        # mode 記 enforce（mode 不明）、寫明原因，不拋例外（#183 決定 1；g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）。
+        # 以前 g4_access 自己讀 mode（缺席時預設 shadow）再以 --mode 傳給靜態檢查
+        from vibesec_policy import POLICY_UNREADABLE, mode_policy_root, modeless_policy_root, trusted_tree
+        with trusted_tree("") as tree:
+            try:
+                g = check(scan(repo, out, tree / "scripts/g4_static.py", policy_root=tree), "mode 缺席")
+                why = g["status_reason"] or ""
+                if g["status"] != "incomplete" or g["mode"] != "enforce" or POLICY_UNREADABLE not in why or "mode" not in why:
+                    fails.append(f"受信任政策缺 mode → incomplete、mode 記 enforce、寫明原因（得到 {g['status']}、{g['mode']}：{why}）")
+            except Exception as e:
+                fails.append(f"受信任政策缺 mode → 不得拋例外（得到 {type(e).__name__}：{e}）")
+        # mode 取自政策：受信任政策是 enforce（ROOT 的 vibesec.yaml 是 shadow）→ 靜態檢查失敗時閘門結果也記 enforce
+        with tempfile.TemporaryDirectory() as td, mode_policy_root("mode: enforce") as pr:
+            g = check(scan(repo, out, pathlib.Path(td) / "none.py", policy_root=pr), "找不到腳本（政策 enforce）")
+            if g["status"] != "incomplete" or g["mode"] != "enforce":
+                fails.append(f"靜態檢查失敗時 mode 取自政策（enforce）（得到 {g['status']}、{g['mode']}）")
+        # 靜態檢查根本沒執行（腳本不存在）、政策又讀不到（缺 mode）：mode 記 enforce，原因由 g4_access 自己寫出
+        with tempfile.TemporaryDirectory() as td, modeless_policy_root() as pr:
+            g = check(scan(repo, out, pathlib.Path(td) / "none.py", policy_root=pr), "找不到腳本（政策缺 mode）")
+            why = g["status_reason"] or ""
+            if g["status"] != "incomplete" or g["mode"] != "enforce" or POLICY_UNREADABLE not in why or "mode" not in why:
+                fails.append(f"靜態檢查沒執行、政策缺 mode → incomplete、mode 記 enforce、寫明政策讀不到（得到 {g['mode']}：{why}）")
         g = check(scan(repo, out, wrapped("boom", "print('boom', file=sys.stderr); sys.exit(3)")), "腳本失敗")   # 結果已寫出，但以非零結束
         if g["status"] != "incomplete" or "exit 3" not in (g["status_reason"] or "") or (out / "g4-static.sarif").exists():
             fails.append("靜態檢查失敗 → incomplete，且不留下舊的 SARIF")
@@ -494,8 +505,8 @@ def selftest() -> list[str]:
     # 靜態檢查腳本本身（不經 g4_access 的後處理）：gate JSON 一定含 VS-G4-MCP-RESOURCE-INDICATOR；
     # 腳本所在的受信任樹（CI 的 _trusted/）沒有 scripts/g4_mcp.py → 該控制 untested 並寫進 status_reason，不崩潰、不記 pass
     def run_step(cwd: pathlib.Path, step_script: pathlib.Path):
-        p = subprocess.run([sys.executable, "-I", str(step_script), "--target", str(cwd), "--out", str(cwd / "reports"),
-                            "--mode", "shadow"], capture_output=True, text=True, timeout=120)
+        p = subprocess.run([sys.executable, "-I", str(step_script), "--target", str(cwd), "--out", str(cwd / "reports")],
+                           capture_output=True, text=True, timeout=120)
         gp = cwd / "reports/g4-gate.json"
         return p.returncode, (json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else None)
     with tempfile.TemporaryDirectory() as d:

@@ -593,11 +593,15 @@ def selftest() -> list[str]:
         if _read_settings(ROOT, "enforce")[0] != "enforce":
             fails.append("--mode enforce 可以升級")
         # 受信任設定是 enforce：--mode shadow 不得降級，並在 summary 註明已忽略（#200：規則在 vibesec_policy，只有一份）
-        from vibesec_policy import POLICY_UNREADABLE, temp_policy_root
+        from vibesec_policy import POLICY_UNREADABLE, set_mode_line, temp_policy_root
         with temp_policy_root() as tr:
             vbp = tr / "vibesec.yaml"
             text = vbp.read_text(encoding="utf-8")
-            vbp.write_text(re.sub(r"(?m)^mode:.*$", "mode: enforce", text, count=1), encoding="utf-8")
+
+            def set_mode(line):   # 每一輪都從原本的內容改起
+                vbp.write_text(text, encoding="utf-8")
+                set_mode_line(vbp, line)
+            set_mode("mode: enforce")
             mode, inc, _, errs, notes = _read_settings(tr, "shadow")
             if mode != "enforce" or errs or not any("降級" in n for n in notes):
                 fails.append(f"--mode shadow 不得降級受信任設定的 enforce，並附註（得到 {mode}，{errs}，{notes}）")
@@ -606,7 +610,7 @@ def selftest() -> list[str]:
                 fails.append(f"忽略降級的附註寫進 summary、不影響退出碼（得到 {d['code']}：{d['markdown'][-200:]}）")
             # 受信任的 mode 缺席或不合法 → 記為錯誤（政策讀不到）、視同 enforce、退出碼 2
             for line in ("", "mode: Enforce"):
-                vbp.write_text(re.sub(r"(?m)^mode:.*$", line, text, count=1), encoding="utf-8")
+                set_mode(line)
                 mode, inc, _, errs, notes = _read_settings(tr, None)
                 d = enforce({"G3": good}, mode=mode, incomplete_blocking_gates=inc, errors=errs, notes=notes)
                 if d["code"] != 2 or d["mode"] != "enforce" or not any(e.startswith(POLICY_UNREADABLE + "（") for e in errs):
