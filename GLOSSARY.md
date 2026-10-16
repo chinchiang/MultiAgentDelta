@@ -24,6 +24,10 @@ _避免_：job、step（那是 workflow 的單位）
 一筆具體的問題紀錄，帶有規則 ID 與政策 tier。
 _避免_：告警、issue、漏洞（漏洞是發現的一種，不是同義詞）
 
+**發現 ID（finding ID）**：
+由規則、位置與 commit 決定的發現識別碼 `VS-YYYYMMDD-<8 hex>`：日期取發現建立時間的 UTC 日期，hex 取 `sha256(rule_id ␀ path ␀ start_line ␀ commit)` 前 8 碼（`␀` 是 NUL、`null` 編成空字串）。同一個 commit、同一天重跑得到同一個 ID；由 `gate_result.py finding` 產生。
+_避免_：由模型產生或手拼的 ID
+
 **控制覆蓋（coverage）**：
 閘門對每個控制的實測狀態：通過、失敗、未實測、待併入或不適用。
 _避免_：檢查清單、checklist
@@ -136,6 +140,10 @@ _Avoid_: job, step (those are workflow units)
 **Finding**:
 A concrete problem record carrying a rule ID and a policy tier.
 _Avoid_: alert, issue, vulnerability (a vulnerability is one kind of finding, not a synonym)
+
+**Finding ID**:
+The finding identifier `VS-YYYYMMDD-<8 hex>`, determined by the rule, location, and commit: the date is the UTC date of the finding's creation time, and the hex is the first 8 characters of `sha256(rule_id ␀ path ␀ start_line ␀ commit)` (`␀` is NUL; `null` is encoded as an empty string). Rerunning on the same commit on the same day yields the same ID. Produced by `gate_result.py finding`.
+_Avoid_: IDs generated or assembled by a model
 
 **Coverage**:
 The tested state of each control in a gate: pass, fail, untested, pending merge, or not applicable.

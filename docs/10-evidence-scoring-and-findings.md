@@ -95,7 +95,7 @@
 
 ```json
 {
-  "id": "VS-20261003-9f3a1c2e",            // VS-YYYYMMDD-<8 hex>；hex = sha256(rule_id+path+line+commit)[:8]
+  "id": "VS-20261003-9f3a1c2e",            // VS-<created_at 的 UTC 日期>-<sha256(rule_id ␀ path ␀ start_line ␀ commit)[:8]>；␀ = NUL，null 編成空字串；由 gate_result.py finding 產生
   "gate": "G5",                             // G0–G6
   "rule_id": "vibesec.g5.bola-cross-account", // vibesec 規則或 "<tool>:<原規則>"（gitleaks:、semgrep:、trivy:…）
   "title": "B 帳號可讀取 A 帳號訂單",
