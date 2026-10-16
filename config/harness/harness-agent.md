@@ -61,7 +61,7 @@ role: harness
 
 ## 5. Finding 正規化規則
 
-- `id`：`VS-<YYYYMMDD>-<sha256(rule_id + path + start_line + commit)[:8]>`。
+- `id`：`VS-<created_at 的 UTC 日期 YYYYMMDD>-<sha256(rule_id ␀ path ␀ start_line ␀ commit) 前 8 hex>`；`␀` 是 NUL 分隔字元，`null` 編成空字串（架構類發現沒有 path、start_line 也能產生 ID），`path`、`start_line` 取自 `location`，`commit` 是掃描時的 commit。由 `python3 scripts/gate_result.py finding` 產生，不得手拼（GLOSSARY.md「發現 ID」）。
 - `rule_id`：vibesec 規則用 `vibesec.g<N>.<kebab>`；外部工具用 `<tool>:<原規則 id>`。
 - `control_id` / `cwe` / `cve`：只填 `config/catalogs/` 內查得到的值，否則 `null` + `notes`。
 - `severity`：CVSS 推導（9.0–10 critical、7.0–8.9 high、4.0–6.9 medium、0.1–3.9 low、0 info）或工具原值。

@@ -71,15 +71,7 @@ def load_cfg() -> dict:
             "provider_family": families, "provider_classes": classes}
 
 
-def known_controls() -> set[str]:
-    """config/catalogs/ 內出現的控制 ID（與 validate.py 同一個正則）。"""
-    pat = re.compile(r"(ASVS5-V\d+\.\d+(\.\d+)?|LLM\d{2}:2025|MAESTRO-L[1-7]|VS-G[0-6]-[A-Z0-9-]+)")
-    out: set[str] = set()
-    for cat in ("cwe-map.yaml", "asvs-5.0-controls.yaml", "llm-top10-2025.yaml", "maestro-layers.yaml"):
-        p = ROOT / "config/catalogs" / cat
-        if p.exists():
-            out |= {m.group(0) for m in pat.finditer(p.read_text(encoding="utf-8"))}
-    return out
+known_controls = gate_result.known_controls   # config/catalogs/ 內的控制 ID；讀取程式搬到 gate_result（#185）
 
 
 def _load_ruling(ref: str) -> dict | None:

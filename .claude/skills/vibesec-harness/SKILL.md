@@ -173,7 +173,15 @@ python3 scripts/g0_threat_model.py --target "$TARGET" [--threat-model <file>] --
 
 ## 步驟 3：評分與 finding 組裝
 
-對每個發現依 `config/harness/harness-agent.md` §5 組 Finding（閘門 finding 的 `exception` 原樣搬進 Finding、`policy_tier` 沿用閘門降級後的結果），並用 Python 驗證：
+對每個發現依 `config/harness/harness-agent.md` §5 整理欄位，再呼叫 `gate_result.py finding` 產生 Finding（閘門 finding 的 `exception` 原樣搬進 Finding、`policy_tier` 沿用閘門降級後的結果）。**不得自己拼 `id`**：輸入不能帶 `id`，ID 由 CLI 依 GLOSSARY.md「發現 ID」的公式產生；`evidence_grade`、`policy_tier` 必填；`control_id`、`cwe`、`cve` 不在 `config/catalogs/` 時 CLI 以非零退出碼拒絕，改填 `null` 並在 `notes` 說明。
+
+```bash
+echo '{"gate":"G5","rule_id":"vibesec.g5.bola-cross-account","title":"…","evidence_grade":"E3","policy_tier":"blocking",
+      "sources":{"tool":"vibesec-g5","tool_version":"1.0.0"},"location":{"kind":"http","path":"/orders/{id}"},"commit":"<HEAD>"}' \
+  | python3 scripts/gate_result.py finding > /tmp/finding.json   # 非零退出碼 → 看 stderr 修正輸入，不得繞過
+```
+
+把各個 Finding 收進 `reports/findings.json` 後，用 Python 驗證：
 
 ```bash
 python3 - <<'PY'

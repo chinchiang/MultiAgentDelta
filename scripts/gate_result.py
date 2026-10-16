@@ -22,6 +22,11 @@
   remove_stale(path) -> bool                 刪掉過期的自產 SARIF（這一次沒有判定任何發現時用：政策讀不到、
                                              G1 sbom／kev／provenance 的 incomplete）；檔案不存在不出錯
   now() -> str                               UTC、精度到秒、+00:00
+  finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, location=None, commit=None, created_at=None, …)
+                                             完整的發現（schemas/finding.schema.json）與決定性的發現 ID（GLOSSARY.md「發現 ID」）：
+                                             VS-<created_at 的 UTC 日期>-<sha256(rule_id ␀ path ␀ start_line ␀ commit)[:8]>，
+                                             ␀ 是 NUL、null 編成空字串；control_id／cwe／cve 不在 config/catalogs/ → ValueError
+  known_controls() / known_cwes() / known_cves() -> set[str]   config/catalogs/ 內的控制 ID、CWE、CVE
 
 控制覆蓋不變式：宣告在 controls、卻沒有 cover 的控制，result() 時補成 untested（原因：未執行）；宣告在 deferred、
 卻沒有 cover 的控制補成 pending。漏回報只會讓閘門變嚴，不可能變成 pass。cover 未宣告的控制 → ValueError。
@@ -31,13 +36,15 @@ mode：result() 只接受 shadow／enforce，不合法 → ValueError；unreadab
 risk_tier 同理：result() 不合法 → ValueError；unreadable() 遇到不合法的值省略該欄位（#181；risk_tier 打錯時
 load_policy 本來就回報政策讀不到）。
 
-只回傳 dict，不寫閘門 JSON，也不在執行時跑 jsonschema（jsonschema 在部分環境可能缺席）；輸入不合法 → ValueError，
+只回傳 dict，不寫閘門 JSON，也不在執行時跑 jsonschema（finding CLI 例外）（jsonschema 在部分環境可能缺席）；輸入不合法 → ValueError，
 那是閘門程式的 bug。schema 符合性由本檔的 selftest 以 jsonschema 驗證。
 
   python3 scripts/gate_result.py selftest
+  python3 scripts/gate_result.py finding < 部分欄位.json > 發現.json
+      harness 組裝發現用（不參與阻擋判定）：輸出以 jsonschema 驗證；輸入不合法或缺 jsonschema → exit 2、stderr 寫明原因
 """
 from __future__ import annotations
-import datetime, pathlib, sys
+import datetime, hashlib, pathlib, re, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -206,6 +213,166 @@ class GateRun:
         coverage = self._coverage({}, problem)            # 不使用已累積的回報
         status, status_reason = verdict(blocking=0, coverage=coverage, problems=[problem])
         return self._gate(mode, tier, status, status_reason, [row], 0, 0, coverage)
+
+
+# ------------------------------------------------------------------ 發現與發現 ID（#185）
+CONTROL_RE = re.compile(r"(ASVS5-V\d+\.\d+(\.\d+)?|LLM\d{2}:2025|MAESTRO-L[1-7]|VS-G[0-6]-[A-Z0-9-]+)")
+CWE_KEY_RE = re.compile(r"^\s+(CWE-\d+):", re.M)    # cwe-map.yaml 的 cwes 名稱表（每個 CWE 一個 key）
+EVIDENCE_GRADES = ("E0", "E1", "E2", "E3")
+VALIDATION_STATES = ("pending", "confirmed", "refuted")
+POLICY_TIERS = ("blocking", "advisory")
+SEVERITIES = ("critical", "high", "medium", "low", "info")
+CVSS_VERSIONS = ("4.0", "3.1")
+PRIORITIES = ("P0", "P1", "P2", "P3")
+RETEST_RESULTS = ("fixed", "still_present", "regressed", "not_retested")
+
+
+def _catalog_text(name) -> str:
+    p = ROOT / "config/catalogs" / name
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def known_controls() -> set[str]:
+    """config/catalogs/ 內出現的控制 ID（與 validate.py 同一個正則）。原在 g4_review（#185 搬到這裡，g4_review 沿用）。"""
+    out: set[str] = set()
+    for cat in ("cwe-map.yaml", "asvs-5.0-controls.yaml", "llm-top10-2025.yaml", "maestro-layers.yaml"):
+        out |= {m.group(0) for m in CONTROL_RE.finditer(_catalog_text(cat))}
+    return out
+
+
+def known_cwes() -> set[str]:
+    """config/catalogs/cwe-map.yaml 的 cwes 名稱表裡的 CWE。"""
+    return set(CWE_KEY_RE.findall(_catalog_text("cwe-map.yaml")))
+
+
+def known_cves() -> set[str]:
+    """config/catalogs/cve-references.yaml 的 cves（cve_catalog 負責核對目錄本身）；需要 PyYAML，只在發現帶 CVE 時讀。"""
+    import yaml
+    from cve_catalog import CATALOG
+    p = ROOT / CATALOG
+    return set(((yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get("cves") or {}) if p.exists() else ())
+
+
+def _optional_choice(name, v, allowed):
+    return None if v is None else _choice(name, v, allowed)
+
+
+def _in_catalog(name, v, known) -> str | None:
+    """CLAUDE.md 規則 3：ID 只能查目錄；null 允許，查不到 → ValueError。"""
+    if v is None:
+        return None
+    if not isinstance(v, str) or v not in known():
+        raise ValueError(f"{name} {v!r} 不在 config/catalogs/（CLAUDE.md 規則 3：ID 只能查目錄，查不到請填 null 並在 notes 說明）")
+    return v
+
+
+def _utc_date(created_at) -> str:
+    _text("created_at", created_at)
+    try:
+        t = datetime.datetime.fromisoformat(created_at)
+    except ValueError:
+        raise ValueError(f"created_at 不是 ISO 8601 時間：{created_at!r}") from None
+    if t.tzinfo is None:
+        raise ValueError(f"created_at 必須帶時區：{created_at!r}")
+    return t.astimezone(datetime.timezone.utc).strftime("%Y%m%d")
+
+
+def _finding_id(rule_id, path, start_line, commit, created_at) -> str:
+    """VS-<created_at 的 UTC 日期>-<sha256(rule_id ␀ path ␀ start_line ␀ commit) 前 8 hex>；null 編成空字串。"""
+    key = "\0".join("" if v is None else str(v) for v in (rule_id, path, start_line, commit))
+    return f"VS-{_utc_date(created_at)}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:8]}"
+
+
+def finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, location=None, commit=None, created_at=None,
+            description=None, control_id=None, cwe=None, cve=None, severity=None, cvss_version=None, cvss_vector=None,
+            cvss_score=None, epss=None, epss_date=None, kev=None, kev_date=None, validation_status="pending",
+            priority=None, owner=None, due_date=None, evidence_refs=None, review=None, retest_result=None, notes=None,
+            exception=None) -> dict:
+    """組出完整的發現（schemas/finding.schema.json），ID 由程式決定（GLOSSARY.md「發現 ID」）。
+    evidence_grade、policy_tier 必填、沒有預設（規則 4、5；tier 由閘門或 ApplyPolicy 決定）；validation_status 預設 pending；
+    其他沒給的欄位為 null 或 []，description、exception 省略。ID 的 commit 只取 commit 參數，location 照原樣放入（#185 決定）。
+    這裡只做手動檢查，不跑 jsonschema；CLI 另以 jsonschema 驗證輸出。"""
+    _choice("gate", gate, GATES)
+    _text("rule_id", rule_id)
+    _text("title", title)
+    _choice("evidence_grade", evidence_grade, EVIDENCE_GRADES)
+    _choice("validation_status", validation_status, VALIDATION_STATES)
+    _choice("policy_tier", policy_tier, POLICY_TIERS)
+    for name, v, allowed in (("severity", severity, SEVERITIES), ("cvss_version", cvss_version, CVSS_VERSIONS),
+                             ("priority", priority, PRIORITIES), ("retest_result", retest_result, RETEST_RESULTS)):
+        _optional_choice(name, v, allowed)
+    _in_catalog("control_id", control_id, known_controls)
+    _in_catalog("cwe", cwe, known_cwes)
+    _in_catalog("cve", cve, known_cves)
+    if not isinstance(sources, dict) or "tool_version" not in sources:
+        raise ValueError(f"sources 必須是含 tool、tool_version 的物件（得到 {sources!r}）")
+    _text("sources.tool", sources.get("tool"))
+    if location is not None and not isinstance(location, dict):
+        raise ValueError(f"location 必須是物件或 null（得到 {location!r}）")
+    path, line = (location or {}).get("path"), (location or {}).get("start_line")
+    if path is not None and not isinstance(path, str):
+        raise ValueError(f"location.path 必須是字串或 null（得到 {path!r}）")
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+        raise ValueError(f"location.start_line 必須是正整數或 null（得到 {line!r}）")
+    if commit is not None:
+        _text("commit", commit)
+    if evidence_refs is not None and not isinstance(evidence_refs, list):
+        raise ValueError(f"evidence_refs 必須是清單（得到 {evidence_refs!r}）")
+    created_at = now() if created_at is None else created_at   # 空字串不當成「沒給」，交給 _utc_date 拒絕
+    f = {"id": _finding_id(rule_id, path, line, commit, created_at), "gate": gate, "rule_id": rule_id, "title": title}
+    if description is not None:
+        f["description"] = description
+    f.update({"control_id": control_id, "cwe": cwe, "cve": cve, "severity": severity, "cvss_version": cvss_version,
+              "cvss_vector": cvss_vector, "cvss_score": cvss_score, "epss": epss, "epss_date": epss_date, "kev": kev,
+              "kev_date": kev_date, "evidence_grade": evidence_grade, "validation_status": validation_status,
+              "policy_tier": policy_tier, "priority": priority, "owner": owner, "due_date": due_date,
+              "location": location, "evidence_refs": list(evidence_refs or []), "review": review,
+              "retest_result": retest_result, "sources": sources, "created_at": created_at, "notes": notes})
+    if exception is not None:
+        f["exception"] = exception
+    return f
+
+
+def _finding_validator():
+    """finding schema 的 jsonschema 驗證器（CLI 與 selftest 共用；呼叫端負責 jsonschema 缺席的處理）。"""
+    import json
+    from jsonschema import Draft202012Validator
+    return Draft202012Validator(json.loads((ROOT / "schemas/finding.schema.json").read_text(encoding="utf-8")),
+                                format_checker=Draft202012Validator.FORMAT_CHECKER)
+
+
+def finding_cli(stdin, stdout, stderr) -> int:
+    """`finding` 子指令：stdin 讀部分欄位的 JSON 物件，stdout 輸出完整發現；不合法 → exit 2、stderr 寫明原因。
+    只組裝發現，不參與阻擋判定。輸出先以 jsonschema 驗證；jsonschema 缺席 → exit 2，不輸出沒驗證過的發現（#185 決定）。"""
+    import json
+    try:
+        schema = _finding_validator()
+    except ImportError:
+        print("finding：缺 jsonschema，無法驗證發現，未輸出（pip install jsonschema）", file=stderr)
+        return 2
+    try:
+        data = json.loads(stdin.read())
+    except ValueError as e:
+        print(f"finding：stdin 不是合法的 JSON：{e}", file=stderr)
+        return 2
+    if not isinstance(data, dict):
+        print(f"finding：stdin 必須是 JSON 物件（得到 {type(data).__name__}）", file=stderr)
+        return 2
+    try:
+        f = finding(**data)
+    except TypeError as e:            # 缺必填欄位、未知欄位（含自帶 id）
+        print(f"finding：欄位不合法：{e}", file=stderr)
+        return 2
+    except ValueError as e:
+        print(f"finding：{e}", file=stderr)
+        return 2
+    errors = sorted(schema.iter_errors(f), key=str)
+    if errors:
+        e = errors[0]
+        print(f"finding：不符 finding schema（{'/'.join(map(str, e.absolute_path)) or '(root)'}）：{e.message}", file=stderr)
+        return 2
+    print(json.dumps(f, ensure_ascii=False, indent=2), file=stdout)
+    return 0
 
 
 # ------------------------------------------------------------------ selftest
@@ -467,6 +634,174 @@ def selftest() -> list[str]:
             if remove_stale(p) is not False:
                 return "檔案不存在 → 不出錯、回傳 False"
     check("remove_stale()", t_remove)
+
+    # ---- 發現與發現 ID（#185）
+    import subprocess
+    fschema = _finding_validator()
+
+    def ferrs(f):
+        e = sorted(fschema.iter_errors(f), key=str)
+        return e[0].message if e else None
+
+    SRC = {"tool": "vibesec-g5", "tool_version": "1.0.0"}
+    AT = "2026-10-16T01:02:03+00:00"
+    LOC = {"kind": "code", "path": "app/main.py", "start_line": 42}
+    base = dict(gate="G5", rule_id="vibesec.g5.bola-cross-account", title="B 帳號可讀取 A 帳號訂單",
+                evidence_grade="E3", policy_tier="blocking", sources=SRC, location=LOC, commit="a1b2c3d", created_at=AT)
+    fid = lambda **kw: finding(**{**base, **kw})["id"]
+
+    def t_finding_min():
+        f = finding(**base)
+        if ferrs(f):
+            return f"不符 finding schema：{ferrs(f)}"
+        if list(f) != ["id", "gate", "rule_id", "title", "control_id", "cwe", "cve", "severity", "cvss_version",
+                       "cvss_vector", "cvss_score", "epss", "epss_date", "kev", "kev_date", "evidence_grade",
+                       "validation_status", "policy_tier", "priority", "owner", "due_date", "location", "evidence_refs",
+                       "review", "retest_result", "sources", "created_at", "notes"]:
+            return f"欄位順序應同 docs/templates/finding.example.json，沒給的 description、exception 省略（得到 {list(f)}）"
+        if f["validation_status"] != "pending" or f["evidence_refs"] != [] or f["control_id"] is not None \
+                or f["review"] is not None or f["notes"] is not None:
+            return f"validation_status 預設 pending、其他沒給的欄位為 null 或 []（得到 {f}）"
+        if (f["location"], f["sources"], f["created_at"]) != (LOC, SRC, AT):
+            return "location、sources、created_at 應照原樣放入"
+    check("finding()：只給必填欄位 → 完整、符合 schema", t_finding_min)
+
+    def t_finding_full():
+        f = finding(**base, description="d", control_id="ASVS5-V8.2", cwe="CWE-639", severity="high",
+                    cvss_version="4.0", cvss_vector="CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+                    cvss_score=7.1, validation_status="confirmed", priority="P1", owner="team-orders",
+                    due_date="2026-10-23", evidence_refs=[{"kind": "http_exchange", "ref": "r.json"}],
+                    retest_result="not_retested", notes="n",
+                    exception={"path_glob": "app/**", "reason": "r", "approved_by": "a", "expires": "2026-12-31",
+                               "agent_id": None})
+        if ferrs(f):
+            return f"不符 finding schema：{ferrs(f)}"
+        if (f["description"], f["control_id"], f["cwe"], f["validation_status"], f["exception"]["path_glob"]) != \
+                ("d", "ASVS5-V8.2", "CWE-639", "confirmed", "app/**"):
+            return f"給了的欄位應照原樣放入（得到 {f}）"
+        if list(f)[4] != "description" or list(f)[-1] != "exception":
+            return f"description 接在 title 後、exception 排最後（得到 {list(f)}）"
+        if finding(**base, cve="CVE-2021-44228")["cve"] != "CVE-2021-44228":
+            return "目錄內的 CVE 應接受"
+    check("finding()：選填欄位照原樣放入", t_finding_full)
+
+    def t_finding_now():
+        f = finding(**{**base, "created_at": None})
+        if not ISO.match(f["created_at"]) or f["id"][3:11] != f["created_at"][:10].replace("-", ""):
+            return f"沒給 created_at → 現在時間（+00:00、到秒），ID 日期跟著它（得到 {f['created_at']}、{f['id']}）"
+    check("finding()：created_at 預設現在時間", t_finding_now)
+
+    def t_id_formula():
+        want = "VS-20261016-" + hashlib.sha256("vibesec.g5.bola-cross-account\0app/main.py\x0042\0a1b2c3d".encode()).hexdigest()[:8]
+        if fid() != want:
+            return f"ID 應為 VS-<UTC 日期>-sha256(rule_id␀path␀start_line␀commit)[:8]（得到 {fid()}，應為 {want}）"
+        if fid() != fid():
+            return "同樣的輸入應得到同樣的 ID"
+        arch = "VS-20261016-" + hashlib.sha256("vibesec.g5.bola-cross-account\0\0\0".encode()).hexdigest()[:8]
+        if fid(location=None, commit=None) != arch:
+            return f"null 編成空字串：location、commit 都是 null 也能產生 ID（得到 {fid(location=None, commit=None)}）"
+        if fid(location={"kind": "architecture"}, commit=None) != arch:
+            return "location 沒有 path／start_line 時視同 null"
+    check("發現 ID 公式", t_id_formula)
+
+    def t_id_changes():
+        ids = {fid(), fid(rule_id="vibesec.g5.missing-session-check"), fid(location={**LOC, "path": "app/x.py"}),
+               fid(location={**LOC, "start_line": 43}), fid(commit="a1b2c3e"), fid(created_at="2026-10-17T01:02:03+00:00")}
+        if len(ids) != 6:
+            return f"rule_id、path、start_line、commit、日期任一改變，ID 就應改變（得到 {len(ids)} 個不同 ID）"
+        if fid(title="另一個標題", evidence_grade="E1") != fid() or fid(created_at="2026-10-16T23:59:59+00:00") != fid():
+            return "ID 只由 rule_id、path、start_line、commit 與 UTC 日期決定"
+    check("發現 ID：任一組成欄位改變，ID 就改變", t_id_changes)
+
+    def t_id_separator():
+        a = fid(location={"kind": "code", "path": "a", "start_line": None}, commit="bc")
+        b = fid(location={"kind": "code", "path": "ab", "start_line": None}, commit="c")
+        return "a+bc 與 ab+c 不應撞在一起（分隔字元應為 NUL）" if a == b else None
+    check("發現 ID：a+bc 與 ab+c 不撞", t_id_separator)
+
+    def t_id_utc_date():
+        if fid(created_at="2026-10-17T07:00:00+08:00") != fid():
+            return "+08:00 的 10/17 07:00 是 UTC 10/16，ID 日期應取 UTC 日期"
+        if not fid(created_at="2026-10-16T20:00:00-05:00").startswith("VS-20261017-"):
+            return "-05:00 的 10/16 20:00 是 UTC 10/17"
+    check("發現 ID：日期取 created_at 的 UTC 日期", t_id_utc_date)
+
+    def t_finding_bad():
+        bad_asvs, bad_cwe, bad_cve = "ASVS5-V99.99", "CWE-99999", "CVE-2099-0001"   # 刻意不在目錄（validate.py 不掃這三種）
+        cases = {
+            "evidence_grade 不合法": lambda: finding(**{**base, "evidence_grade": "E4"}),
+            "policy_tier 不合法": lambda: finding(**{**base, "policy_tier": None}),
+            "validation_status 不合法": lambda: finding(**base, validation_status="open"),
+            "gate 不合法": lambda: finding(**{**base, "gate": "G9"}),
+            "rule_id 空字串": lambda: finding(**{**base, "rule_id": " "}),
+            "title 空字串": lambda: finding(**{**base, "title": ""}),
+            "control_id 不在目錄": lambda: finding(**base, control_id=bad_asvs),
+            "cwe 不在目錄": lambda: finding(**base, cwe=bad_cwe),
+            "cve 不在目錄": lambda: finding(**base, cve=bad_cve),
+            "sources 缺 tool": lambda: finding(**{**base, "sources": {"tool_version": None}}),
+            "sources 缺 tool_version": lambda: finding(**{**base, "sources": {"tool": "x"}}),
+            "start_line 非整數": lambda: finding(**{**base, "location": {**LOC, "start_line": "42"}}),
+            "start_line 為 0": lambda: finding(**{**base, "location": {**LOC, "start_line": 0}}),
+            "location 不是物件": lambda: finding(**{**base, "location": "app/main.py"}),
+            "commit 非字串": lambda: finding(**{**base, "commit": 123}),
+            "created_at 沒有時區": lambda: finding(**{**base, "created_at": "2026-10-16T01:02:03"}),
+            "created_at 不是時間": lambda: finding(**{**base, "created_at": "yesterday"}),
+            "created_at 空字串": lambda: finding(**{**base, "created_at": ""}),
+            "severity 不合法": lambda: finding(**base, severity="severe"),
+        }
+        bad = [k for k, fn in cases.items() if not raises(fn)]
+        for k in ("evidence_grade", "policy_tier"):     # 必填、沒有預設：簽名本身拒絕（TypeError）
+            try:
+                finding(**{n: v for n, v in base.items() if n != k})
+                bad.append(f"缺 {k}")
+            except TypeError:
+                pass
+        return f"應拋例外：{bad}" if bad else None
+    check("finding()：不合法輸入拋例外（缺必填 → TypeError，其餘 → ValueError）", t_finding_bad)
+
+    def t_known_controls():
+        got = known_controls()
+        missing = [c for c in ("ASVS5-V8.2", "LLM01:2025", "MAESTRO-L1") if c not in got]
+        return f"known_controls() 應含 config/catalogs 的控制（缺 {missing}）" if missing else None
+    check("known_controls()", t_known_controls)
+
+    def cli(payload):
+        p = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), "finding"], input=payload,
+                           capture_output=True, text=True, timeout=60)
+        return p.returncode, p.stdout, p.stderr
+
+    def t_cli_ok():
+        code, out, err = cli(json.dumps({**base, "control_id": "ASVS5-V8.2"}, ensure_ascii=False))
+        if code != 0:
+            return f"合法輸入應 exit 0（得到 {code}：{err.strip()}）"
+        f = json.loads(out)
+        if ferrs(f) or f != finding(**base, control_id="ASVS5-V8.2"):
+            return f"stdout 應是與 finding() 相同的完整發現（{ferrs(f)}）"
+    check("finding CLI：合法輸入", t_cli_ok)
+
+    def t_cli_bad():
+        cases = {"不是 JSON": "{", "不是物件": "[]", "缺 evidence_grade": json.dumps({k: v for k, v in base.items() if k != "evidence_grade"}),
+                 "未知欄位": json.dumps({**base, "foo": 1}), "自帶 id": json.dumps({**base, "id": "VS-20261016-00000000"}),
+                 "control_id 不在目錄": json.dumps({**base, "control_id": "ASVS5-V99.99"}),
+                 "通過手動檢查但不符 schema": json.dumps({**base, "cvss_score": 11})}
+        for name, payload in cases.items():
+            code, out, err = cli(payload)
+            if code == 0 or out.strip() or not err.strip():
+                return f"{name}：應以非零退出碼結束、stdout 為空、stderr 寫明原因（得到 {code}、{out!r}、{err!r}）"
+    check("finding CLI：不合法輸入", t_cli_bad)
+
+    def t_cli_no_jsonschema():
+        import io
+        saved = sys.modules.get("jsonschema")
+        sys.modules["jsonschema"] = None          # import jsonschema → ImportError
+        try:
+            out, err = io.StringIO(), io.StringIO()
+            code = finding_cli(io.StringIO(json.dumps(base, ensure_ascii=False)), out, err)
+        finally:
+            sys.modules["jsonschema"] = saved
+        if code != 2 or out.getvalue() or "jsonschema" not in err.getvalue():
+            return f"缺 jsonschema → exit 2、不輸出沒驗證過的發現、stderr 寫明原因（得到 {code}、{out.getvalue()!r}）"
+    check("finding CLI：缺 jsonschema → exit 2、不輸出", t_cli_no_jsonschema)
     return fails
 
 
@@ -477,5 +812,7 @@ if __name__ == "__main__":
             print(f"FAIL {_f}")
         print("selftest " + ("通過" if not _fails else f"失敗 {len(_fails)} 項"))
         sys.exit(1 if _fails else 0)
+    if sys.argv[1:] == ["finding"]:
+        sys.exit(finding_cli(sys.stdin, sys.stdout, sys.stderr))
     print(__doc__)
     sys.exit(2)
