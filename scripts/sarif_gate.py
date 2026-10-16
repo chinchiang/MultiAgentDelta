@@ -489,14 +489,10 @@ def selftest() -> list[str]:
                 fails.append(f"政策檔讀不到 → {gate} incomplete、宣告的控制全部 untested、寫明原因、沒有發現、"
                              f"只有 vibesec-sarif-gate 一列 error（得到 {rc}、{g}）")
     # mode 取自政策（#201）：load_context 記 policy.mode，不再自己讀 ROOT 的 vibesec.yaml（以前缺席時預設 shadow）
-    import re as _re
-    from vibesec_policy import load_policy as _load_policy, temp_policy_root as _temp_root
-    with _temp_root() as pr:
-        vbp = pr / "vibesec.yaml"
-        text = vbp.read_text(encoding="utf-8")
-        for m in ("enforce", "shadow"):   # ROOT 的 vibesec.yaml 是 shadow：enforce 那一輪才分得出來源
-            vbp.write_text(_re.sub(r"(?m)^mode:.*$", f"mode: {m}", text, count=1), encoding="utf-8")
-            pol, _ = _load_policy(pr, project_root=None)
+    from vibesec_policy import mode_policy_root
+    for m in ("enforce", "shadow"):   # ROOT 的 vibesec.yaml 是 shadow：enforce 那一輪才分得出來源
+        with mode_policy_root(f"mode: {m}") as pr:
+            pol, _ = load_policy(pr, project_root=None)
             if load_context(pol)["mode"] != m:
                 fails.append(f"load_context：mode 取自政策（{m}），不讀 ROOT 的 vibesec.yaml（得到 {load_context(pol)['mode']}）")
     return fails

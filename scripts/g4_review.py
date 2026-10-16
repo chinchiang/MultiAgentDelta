@@ -737,27 +737,25 @@ def selftest() -> list[str]:
         fails.append(f"外部紀錄：政策讀不到 → 應不可信並寫明原因（得到 {got}）")
     # gate 子指令的退出碼依受信任政策的 mode（#201）：--mode 已不使用、傳了也忽略（以前預設 shadow）。
     # 閘門結果是 fail 時：政策 enforce → exit 1（即使 --mode shadow）；政策 shadow → exit 0（即使 --mode enforce）
-    import contextlib, io, re as _re, tempfile as _tf
+    import contextlib, io, tempfile as _tf
     import vibesec_policy
     real_load = vibesec_policy.load_policy
-    with vibesec_policy.temp_policy_root() as pr, _tf.TemporaryDirectory() as d:
-        vbp = pr / "vibesec.yaml"
-        text = vbp.read_text(encoding="utf-8")
+    with _tf.TemporaryDirectory() as d:
         failing = dict(_static(), status="fail", findings_count={"blocking": 1, "advisory": 0},
                        coverage=[{"control_id": "VS-G4-RULES-FILE-UNICODE", "state": "fail", "reason": None},
                                  {"control_id": LLM_CONTROL, "state": "pending", "reason": "x"}])
         sp = pathlib.Path(d, "static.json"); sp.write_text(json.dumps(failing), encoding="utf-8")
-        vibesec_policy.load_policy = lambda root=None, **kw: real_load(pr, **kw)
         try:
-            for mode, passed, want in (("enforce", "shadow", 1), ("enforce", None, 1), ("shadow", "enforce", 0)):
-                vbp.write_text(_re.sub(r"(?m)^mode:.*$", f"mode: {mode}", text, count=1), encoding="utf-8")
-                out = pathlib.Path(d, f"gate-{mode}-{passed}.json")
-                with contextlib.redirect_stdout(io.StringIO()):
-                    rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--out", str(out),
-                               *(["--mode", passed] if passed else [])])
+            for mode, cli_mode, want in (("enforce", "shadow", 1), ("enforce", None, 1), ("shadow", "enforce", 0)):
+                with vibesec_policy.mode_policy_root(f"mode: {mode}") as pr:
+                    vibesec_policy.load_policy = lambda root=None, **kw: real_load(pr, **kw)
+                    out = pathlib.Path(d, f"gate-{mode}-{cli_mode}.json")
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--out", str(out),
+                                   *(["--mode", cli_mode] if cli_mode else [])])
                 g = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else {}
                 if rc != want or g.get("status") != "fail":
-                    fails.append(f"gate：閘門結果 fail、政策 {mode}、--mode {passed} → exit {want}（得到 exit {rc}、{g.get('status')}）")
+                    fails.append(f"gate：閘門結果 fail、政策 {mode}、--mode {cli_mode} → exit {want}（得到 exit {rc}、{g.get('status')}）")
         finally:
             vibesec_policy.load_policy = real_load
     return fails

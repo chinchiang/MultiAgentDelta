@@ -1804,7 +1804,7 @@ def selftest():
     # 照樣寫出 incomplete 閘門結果：mode 記 enforce、三個控制 untested、SBOM／KEV pending、tool 列只有一列 error、
     # 不查 registry、舊 SARIF 刪掉、退出碼 2。以前缺席時默默記成 shadow、照常判定，不合法時以 traceback 結束。
     # vibesec.yaml 整個讀不到（缺席、語法錯誤、不是 mapping）同樣是政策讀不到。合法的 mode 照常執行，閘門結果的 mode 取自政策
-    from vibesec_policy import POLICY_UNREADABLE, temp_policy_root
+    from vibesec_policy import POLICY_UNREADABLE, set_mode_line, temp_policy_root
     real_checks, queried = (npm_check, pypi_check, pypi_requires, _POLICY), []
     def no_query(pkg, ver, c):
         queried.append(pkg)
@@ -1819,8 +1819,6 @@ def selftest():
             git(D, "init", "-q"); git(D, "add", "package.json"); git(D, "commit", "-qm", "t")
             vbp = pr / "vibesec.yaml"
             real_text = vbp.read_text(encoding="utf-8")
-            if len(re.findall(r"(?m)^mode:.*$", real_text)) != 1:
-                fails.append("selftest 前置：vibesec.yaml 找不到唯一的最上層 mode，無法製造 mode 缺席或不合法的情境")
             for label, line in [("缺席", ""), ("x", "mode: x"), ("Enforce", "mode: Enforce"), ("空字串", 'mode: ""'),
                                 ("shadow", "mode: shadow"), ("enforce", "mode: enforce"), ("整個檔缺席", None),
                                 ("整個檔語法錯誤", ("gates: [\n",)), ("整個檔不是 mapping", ("- a\n",))]:
@@ -1830,7 +1828,8 @@ def selftest():
                 elif isinstance(line, tuple):
                     vbp.write_text(line[0], encoding="utf-8")
                 else:
-                    vbp.write_text(re.sub(r"(?m)^mode:.*$", line, real_text, count=1), encoding="utf-8")
+                    vbp.write_text(real_text, encoding="utf-8")   # 每一輪都從原本的內容改起
+                    set_mode_line(vbp, line)
                 gp.unlink(missing_ok=True)
                 sp.write_text('{"stale": true}', encoding="utf-8")
                 _POLICY = None

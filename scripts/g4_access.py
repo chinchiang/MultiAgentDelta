@@ -324,14 +324,8 @@ def selftest() -> list[str]:
         # 受信任政策的 vibesec.yaml 缺 mode（#200、#201）：靜態檢查回報政策讀不到 → 靜態失敗路徑。閘門結果 incomplete、
         # mode 記 enforce（mode 不明）、寫明原因，不拋例外（#183 決定 1；g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）。
         # 以前 g4_access 自己讀 mode（缺席時預設 shadow）再以 --mode 傳給靜態檢查
-        import shutil
-        from vibesec_policy import POLICY_UNREADABLE
-        with tempfile.TemporaryDirectory() as td:
-            tree = pathlib.Path(td) / "trusted"
-            for sub in ("scripts", "config", "schemas"):
-                shutil.copytree(ROOT / sub, tree / sub, ignore=shutil.ignore_patterns("__pycache__"))
-            (tree / "vibesec.yaml").write_text(re.sub(r"(?m)^mode:.*\n?", "", (ROOT / "vibesec.yaml").read_text(encoding="utf-8"), count=1),
-                                               encoding="utf-8")
+        from vibesec_policy import POLICY_UNREADABLE, mode_policy_root, modeless_policy_root, trusted_tree
+        with trusted_tree("") as tree:
             try:
                 g = check(scan(repo, out, tree / "scripts/g4_static.py", policy_root=tree), "mode 缺席")
                 why = g["status_reason"] or ""
@@ -340,16 +334,11 @@ def selftest() -> list[str]:
             except Exception as e:
                 fails.append(f"受信任政策缺 mode → 不得拋例外（得到 {type(e).__name__}：{e}）")
         # mode 取自政策：受信任政策是 enforce（ROOT 的 vibesec.yaml 是 shadow）→ 靜態檢查失敗時閘門結果也記 enforce
-        with tempfile.TemporaryDirectory() as td:
-            from vibesec_policy import temp_policy_root
-            with temp_policy_root() as pr:
-                vbp = pr / "vibesec.yaml"
-                vbp.write_text(re.sub(r"(?m)^mode:.*$", "mode: enforce", vbp.read_text(encoding="utf-8"), count=1), encoding="utf-8")
-                g = check(scan(repo, out, pathlib.Path(td) / "none.py", policy_root=pr), "找不到腳本（政策 enforce）")
-                if g["status"] != "incomplete" or g["mode"] != "enforce":
-                    fails.append(f"靜態檢查失敗時 mode 取自政策（enforce）（得到 {g['status']}、{g['mode']}）")
+        with tempfile.TemporaryDirectory() as td, mode_policy_root("mode: enforce") as pr:
+            g = check(scan(repo, out, pathlib.Path(td) / "none.py", policy_root=pr), "找不到腳本（政策 enforce）")
+            if g["status"] != "incomplete" or g["mode"] != "enforce":
+                fails.append(f"靜態檢查失敗時 mode 取自政策（enforce）（得到 {g['status']}、{g['mode']}）")
         # 靜態檢查根本沒執行（腳本不存在）、政策又讀不到（缺 mode）：mode 記 enforce，原因由 g4_access 自己寫出
-        from vibesec_policy import modeless_policy_root
         with tempfile.TemporaryDirectory() as td, modeless_policy_root() as pr:
             g = check(scan(repo, out, pathlib.Path(td) / "none.py", policy_root=pr), "找不到腳本（政策缺 mode）")
             why = g["status_reason"] or ""

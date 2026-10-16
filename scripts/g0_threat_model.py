@@ -448,8 +448,7 @@ def selftest() -> list[str]:
     # mode 缺席或不合法（#190、#200）：受信任政策（policy_root）的 vibesec.yaml 缺 mode 或不合法 → load_policy 回報政策讀不到 →
     # 照樣寫出 incomplete 閘門結果：mode 記 enforce、控制全部 untested、tool 列只有一列 error、不讀威脅模型；退出碼 2。
     # 以前缺席時默默記成 shadow、照常判定，不合法時拋例外。閘門結果的 mode 取自政策，不取自 vibesec= 注入的內容
-    import re as _re
-    from vibesec_policy import POLICY_UNREADABLE, temp_policy_root
+    from vibesec_policy import POLICY_UNREADABLE, set_mode_line, temp_policy_root
     import gate_result
     real_locate, located = locate_model, []
 
@@ -459,9 +458,11 @@ def selftest() -> list[str]:
     locate_model = counting_locate
     try:
         with temp_policy_root() as pr:
-            vbp = pr / "vibesec.yaml"
-            text = vbp.read_text(encoding="utf-8")
-            set_mode = lambda line: vbp.write_text(_re.sub(r"(?m)^mode:.*$", line, text, count=1), encoding="utf-8")
+            vbp, text = pr / "vibesec.yaml", (pr / "vibesec.yaml").read_text(encoding="utf-8")
+
+            def set_mode(line):   # 每一輪都從原本的內容改起（拿掉 mode 之後下一輪仍找得到）
+                vbp.write_text(text, encoding="utf-8")
+                set_mode_line(vbp, line)
             for label, line in [("缺席", ""), ("x", "mode: x"), ("Enforce", "mode: Enforce"), ("空字串", 'mode: ""')]:
                 set_mode(line)
                 located.clear()

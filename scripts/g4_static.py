@@ -335,18 +335,17 @@ def selftest() -> list[str]:
         p = subprocess.run([sys.executable, "-I", str(script), *map(str, args)], cwd=cwd, capture_output=True, text=True, timeout=300)
         return p.returncode
 
-    import re, shutil
+    import contextlib, re
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from vibesec_policy import trusted_tree
     real_mode = re.search(r"(?m)^mode:\s*(\S+)", (ROOT / "vibesec.yaml").read_text(encoding="utf-8")).group(1)
+    trees = contextlib.ExitStack()   # mode 不同的受信任樹副本（CLI 不能注入 policy_root），selftest 結束時刪除
+    tree_of: dict[str, pathlib.Path] = {}
 
-    def trusted_tree(base: pathlib.Path, mode: str) -> pathlib.Path:
-        """mode 為 mode 的受信任樹副本（CLI 不能注入 policy_root）：scripts、config、schemas，加上改寫 mode 的 vibesec.yaml。"""
-        t = base / f"trusted-{mode}"
-        if not t.exists():
-            for sub in ("scripts", "config", "schemas"):
-                shutil.copytree(ROOT / sub, t / sub, ignore=shutil.ignore_patterns("__pycache__"))
-            (t / "vibesec.yaml").write_text(re.sub(r"(?m)^mode:.*$", f"mode: {mode}", (ROOT / "vibesec.yaml").read_text(encoding="utf-8"),
-                                                   count=1), encoding="utf-8")
-        return t / "scripts/g4_static.py"
+    def tree_script(mode: str) -> pathlib.Path:
+        if mode not in tree_of:
+            tree_of[mode] = trees.enter_context(trusted_tree(f"mode: {mode}")) / "scripts/g4_static.py"
+        return tree_of[mode]
 
     def outputs(out: pathlib.Path):
         try:
@@ -400,14 +399,14 @@ def selftest() -> list[str]:
 
         # 有 blocking 發現：受信任政策 shadow 只報告（exit 0）、enforce exit 1；兩者都要寫出結果。退出碼與閘門結果的 mode
         # 都取自政策，--mode 傳反了也一樣（#201：以前由 --mode 決定）
-        for mode, passed, want in (("shadow", "enforce", 0), ("enforce", "shadow", 1), ("enforce", None, 1)):
-            out = D / f"o-{mode}-{passed}"
-            rc = run("--target", risky, "--out", out, *(["--mode", passed] if passed else []), cwd=D,
-                     script=trusted_tree(D, mode))
+        for mode, cli_mode, want in (("shadow", "enforce", 0), ("enforce", "shadow", 1), ("enforce", None, 1)):
+            out = D / f"o-{mode}-{cli_mode}"
+            rc = run("--target", risky, "--out", out, *(["--mode", cli_mode] if cli_mode else []), cwd=D,
+                     script=tree_script(mode))
             hits, gate = outputs(out)
             if rc != want or "vibesec.g4.supabase-rls-disabled" not in (hits or set()) \
                     or (gate or {}).get("findings_count", {}).get("blocking") != 1 or (gate or {}).get("mode") != mode:
-                fails.append(f"blocking 發現、政策 {mode}、--mode {passed} → exit {want}、mode 記 {mode} 並回報"
+                fails.append(f"blocking 發現、政策 {mode}、--mode {cli_mode} → exit {want}、mode 記 {mode} 並回報"
                              f"（exit {rc}，mode={(gate or {}).get('mode')}，發現 {hits}）")
 
         # 排除：只出現在 _trusted／.git／node_modules 的發現不回報
@@ -457,6 +456,7 @@ def selftest() -> list[str]:
                     or (out / "g4-static.sarif").exists() or list(schema.iter_errors(g)):
                 fails.append(f"政策讀不到（{make_root.__name__}）→ G4 incomplete、寫明原因、mode 記 enforce、靜態控制 untested、"
                              f"LLM 審查 pending、tool error、不留 SARIF（得到 {g}）")
+    trees.close()
     return fails
 
 

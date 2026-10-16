@@ -270,17 +270,41 @@ def broken_policy_root():
         yield tmp
 
 
-@contextlib.contextmanager
-def modeless_policy_root():
-    """selftest 用：vibesec.yaml 沒有最上層 mode 的暫存 root（其餘照本 repo）；load_policy 會回報 mode 缺席（政策讀不到）。"""
+def set_mode_line(vibesec_yaml: pathlib.Path, mode_line: str) -> None:
+    """selftest 用：把 vibesec.yaml 唯一的最上層 `mode:` 行換成 mode_line（空字串 → 拿掉這一行）；找不到或不唯一 → RuntimeError。"""
     import re
+    text, n = re.subn(r"(?m)^mode:.*(\n|$)", (mode_line + "\n") if mode_line else "", vibesec_yaml.read_text(encoding="utf-8"))
+    if n != 1:
+        raise RuntimeError(f"{vibesec_yaml}：找不到唯一的最上層 mode")
+    vibesec_yaml.write_text(text, encoding="utf-8")
+
+
+@contextlib.contextmanager
+def mode_policy_root(mode_line: str):
+    """selftest 用：vibesec.yaml 的最上層 mode 行換成 mode_line 的暫存 root（例如 "mode: enforce"、"mode: x"；空字串 → 拿掉），
+    其餘照本 repo（同 temp_policy_root：沒有政策例外）。給可以注入 policy_root= 的閘門進入點用。"""
     with temp_policy_root() as tmp:
-        vbp = tmp / "vibesec.yaml"
-        text, n = re.subn(r"(?m)^mode:.*\n?", "", vbp.read_text(encoding="utf-8"))
-        if n != 1:
-            raise RuntimeError("modeless_policy_root：vibesec.yaml 找不到唯一的最上層 mode")
-        vbp.write_text(text, encoding="utf-8")
+        set_mode_line(tmp / "vibesec.yaml", mode_line)
         yield tmp
+
+
+def modeless_policy_root():
+    """selftest 用：vibesec.yaml 沒有最上層 mode 的暫存 root；load_policy 會回報 mode 缺席（政策讀不到）。"""
+    return mode_policy_root("")
+
+
+@contextlib.contextmanager
+def trusted_tree(mode_line: str):
+    """selftest 用：受信任樹副本（scripts、config、schemas、vibesec.yaml），vibesec.yaml 的 mode 行換成 mode_line（空字串 → 拿掉）。
+    給只能經命令列執行、無法注入 policy_root 的測試（例如 CI 以 python3 -I 執行的 g4_static）。yield 暫存 root。"""
+    import shutil, tempfile
+    with tempfile.TemporaryDirectory(prefix="vibesec-tree-") as d:
+        tree = pathlib.Path(d)
+        for sub in ("scripts", "config", "schemas"):
+            shutil.copytree(DEFAULT_ROOT / sub, tree / sub, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy(DEFAULT_ROOT / "vibesec.yaml", tree / "vibesec.yaml")
+        set_mode_line(tree / "vibesec.yaml", mode_line)
+        yield tree
 
 
 def write_exceptions(root: pathlib.Path, exceptions) -> None:
@@ -529,6 +553,12 @@ def selftest() -> list[str]:
     with modeless_policy_root() as tmp:
         if load_policy(tmp, project_root=None)[1] != f"{POLICY_UNREADABLE}（vibesec.yaml 缺 mode；須為 shadow／enforce）":
             fails.append("modeless_policy_root：load_policy 應回報 mode 缺席")
+    with mode_policy_root("mode: enforce") as tmp:
+        if getattr(load_policy(tmp, project_root=None)[0], "mode", None) != "enforce":
+            fails.append("mode_policy_root：mode 行換成 enforce")
+    with trusted_tree("mode: enforce") as tree:
+        if not (tree / "scripts/vibesec_mode.py").is_file() or getattr(load_policy(tree, project_root=None)[0], "mode", None) != "enforce":
+            fails.append("trusted_tree：含 scripts、政策與換過 mode 的 vibesec.yaml")
     if tmp.exists():
         fails.append("temp_policy_root：離開時刪除暫存 root")
     # 契約：record() 的形狀就是 finding.schema.json 的 exception（harness 原樣搬進 findings.json）；缺欄、多欄、型別不符 → 不通過
@@ -550,10 +580,9 @@ def selftest() -> list[str]:
     with temp_policy_root() as tmp:
         vbp = tmp / "vibesec.yaml"
         base_text = vbp.read_text(encoding="utf-8")
-        import re as _re
-
-        def with_mode(line):
-            vbp.write_text(_re.sub(r"(?m)^mode:.*$", line, base_text, count=1), encoding="utf-8")
+        def with_mode(line):   # 每一輪都從原本的內容改起
+            vbp.write_text(base_text, encoding="utf-8")
+            set_mode_line(vbp, line)
         for label, line, want in [
                 ("缺席", "", f"{POLICY_UNREADABLE}（vibesec.yaml 缺 mode；須為 shadow／enforce）"),
                 ("不合法", "mode: x", f"{POLICY_UNREADABLE}（vibesec.yaml 的 mode 不合法：'x'；須為 shadow／enforce）"),
