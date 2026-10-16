@@ -22,7 +22,7 @@ reviews/ 由 CODEOWNERS 審核。此工具不呼叫任何模型、不裁決、�
 退出碼：check 0 通過、1 違規；gate 0（shadow 或非 fail）、1（enforce 且 fail）；兩者 2 = 工具缺席（不放行）。
 """
 from __future__ import annotations
-import argparse, copy, datetime, json, os, pathlib, re, subprocess, sys
+import argparse, copy, json, os, pathlib, re, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # 判定邏輯與設定（schema、vibesec.yaml、providers、catalogs、ruling.py）取自本腳本所在的樹；
@@ -49,6 +49,7 @@ except ImportError as e:  # incomplete ≠ pass
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import ruling as ruling_tool  # noqa: E402  人工裁決的規則（rulings/）與本工具共用同一份檢查
+import gate_result  # noqa: E402  tool 列與時間戳只有一份寫法（#183）；組裝邏輯仍在 derive_gate（候選 C）
 
 
 def _yaml(p: pathlib.Path) -> dict:
@@ -263,10 +264,9 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     else:
         for p in record["providers"]:
             # gate-result 的 tools 沒有 refused：資料分級不允許、未送出的 provider 記為 missing（未執行），exit_code 沿用 review_provider.py 的 3
-            tools.append({"name": p["provider"], "version": p.get("model"),
-                          "state": "missing" if p["state"] == "refused" else p["state"],
-                          "exit_code": 3 if p["state"] == "refused" else None,
-                          "output_ref": record_ref, "duration_seconds": None})
+            tools.append(gate_result.tool(p["provider"], "missing" if p["state"] == "refused" else p["state"],
+                                          version=p.get("model"), exit_code=3 if p["state"] == "refused" else None,
+                                          output_ref=record_ref))
         coverage += [dict(c) for c in record["coverage"]]
         unresolved_blocking, human_pending = [], []
         for f in ev["findings"]:
@@ -296,7 +296,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     gate.update({"status": status, "status_reason": status_reason, "tools": tools,
                  "coverage": coverage,
                  "findings_count": {"blocking": static_blocking + llm_blocking, "advisory": static_advisory + llm_advisory},
-                 "finished_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()})
+                 "finished_at": gate_result.now()})
     gate["_llm_findings"] = ev["findings"] if ev else []   # 只給留言用；寫檔前移除
     return gate
 
@@ -660,6 +660,14 @@ def selftest() -> list[str]:
         fails.append(f"refused 的 provider 不算 family、紀錄仍有效（errors {ev6['errors']}、gate {g6['status']}）")
     if any(t["state"] == "refused" for t in g6["tools"]):
         fails.append("gate 的 tools 不得出現 refused（gate-result schema 沒有此值）")
+    # 接線（#183）：provider 的 tool 列是 gate_result.tool 的形狀；refused → missing、exit_code 3，其餘照實記錄
+    import gate_result
+    want = [gate_result.tool(p["provider"], "missing" if p["state"] == "refused" else p["state"], version=p.get("model"),
+                             exit_code=3 if p["state"] == "refused" else None, output_ref="reviews/g4/x.yaml")
+            for p in r6["providers"]]
+    got = g6["tools"][-len(r6["providers"]):]
+    if got != want or [list(t) for t in got] != [list(t) for t in want]:
+        fails.append(f"provider 的 tool 列應為 gate_result.tool 的形狀（refused → missing／exit 3）（得到 {got}）")
     # 信任上限：本 PR 新增的紀錄不能自證
     if trust_cap(False, "appsec-lead", "author", []) is not None:
         fails.append("已在 base 上的紀錄（未在本 PR 變更）應可信")
