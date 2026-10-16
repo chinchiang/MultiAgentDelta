@@ -510,7 +510,7 @@ def selftest() -> list[str]:
         elif g:
             check(g, "靜態檢查腳本（無 MCP）")
         for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py", "scripts/gate_verdict.py",
-                    "scripts/gate_result.py", "scripts/g4_static.py"):
+                    "scripts/vibesec_mode.py", "scripts/gate_result.py", "scripts/g4_static.py"):
             (trusted / rel).write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
         (proj / "reports/g4-gate.json").unlink(missing_ok=True)   # 不讓上一次的閘門結果被當成這一次的（腳本崩潰時會讀到舊檔）
         rc, g = run_step(proj, trusted / "scripts/g4_static.py")   # 受信任樹缺 g4_mcp.py（例如 default branch 尚未合併本模組）

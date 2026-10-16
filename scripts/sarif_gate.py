@@ -209,13 +209,9 @@ def env_findings(d: dict, pol: dict) -> list[dict]:
 
 def unreadable_gate(gate: str, problem: str, *, scope: str, started: str | None = None) -> dict:
     """政策檔讀不到：不讀工具結果、不分類任何發現；閘門的每個控制 untested 並寫明未完成原因（incomplete ≠ pass），
-    tool 列只有本程式一列 error（GateRun.unreadable）。mode 讀不到或不合法 → 視同 enforce（GateRun.unreadable；
-    阻擋判定另讀受信任樹的 mode）。"""
-    try:
-        mode = _yaml(ROOT / "vibesec.yaml").get("mode")
-    except Exception:
-        mode = None
-    run = GateRun(gate, controls=list(GATE_CONTROLS[gate]), mode=mode, scope=scope, started_at=started)
+    tool 列只有本程式一列 error（GateRun.unreadable）。mode 取自政策，政策讀不到（含 mode 缺席或不合法，#200）就是 mode
+    不明 → 記為 enforce（GateRun.unreadable；阻擋判定另讀受信任樹的 mode）。以前另讀 ROOT 的 vibesec.yaml。"""
+    run = GateRun(gate, controls=list(GATE_CONTROLS[gate]), mode=None, scope=scope, started_at=started)
     return run.unreadable(problem, tool_name=SELF_TOOL)
 
 
@@ -226,6 +222,31 @@ def context_or_unreadable(gate: str, policy_root: pathlib.Path, started: str, **
     if problem:
         return None, dict(unreadable_gate(gate, problem, scope="full", started=started), **gate_fields)
     return load_context(policy), None
+
+
+def main_with_policy(gate_module, policy_root: pathlib.Path, d: pathlib.Path, *tool_envs: str) -> tuple[int, list[str]]:
+    """selftest 用（g2_secrets、g3_sast）：以 policy_root 的政策經 gate_module.main() 掃描空的暫存 repo；tool_envs 指向
+    會留下記號檔的工具替身。回傳 (退出碼, 被執行的替身)。不新增命令列參數：暫時把 gate_module.scan 換成帶 policy_root 的版本。"""
+    import contextlib, functools, io, os, stat, subprocess
+    repo, marks = d / "main-repo", d / "marks"
+    repo.mkdir(); marks.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    env_saved = {k: os.environ.get(k) for k in tool_envs}
+    for k in tool_envs:
+        fake = d / f"fake-{k}"
+        fake.write_text(f"#!/bin/sh\ntouch '{marks / k}'\n", encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        os.environ[k] = str(fake)
+    real_scan = gate_module.scan
+    gate_module.scan = functools.partial(real_scan, policy_root=policy_root)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = gate_module.main(["--target", str(repo), "--out-dir", str(d / "main-out"), "--gate", str(d / "main-gate.json")])
+    finally:
+        gate_module.scan = real_scan
+        for k, v in env_saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    return rc, sorted(p.name for p in marks.iterdir())
 
 
 def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | None, pol: dict,

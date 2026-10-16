@@ -49,9 +49,9 @@ import datetime, hashlib, pathlib, re, sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from gate_verdict import COVERAGE_STATES, verdict  # noqa: E402  狀態判定與覆蓋 state 的唯一來源
+from vibesec_mode import MODES  # noqa: E402  mode 的合法值只有一份（#200）
 
 GATES = ("G0", "G1", "G2", "G3", "G4", "G5", "G6")
-MODES = ("shadow", "enforce")
 SCOPES = ("diff", "full")
 RISK_TIERS = ("L1", "L2", "L3")
 TOOL_STATES = ("ran", "missing", "timeout", "error")

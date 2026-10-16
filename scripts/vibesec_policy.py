@@ -11,6 +11,8 @@ base_tier；所有發出 finding 的元件（workflow 內嵌探針、scripts/*.p
   p.base_tier(rule_id)   # 基礎 tier：不含 tier_overrides（cwe-map／docs／evals 對齊用）
   p.cap(rule_id, req)    # 呼叫端只能把個別發現降為 advisory，不能升級到政策以上
   p, problem = load_policy(root)   # 閘門進入點：讀不到 → (None, 未完成原因)，閘門記 incomplete
+  p.mode, p.mode_note    # 執行模式：受信任 vibesec.yaml 的 mode，沒有預設值（缺席或不合法 → 讀不到）；
+                         # load_policy(root, mode_override=…) 只能把 shadow 升為 enforce（只有阻擋判定會傳），忽略降級時附註
   pp = p.for_project(project, today=None)       # 綁定受驗樹的政策例外（G0–G3 唯一的讀取與比對）；project 必填
   pp.classify(rule_id, path, agent_id=None, requested=None)
                          # {"policy_tier", "exception"}：tier 依 cap；命中例外 → advisory、發現保留，exception 為固定五欄
@@ -40,6 +42,8 @@ except ImportError:
     sys.exit(2)
 
 DEFAULT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from vibesec_mode import apply_override, read_mode  # noqa: E402  mode 的合法值與解析只有一份（#200）；只用標準函式庫
 # Policy(project_root=…) 的預設：取環境變數 VIBESEC_PROJECT_ROOT；明確傳 None ＝ 沒有 project_root（selftest 用，不受環境影響）
 FROM_ENV = object()
 TIERS = ("blocking", "advisory")
@@ -63,16 +67,21 @@ def rule_gate(rule_id: str) -> str | None:
     return TOOL_GATE.get(rid.split(":", 1)[0]) if ":" in rid else None
 
 
+class ModeError(ValueError):
+    """vibesec.yaml 的 mode 缺席或不合法，或 mode_override 不合法；訊息即未完成原因（load_policy 原樣放進 problem）。"""
+
+
 class Policy:
     def __init__(self, root: pathlib.Path | str | None = None, risk_tier: str | None = None,
-                 project_root: pathlib.Path | str | None | object = FROM_ENV):
+                 project_root: pathlib.Path | str | None | object = FROM_ENV, mode_override: str | None = None):
         self.root = pathlib.Path(root) if root else DEFAULT_ROOT
         if project_root is FROM_ENV:
             project_root = os.environ.get("VIBESEC_PROJECT_ROOT")
         self.project_root = pathlib.Path(project_root) if project_root else None
         pol = yaml.safe_load((self.root / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8")) or {}
+        vb_text = (self.root / "vibesec.yaml").read_text(encoding="utf-8")
         if risk_tier is None:
-            vb = yaml.safe_load((self.root / "vibesec.yaml").read_text(encoding="utf-8")) or {}
+            vb = yaml.safe_load(vb_text) or {}
             risk_tier = vb.get("risk_tier", "L2")
         overrides = pol.get("tier_overrides") or {}
         # risk_tier 必須是 vibesec.yaml 定義的層級（L1／L2／L3）：以前 l3、L4 這類打錯的值靜默取不到任何 override，
@@ -82,6 +91,14 @@ class Policy:
         if not set(overrides) <= set(RISK_TIERS):
             raise ValueError(f"blocking-policy tier_overrides 有未知層級：{sorted(set(overrides) - set(RISK_TIERS))}")
         self.risk_tier = risk_tier
+        # mode 沒有預設值（#199）：缺席或不合法 → ModeError（load_policy 回報為政策讀不到）；以前各閘門各自預設 shadow
+        mode, problem = read_mode(vb_text)
+        if problem:
+            raise ModeError(problem)
+        try:
+            self.mode, self.mode_note = apply_override(mode, mode_override)
+        except ValueError as e:
+            raise ModeError(str(e)) from None
         self.default_tier = pol.get("default_tier", "advisory")
         if self.default_tier not in TIERS:
             raise ValueError(f"blocking-policy default_tier 不合法：{self.default_tier!r}")
@@ -224,6 +241,8 @@ def load_policy(root: pathlib.Path | str | None = None, **kw) -> tuple[Policy | 
     閘門記一筆未完成原因、狀態 incomplete，不分類任何發現（incomplete ≠ pass，CLAUDE.md #2）。kw 原樣交給 Policy。"""
     try:
         return Policy(root, **kw), None
+    except ModeError as e:   # mode 錯誤也是政策讀不到的一種：同一個前綴、同一條閘門路徑（#200）
+        return None, f"{POLICY_UNREADABLE}（{e}）"
     except Exception as e:   # yaml.YAMLError 不是 ValueError 的子類別；任何讀取失敗都不得退回預設 tier 照樣判定
         return None, f"{POLICY_UNREADABLE}（{type(e).__name__}），無法決定發現的 tier"
 
@@ -251,6 +270,19 @@ def broken_policy_root():
         yield tmp
 
 
+@contextlib.contextmanager
+def modeless_policy_root():
+    """selftest 用：vibesec.yaml 沒有最上層 mode 的暫存 root（其餘照本 repo）；load_policy 會回報 mode 缺席（政策讀不到）。"""
+    import re
+    with temp_policy_root() as tmp:
+        vbp = tmp / "vibesec.yaml"
+        text, n = re.subn(r"(?m)^mode:.*\n?", "", vbp.read_text(encoding="utf-8"))
+        if n != 1:
+            raise RuntimeError("modeless_policy_root：vibesec.yaml 找不到唯一的最上層 mode")
+        vbp.write_text(text, encoding="utf-8")
+        yield tmp
+
+
 def write_exceptions(root: pathlib.Path, exceptions) -> None:
     """selftest 用：把 root 的 blocking-policy.yaml 的 exceptions 換成 exceptions，其餘照舊。"""
     path = pathlib.Path(root) / "config/policy/blocking-policy.yaml"
@@ -268,7 +300,7 @@ def selftest() -> list[str]:
             "blocking": [{"rule_id": "vibesec.g9.a", "why": "x"}],
             "advisory": [{"rule_id": "vibesec.g9.b", "why": "x"}],
             "tier_overrides": {"L3": {"promote_to_blocking": ["vibesec.g9.b"], "demote_to_advisory": ["vibesec.g9.a"]}}}))
-        (root / "vibesec.yaml").write_text("risk_tier: L3\n")
+        (root / "vibesec.yaml").write_text("mode: shadow\nrisk_tier: L3\n")
         p = Policy(root)
         checks = [
             (p.base_tier("vibesec.g9.a"), "blocking", "blocking 清單 → base blocking"),
@@ -287,12 +319,12 @@ def selftest() -> list[str]:
                 fails.append(f"{label}：得到 {got!r}，預期 {want!r}")
         # risk_tier 打錯（小寫、不存在的層級、非字串）→ 例外，不得靜默取不到 override（以前 l3 讓 L3 升級規則消失）
         for bad in ("l3", "L4", "", None, 3):
-            (root / "vibesec.yaml").write_text(yaml.safe_dump({"risk_tier": bad}))
+            (root / "vibesec.yaml").write_text(yaml.safe_dump({"mode": "shadow", "risk_tier": bad}))
             try:
                 Policy(root); fails.append(f"risk_tier={bad!r} 應拋出例外")
             except ValueError:
                 pass
-        (root / "vibesec.yaml").write_text("project: {name: x}\n")
+        (root / "vibesec.yaml").write_text("mode: shadow\nproject: {name: x}\n")
         if Policy(root).risk_tier != "L2":
             fails.append("vibesec.yaml 未設定 risk_tier → 預設 L2")
         # applies_only_to_gates：清單外閘門的規則有效 tier 為 advisory（發現保留、不阻擋）；分不出閘門的規則不降級。
@@ -494,6 +526,9 @@ def selftest() -> list[str]:
     with broken_policy_root() as tmp:
         if load_policy(tmp, project_root=None)[0] is not None:
             fails.append("broken_policy_root：load_policy 應讀不到")
+    with modeless_policy_root() as tmp:
+        if load_policy(tmp, project_root=None)[1] != f"{POLICY_UNREADABLE}（vibesec.yaml 缺 mode；須為 shadow／enforce）":
+            fails.append("modeless_policy_root：load_policy 應回報 mode 缺席")
     if tmp.exists():
         fails.append("temp_policy_root：離開時刪除暫存 root")
     # 契約：record() 的形狀就是 finding.schema.json 的 exception（harness 原樣搬進 findings.json）；缺欄、多欄、型別不符 → 不通過
@@ -510,6 +545,45 @@ def selftest() -> list[str]:
                        ("approved_by 空字串", dict(rec, approved_by=""))):
         if ok(bad):
             fails.append(f"finding.schema.json 的 exception 應拒絕：{label}")
+    # mode（#200）：Policy 讀 vibesec.yaml 時以 vibesec_mode.read_mode 取得，沒有預設值；缺席或不合法 → load_policy 回報
+    # 「政策讀不到」的一種（前綴 POLICY_UNREADABLE），閘門既有的讀不到路徑直接涵蓋。mode_override 只能把 shadow 升為 enforce
+    with temp_policy_root() as tmp:
+        vbp = tmp / "vibesec.yaml"
+        base_text = vbp.read_text(encoding="utf-8")
+        import re as _re
+
+        def with_mode(line):
+            vbp.write_text(_re.sub(r"(?m)^mode:.*$", line, base_text, count=1), encoding="utf-8")
+        for label, line, want in [
+                ("缺席", "", f"{POLICY_UNREADABLE}（vibesec.yaml 缺 mode；須為 shadow／enforce）"),
+                ("不合法", "mode: x", f"{POLICY_UNREADABLE}（vibesec.yaml 的 mode 不合法：'x'；須為 shadow／enforce）"),
+                ("大小寫", "mode: Enforce", f"{POLICY_UNREADABLE}（vibesec.yaml 的 mode 不合法：'Enforce'；須為 shadow／enforce）")]:
+            with_mode(line)
+            got = load_policy(tmp, project_root=None)
+            if got != (None, want):
+                fails.append(f"load_policy：mode {label} → (None, {want!r})（得到 {got[0] is not None and 'Policy' or None}, {got[1]!r}）")
+            try:
+                Policy(tmp, project_root=None); fails.append(f"Policy()：mode {label} 應拋出 ValueError")
+            except ValueError:
+                pass
+        for cfg, override, want_mode, want_note in [
+                ("shadow", None, "shadow", False), ("enforce", None, "enforce", False),
+                ("shadow", "", "shadow", False), ("shadow", "enforce", "enforce", False),
+                ("enforce", "enforce", "enforce", False), ("shadow", "shadow", "shadow", False),
+                ("enforce", "shadow", "enforce", True)]:
+            with_mode(f"mode: {cfg}")
+            p, problem = load_policy(tmp, project_root=None, mode_override=override)
+            got = (p.mode, bool(p.mode_note)) if p else problem
+            if got != (want_mode, want_note):
+                fails.append(f"mode_override：設定 {cfg}、覆寫 {override!r} → {want_mode}、附註={want_note}（得到 {got}）")
+        with_mode("mode: enforce")
+        p, _ = load_policy(tmp, project_root=None, mode_override="shadow")
+        if not p or "shadow" not in (p.mode_note or "") or "enforce" not in (p.mode_note or ""):
+            fails.append(f"忽略降級的附註應寫明覆寫值與設定值（得到 {p and p.mode_note!r}）")
+        for bad in ("x", "Enforce", 3):
+            got = load_policy(tmp, project_root=None, mode_override=bad)
+            if got[0] is not None or not (got[1] or "").startswith(POLICY_UNREADABLE + "（") or repr(bad) not in (got[1] or ""):
+                fails.append(f"mode_override 不合法（{bad!r}）→ 政策讀不到並附上讀到的值，不得忽略（得到 {got[1]!r}）")
     # 本 repo 的實際政策：L1 下 G3 規則不阻擋、G1／G2 照常；L3 的升級規則仍在
     real_l1, real_l3 = Policy(risk_tier="L1"), Policy(risk_tier="L3")
     if real_l1.tier("vibesec.g3.sql-string-concat") != "advisory" or real_l1.tier("vibesec.g2.hardcoded-secret") != "blocking":

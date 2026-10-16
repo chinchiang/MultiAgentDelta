@@ -254,17 +254,29 @@ def selftest() -> list[str]:
             if got != want:
                 fails.append(f"vibesec.yaml {label} → 逾時 {want}（得到 {got}）")
     # 政策檔讀不到 → scan 一開始就停：不跑 gitleaks、G2 incomplete、控制 untested 並寫明未完成原因、沒有任何發現
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    # 政策 root 的 vibesec.yaml 缺 mode 也是政策讀不到（#200）；兩種情況 mode 都記 enforce（mode 不明）
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, modeless_policy_root
     import gate_result
-    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
-        g = scan(pathlib.Path(d), pathlib.Path(d, "out"), None, 60, policy_root=pr)
-        why = g["status_reason"] or ""
-        if g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in why or "not found" in why \
-                or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
-                or [c["control_id"] for c in g["coverage"]] != list(sarif_gate.GATE_CONTROLS["G2"]) \
-                or g["tools"] != [gate_result.tool(sarif_gate.SELF_TOOL, "error")] \
-                or list(schema.iter_errors(g)):
-            fails.append(f"政策檔讀不到（只有 vibesec-sarif-gate 一列 error）→ 不跑 gitleaks、G2 incomplete、控制 untested、寫明原因（得到 {g}）")
+    for make_root in (broken_policy_root, modeless_policy_root):
+        with make_root() as pr, tempfile.TemporaryDirectory() as d:
+            g = scan(pathlib.Path(d), pathlib.Path(d, "out"), None, 60, policy_root=pr)
+            why = g["status_reason"] or ""
+            if g["status"] != "incomplete" or POLICY_UNREADABLE + "（" not in why or "not found" in why or g["mode"] != "enforce" \
+                    or (make_root is modeless_policy_root and "mode" not in why) \
+                    or {c["state"] for c in g["coverage"]} != {"untested"} or g["findings_count"] != {"blocking": 0, "advisory": 0} \
+                    or [c["control_id"] for c in g["coverage"]] != list(sarif_gate.GATE_CONTROLS["G2"]) \
+                    or g["tools"] != [gate_result.tool(sarif_gate.SELF_TOOL, "error")] \
+                    or list(schema.iter_errors(g)):
+                fails.append(f"政策讀不到（{make_root.__name__}；只有 vibesec-sarif-gate 一列 error）→ 不跑 gitleaks、G2 incomplete、"
+                             f"控制 untested、寫明原因、mode 記 enforce（得到 {g}）")
+            # 經 main()：退出碼 2（同政策讀不到）、gitleaks 沒有執行（替身被呼叫會留下記號檔）
+            rc, ran = sarif_gate.main_with_policy(sys.modules[__name__], pr, pathlib.Path(d), "VIBESEC_GITLEAKS")
+            if rc != 2 or ran:
+                fails.append(f"政策讀不到（{make_root.__name__}）→ main 退出碼 2、不執行 gitleaks（得到 {rc}、執行了 {ran}）")
+    from vibesec_policy import temp_policy_root
+    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d:   # 對照組：政策讀得到時替身確實會被執行
+        if sarif_gate.main_with_policy(sys.modules[__name__], pr, pathlib.Path(d), "VIBESEC_GITLEAKS")[1] != ["VIBESEC_GITLEAKS"]:
+            fails.append("對照組：政策讀得到時 gitleaks 替身應被執行（否則上面的「不執行」檢查沒有意義）")
     return fails
 
 

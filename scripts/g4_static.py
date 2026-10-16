@@ -46,7 +46,9 @@ def scan(MODE: str, COMMIT: str | None, REPORTS: pathlib.Path, policy_root: path
     POLICY, problem = load_policy(policy_root)   # 只建立一次；讀不到 → incomplete，不分類任何發現
     if problem:
         gate_result.remove_stale(REPORTS / "g4-static.sarif")   # 不讓上一次的結果被當成這次的
-        # 靜態控制 untested（原因＝problem）、LLM 審查控制維持 pending、tool 列只有一列 error
+        # 靜態控制 untested（原因＝problem）、LLM 審查控制維持 pending、tool 列只有一列 error。mode 取自政策：
+        # 政策讀不到（含 mode 缺席或不合法，#200）＝ mode 不明 → unreadable() 記 enforce，不採用 --mode 傳進來的值
+        run.mode = None
         write_gate(run.unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
         print(f"G4 static: incomplete（{problem}）")
         return
@@ -308,10 +310,12 @@ def main(argv=None) -> int:
             print(f"FAIL {f}")
         print("selftest 通過" if not fails else f"selftest 失敗 {len(fails)} 項")
         return 1 if fails else 0
+    sys.path.insert(0, str(ROOT / "scripts"))   # CI 以 python3 -I 執行：import 必須在 sys.path.insert 之後
+    from vibesec_mode import MODES                # mode 的合法值只有一份（#200）
     ap = argparse.ArgumentParser(description="VibeSec G4 靜態檢查")
     ap.add_argument("--target", required=True, type=pathlib.Path, help="受測專案根目錄")
     ap.add_argument("--out", required=True, type=pathlib.Path, help="輸出目錄（g4-static.sarif、g4-gate.json）")
-    ap.add_argument("--mode", required=True, choices=("shadow", "enforce"), help="沒有預設值：預設 shadow 等於靜默放行")
+    ap.add_argument("--mode", required=True, choices=MODES, help="沒有預設值：預設 shadow 等於靜默放行")
     ap.add_argument("--commit", default=None, help="受測 commit（寫入 gate JSON；沒給記 null）")
     a = ap.parse_args(argv)
     out = a.out.resolve()                 # 先以呼叫端 cwd 解析，再切換到受測專案
@@ -407,28 +411,32 @@ def selftest() -> list[str]:
     # 不留 SARIF（以前 Policy(ROOT) 拋出例外、整支結束，gate JSON 沒有寫出）。在同一個行程呼叫：不為測試開命令列參數
     import contextlib, io
     sys.path.insert(0, str(ROOT / "scripts"))
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
+    # 政策 root 的 vibesec.yaml 缺 mode 也是政策讀不到（#200）；兩種情況 mode 都記 enforce（不採用 --mode 傳進來的 shadow）
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, modeless_policy_root
     cwd = os.getcwd()
-    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
-        out = pathlib.Path(d, "out"); out.mkdir()
-        (out / "g4-static.sarif").write_text("上一次的結果", encoding="utf-8")
-        try:
-            os.chdir(d)
-            with contextlib.redirect_stdout(io.StringIO()):
-                scan("shadow", None, out, policy_root=pr)
-        finally:
-            os.chdir(cwd)
-        g = json.loads((out / "g4-gate.json").read_text(encoding="utf-8"))
-        # 接線（#183）：閘門結果由 GateRun.unreadable 產出 → 靜態控制依序 untested（原因＝政策讀不到）、
-        # LLM 審查控制（deferred）維持 pending、tool 列只有一列 error
-        import gate_result
-        cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g["coverage"]]
-        want = [(c, "untested", True) for c in CONTROLS if c != LLM_CONTROL] + [(LLM_CONTROL, "pending", False)]
-        if g["status"] != "incomplete" or not (g["status_reason"] or "").startswith(POLICY_UNREADABLE + "（") \
-                or g["findings_count"] != {"blocking": 0, "advisory": 0} or cov != want \
-                or g["tools"] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
-                or (out / "g4-static.sarif").exists() or list(schema.iter_errors(g)):
-            fails.append(f"政策檔讀不到 → G4 incomplete、寫明原因、靜態控制 untested、LLM 審查 pending、tool error、不留 SARIF（得到 {g}）")
+    for make_root in (broken_policy_root, modeless_policy_root):
+        with make_root() as pr, tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d, "out"); out.mkdir()
+            (out / "g4-static.sarif").write_text("上一次的結果", encoding="utf-8")
+            try:
+                os.chdir(d)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    scan("shadow", None, out, policy_root=pr)
+            finally:
+                os.chdir(cwd)
+            g = json.loads((out / "g4-gate.json").read_text(encoding="utf-8"))
+            # 接線（#183）：閘門結果由 GateRun.unreadable 產出 → 靜態控制依序 untested（原因＝政策讀不到）、
+            # LLM 審查控制（deferred）維持 pending、tool 列只有一列 error
+            import gate_result
+            cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g["coverage"]]
+            want = [(c, "untested", True) for c in CONTROLS if c != LLM_CONTROL] + [(LLM_CONTROL, "pending", False)]
+            if g["status"] != "incomplete" or not (g["status_reason"] or "").startswith(POLICY_UNREADABLE + "（") \
+                    or g["mode"] != "enforce" or (make_root is modeless_policy_root and "mode" not in (g["status_reason"] or "")) \
+                    or g["findings_count"] != {"blocking": 0, "advisory": 0} or cov != want \
+                    or g["tools"] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
+                    or (out / "g4-static.sarif").exists() or list(schema.iter_errors(g)):
+                fails.append(f"政策讀不到（{make_root.__name__}）→ G4 incomplete、寫明原因、mode 記 enforce、靜態控制 untested、"
+                             f"LLM 審查 pending、tool error、不留 SARIF（得到 {g}）")
     return fails
 
 
