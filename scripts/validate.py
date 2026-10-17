@@ -496,6 +496,12 @@ try:
         _cfg4 = _g4.load_cfg()
         from vibesec_policy import load_policy as _load_policy
         _g4_policy_load = _load_policy(CODE.parent)   # 只建立一次；讀不到 → 紀錄照樣驗證，未完成原因記在 incomplete
+        # enforce 下 G4 未完成不擋是 #215 的人工決定：切換 enforce 時一定看得到（WARN，不擋）。政策取自本腳本所在的樹：
+        # CI 的「PR 版本」是 PR head（切換 enforce 的那個 PR 就會看到）、受信任版本是 default branch（合併後持續提醒）。
+        # 只是提醒、不參與任何判定，所以讀 PR head 的政策沒有信任問題
+        from vibesec_policy import g4_enforce_reminder as _g4_reminder
+        if _g4_policy_load[0] is not None and (_r := _g4_reminder(_g4_policy_load[0])):
+            warn(f"vibesec.yaml（mode: enforce）＋ config/policy/blocking-policy.yaml：{_r}")
         for _f in ([ROOT / "docs/templates/g4-review.example.yaml"] + sorted((ROOT / "reviews/g4").glob("*.yaml"))
                    + sorted((ROOT / "reviews/g4/external").glob("*.yaml"))):
             if not _f.exists():
