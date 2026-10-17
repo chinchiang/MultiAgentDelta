@@ -15,7 +15,9 @@ reviews/ 由 CODEOWNERS 審核。此工具不呼叫任何模型、不裁決、�
 
 狀態推導（docs/05「阻擋政策」；incomplete ≠ pass，CLAUDE.md #2）：
   靜態 blocking，或 LLM 審查發現屬 blocking 且經人工裁決 confirm            → fail
-  否則任一發現 requires_human 且沒有有效裁決（rulings/）                     → pending
+  否則任一發現 requires_human 且沒有有效裁決（rulings/）、有待裁決的 blocking 發現，
+      或審查紀錄未獲信任（紀錄或裁決由本 PR 引入卻未經非作者 approve）                → pending
+  （待裁決的 blocking 發現計入 findings_count：enforce 下阻擋判定依計數擋，直到人工裁決；GLOSSARY.md）
   否則無紀錄／紀錄過期／family < min／必要角色缺席／coverage 有 pending、untested → incomplete
   否則                                                                         → pass
 「有效」= 紀錄的 commit 是 head 的祖先，且兩者之間只動過 reviews/g4/ 與 rulings/。
@@ -48,7 +50,7 @@ except ImportError as e:  # incomplete ≠ pass
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import ruling as ruling_tool  # noqa: E402  人工裁決的規則（rulings/）與本工具共用同一份檢查
-import gate_result  # noqa: E402  tool 列與時間戳只有一份寫法（#183）；判定與組裝邏輯仍在 derive_gate，另案處理
+import gate_result  # noqa: E402  G4 組裝經 GateRun（#213）：外層欄位、tool 列、時間戳與判定只有一份寫法
 from g4_static import LLM_CONTROL  # noqa: E402  LLM 審查控制 ID 的唯一來源（g4_static 不依賴 PyYAML）
 
 
@@ -88,7 +90,7 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
     v = Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")), format_checker=Draft202012Validator.FORMAT_CHECKER)
     errors = [f"schema：{e.message} @ {'/'.join(map(str, e.path)) or '(root)'}" for e in sorted(v.iter_errors(record), key=str)]
     if errors:
-        return {"errors": errors, "incomplete": [], "findings": [], "families": 0}
+        return {"errors": errors, "incomplete": [], "coverage_gaps": [], "findings": [], "families": 0}
     incomplete: list[str] = []
     # reviews/g4/<commit>.yaml（本 repo）與 reviews/g4/external/<commit>.yaml（外部專案）都以審查的 commit 命名
     if path is not None and path.parent.name in ("g4", "external") and path.stem != record["commit"]:
@@ -125,9 +127,12 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
         for cid in cov:
             if cid not in controls:
                 errors.append(f"coverage control_id {cid} 不在 config/catalogs/")
+    coverage_gaps = []   # 結構化的 coverage 缺口（#213）：組裝依 state 決定經 coverage 還是未完成原因表達；incomplete 照舊列出（check 子指令）
     for cid, c in cov.items():
         if c["state"] in ("pending", "untested"):
-            incomplete.append(f"coverage {cid}: {c['state']}" + (f"（{c['reason']}）" if c.get("reason") else ""))
+            text = f"coverage {cid}: {c['state']}" + (f"（{c['reason']}）" if c.get("reason") else "")
+            incomplete.append(text)
+            coverage_gaps.append({"control_id": cid, "state": c["state"], "reason": c.get("reason"), "text": text})
 
     # findings：意見只能來自實際執行的 provider；分歧／少數意見／family 不足必須 requires_human；結論只能來自人工裁決
     effective = []
@@ -209,7 +214,8 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
         if policy:   # 政策讀不到 → 不分類：tier 只用來驗證，不產出發現
             effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": tier,
                               "validation_status": status, "requires_human": req_human, "ruling_ref": f.get("ruling_ref")})
-    return {"errors": errors, "incomplete": incomplete, "findings": effective, "families": len(families)}
+    return {"errors": errors, "incomplete": incomplete, "coverage_gaps": coverage_gaps, "findings": effective,
+            "families": len(families)}
 
 
 # ------------------------------------------------------------------ git
@@ -234,42 +240,65 @@ def freshness(commit: str, head: str) -> tuple[bool, str, int]:
 
 
 # ------------------------------------------------------------------ 閘門
-def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason: str | None, record_ref: str | None) -> dict:
-    """把靜態 gate JSON 與（有效的）審查紀錄合成 G4 gate JSON。record=None → 維持靜態結果 + LLM pending。"""
-    gate = copy.deepcopy(static)
+# coverage 合併時的嚴格程度（#213 決定 2）：同一個控制出現多次時取較嚴者
+_STRICTNESS = {"fail": 4, "untested": 3, "pending": 2, "pass": 1, "not_applicable": 0}
+
+
+def _merge_coverage(entries: list[dict]) -> list[dict]:
+    """依出現順序合併同一控制的多筆 coverage：state 取較嚴者，理由依序串接（去重）。schema 允許紀錄 coverage 與靜態檢查
+    有同一個控制，或紀錄內重複；GateRun 每個控制只回報一次。"""
+    out: dict[str, dict] = {}
+    for c in entries:
+        cid, reason = c["control_id"], c.get("reason")
+        if cid not in out:
+            out[cid] = {"control_id": cid, "state": c["state"], "reason": reason}
+            continue
+        cur = out[cid]
+        if _STRICTNESS[c["state"]] > _STRICTNESS[cur["state"]]:
+            cur["state"] = c["state"]
+        cur["reason"] = "；".join(dict.fromkeys(r for r in (cur["reason"], reason) if r)) or None
+    return list(out.values())
+
+
+def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason: str | None, record_ref: str | None,
+                trust_problems=()) -> tuple[dict, list[dict]]:
+    """G4 組裝的唯一入口（#211、#213）：靜態結果＋（有效的）審查紀錄 → (G4 閘門結果, 審查發現)。
+    record=None → 維持靜態結果、LLM 審查控制 pending。trust_problems：呼叫端算好的「審查紀錄未獲信任」理由（CI：紀錄或裁決
+    由本 PR 引入卻未經非作者 approve；本機：外部紀錄的信任結果），當成待人工裁決交給閘門判定（以前由 apply_cap 在判定之外改寫）。
+    狀態一律由 gate_verdict.verdict 判定（GateRun）；判定看的 coverage 就是輸出的 coverage。審查發現另外回傳（給 PR 留言用），
+    不再塞在閘門結果的私有欄位裡。"""
+    from gate_verdict import verdict
+    trust_problems = [str(t) for t in trust_problems if str(t).strip()]
     static_blocking = int((static.get("findings_count") or {}).get("blocking") or 0)
     static_advisory = int((static.get("findings_count") or {}).get("advisory") or 0)
-    coverage = [c for c in static.get("coverage") or [] if c.get("control_id") != LLM_CONTROL]
+    static_cov = [c for c in static.get("coverage") or [] if c.get("control_id") != LLM_CONTROL]
     tools = list(static.get("tools") or [])
-    # 狀態一律由 gate_verdict.verdict 判定（全 repo 唯一一份規則）。以前在這裡另寫一份：審查紀錄有效時只看
-    # blocking／裁決／紀錄本身的問題，靜態結果 coverage 的 untested（READ_ERR、MCP 檢查無法執行）被忽略而報 pass。
-    from gate_verdict import verdict
-    static_cov = list(coverage)
-    llm_blocking = llm_advisory = 0
+    llm_advisory = 0
     confirmed_blocking: list[str] = []
+    pending_ruling_blocking: list[str] = []   # 待裁決的 blocking 發現：blocking、未被 refute、尚無人工裁決
     problems: list[str] = []
     awaiting: list[str] = []
     notes: list[str] = []
+    gaps = []
     if record is None or ev is None:
         problems.append(fresh_reason or "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 完成並提交 reviews/g4/<commit>.yaml")
-        coverage.append({"control_id": LLM_CONTROL, "state": "pending", "reason": problems[-1]})
+        record_cov = [{"control_id": LLM_CONTROL, "state": "pending", "reason": problems[-1]}]
     else:
         for p in record["providers"]:
             # gate-result 的 tools 沒有 refused：資料分級不允許、未送出的 provider 記為 missing（未執行），exit_code 沿用 review_provider.py 的 3
             tools.append(gate_result.tool(p["provider"], "missing" if p["state"] == "refused" else p["state"],
                                           version=p.get("model"), exit_code=3 if p["state"] == "refused" else None,
                                           output_ref=record_ref))
-        coverage += [dict(c) for c in record["coverage"]]
-        unresolved_blocking, human_pending = [], []
+        record_cov = [dict(c) for c in record["coverage"]]
+        human_pending = []
         for f in ev["findings"]:
             if f["validation_status"] == "refuted":
                 continue
             if f["policy_tier"] == "blocking":
-                llm_blocking += 1
                 if f["validation_status"] == "confirmed":
                     confirmed_blocking.append(f["id"])
-                elif not f["requires_human"]:
-                    unresolved_blocking.append(f["id"])   # 模型一致 confirm 但無裁決：不能 pass（第四次審視 S-5）
+                else:   # 模型一致 confirm 但無裁決（第四次審視 S-5），或交人工裁決中：都不能 pass，也不能自行 fail
+                    pending_ruling_blocking.append(f["id"])
             else:
                 llm_advisory += 1
             if f["requires_human"]:
@@ -278,19 +307,43 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
             notes.append("LLM 審查發現經人工裁決 confirm 的 blocking：" + "、".join(confirmed_blocking))
         if human_pending:
             awaiting.append("rulings/：" + "、".join(human_pending))
-        if unresolved_blocking:
-            awaiting.append("blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：" + "、".join(unresolved_blocking))
-        problems.extend(ev["incomplete"])            # 紀錄本身的問題（含紀錄 coverage 的 pending／untested）
+        gaps = ev.get("coverage_gaps") or []
         notes.append(f"審查紀錄 {record_ref}（{ev['families']} family）")
-    # 只有經人工裁決 confirm 的 LLM blocking 才讓閘門 fail；未裁決者是待人工裁決（findings_count 仍照實計入）
-    status, status_reason = verdict(blocking=static_blocking + len(confirmed_blocking), coverage=static_cov,
-                                    problems=problems, awaiting_human=awaiting, notes=notes)
-    gate.update({"status": status, "status_reason": status_reason, "tools": tools,
-                 "coverage": coverage,
-                 "findings_count": {"blocking": static_blocking + llm_blocking, "advisory": static_advisory + llm_advisory},
-                 "finished_at": gate_result.now()})
-    gate["_llm_findings"] = ev["findings"] if ev else []   # 只給留言用；寫檔前移除
-    return gate
+    coverage = _merge_coverage(static_cov + record_cov)
+    # 紀錄 coverage 的缺口：untested 由 coverage 表達（判定看得到），pending 是「待併入」、判定看不到 → 仍以未完成原因傳入
+    # （#213 決定 1：否則紀錄 pending 會讓 G4 從 incomplete 變 pass）。合併後不是 untested 的（例如被靜態的 fail 蓋過）也照舊傳入
+    untested_now = {c["control_id"] for c in coverage if c["state"] == "untested"}
+    via_coverage = {g["text"] for g in gaps if g["state"] == "untested" and g["control_id"] in untested_now}
+    if ev is not None and record is not None:
+        problems.extend(p for p in ev["incomplete"] if p not in via_coverage)   # 紀錄本身的問題
+    awaiting_blocking_text = [gate_result.AWAITING_BLOCKING_PREFIX + "、".join(pending_ruling_blocking)] if pending_ruling_blocking else []
+    # 信任問題：不算它們時本來會 pass，才把 LLM 審查控制的 coverage 降為 pending（#213 決定 3：維持 apply_cap 原本的行為）。
+    # coverage 的理由只記第一則（apply_cap 逐則套用時只有第一次會改寫 coverage）；全部的信任問題都列在 status_reason
+    if trust_problems and verdict(blocking=static_blocking + len(confirmed_blocking), coverage=coverage, problems=problems,
+                                  awaiting_human=awaiting + awaiting_blocking_text, notes=notes)[0] == "pass":
+        for c in coverage:
+            if c["control_id"] == LLM_CONTROL and c["state"] == "pass":
+                c.update(state="pending", reason=f"審查紀錄未獲信任：{trust_problems[0]}")
+    run = gate_result.GateRun("G4", controls=[c["control_id"] for c in coverage], mode=static.get("mode"),
+                              scope=static.get("scope"), commit=static.get("commit"), diff_base=static.get("diff_base"),
+                              risk_tier=static.get("risk_tier"), started_at=static.get("started_at"))
+    for t in tools:
+        run.tool(t["name"], t["state"], version=t.get("version"), exit_code=t.get("exit_code"), output_ref=t.get("output_ref"),
+                 duration_seconds=t.get("duration_seconds"))
+    for c in coverage:
+        run.cover(c["control_id"], c["state"], c["reason"])
+    # 只有經人工裁決 confirm 的 LLM blocking 才讓閘門 fail；待裁決的 blocking 計入 findings_count、列為待人工裁決
+    run.count(blocking=static_blocking + len(confirmed_blocking), advisory=static_advisory + llm_advisory)
+    for p in problems:
+        run.problem(p)
+    for a in awaiting:
+        run.awaiting_human(a)
+    run.awaiting_blocking(pending_ruling_blocking)
+    for t in trust_problems:
+        run.awaiting_human(f"審查紀錄未獲信任：{t}")
+    for n in notes:
+        run.note(n)
+    return run.result(), (list(ev["findings"]) if ev else [])
 
 
 def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers: list[str]) -> str | None:
@@ -351,19 +404,6 @@ def external_trust(records: dict[str, dict | None], pr_author: str, approvers: l
     return problems
 
 
-def apply_cap(gate: dict, reason: str) -> dict:
-    """把 pass 降為 pending（fail／pending／incomplete 不變），並在理由與 coverage 註明。"""
-    if gate["status"] == "pass":
-        gate["status"] = "pending"
-        gate["status_reason"] = "；".join(x for x in (f"審查紀錄未獲信任：{reason}", gate.get("status_reason")) if x)
-        for c in gate.get("coverage") or []:
-            if c.get("control_id") == LLM_CONTROL and c.get("state") == "pass":
-                c.update(state="pending", reason=f"審查紀錄未獲信任：{reason}")
-    elif reason:
-        gate["status_reason"] = "；".join(x for x in (gate.get("status_reason"), f"審查紀錄未獲信任：{reason}") if x)
-    return gate
-
-
 def ruling_caps(findings: list[dict], changed, pr_author: str | None, approvers: list[str], load) -> list[str]:
     """本 PR 新增或修改的人工裁決同樣不能自證：以前只檢查審查紀錄，PR 可以不動紀錄、只新增一份把發現翻成 refuted 的
     ruling（decided_by 隨便填別人的帳號），G4 就變 pass，而那個人根本不必 approve（第二輪審查 M4）。
@@ -403,13 +443,13 @@ def md_safe(text) -> str:
     return _MD_SPECIAL.sub(r"\\\1", t).replace("@", "＠")
 
 
-def comment_markdown(gate: dict, record_ref: str | None) -> str:
+def comment_markdown(gate: dict, record_ref: str | None, llm_findings=()) -> str:
     st = gate["status"]
     lines = ["<!-- vibesec-g4-llm-review -->", "### VibeSec G4 — 存取控制", "",
              "G4 靜態檢查已完成（隱形 Unicode / RLS / Agent tool allow-list / HITL / 單層 middleware / MCP resource indicator）。", "",
              f"**G4 狀態：`{md_safe(st)}`**——{md_safe(gate.get('status_reason'))}"]
     if record_ref:
-        rows = gate.get("_llm_findings") or []
+        rows = list(llm_findings)
         if rows:
             lines += ["", "| 發現 | 規則 | tier | 狀態 | 需人工裁決 |", "|---|---|---|---|---|"]
             lines += [f"| {md_safe(f['id'])} | {md_safe(f['rule_id'])} | {md_safe(f['policy_tier'])} | {md_safe(f['validation_status'])} | {'是' if f['requires_human'] else ''} |"
@@ -479,10 +519,10 @@ def selftest() -> list[str]:
     gate_schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")),
                                        format_checker=Draft202012Validator.FORMAT_CHECKER)
 
-    def gate_of(rec, ev, fresh=True):
-        g = derive_gate(_static(), rec, ev, None if fresh else "過期", "reviews/g4/x.yaml" if fresh else None) \
+    def gate_of(rec, ev, fresh=True, trust_problems=()):
+        g, _ = derive_gate(_static(), rec, ev, None if fresh else "過期", "reviews/g4/x.yaml" if fresh else None,
+                           trust_problems=trust_problems) \
             if fresh else derive_gate(_static(), None, None, "紀錄過期", None)
-        g.pop("_llm_findings", None)
         es = sorted(gate_schema.iter_errors(g), key=str)
         if es:
             fails.append(f"gate JSON 不符 schema：{es[0].message}")
@@ -576,13 +616,13 @@ def selftest() -> list[str]:
         fails.append("未裁決的 blocking 發現 → 閘門應為 pending，不是 pass")
     # 靜態 blocking 永遠 fail
     s = _static(); s["findings_count"]["blocking"] = 1
-    if derive_gate(s, r4, ev4, None, "x")["status"] != "fail":
+    if derive_gate(s, r4, ev4, None, "x")[0]["status"] != "fail":
         fails.append("靜態 blocking → fail")
     # 重現：審查紀錄有效時，靜態結果 coverage 的 untested（READ_ERR、MCP 檢查無法執行）不得被忽略而報 pass
     for cid, why in (("VS-G4-AGENT-TOOL-ALLOWLIST", "無法讀取：app.py（PermissionError）"),
                      ("VS-G4-MCP-RESOURCE-INDICATOR", "MCP resource indicator 檢查無法執行")):
         s = _static(); s["coverage"].append({"control_id": cid, "state": "untested", "reason": why})
-        g = derive_gate(s, r4, ev4, None, "x")
+        g, _ = derive_gate(s, r4, ev4, None, "x")
         if g["status"] == "pass" or why not in (g["status_reason"] or ""):
             fails.append(f"有效審查紀錄 + 靜態 {cid} untested → 不得為 pass，並寫明原因（得到 {g['status']}：{g['status_reason']}）")
     # 無紀錄／過期 → incomplete
@@ -689,18 +729,62 @@ def selftest() -> list[str]:
         fails.append("裁決不是本 PR 引入（已在 base 上）→ 不設上限")
     if record_changed(None, "HEAD", "reviews/g4/x.yaml") is not True or record_changed("", "HEAD", "reviews/g4/x.yaml") is not True:
         fails.append("沒有 base 可比對 → 紀錄應視為本次變更引入（fail closed）")
-    g4p = gate_of(r4, ev4)
-    if apply_cap(g4p, "x")["status"] != "pending" or next(c for c in g4p["coverage"] if c["control_id"] == LLM_CONTROL)["state"] != "pending":
-        fails.append("不可信的 pass → pending，且 VS-G4-LLM-REVIEW coverage 降為 pending")
-    gf = derive_gate({**_static(), "findings_count": {"blocking": 1, "advisory": 0}}, r4, ev4, None, "x")
-    gf.pop("_llm_findings", None)
-    if apply_cap(gf, "x")["status"] != "fail":
-        fails.append("上限不得把 fail 改掉")
+    # 信任問題交給閘門判定（#213；以前由 apply_cap 在判定之外改寫）：當成待人工裁決「審查紀錄未獲信任：…」。
+    # 不算信任問題時會 pass → pending，且 VS-G4-LLM-REVIEW coverage 降為 pending；本來就不是 pass → 狀態與 coverage 不變
+    llm_cov = lambda g: next(c for c in g["coverage"] if c["control_id"] == LLM_CONTROL)
+    g4p = gate_of(r4, ev4, trust_problems=["x", "y"])
+    if g4p["status"] != "pending" or llm_cov(g4p)["state"] != "pending" or llm_cov(g4p)["reason"] != "審查紀錄未獲信任：x" \
+            or "待人工裁決：審查紀錄未獲信任：x" not in (g4p["status_reason"] or "") or "待人工裁決：審查紀錄未獲信任：y" not in g4p["status_reason"]:
+        fails.append(f"不可信的 pass → pending、理由列為待人工裁決、VS-G4-LLM-REVIEW coverage 降為 pending（得到 {g4p['status']}："
+                     f"{g4p['status_reason']}、{llm_cov(g4p)}）")
+    gf, _ = derive_gate({**_static(), "findings_count": {"blocking": 1, "advisory": 0}}, r4, ev4, None, "x", trust_problems=["x"])
+    if gf["status"] != "fail" or llm_cov(gf)["state"] != "pass" or "審查紀錄未獲信任：x" not in (gf["status_reason"] or ""):
+        fails.append(f"信任問題不得把 fail 改掉、本來就不是 pass 時 coverage 不變，但理由仍要寫明（得到 {gf['status']}、{llm_cov(gf)}）")
+    if hasattr(sys.modules[__name__], "apply_cap"):
+        fails.append("apply_cap 應已移除：狀態只由閘門判定產出")
+    # 回傳（閘門結果, 審查發現）：閘門結果不再帶私有欄位 _llm_findings（以前寫檔前要記得 pop）
+    g_rh, llm_rh = derive_gate(_static(), rec, ev, None, "x")
+    if "_llm_findings" in g_rh or [f["id"] for f in llm_rh] != [fid]:
+        fails.append(f"審查發現另外回傳、閘門結果沒有 _llm_findings（得到 {list(g_rh)}、{llm_rh}）")
+    # 待裁決的 blocking 發現（#211）：計入 findings_count、status pending、理由用 GateRun.awaiting_blocking 的固定開頭
+    r6b = copy.deepcopy(rec); f6b = r6b["findings"][0]
+    f6b.update(policy_tier="blocking", requires_human=False, validation_status="pending", ruling_ref=None)
+    for o in f6b["opinions"]:
+        o.update(verdict="confirm", minority=False)
+    g6p = gate_of(r6b, evaluate(r6b, cfg, controls, None))
+    if g6p["status"] != "pending" or g6p["findings_count"]["blocking"] != 1 or gate_result.AWAITING_BLOCKING_PREFIX not in (g6p["status_reason"] or ""):
+        fails.append(f"待裁決的 blocking → pending、計入 findings_count（得到 {g6p['status']}、{g6p['findings_count']}：{g6p['status_reason']}）")
+    # 一份 coverage（#213）：判定看輸出的完整 coverage；紀錄的 untested 經 coverage、pending 仍是未完成原因（status 都是 incomplete）
+    ru = copy.deepcopy(r4); ru["coverage"] = [{"control_id": LLM_CONTROL, "state": "untested", "reason": "逾時"}]
+    evu = evaluate(ru, cfg, controls, None); gu = gate_of(ru, evu)
+    if gu["status"] != "incomplete" or f"{LLM_CONTROL} 未實測（逾時）" not in (gu["status_reason"] or "") \
+            or [g["control_id"] for g in evu.get("coverage_gaps") or []] != [LLM_CONTROL]:
+        fails.append(f"紀錄 coverage untested → incomplete、經 coverage 寫明、evaluate 回傳結構化缺口（得到 {gu['status']}：{gu['status_reason']}、{evu.get('coverage_gaps')}）")
+    rp = copy.deepcopy(r4); rp["coverage"] = [{"control_id": LLM_CONTROL, "state": "pending", "reason": "待補"}]
+    evp = evaluate(rp, cfg, controls, None); gp = gate_of(rp, evp)
+    if gp["status"] != "incomplete" or f"coverage {LLM_CONTROL}: pending（待補）" not in (gp["status_reason"] or ""):
+        fails.append(f"紀錄 coverage pending → 仍是未完成原因、incomplete（不得因判定看 coverage 而變 pass；得到 {gp['status']}：{gp['status_reason']}）")
+    if not any(i.startswith(f"coverage {LLM_CONTROL}: untested") for i in evu["incomplete"]):
+        fails.append("evaluate 的 incomplete 照舊列出 coverage 缺口（check 子指令的輸出不變）")
+    # 控制重複：紀錄 coverage 與靜態檢查同一個控制、或紀錄內重複 → 合併成一筆，state 取較嚴者，理由串接（#213 決定 2）
+    rdup = copy.deepcopy(r4); rdup["coverage"] = [{"control_id": LLM_CONTROL, "state": "pass", "reason": None},
+                                                {"control_id": "ASVS5-V8.2", "state": "untested", "reason": "LLM 未審"},
+                                                {"control_id": LLM_CONTROL, "state": "pending", "reason": "補件"}]
+    evdup = evaluate(rdup, cfg, controls, None)
+    try:
+        gdup, _ = derive_gate({**_static(), "coverage": [{"control_id": "ASVS5-V8.2", "state": "pass", "reason": None},
+                                                         {"control_id": LLM_CONTROL, "state": "pending", "reason": "x"}]},
+                              rdup, evdup, None, "x")
+    except ValueError as e:   # 沒有合併時 GateRun 會拒絕重複的控制
+        gdup = {"coverage": [], "status": f"例外 {e}"}
+    cov = [(c["control_id"], c["state"]) for c in gdup["coverage"]]
+    if cov != [("ASVS5-V8.2", "untested"), (LLM_CONTROL, "pending")] or gdup["status"] != "incomplete":
+        fails.append(f"重複的控制合併成一筆、取較嚴的 state（得到 {cov}、{gdup['status']}）")
     r6 = copy.deepcopy(r4); r6["recorded_by"]["handle"] = ""
     ev6 = evaluate(r6, cfg, controls, None)
     if ev6["errors"] or not any("handle 未填" in i for i in ev6["incomplete"]):
         fails.append("handle 空白：schema 應接受（harness 照 SKILL 留空），但列為缺口")
-    if "pending" not in comment_markdown(gate_of(rec, ev), "x") or fid not in comment_markdown(gate_of(rec, ev), "x"):
+    if "pending" not in comment_markdown(gate_of(rec, ev), "x", llm_rh) or fid not in comment_markdown(gate_of(rec, ev), "x", llm_rh):
         fails.append("留言應列出狀態與發現")
     # 核准者：與 pr-gates.yml 的 approve 擷取規則相同
     head = "a" * 40
@@ -832,20 +916,18 @@ def main(argv=None) -> int:
     static = json.loads(pathlib.Path(a.static).read_text(encoding="utf-8"))
     head = _git("rev-parse", a.head).stdout.strip() or a.head
     record, ev, ref, reason = find_record(head, cfg, controls)
-    gate = derive_gate(static, record, ev, reason, ref)
+    trust = []   # CI 的信任問題：紀錄或裁決由本 PR 引入，確認者必須是在目前 head 上 approve 的非作者
     if record is not None:
         changed = record_changed(a.base, head, ref)
         cap = trust_cap(changed, record["recorded_by"].get("handle", ""), a.pr_author,
                         [x for x in a.approvers.split(",") if x])
         if cap and not a.base:
             cap = "無 base 可比對（非 pull_request 事件），無法確認紀錄不是本次變更引入；" + cap
-        if cap:
-            apply_cap(gate, cap)
-        for rc in ruling_caps(ev["findings"] if ev else [], lambda ref: record_changed(a.base, head, ref), a.pr_author,
-                              [x for x in a.approvers.split(",") if x], lambda ref: _yaml(PROJECT / ref)):
-            apply_cap(gate, rc)
-    md = comment_markdown(gate, ref)
-    gate.pop("_llm_findings", None)
+        trust += [cap] if cap else []
+        trust += ruling_caps(ev["findings"] if ev else [], lambda ref: record_changed(a.base, head, ref), a.pr_author,
+                             [x for x in a.approvers.split(",") if x], lambda ref: _yaml(PROJECT / ref))
+    gate, llm_findings = derive_gate(static, record, ev, reason, ref, trust_problems=trust)
+    md = comment_markdown(gate, ref, llm_findings)
     if a.out:
         pathlib.Path(a.out).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     if a.comment:

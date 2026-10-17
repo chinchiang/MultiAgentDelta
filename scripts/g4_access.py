@@ -195,12 +195,10 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
         record, ev, ref, reason, cap = find_external_record(target, commit, cfg, controls, review_root)
     else:
         record, ev, ref, reason, cap = find_self_record(target, commit, cfg, controls)
-    gate = g4_review.derive_gate(static, record, ev, reason, ref)
-    if record is not None:
-        caps = [cap, g4_review.trust_cap(False, record["recorded_by"].get("handle", ""), None, [])]
-        if any(caps):
-            g4_review.apply_cap(gate, "；".join(c for c in caps if c))
-    gate.pop("_llm_findings", None)
+    # 本機的信任問題：外部紀錄的信任結果，以及紀錄確認者是否有填（找紀錄、算信任問題留在呼叫端，ADR 0001）
+    # 多則串成一則傳入（與以前 apply_cap 一次套用的文字相同）
+    trust = [c for c in (cap, g4_review.trust_cap(False, record["recorded_by"].get("handle", ""), None, [])) if c] if record else []
+    gate, _ = g4_review.derive_gate(static, record, ev, reason, ref, trust_problems=["；".join(trust)] if trust else [])
     if notes:
         gate["status_reason"] = "；".join(x for x in (gate.get("status_reason"), *notes) if x)
     gate.update(scope="full", diff_base=None, commit=commit, started_at=started)
@@ -417,7 +415,7 @@ def selftest() -> list[str]:
         put(rec_human); git(home, "commit", "-qam", "needs ruling")
         g, why, _ = ext("外部紀錄待裁決")
         ev = g4_review.evaluate(rec_human, g4_review.load_cfg(), g4_review.known_controls())
-        expected = g4_review.derive_gate(none_gate, rec_human, ev, None, rel)["status"]
+        expected = g4_review.derive_gate(none_gate, rec_human, ev, None, rel)[0]["status"]
         if g["status"] != expected or "待人工裁決" not in why:
             fails.append(f"外部紀錄的狀態照 g4_review 的規則推導（預期 {expected}，得到 {g['status']}：{why}）")
         put(rec); git(home, "commit", "-qam", "signed again")
