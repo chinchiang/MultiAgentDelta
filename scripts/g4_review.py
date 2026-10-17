@@ -372,9 +372,10 @@ def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
 
-def trusted_approvers(reviews: list[dict], pr_author: str, head_sha: str) -> list[str]:
+def approvers_on_head(reviews: list[dict], pr_author: str, head_sha: str) -> list[str]:
     """GitHub pulls.listReviews 的結果 → 在 head_sha 上 approve、且不是 PR 作者的帳號（小寫）。
-    每人只看最後一次非 COMMENTED／PENDING 的 review：之後的 CHANGES_REQUESTED、DISMISSED 會取消先前的 approve。"""
+    每人只看最後一次非 COMMENTED／PENDING 的 review：之後的 CHANGES_REQUESTED、DISMISSED 會取消先前的 approve。
+    名稱不用 trusted：CodeQL 的「secret」名稱規則包含 trusted，會把回傳的帳號清單當成機密（#230，比照 #208、#229）。"""
     last: dict[str, dict] = {}
     for r in reviews:
         login = ((r.get("user") or {}).get("login") or "").strip().lower()
@@ -810,8 +811,8 @@ def selftest() -> list[str]:
         ([rv("reviewer", "APPROVED"), rv("reviewer", "COMMENTED")], ["reviewer"], "approve 後只留言 → 仍採計"),
     ]
     for reviews, want, why in cases:
-        if trusted_approvers(reviews, "Author", head) != want:
-            fails.append(f"trusted_approvers：{why}（得到 {trusted_approvers(reviews, 'Author', head)}）")
+        if approvers_on_head(reviews, "Author", head) != want:
+            fails.append(f"approvers_on_head：{why}（得到 {approvers_on_head(reviews, 'Author', head)}）")
     ext = copy.deepcopy(r4); ext["recorded_by"]["handle"] = "reviewer"
     ref = f"reviews/g4/external/{ext['commit']}.yaml"
     if external_trust({ref: ext}, "author", ["reviewer"], cfg, controls):
@@ -945,7 +946,7 @@ def main(argv=None) -> int:
             reviews = json.loads(pathlib.Path(a.reviews).read_text(encoding="utf-8") or "[]")
         except (OSError, json.JSONDecodeError):
             reviews = []   # 取不到 review → 沒有核准者 → 紀錄不可信（fail closed）
-        approvers = trusted_approvers(reviews if isinstance(reviews, list) else [], a.pr_author, a.head)
+        approvers = approvers_on_head(reviews if isinstance(reviews, list) else [], a.pr_author, a.head)
         problems = external_trust(records, a.pr_author, approvers, cfg, controls)
         print(f"本 PR 新增／修改的外部 G4 紀錄 {len(refs)} 份；head {a.head[:12]} 上的非作者核准者：{', '.join(approvers) or '（無）'}")
         level = "warning" if a.single_maintainer else "error"
