@@ -85,7 +85,7 @@ gh run view "$id" --log | grep '| G' | sed 's/.*Z //' | sort -u     # 閘門表�
 - **ID 掃描**：`validate.py` 會掃 scripts 裡的 `vibesec.gN.*`、`VS-G*-*`，測試資料也一樣，所以要用目錄裡存在的 ID。
 - **不變式會掃到註解**：`step_mode_decisions` 會略過 bash 的註解行，其他不變式不一定。註解裡改寫說法，避開被禁止的字樣。
 - **雙語**：只有雙語集合（見 CLAUDE.md）要中英兩段一起改；集合外的文件只寫正體中文。`validate.py` 會檢查集合內的錨點、切換連結與標題結構（`scripts/bilingual.py`），句子是否逐一對應要靠 review。
-- **enforce 下的 selftest**：`mode: enforce` 時，`g4_access.py` 的 selftest 會失敗（#223）。
+- **selftest 的 mode**：selftest 用 `trusted_tree("mode: …")` 固定 mode，不依賴 repo 目前的 `vibesec.yaml`。CI 的 repo-validate 會在 mode 改為 enforce 的副本裡再跑一次 validate，依賴 repo mode 的 selftest 在 PR 階段就會失敗（#223）。
 - **staging-blackbox**：repo 沒有設定 `vars.VIBESEC_TARGET_URL`，所以 staging-blackbox 只會打 job 內啟動的 vulnapp。
 - **合併條件**：`main` 沒有 required status checks。要確認某個 check 是不是合併條件，用 `gh api repos/chinchiang/MultiAgentDelta/rulesets` 查（#209）。
 
@@ -176,6 +176,6 @@ Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 - **ID scan**: `validate.py` scans scripts for `vibesec.gN.*` and `VS-G*-*`, test data included, so use IDs that exist in the catalogs.
 - **Invariants scan comments**: `step_mode_decisions` skips bash comment lines; other invariants may not. Reword comments to avoid the forbidden strings.
 - **Bilingual docs**: only the bilingual set (see CLAUDE.md) needs both language sections updated together; files outside the set are Traditional Chinese only. `validate.py` checks the anchors, language links, and heading structure inside the set (`scripts/bilingual.py`); sentence-by-sentence correspondence is left to review.
-- **Selftests under enforce**: with `mode: enforce`, the `g4_access.py` selftest fails (#223).
+- **Selftest mode**: selftests pin the mode with `trusted_tree("mode: …")` instead of relying on the repo's current `vibesec.yaml`. CI's repo-validate runs validate again in a copy whose mode is enforce, so a selftest that depends on the repo's mode fails at the PR stage (#223).
 - **staging-blackbox**: the repo has no `vars.VIBESEC_TARGET_URL`, so staging-blackbox only hits the vulnapp started inside the job.
 - **Merge requirements**: `main` has no required status checks. To check whether a given check gates merging, query `gh api repos/chinchiang/MultiAgentDelta/rulesets` (#209).

@@ -224,7 +224,8 @@ def _selftest(shadow_tree: pathlib.Path, enforce_tree: pathlib.Path) -> list[str
     import yaml
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    script = shadow_tree / "scripts/g4_static.py"   # 固定 shadow：有 blocking 也 exit 0（enforce 的退出碼另外測）
+    static = lambda tree: tree / "scripts/g4_static.py"
+    script = static(shadow_tree)   # 固定 shadow：有 blocking 也 exit 0（enforce 的退出碼另外測）
     _wrap_dir = tempfile.TemporaryDirectory(prefix="vibesec-g4-wrap-")
 
     def wrapped(name: str, tail: str) -> pathlib.Path:
@@ -254,7 +255,7 @@ def _selftest(shadow_tree: pathlib.Path, enforce_tree: pathlib.Path) -> list[str
             for rel, body in files.items():
                 (pathlib.Path(d) / rel).parent.mkdir(parents=True, exist_ok=True)
                 (pathlib.Path(d) / rel).write_text(body, encoding="utf-8")
-            p = subprocess.run([sys.executable, "-I", str(tree / "scripts/g4_static.py"), "--target", d, "--out", f"{d}/reports"],
+            p = subprocess.run([sys.executable, "-I", str(static(tree)), "--target", d, "--out", f"{d}/reports"],
                                capture_output=True, text=True, timeout=120)
             sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
         return p.returncode, [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
@@ -327,6 +328,11 @@ def _selftest(shadow_tree: pathlib.Path, enforce_tree: pathlib.Path) -> list[str
         g = check(scan(repo, out, script), "靜態 blocking")
         if g["status"] != "fail" or not g["findings_count"]["blocking"]:
             fails.append("Agent 高危工具（blocking）→ G4 fail")
+        # enforce 下靜態檢查有 blocking 時 exit 1，run_static 仍採用它的結果（不是「靜態檢查失敗」→ incomplete，#223）
+        g = check(scan(repo, out, static(enforce_tree), policy_root=enforce_tree), "靜態 blocking（enforce）")
+        if g["status"] != "fail" or not g["findings_count"]["blocking"] or \
+                not any(x.get("name") == g4_static.TOOL_NAME and x.get("exit_code") == 1 for x in g["tools"]):
+            fails.append(f"enforce 下靜態 blocking（exit 1）→ 結果照常採用、G4 fail、tool 列記 exit 1（得到 {g['status']}、{g['tools']}）")
         g = check(scan(repo, out, pathlib.Path(_wrap_dir.name) / "none.py"), "找不到腳本")
         if g["status"] != "incomplete" or STEP not in (g["status_reason"] or ""):
             fails.append("找不到靜態檢查腳本 → incomplete")
@@ -539,7 +545,7 @@ def _selftest(shadow_tree: pathlib.Path, enforce_tree: pathlib.Path) -> list[str
             check(g, "靜態檢查腳本（無 MCP）")
         for rel in ("vibesec.yaml", "config/policy/blocking-policy.yaml", "scripts/vibesec_policy.py", "scripts/gate_verdict.py",
                     "scripts/vibesec_mode.py", "scripts/gate_result.py", "scripts/g4_static.py"):
-            (trusted / rel).write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+            (trusted / rel).write_text((shadow_tree / rel).read_text(encoding="utf-8"), encoding="utf-8")   # 固定 shadow 的樹
         (proj / "reports/g4-gate.json").unlink(missing_ok=True)   # 不讓上一次的閘門結果被當成這一次的（腳本崩潰時會讀到舊檔）
         rc, g = run_step(proj, trusted / "scripts/g4_static.py")   # 受信任樹缺 g4_mcp.py（例如 default branch 尚未合併本模組）
         cov = next((c for c in (g or {}).get("coverage", []) if c["control_id"] == MCP_CONTROL), None)
