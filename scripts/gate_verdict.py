@@ -218,24 +218,28 @@ def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="
     if incomplete_blocking_gates is None:
         errors.append("blocking-policy 無法讀取：未完成的閘門一律視為阻擋")
     rows = [_row(gid, g) for gid, g in gates.items()]
+    # 顯示用的狀態：pending 卻有 blocking 計數＝有待裁決的 blocking 發現（GLOSSARY.md）。label 與 outputs 不變
+    shown = {r["gate"]: (f"`{r['label']}`（blocking {r['blocking']}，待裁決）" if r["status"] == "pending" and (r["blocking"] or 0) > 0
+                         else f"`{r['label']}`") for r in rows}
     block, notes = [], list(notes)
     code = 0
     if mode == "enforce" and not report_only:
         for r in rows:
             b = r["blocking"] or 0
+            waiting = "，待裁決" if r["status"] == "pending" and b > 0 else ""   # 待裁決的 blocking 發現（GLOSSARY.md）
             if b > 0 or r["status"] == "fail":   # 自稱 fail 卻沒有 blocking 計數：輸入矛盾，取較嚴者
-                block.append(f"{r['gate']} {r['label']}（blocking {b}）"); code = code or 1
+                block.append(f"{r['gate']} {r['label']}（blocking {b}{waiting}）"); code = code or 1
             if r["status"] in ("incomplete", "pending"):
                 if incomplete_blocking_gates is None or r["gate"] in incomplete_blocking_gates:
                     block.append(f"{r['gate']} {r['label']}（政策：enforce 下未完成也擋）"); code = 2
-                else:
+                elif not waiting:   # 待裁決的 blocking 已依計數擋下，不再附「只報告」（看起來會像矛盾）
                     notes.append(f"{r['gate']} {r['label']} 依政策只報告（不在 incomplete_gate_is_blocking_in_enforce）")
         if errors:
             code = 2
     md = [f"# {title}", "", f"模式：`{mode}`" + (f"（{report_only}）" if report_only else ""), "",
           "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
     for r in rows:
-        md.append(f"| {r['gate']} | `{r['label']}` | {'-' if r['blocking'] is None else r['blocking']} | "
+        md.append(f"| {r['gate']} | {shown[r['gate']]} | {'-' if r['blocking'] is None else r['blocking']} | "
                   f"{'-' if r['advisory'] is None else r['advisory']} | {_cell(r['reason'])} |")
     md += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。", ""]
     if block or errors:
@@ -655,6 +659,24 @@ def selftest() -> list[str]:
         line = out.read_text().strip()
         if not line.startswith("blackbox_problems=") or not json.loads(line.split("=", 1)[1]):
             fails.append(f"CLI blackbox：問題清單以 JSON 寫入 blackbox_problems（得到 {line!r}）")
+    # 待裁決的 blocking 發現（GLOSSARY.md、#214）：閘門 pending 卻有 blocking 計數 → enforce 依計數擋（code 1）。summary 的表格
+    # 與阻擋理由標成「pending（blocking N，待裁決）」，不再看起來像矛盾；也不再附「依政策只報告」（已經被計數擋下）。
+    # label 與 outputs（<gate>_status）不變：staging 的 issue 腳本讀它們
+    pr_gate = {"gate": "G4", "status": "pending", "status_reason": "待人工裁決：blocking 發現尚未裁決：VS-1", "mode": "shadow",
+               "scope": "full", "started_at": "2026-01-01T00:00:00+00:00", "finished_at": "2026-01-01T00:01:00+00:00", "tools": [],
+               "findings_count": {"blocking": 1, "advisory": 0}, "coverage": []}
+    d = enforce({"G4": pr_gate}, mode="enforce", incomplete_blocking_gates={"G1", "G2"})
+    if d["code"] != 1 or "| G4 | `pending`（blocking 1，待裁決） |" not in d["markdown"] \
+            or "G4 pending（blocking 1，待裁決）" not in d["markdown"] or any("依政策只報告" in n for n in d["notes"]) \
+            or d["outputs"]["g4_status"] != "pending" or d["outputs"]["g4_blocking"] != "1":
+        fails.append(f"pending＋blocking 計數 → 擋（code 1）、summary 標示待裁決、不附「依政策只報告」、outputs 不變（得到 {d['code']}、"
+                     f"{d['notes']}、{d['outputs']}：{d['markdown'][-400:]}）")
+    d = enforce({"G4": pr_gate}, mode="shadow", incomplete_blocking_gates={"G1", "G2"})
+    if d["code"] != 0 or "| G4 | `pending`（blocking 1，待裁決） |" not in d["markdown"]:
+        fails.append(f"shadow 下只報告，表格同樣標示待裁決（得到 {d['code']}）")
+    d = enforce({"G4": dict(pr_gate, findings_count={"blocking": 0, "advisory": 0})}, mode="enforce", incomplete_blocking_gates={"G1", "G2"})
+    if d["code"] != 0 or "待裁決" in d["markdown"].split("| G4 |")[1].split("|")[1] or not any("依政策只報告" in n for n in d["notes"]):
+        fails.append(f"pending 但計數為 0 → 不標待裁決、照舊依政策只報告（得到 {d['code']}、{d['notes']}）")
     return fails
 
 

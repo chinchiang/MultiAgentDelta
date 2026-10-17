@@ -48,6 +48,10 @@ _避免_：錯誤、error（error 專指程式本身的錯誤）
 模型意見分歧或證據不足以下結論、須由人工裁決的發現。
 _避免_：待審、pending review
 
+**待裁決的 blocking 發現（pending-ruling blocking finding）**：
+policy tier 為 blocking、未被 refute、尚無人工裁決的 LLM 審查發現。計入閘門結果的 `findings_count.blocking`，enforce 下由阻擋判定依計數阻擋；但模型意見不能自行確認（docs/09 §5），所以不讓閘門狀態變成 fail，閘門維持 pending，理由列為待人工裁決。人工裁決後解除：confirm → 閘門 fail；refute → 不再計入。summary 標成「`pending`（blocking N，待裁決）」。
+_避免_：未確認的 blocking、假 blocking
+
 ## 判定
 
 **閘門判定（gate verdict）**：
@@ -164,6 +168,10 @@ _Avoid_: error (error means a bug in the program itself)
 **Awaiting human**:
 A finding on which model opinions disagree or the evidence does not support a conclusion, so a human must rule.
 _Avoid_: pending review
+
+**Pending-ruling blocking finding**:
+An LLM review finding whose policy tier is blocking, that has not been refuted, and that has no human ruling yet. It counts toward the gate result's `findings_count.blocking`, so under enforce the enforcement decision blocks on the count; but model opinions cannot confirm a finding on their own (docs/09 §5), so it does not turn the gate status into fail: the gate stays pending and the reason lists it as awaiting human. A human ruling resolves it: confirm → the gate fails; refute → it no longer counts. The summary shows it as `pending`（blocking N，待裁決）.
+_Avoid_: unconfirmed blocking, fake blocking
 
 ## Verdicts
 
