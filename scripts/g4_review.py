@@ -21,7 +21,8 @@ reviews/ 由 CODEOWNERS 審核。此工具不呼叫任何模型、不裁決、�
   否則無紀錄／紀錄過期／family < min／必要角色缺席／coverage 有 pending、untested → incomplete
   否則                                                                         → pass
 「有效」= 紀錄的 commit 是 head 的祖先，且兩者之間只動過 reviews/g4/ 與 rulings/。
-退出碼：check 0 通過、1 違規；gate 0（受信任政策的 mode 是 shadow，或非 fail）、1（受信任政策的 mode 是 enforce 且 fail）；兩者 2 = 工具缺席（不放行）。
+退出碼：check 0 通過、1 違規；gate 1（受信任政策的 mode 是 enforce，且閘門 fail 或有 blocking 計數——含待裁決的 blocking 發現，
+與阻擋判定相同）、其餘 0；兩者 2 = 工具缺席（不放行）。
 """
 from __future__ import annotations
 import argparse, copy, json, os, pathlib, re, subprocess, sys
@@ -420,6 +421,14 @@ def ruling_caps(findings: list[dict], changed, pr_author: str | None, approvers:
         if c:
             out.append(f"裁決 {ref}：" + c.replace("審查紀錄", "裁決").replace("recorded_by", "decided_by"))
     return out
+
+
+def gate_exit_code(gate: dict, mode: str) -> int:
+    """gate 子指令的退出碼，用阻擋判定同一份「依計數阻擋」的規則（gate_verdict.blocks_by_count，#214）：enforce 下閘門 fail，
+    或 findings_count 有 blocking（含待裁決的 blocking 發現，GLOSSARY.md）→ 1；其餘 0。以前只看 fail：待裁決的 blocking 在這一步
+    exit 0、要到 summary 才擋。G4 不在 incomplete_gate_is_blocking_in_enforce，所以「未完成也擋」不適用（政策另案 #215）。"""
+    from gate_verdict import blocks_by_count
+    return 1 if mode == "enforce" and blocks_by_count(gate.get("status"), (gate.get("findings_count") or {}).get("blocking")) else 0
 
 
 def changed_since(base: str, head: str, path: str) -> bool:
@@ -849,6 +858,36 @@ def selftest() -> list[str]:
                 fails.append(f"gate：帶已移除的 --mode → argparse exit 2（得到 {rc}）")
         finally:
             vibesec_policy.load_policy = real_load
+    # 退出碼與阻擋判定一致（#214）：enforce 下閘門 fail，或有 blocking 計數（含待裁決的 blocking 發現）→ 1；以前只看 fail，
+    # 待裁決的 blocking 在這一步 exit 0、要到 summary 才擋
+    pend_b = {"status": "pending", "findings_count": {"blocking": 1, "advisory": 0}}
+    for gate, mode, want in [(pend_b, "enforce", 1), (pend_b, "shadow", 0), ({"status": "fail", "findings_count": {"blocking": 0}}, "enforce", 1),
+                             ({"status": "pending", "findings_count": {"blocking": 0}}, "enforce", 0),
+                             ({"status": "incomplete", "findings_count": {"blocking": 0}}, "enforce", 0),
+                             ({"status": "pass", "findings_count": {"blocking": 0}}, "enforce", 0)]:
+        try:
+            got = gate_exit_code(gate, mode)
+        except Exception as e:
+            got = f"例外 {type(e).__name__}"
+        if got != want:
+            fails.append(f"gate 的退出碼：{gate['status']}、blocking {gate['findings_count']['blocking']}、{mode} → {want}（得到 {got}）")
+    # 接線：gate 子指令經 main() 用 gate_exit_code（組裝暫時換成回傳「pending 但有計數」的閘門，政策換成暫存政策）
+    real_derive = derive_gate
+    g = globals()
+    try:
+        g["derive_gate"] = lambda *a, **k: (dict(_static(), status="pending", findings_count={"blocking": 1, "advisory": 0}), [])
+        with _tf.TemporaryDirectory() as d:
+            sp = pathlib.Path(d, "static.json"); sp.write_text(json.dumps(_static()), encoding="utf-8")
+            for mode, want in (("enforce", 1), ("shadow", 0)):
+                with vibesec_policy.mode_policy_root(f"mode: {mode}") as pr:
+                    vibesec_policy.load_policy = lambda root=None, **kw: real_load(pr, **kw)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--out", str(pathlib.Path(d, "o.json"))])
+                if rc != want:
+                    fails.append(f"gate 子指令：pending＋待裁決的 blocking、政策 {mode} → exit {want}（得到 {rc}）")
+    finally:
+        g["derive_gate"] = real_derive
+        vibesec_policy.load_policy = real_load
     return fails
 
 
@@ -936,9 +975,7 @@ def main(argv=None) -> int:
     print(f"G4 {gate['status']}：{gate.get('status_reason')}")
     # 退出碼依受信任政策的 mode（#201；以前取 --mode、預設 shadow）。政策讀不到 → mode 不明 → 視同 enforce（較嚴）
     from vibesec_policy import effective_mode, load_policy
-    if effective_mode(load_policy(ROOT)[0]) == "enforce" and gate["status"] == "fail":
-        return 1
-    return 0
+    return gate_exit_code(gate, effective_mode(load_policy(ROOT)[0]))
 
 
 if __name__ == "__main__":
