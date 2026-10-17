@@ -47,6 +47,10 @@ Issue 與 spec 放在 GitHub Issues（`chinchiang/MultiAgentDelta`），用 `gh`
 
 Single-context：`GLOSSARY.md` ＋ `docs/adr/`。見 `docs/agents/domain.md`。
 
+### Workflow
+
+實作 ticket、開 PR、合併前：步驟、判準（評測逐案比對、CI 閘門表格）與容易踩的坑，見 `docs/agents/workflow.md`。
+
 ---
 
 <a id="english"></a>
@@ -95,3 +99,7 @@ The five default role labels are used (`needs-triage`, `needs-info`, `ready-for-
 ### Domain docs
 
 Single-context: `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
+### Workflow
+
+Before implementing a ticket, opening a PR, or merging: steps, pass criteria (case-by-case eval comparison, CI gate table), and gotchas are in `docs/agents/workflow.md`.
