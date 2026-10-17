@@ -59,6 +59,8 @@ RISK_TIERS = ("L1", "L2", "L3")
 TOOL_STATES = ("ran", "missing", "timeout", "error")
 SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 NOT_RUN = "未執行"
+# 待裁決的 blocking 發現在待人工裁決裡的開頭（GateRun.awaiting_blocking；措辭沿用 G4 組裝，#213 改由這裡產出）
+AWAITING_BLOCKING_PREFIX = "blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）："
 
 
 INFORMATION_URI = "https://github.com/chinchiang/MultiAgentDelta"
@@ -143,7 +145,7 @@ class GateRun:
         self.started_at = started_at or now()
         self._tools, self._cover = [], {}
         self._problems, self._notes, self._awaiting = [], [], []
-        self._blocking = self._advisory = self._fail_conditions = self._awaiting_blocking = 0
+        self._blocking = self._advisory = self._fail_conditions = self._awaiting_blocking_count = 0
         self._na = None
 
     # ---- 累積
@@ -170,15 +172,16 @@ class GateRun:
         self._fail_conditions += 1
 
     def awaiting_blocking(self, ids) -> None:
-        """待裁決的 blocking 發現（#211）：blocking tier、未被 refute、尚無人工裁決的 LLM 審查發現。計入 findings_count.blocking
-        （enforce 下阻擋判定依計數擋），並以一筆待人工裁決列出 ids；不計入 verdict 的 blocking，所以沒有其他 blocking 時是 pending。
-        空清單 → 不做任何事。措辭沿用 G4 組裝原本的文字。"""
+        """待裁決的 blocking 發現（#211、#212）：blocking tier、未被 refute、尚無人工裁決的 LLM 審查發現。計入 findings_count.blocking
+        （enforce 下阻擋判定依計數擋，不因沒人裁決就放過），並以一筆待人工裁決列出 ids；不計入 verdict 的 blocking，所以沒有其他
+        blocking 時是 pending（模型意見不能自行確認，docs/09 §5；多模型審查與人工裁決的規則見 CLAUDE.md 規則 6）。
+        空清單 → 不做任何事。"""
         if not isinstance(ids, (list, tuple)):
             raise ValueError(f"ids 必須是清單（得到 {ids!r}）")
         ids = [_text("finding id", i) for i in ids]
         if ids:
-            self._awaiting_blocking += len(ids)
-            self._awaiting.append("blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：" + "、".join(ids))
+            self._awaiting_blocking_count += len(ids)
+            self._awaiting.append(AWAITING_BLOCKING_PREFIX + "、".join(ids))
 
     def problem(self, text) -> None:
         self._problems.append(_text("problem", text))
@@ -214,7 +217,7 @@ class GateRun:
         coverage = self._coverage(self._cover, NOT_RUN)   # 控制覆蓋不變式：漏回報 → untested
         status, status_reason = verdict(blocking=self._blocking + self._fail_conditions, coverage=coverage, problems=self._problems,
                                         awaiting_human=self._awaiting, not_applicable=self._na, notes=self._notes)
-        return self._gate(mode, tier, status, status_reason, list(self._tools), self._blocking + self._awaiting_blocking,
+        return self._gate(mode, tier, status, status_reason, list(self._tools), self._blocking + self._awaiting_blocking_count,
                           self._advisory, coverage)
 
     def unreadable(self, problem, *, tool_name, version=None) -> dict:
