@@ -11,10 +11,8 @@
 # 注意：_trusted/ 位於 workspace 內，掃整個目錄的工具（semgrep、checkov、trivy、G4 靜態檢查 scripts/g4_static.py、syft）都要排除它。
 name: vibesec-trusted
 description: 取出 default branch 的判定程式與設定到 _trusted/，讀取 mode／risk_tier，套用受信任的忽略清單，清掉可能被提交的工具輸出
+# 不輸出 mode：阻擋判定（gate_verdict）自己讀受信任樹，workflow 步驟不得讀 mode（ci_invariants.step_mode_decisions，#209、#220）
 outputs:
-  mode:
-    description: vibesec.yaml 的 mode（shadow／enforce），取自 default branch
-    value: ${{ steps.cfg.outputs.mode }}
   shadow:
     description: mode 是否為 shadow（"true"／"false"）
     value: ${{ steps.cfg.outputs.shadow }}
@@ -60,7 +58,6 @@ runs:
         if problem:
             print(f"::error::_trusted/{problem}", file=sys.stderr); sys.exit(2)   # 例如「_trusted/vibesec.yaml 缺 mode；須為 shadow／enforce」
         tier = top_scalar(txt, "risk_tier") or "L2"
-        print(f"mode={mode}")
         print(f"shadow={'true' if mode == 'shadow' else 'false'}")
         print(f"risk_tier={tier}")
         PY

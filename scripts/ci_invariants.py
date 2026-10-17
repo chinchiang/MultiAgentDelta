@@ -162,6 +162,11 @@ def action_mode_reader_problems(action: dict) -> list[str]:
         out.append(f"「{CFG_STEP_NAME}」步驟寫死了合法值清單（只能用 vibesec_mode 的 MODES）")
     if "python3 -I" not in run:
         out.append(f"「{CFG_STEP_NAME}」步驟沒有以 python3 -I 執行（工作目錄是 PR head，可蓋掉標準函式庫）")
+    # mode 只用來算 shadow；阻擋判定自己讀受信任樹，workflow 不得讀 mode（step_mode_decisions），所以也不輸出（#220）
+    if "mode" in (action.get("outputs") or {}):
+        out.append("受信任設定 action 不得輸出 mode（只輸出 shadow；判定由 gate_verdict 讀受信任樹）")
+    if re.search(r"""^\s*print\(\s*f?["']mode=""", run, re.M):
+        out.append(f"「{CFG_STEP_NAME}」步驟把 mode 寫進步驟輸出（只輸出 shadow）")
     return out
 
 
@@ -289,7 +294,7 @@ def selftest() -> list[str]:
     # 受信任設定 action 讀 mode：只能 import 受信任樹的 vibesec_mode（不依賴 PyYAML），不得內嵌 regex 或合法值清單
     good_cfg = ("python3 -I - <<'PY' >> \"$GITHUB_OUTPUT\"\nimport sys, pathlib\n"
                 "sys.path.insert(0, str(pathlib.Path('_trusted/scripts').resolve()))\n"
-                "from vibesec_mode import read_mode, top_scalar\nPY\n")
+                "from vibesec_mode import read_mode, top_scalar\nprint(f\"shadow={'true' if mode == 'shadow' else 'false'}\")\nPY\n")
     act = lambda run, sid="cfg": {"runs": {"steps": [{"name": "讀取受信任的 mode / risk_tier", "id": sid, "run": run}]}}
     for label, a, want in [
         ("以 vibesec_mode 讀", act(good_cfg), 0),
@@ -297,6 +302,9 @@ def selftest() -> list[str]:
                                   "if mode not in (\"shadow\", \"enforce\"): sys.exit(2)\nPY\n"), 3),
         ("拿掉 -I", act(good_cfg.replace("python3 -I -", "python3 -")), 1),
         ("步驟缺席", {"runs": {"steps": []}}, 1),
+        ("輸出 mode（#220 以前）", {**act(good_cfg.replace("PY\n", 'print(f"mode={mode}")\nPY\n')),
+                                  "outputs": {"mode": {"value": "${{ steps.cfg.outputs.mode }}"}}}, 2),
+        ("只輸出 shadow", {**act(good_cfg), "outputs": {"shadow": {"value": "${{ steps.cfg.outputs.shadow }}"}}}, 0),
     ]:
         try:
             got = action_mode_reader_problems(a)
