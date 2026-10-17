@@ -37,6 +37,7 @@
 - #203 合併之後，在那之前開的 PR 要 rebase：它們的 workflow 仍會傳 `--mode`，而受信任樹的閘門腳本已經沒有這個參數（argparse exit 2）。這是第二階段刻意接受的結果。
 
 - #209：G2 的 `.env` 檢查步驟原本是唯一的例外，它在 workflow 的 bash 裡依 `VIBESEC_MODE` 自己做阻擋判定（#199 Out of Scope）。現在已移除：這個步驟只產生 `g2-envcheck.json`，阻擋與否交給 `gate_verdict`。`ci_invariants` 新增第三條不變式：workflow 的步驟、job、workflow 層級都不得讀 mode（`VIBESEC_MODE`、`outputs.mode`）；呼叫 `gate_verdict` 的步驟也一樣，因為 `gate_verdict` 自己讀受信任樹。
+- #220：受信任設定 action 不再輸出 `mode`，只輸出 `shadow`（讀 mode 本身保留，mode 缺席或不合法仍然 exit 2）。`action_mode_reader_problems` 也檢查 action 不得輸出 mode。
 
 ## 後果
 
@@ -85,6 +86,7 @@ This landed in phases, as #199 describes, and is complete:
 - After #203 is merged, PRs opened before it must be rebased: their workflows still pass `--mode`, while the trusted tree's gate scripts no longer accept it (argparse exits 2). This is an accepted consequence of the second phase.
 
 - #209: G2's `.env` check step used to be the only exception: it made its own blocking decision in workflow bash based on `VIBESEC_MODE` (#199 Out of Scope). That is now removed: the step only produces `g2-envcheck.json`, and `gate_verdict` decides whether to block. A third `ci_invariants` check was added: no workflow step, job, or workflow-level setting may read mode (`VIBESEC_MODE`, `outputs.mode`); this includes steps that call `gate_verdict`, because `gate_verdict` reads the trusted tree on its own.
+- #220: the trusted-configuration action no longer outputs `mode`, only `shadow` (it still reads mode, and still exits 2 when mode is missing or invalid). `action_mode_reader_problems` also checks that the action does not output mode.
 
 ## Consequences
 
