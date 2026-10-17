@@ -23,7 +23,7 @@
 - 控制 ID：ASVS 用 `ASVS5-V<章>.<節>`（自編到節，非官方需求編號，見 `config/catalogs/asvs-5.0-controls.yaml` 的免責說明）；OWASP LLM Top 10 用 `LLM01:2025`…`LLM10:2025`；MAESTRO 用 `MAESTRO-L1`…`MAESTRO-L7`；vibesec 自有控制用 `VS-G<N>-<NAME>`。
 - Finding ID：`VS-YYYYMMDD-<8 hex>`。
 - 所有輸出必須符合 `schemas/finding.schema.json`、`schemas/gate-result.schema.json`。SARIF 2.1.0 給程式位置類發現；架構類發現進 `risk_register.json`。
-- 文件提供正體中文（臺灣慣用語）與英文雙語：同一份 Markdown 先放正體中文、再放英文，以 `<a id="zh-tw"></a>`、`<a id="english"></a>` 分段，檔首放切換連結。技術名詞、程式識別碼、指令與 ID 保留原文。修改任一語言段落時，必須在同一個 PR 更新另一語言；兩者有出入時以**正體中文版為準**。程式碼註解與工具輸出維持正體中文。
+- 文件以正體中文（臺灣慣用語）撰寫；**雙語集合**（`CLAUDE.md`、`GLOSSARY.md`、`docs/agents/`、`docs/adr/`、`docs/research/`，目錄內新增的檔案也算）另加英文：同一份 Markdown 先放正體中文、再放英文，以 `<a id="zh-tw"></a>`、`<a id="english"></a>` 分段，檔首放切換連結（`scripts/bilingual.py` 檢查這些結構）；修改任一語言段落時，必須在同一個 PR 更新另一語言；兩者有出入時以**正體中文版為準**。集合外的文件只寫正體中文（#178）。技術名詞、程式識別碼、指令與 ID 保留原文。程式碼註解與工具輸出維持正體中文。
 - 每份閘門文件固定章節：對抗成因 / 觸發時機與性質 / 核心任務 / 自動化作法 / 工具與設定檔 / 阻擋政策 / 對應控制（ASVS、CWE、LLM Top 10、MAESTRO）/ 驗證方式。
 
 ## 驗證指令
@@ -76,7 +76,7 @@ This repository holds the documentation, configuration, and lab for the "Vibe Co
 - Control IDs: ASVS uses `ASVS5-V<chapter>.<section>` (self-assigned down to the section, not official requirement numbers; see the disclaimer in `config/catalogs/asvs-5.0-controls.yaml`); OWASP LLM Top 10 uses `LLM01:2025`…`LLM10:2025`; MAESTRO uses `MAESTRO-L1`…`MAESTRO-L7`; vibesec's own controls use `VS-G<N>-<NAME>`.
 - Finding ID: `VS-YYYYMMDD-<8 hex>`.
 - All output must conform to `schemas/finding.schema.json` and `schemas/gate-result.schema.json`. SARIF 2.1.0 is for code-location findings; architecture findings go into `risk_register.json`.
-- Documentation is bilingual, in Traditional Chinese (Taiwan usage) and English: each Markdown file has the Traditional Chinese section first, then the English section, separated by `<a id="zh-tw"></a>` and `<a id="english"></a>`, with language links at the top. Technical terms, code identifiers, commands, and IDs stay in their original form. When either language section changes, the other must be updated in the same PR; if they disagree, **the Traditional Chinese version prevails**. Code comments and tool output stay in Traditional Chinese.
+- Documentation is written in Traditional Chinese (Taiwan usage); the **bilingual set** (`CLAUDE.md`, `GLOSSARY.md`, `docs/agents/`, `docs/adr/`, `docs/research/`, including new files in those directories) also carries English: each Markdown file has the Traditional Chinese section first, then the English section, separated by `<a id="zh-tw"></a>` and `<a id="english"></a>`, with language links at the top (`scripts/bilingual.py` checks this structure); when either language section changes, the other must be updated in the same PR; if they disagree, **the Traditional Chinese version prevails**. Files outside the set are Traditional Chinese only (#178). Technical terms, code identifiers, commands, and IDs stay in their original form. Code comments and tool output stay in Traditional Chinese.
 - Every gate document has fixed sections: adversarial causes / triggers and nature / core tasks / automation / tools and configuration files / blocking policy / mapped controls (ASVS, CWE, LLM Top 10, MAESTRO) / verification.
 
 ## Verification commands
