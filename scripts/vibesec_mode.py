@@ -6,6 +6,7 @@ exit 2，所以 action 不能依賴它）。閘門不直接呼叫本 module，�
 （GLOSSARY.md「執行模式」）；「只能把 shadow 升為 enforce」的規則在 vibesec_policy（Policy 的 mode_override）。
 
   MODES                              合法值（全 repo 唯一的一份）
+  top_scalar(text, key) -> str | None 最上層純量 `key:` 的值（受信任設定 action 也用它讀 risk_tier）
   read_mode(text) -> (mode, problem) 讀最上層的 `mode:`：只認行首沒有縮排的鍵、去掉尾端註解與成對引號、大小寫敏感。
                                      合法 → (mode, None)；缺席或不合法 → (None, 原因)，不合法時附上讀到的值。沒有預設值。
   apply_override(mode, override) -> (mode, note)
@@ -21,18 +22,23 @@ import re, sys
 MODES = ("shadow", "enforce")
 
 
-_TOP_MODE = re.compile(r"^mode[ \t]*:[ \t]*(.*)$", re.M)
-
-
-def read_mode(text: str) -> tuple[str | None, str | None]:
-    """規則沿用受信任設定 action 原本內嵌的 regex（#200 把它搬到這裡）：mode 永遠是最上層的純量，不需要 YAML。
-    帶引號時要去掉（以前 `mode: "enforce"` 用 awk 讀會得到含引號的值，enforce 就不擋）。"""
-    m = _TOP_MODE.search(text)
+def top_scalar(text: str, key: str) -> str | None:
+    """最上層純量 `key:` 的值：只認行首沒有縮排的鍵、去掉尾端註解與成對引號；缺席 → None。規則沿用受信任設定 action
+    原本內嵌的 regex（#200、#203 把它搬到這裡）。帶引號時要去掉（以前 `mode: "enforce"` 用 awk 讀會得到含引號的值，enforce 就不擋）。"""
+    m = re.search(rf"^{re.escape(key)}[ \t]*:[ \t]*(.*)$", text, re.M)
     if not m:
-        return None, f"vibesec.yaml 缺 mode；須為 {'／'.join(MODES)}"
+        return None
     v = re.sub(r"[ \t]+#.*$", "", m.group(1)).strip()
     if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
         v = v[1:-1].strip()
+    return v
+
+
+def read_mode(text: str) -> tuple[str | None, str | None]:
+    """mode 永遠是最上層的純量，不需要 YAML（top_scalar）；沒有預設值。"""
+    v = top_scalar(text, "mode")
+    if v is None:
+        return None, f"vibesec.yaml 缺 mode；須為 {'／'.join(MODES)}"
     if v not in MODES:
         return None, f"vibesec.yaml 的 mode 不合法：{v!r}；須為 {'／'.join(MODES)}"
     return v, None
@@ -89,6 +95,17 @@ def selftest() -> list[str]:
     p = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=60)
     if p.returncode != 0 or p.stdout.split() != ["enforce", "False"]:
         fails.append(f"PyYAML 不可 import 時仍可使用、不 import PyYAML（得到 exit {p.returncode}：{p.stdout.strip()} {p.stderr.strip()[-200:]}）")
+    for label, text, key, want in [("risk_tier", "mode: shadow\nrisk_tier: L3  # 註解\n", "risk_tier", "L3"),
+                                   ("引號", "risk_tier: 'L2'\n", "risk_tier", "L2"),
+                                   ("缺席", "mode: shadow\n", "risk_tier", None),
+                                   ("有縮排不認", "gates:\n  risk_tier: L1\n", "risk_tier", None),
+                                   ("空值", "risk_tier:\n", "risk_tier", "")]:
+        try:
+            got = top_scalar(text, key)
+        except Exception as e:
+            got = f"例外 {type(e).__name__}"
+        if got != want:
+            fails.append(f"top_scalar：{label} → {want!r}（得到 {got!r}）")
     for mode, override, want in [("shadow", None, ("shadow", False)), ("shadow", "", ("shadow", False)),
                                  ("shadow", "enforce", ("enforce", False)), ("enforce", "enforce", ("enforce", False)),
                                  ("shadow", "shadow", ("shadow", False)), ("enforce", "shadow", ("enforce", True)),
