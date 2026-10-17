@@ -194,6 +194,13 @@ def _cell(v) -> str:
     return _MD.sub(r"\\\1", str(v if v is not None else "").replace("\n", " ")).replace("@", "＠")
 
 
+def blocks_by_count(status: str, blocking) -> bool:
+    """enforce 下依計數阻擋的規則（只有這一份；G4 審查 gate 的退出碼也用它，#214）：閘門 fail，或 findings_count 有 blocking
+    （含待裁決的 blocking 發現，GLOSSARY.md）。自稱 fail 卻沒有 blocking 計數是矛盾的輸入，取較嚴者。
+    「未完成的閘門也擋」由 incomplete_gate_is_blocking_in_enforce 另外決定，不在這裡。"""
+    return status == "fail" or (blocking or 0) > 0
+
+
 def _row(gid, g) -> dict:
     if g is None:
         return {"gate": gid, "status": "incomplete", "label": "missing", "blocking": None, "advisory": None,
@@ -205,6 +212,8 @@ def _row(gid, g) -> dict:
     fc = f.get("findings_count") or {}
     return {"gate": gid, "status": f["status"], "label": f["status"], "blocking": fc.get("blocking"),
             "advisory": fc.get("advisory"), "reason": f.get("status_reason") or "",
+            # 待裁決的 blocking 發現（GLOSSARY.md）：pending 卻有 blocking 計數。只影響 summary 的標示
+            "awaiting_blocking": f["status"] == "pending" and (fc.get("blocking") or 0) > 0,
             "tools_ran": {t.get("name") for t in f.get("tools") or [] if t.get("state") == "ran"}, "valid": True}
 
 
@@ -219,15 +228,15 @@ def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="
         errors.append("blocking-policy 無法讀取：未完成的閘門一律視為阻擋")
     rows = [_row(gid, g) for gid, g in gates.items()]
     # 顯示用的狀態：pending 卻有 blocking 計數＝有待裁決的 blocking 發現（GLOSSARY.md）。label 與 outputs 不變
-    shown = {r["gate"]: (f"`{r['label']}`（blocking {r['blocking']}，待裁決）" if r["status"] == "pending" and (r["blocking"] or 0) > 0
-                         else f"`{r['label']}`") for r in rows}
+    shown = {r["gate"]: (f"`{r['label']}`（blocking {r['blocking']}，待裁決）" if r.get("awaiting_blocking") else f"`{r['label']}`")
+             for r in rows}
     block, notes = [], list(notes)
     code = 0
     if mode == "enforce" and not report_only:
         for r in rows:
             b = r["blocking"] or 0
-            waiting = "，待裁決" if r["status"] == "pending" and b > 0 else ""   # 待裁決的 blocking 發現（GLOSSARY.md）
-            if b > 0 or r["status"] == "fail":   # 自稱 fail 卻沒有 blocking 計數：輸入矛盾，取較嚴者
+            waiting = "，待裁決" if r.get("awaiting_blocking") else ""
+            if blocks_by_count(r["status"], b):
                 block.append(f"{r['gate']} {r['label']}（blocking {b}{waiting}）"); code = code or 1
             if r["status"] in ("incomplete", "pending"):
                 if incomplete_blocking_gates is None or r["gate"] in incomplete_blocking_gates:

@@ -424,10 +424,11 @@ def ruling_caps(findings: list[dict], changed, pr_author: str | None, approvers:
 
 
 def gate_exit_code(gate: dict, mode: str) -> int:
-    """gate 子指令的退出碼，與阻擋判定（gate_verdict enforce）的規則相同（#214）：enforce 下閘門 fail，或 findings_count 有
-    blocking（含待裁決的 blocking 發現，GLOSSARY.md）→ 1；其餘 0。以前只看 fail：待裁決的 blocking 在這一步 exit 0、到 summary 才擋。"""
-    blocking = int((gate.get("findings_count") or {}).get("blocking") or 0)
-    return 1 if mode == "enforce" and (gate.get("status") == "fail" or blocking > 0) else 0
+    """gate 子指令的退出碼，用阻擋判定同一份「依計數阻擋」的規則（gate_verdict.blocks_by_count，#214）：enforce 下閘門 fail，
+    或 findings_count 有 blocking（含待裁決的 blocking 發現，GLOSSARY.md）→ 1；其餘 0。以前只看 fail：待裁決的 blocking 在這一步
+    exit 0、要到 summary 才擋。G4 不在 incomplete_gate_is_blocking_in_enforce，所以「未完成也擋」不適用（政策另案 #215）。"""
+    from gate_verdict import blocks_by_count
+    return 1 if mode == "enforce" and blocks_by_count(gate.get("status"), (gate.get("findings_count") or {}).get("blocking")) else 0
 
 
 def changed_since(base: str, head: str, path: str) -> bool:
@@ -870,6 +871,23 @@ def selftest() -> list[str]:
             got = f"例外 {type(e).__name__}"
         if got != want:
             fails.append(f"gate 的退出碼：{gate['status']}、blocking {gate['findings_count']['blocking']}、{mode} → {want}（得到 {got}）")
+    # 接線：gate 子指令經 main() 用 gate_exit_code（組裝暫時換成回傳「pending 但有計數」的閘門，政策換成暫存政策）
+    real_derive = derive_gate
+    g = globals()
+    try:
+        g["derive_gate"] = lambda *a, **k: (dict(_static(), status="pending", findings_count={"blocking": 1, "advisory": 0}), [])
+        with _tf.TemporaryDirectory() as d:
+            sp = pathlib.Path(d, "static.json"); sp.write_text(json.dumps(_static()), encoding="utf-8")
+            for mode, want in (("enforce", 1), ("shadow", 0)):
+                with vibesec_policy.mode_policy_root(f"mode: {mode}") as pr:
+                    vibesec_policy.load_policy = lambda root=None, **kw: real_load(pr, **kw)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        rc = main(["gate", "--static", str(sp), "--head", "HEAD", "--out", str(pathlib.Path(d, "o.json"))])
+                if rc != want:
+                    fails.append(f"gate 子指令：pending＋待裁決的 blocking、政策 {mode} → exit {want}（得到 {rc}）")
+    finally:
+        g["derive_gate"] = real_derive
+        vibesec_policy.load_policy = real_load
     return fails
 
 
