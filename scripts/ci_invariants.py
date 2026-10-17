@@ -8,7 +8,7 @@
   sed_target_substitution(text)           不得以 sed 把受測目標 URL 代入設定（URL 含 # 或 & 會壞）
   sarif_jobs_without_permission(wf)       有 upload-sarif 的 job，有效權限須含 security-events: write
   self_sarif_uploads_without_hashfiles(wf)  上傳自產 SARIF 的步驟須以 hashFiles(<該檔>) 為條件（閘門沒有判定任何發現時不寫 SARIF）
-  trusted_action_mode_reader(action)      受信任設定 action 以受信任樹的 vibesec_mode 讀 mode，不內嵌自己的 regex（ADR 0002）
+  action_mode_reader_problems(action)      受信任設定 action 以受信任樹的 vibesec_mode 讀 mode，不內嵌自己的 regex（ADR 0002）
   gate_mode_channels(wf)                  workflow 不得以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）
 
   python3 scripts/ci_invariants.py selftest
@@ -141,26 +141,26 @@ def g4_static_wiring(pr_gates: dict) -> list[str]:
     return out
 
 
-TRUSTED_CFG_STEP = "讀取受信任的 mode"
+CFG_STEP_NAME = "讀取受信任的 mode"
 GATE_SCRIPTS = ("g4_static.py", "g4_review.py", "g5_api_probes.py", "g6_gate.py")   # 不含 gate_verdict.py（阻擋判定可以升級）
 
 
-def trusted_action_mode_reader(action: dict) -> list[str]:
+def action_mode_reader_problems(action: dict) -> list[str]:
     """受信任設定 action 讀 mode 的步驟（#203）：以 python3 -I import 受信任樹的 vibesec_mode（read_mode、top_scalar），
     不得內嵌 regex 或合法值清單。以前 action 自己寫一份 regex，與閘門讀 mode 的規則可能漂移（ADR 0002）。"""
     steps = [st for st in ((action.get("runs") or {}).get("steps") or [])
-             if str(st.get("name", "")).startswith(TRUSTED_CFG_STEP)]
+             if str(st.get("name", "")).startswith(CFG_STEP_NAME)]
     if len(steps) != 1:
-        return [f"受信任設定 action 應恰有一個「{TRUSTED_CFG_STEP}」步驟（得到 {len(steps)} 個）"]
+        return [f"受信任設定 action 應恰有一個「{CFG_STEP_NAME}」步驟（得到 {len(steps)} 個）"]
     run, out = str(steps[0].get("run") or ""), []
     if not re.search(r"^\s*from vibesec_mode import .*\bread_mode\b", run, re.M):
-        out.append(f"「{TRUSTED_CFG_STEP}」步驟沒有 import vibesec_mode 的 read_mode")
+        out.append(f"「{CFG_STEP_NAME}」步驟沒有 import vibesec_mode 的 read_mode")
     if re.search(r"^\s*import .*\bre\b|\bre\.(search|match|sub|compile)\(", run, re.M):
-        out.append(f"「{TRUSTED_CFG_STEP}」步驟內嵌了自己的 regex（mode 的規則只能在 vibesec_mode）")
+        out.append(f"「{CFG_STEP_NAME}」步驟內嵌了自己的 regex（mode 的規則只能在 vibesec_mode）")
     if re.search(r"""[\(\[]\s*["']shadow["']\s*,\s*["']enforce["']""", run):
-        out.append(f"「{TRUSTED_CFG_STEP}」步驟寫死了合法值清單（只能用 vibesec_mode 的 MODES）")
+        out.append(f"「{CFG_STEP_NAME}」步驟寫死了合法值清單（只能用 vibesec_mode 的 MODES）")
     if "python3 -I" not in run:
-        out.append(f"「{TRUSTED_CFG_STEP}」步驟沒有以 python3 -I 執行（工作目錄是 PR head，可蓋掉標準函式庫）")
+        out.append(f"「{CFG_STEP_NAME}」步驟沒有以 python3 -I 執行（工作目錄是 PR head，可蓋掉標準函式庫）")
     return out
 
 
@@ -269,11 +269,11 @@ def selftest() -> list[str]:
         ("步驟缺席", {"runs": {"steps": []}}, 1),
     ]:
         try:
-            got = trusted_action_mode_reader(a)
+            got = action_mode_reader_problems(a)
         except Exception as e:
             got = None, f"例外 {type(e).__name__}：{e}"
         if isinstance(got, tuple) or len(got) != want:
-            fails.append(f"trusted_action_mode_reader「{label}」應回報 {want} 項（得到 {got}）")
+            fails.append(f"action_mode_reader_problems「{label}」應回報 {want} 項（得到 {got}）")
     # 閘門腳本不得經 --mode／VIBESEC_MODE 收到 mode；阻擋判定（gate_verdict）的 --mode 與不呼叫閘門腳本的步驟不檢查
     step = lambda run, env=None: {"name": "s", "run": run, **({"env": env} if env else {})}
     for label, steps, want in [

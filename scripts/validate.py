@@ -756,7 +756,7 @@ for _name, _t in _wf.items():
         err(f".github/workflows/{_name}: {_s} 以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）"); _n_ci += 1
 _action = ROOT / ".github/actions/vibesec-trusted/action.yml"
 if _action.is_file():
-    for _p in _ci.trusted_action_mode_reader(yaml.safe_load(_action.read_text(encoding="utf-8")) or {}):
+    for _p in _ci.action_mode_reader_problems(yaml.safe_load(_action.read_text(encoding="utf-8")) or {}):
         err(f".github/actions/vibesec-trusted/action.yml: {_p}"); _n_ci += 1
 else:
     err("缺 .github/actions/vibesec-trusted/action.yml：無法確認受信任設定 action 讀 mode 的方式"); _n_ci += 1
