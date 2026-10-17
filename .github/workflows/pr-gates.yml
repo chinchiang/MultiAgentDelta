@@ -651,6 +651,18 @@ jobs:
       - name: 執行 validate.py（PR 版本）
         run: python3 scripts/validate.py
 
+      # 同一份 PR 樹在 mode: enforce 下再跑一次（#223）：本 repo 平常是 shadow，selftest 若依賴 repo 目前的 mode
+      # （例如有 blocking 時以為一定 exit 0），只有切到 enforce 那天才會壞。改在暫存副本，不動工作區的 vibesec.yaml。
+      - name: 執行 validate.py（PR 版本，mode 改為 enforce 的副本）
+        run: |
+          set -euo pipefail
+          T="$RUNNER_TEMP/enforce-tree"
+          rsync -a --exclude _trusted ./ "$T/"
+          sed -i 's/^mode:.*/mode: enforce/' "$T/vibesec.yaml"
+          # 改寫失敗（mode 行格式變了）→ 失敗，不在 shadow 下照跑一次就當成通過
+          grep -qx 'mode: enforce' "$T/vibesec.yaml" || { echo "::error::無法把副本的 mode 改成 enforce"; exit 1; }
+          cd "$T" && python3 scripts/validate.py
+
       - name: 執行 validate.py（default branch 版本驗 PR head）
         run: |
           # 過渡：引入本檢查的 PR 合併前，default branch 的 validate.py 還不認 VIBESEC_PROJECT_ROOT（會去驗 _trusted/ 本身）

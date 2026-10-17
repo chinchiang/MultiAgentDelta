@@ -210,13 +210,21 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
 
 # ------------------------------------------------------------------ selftest
 def selftest() -> list[str]:
+    """靜態檢查的 mode 取自它所在受信任樹的 vibesec.yaml（ADR 0002）：以前直接用本 repo 的 g4_static.py，
+    本 repo 切成 enforce 時，有 blocking 發現的案例 exit 1，selftest 跟著失敗（#223）。改用固定 mode 的受信任樹副本。"""
+    if not STATIC_SCRIPT.is_file():
+        return [f"找不到 {STATIC_SCRIPT}"]
+    from vibesec_policy import trusted_tree
+    with trusted_tree("mode: shadow") as shadow_tree, trusted_tree("mode: enforce") as enforce_tree:
+        return _selftest(shadow_tree, enforce_tree)
+
+
+def _selftest(shadow_tree: pathlib.Path, enforce_tree: pathlib.Path) -> list[str]:
     from jsonschema import Draft202012Validator
     import yaml
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    script = STATIC_SCRIPT
-    if not script.is_file():
-        return [f"找不到 {script}"]
+    script = shadow_tree / "scripts/g4_static.py"   # 固定 shadow：有 blocking 也 exit 0（enforce 的退出碼另外測）
     _wrap_dir = tempfile.TemporaryDirectory(prefix="vibesec-g4-wrap-")
 
     def wrapped(name: str, tail: str) -> pathlib.Path:
@@ -240,16 +248,17 @@ def selftest() -> list[str]:
     # scripts/llm_observations.py 判定高影響工具的正則（HIGH_IMPACT）因此被判 blocking（L3）。
     # 高危名稱在執行期組出：本檔原文若含「tools=[…, 高危名稱]」會讓本 repo 命中自己的檢查。
     bad = "execute" + "_sql"
-    def overexposed(files: dict[str, str]) -> list[str]:
+    def overexposed(files: dict[str, str], tree: pathlib.Path) -> tuple[int, list[str]]:
+        """以 tree 的 g4_static.py 掃描 files → (退出碼, 命中 agent-tool-overexposure 的位置)；沒寫出 SARIF → OSError。"""
         with tempfile.TemporaryDirectory() as d:
             for rel, body in files.items():
                 (pathlib.Path(d) / rel).parent.mkdir(parents=True, exist_ok=True)
                 (pathlib.Path(d) / rel).write_text(body, encoding="utf-8")
-            subprocess.run([sys.executable, "-I", str(script), "--target", d, "--out", f"{d}/reports"],
-                           capture_output=True, text=True, timeout=120, check=True)
+            p = subprocess.run([sys.executable, "-I", str(tree / "scripts/g4_static.py"), "--target", d, "--out", f"{d}/reports"],
+                               capture_output=True, text=True, timeout=120)
             sarif = json.loads((pathlib.Path(d) / "reports/g4-static.sarif").read_text(encoding="utf-8"))
-        return [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in sarif["runs"][0]["results"]
-                if r["ruleId"] == "vibesec.g4.agent-tool-overexposure"]
+        return p.returncode, [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                              for r in sarif["runs"][0]["results"] if r["ruleId"] == "vibesec.g4.agent-tool-overexposure"]
     tool_cases = [
         ("@tool 註冊", {"agent.py": "from agent_sdk import Agent, tool\n\n@" + "tool\ndef " + bad + "(q):\n    return db.execute(q)\n"}, True),
         ("tools=[…] 清單", {"agent.py": "agent = Agent(" + "tools=[search, " + bad + "])\n"}, True),
@@ -262,14 +271,19 @@ def selftest() -> list[str]:
          {"agent.py": f"# 不要註冊 {bad}\nWARN = '{bad} 屬高危'\nagent = Agent(" + "tools=[search_docs, get_ticket])\n"}, False),
         ("測試資料的 tools 參數", {"t.py": "def probe(events, " + "tools=(\"" + bad + "\",)):\n    return events\n"}, False),
     ]
-    for label, files, want in tool_cases:
-        try:
-            got = overexposed(files)
-        except (subprocess.CalledProcessError, OSError, ValueError) as e:
-            fails.append(f"agent-tool-overexposure「{label}」：G4 靜態步驟執行失敗（{type(e).__name__}）")
-            continue
-        if bool(got) != want:
-            fails.append(f"agent-tool-overexposure「{label}」：預期{'命中' if want else '不命中'}（得到 {got}）")
+    # 兩種 mode 都測：命中相同；退出碼 shadow 一律 0，enforce 有 blocking（L3 下高危工具）時 1、否則 0，兩者都寫出 SARIF
+    for mode, tree in (("shadow", shadow_tree), ("enforce", enforce_tree)):
+        for label, files, want in tool_cases:
+            try:
+                rc, got = overexposed(files, tree)
+            except (OSError, ValueError) as e:
+                fails.append(f"agent-tool-overexposure「{label}」（{mode}）：G4 靜態步驟沒寫出結果（{type(e).__name__}）")
+                continue
+            if bool(got) != want:
+                fails.append(f"agent-tool-overexposure「{label}」（{mode}）：預期{'命中' if want else '不命中'}（得到 {got}）")
+            if rc != (1 if mode == "enforce" and want else 0):
+                fails.append(f"agent-tool-overexposure「{label}」（{mode}）：退出碼應為 {1 if mode == 'enforce' and want else 0}"
+                             f"（得到 {rc}）")
 
     with tempfile.TemporaryDirectory() as d:
         D = pathlib.Path(d)
