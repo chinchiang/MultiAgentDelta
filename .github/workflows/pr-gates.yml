@@ -269,11 +269,9 @@ jobs:
       - name: 檢查 .env 是否在 .gitignore 且無已追蹤的 .env 檔
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         shell: bash
-        env:
-          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
         run: |
           mkdir -p reports
-          # 判定交給受信任的 scripts/env_guard.py --json（與 pre-commit、g2_secrets.py 同一份邏輯）：三種結果分開記
+          # 檢查交給受信任的 scripts/env_guard.py --json（與 pre-commit、g2_secrets.py 同一份邏輯）：三種結果分開記
           # （.gitignore 少規則、已提交的 .env、git 失敗 → incomplete）。以前這裡另寫一份 bash：.gitignore 只要有任一行
           # 含 .env（.env.example、!.env 反向規則）就算通過，與腳本的 git 語意判斷不一致。
           # CI 取 _trusted/（default branch）；run_evals.py 在暫存目錄執行時由 VIBESEC_CONFIG 找 repo 根
@@ -297,13 +295,8 @@ jobs:
           elif [ -z "$ENV_ERROR" ]; then
             echo "OK: 無已追蹤的 .env 檔"
           fi
-          TIER=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-not-ignored | awk '{print $2}')
-          TIER_COMMITTED=$(python3 "$ROOT/scripts/vibesec_policy.py" vibesec.g2.env-committed | awk '{print $2}')
-          echo "policy tier: env-not-ignored=${TIER} env-committed=${TIER_COMMITTED}"
-          if [ "${VIBESEC_MODE}" = "enforce" ]; then
-            if [ "$gi_fail" = "1" ] && [ "$TIER" = "blocking" ]; then exit 1; fi
-            if [ -n "$TRACKED" ] && [ "$TIER_COMMITTED" = "blocking" ]; then exit 1; fi
-          fi
+          # 這裡只產生 reports/g2-envcheck.json、印出結果，不做阻擋判定：summary 由 sarif_gate.py 依政策 tier 記成 G2 的發現，
+          # 再由 gate_verdict.py enforce 統一判定（#209；以前這裡依 mode 另做一份判定）
 
       - name: Upload Gitleaks SARIF（若產生）
         if: always() && hashFiles('results.sarif') != ''

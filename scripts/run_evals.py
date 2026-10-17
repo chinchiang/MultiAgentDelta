@@ -684,7 +684,7 @@ class EnvCheckRunner(Runner):
                     t.parent.mkdir(parents=True, exist_ok=True)
                     t.write_text(str(inp.get("content", "PLACEHOLDER=1\n")), encoding="utf-8")
                 git("add", "-f", "--", *inp["files"])  # 案例描述「已提交」：-f 即使被 ignore 也追蹤
-                subprocess.run(["bash", "-c", self.code], env={**os.environ, "VIBESEC_MODE": "shadow",   # G2 .env 步驟自己的判定（另案）
+                subprocess.run(["bash", "-c", self.code], env={**os.environ,
                    "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
                    "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")},
                                cwd=d, capture_output=True, text=True, timeout=60)

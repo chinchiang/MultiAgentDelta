@@ -36,7 +36,7 @@
 - #203：workflow 不再傳 mode、移除這些參數；受信任設定 action 改用 `vibesec_mode`。`ci_invariants` 有兩條不變式把關：action 不得內嵌自己的 mode 規則；workflow 不得把 mode 傳給閘門腳本。action 要用的 `top_scalar` 先以 prefactor PR 進 main（action 從 PR head 執行，卻 import main 的受信任樹）。
 - #203 合併之後，在那之前開的 PR 要 rebase：它們的 workflow 仍會傳 `--mode`，而受信任樹的閘門腳本已經沒有這個參數（argparse exit 2）。這是第二階段刻意接受的結果。
 
-唯一的例外是 G2 的 `.env` 檢查步驟：它在 workflow 的 bash 裡依 `VIBESEC_MODE` 自己做阻擋判定，屬於「阻擋判定集中化」的問題，另案處理（#199 Out of Scope）。
+- #209：G2 的 `.env` 檢查步驟原本是唯一的例外，它在 workflow 的 bash 裡依 `VIBESEC_MODE` 自己做阻擋判定（#199 Out of Scope）。現在已移除：這個步驟只產生 `g2-envcheck.json`，阻擋與否交給 `gate_verdict`。`ci_invariants` 新增第三條不變式：除了阻擋判定之外，workflow 的步驟、job、workflow 層級都不得讀 mode（`VIBESEC_MODE`、`outputs.mode`）。
 
 ## 後果
 
@@ -84,7 +84,7 @@ This landed in phases, as #199 describes, and is complete:
 - #203: the workflows stop passing mode and these parameters are removed; the trusted-configuration action uses `vibesec_mode`. Two `ci_invariants` checks guard this: the action must not embed its own mode rule, and workflows must not pass mode to gate scripts. The `top_scalar` the action needs went into main first in a prefactor PR (the action runs from the PR head but imports main's trusted tree).
 - After #203 is merged, PRs opened before it must be rebased: their workflows still pass `--mode`, while the trusted tree's gate scripts no longer accept it (argparse exits 2). This is an accepted consequence of the second phase.
 
-The only exception is G2's `.env` check step: it makes its own blocking decision in workflow bash based on `VIBESEC_MODE`. That is a "centralize the blocking decision" problem and is handled separately (#199 Out of Scope).
+- #209: G2's `.env` check step used to be the only exception: it made its own blocking decision in workflow bash based on `VIBESEC_MODE` (#199 Out of Scope). That is now removed: the step only produces `g2-envcheck.json`, and `gate_verdict` decides whether to block. A third `ci_invariants` check was added: apart from the blocking decision, no workflow step, job, or workflow-level setting may read mode (`VIBESEC_MODE`, `outputs.mode`).
 
 ## Consequences
 

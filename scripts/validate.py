@@ -754,6 +754,8 @@ for _name, _t in _wf.items():
             f"上傳步驟會失敗）"); _n_ci += 1
     for _s in _ci.gate_mode_channels(yaml.safe_load(_t) or {}):
         err(f".github/workflows/{_name}: {_s} 以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）"); _n_ci += 1
+    for _s in _ci.step_mode_decisions(yaml.safe_load(_t) or {}):
+        err(f".github/workflows/{_name}: {_s} 讀 mode 自己做阻擋判定（判定一律由 scripts/gate_verdict.py 執行，#209）"); _n_ci += 1
 _action = ROOT / ".github/actions/vibesec-trusted/action.yml"
 if _action.is_file():
     for _p in _ci.action_mode_reader_problems(yaml.safe_load(_action.read_text(encoding="utf-8")) or {}):

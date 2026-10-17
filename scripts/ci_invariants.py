@@ -10,6 +10,7 @@
   self_sarif_uploads_without_hashfiles(wf)  上傳自產 SARIF 的步驟須以 hashFiles(<該檔>) 為條件（閘門沒有判定任何發現時不寫 SARIF）
   action_mode_reader_problems(action)      受信任設定 action 以受信任樹的 vibesec_mode 讀 mode，不內嵌自己的 regex（ADR 0002）
   gate_mode_channels(wf)                  workflow 不得以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）
+  step_mode_decisions(wf)                 阻擋判定（gate_verdict）以外的步驟不得讀 mode 自己判定（#209、GLOSSARY「阻擋判定」）
 
   python3 scripts/ci_invariants.py selftest
 """
@@ -166,7 +167,7 @@ def action_mode_reader_problems(action: dict) -> list[str]:
 
 def gate_mode_channels(wf: dict) -> list[str]:
     """呼叫閘門腳本的步驟不得以 --mode 或 VIBESEC_MODE 傳 mode（#203、ADR 0002：mode 只取自受信任政策）。
-    阻擋判定（gate_verdict）的 --mode 可以升級，不檢查；不呼叫閘門腳本的步驟（例如 G2 的 .env 檢查）不檢查。
+    阻擋判定（gate_verdict）的 --mode 可以升級，不檢查；不呼叫閘門腳本的步驟由 step_mode_decisions 檢查。
     job 與 workflow 層級的 env 也會傳進步驟：有呼叫閘門腳本的 job，這兩層也不得有 VIBESEC_MODE。"""
     out = []
     for jname, job in (wf.get("jobs") or {}).items():
@@ -176,6 +177,27 @@ def gate_mode_channels(wf: dict) -> list[str]:
             if not any(f"scripts/{g}" in run for g in GATE_SCRIPTS):
                 continue
             if inherited or re.search(r"--mode\b", run) or "VIBESEC_MODE" in run or "VIBESEC_MODE" in (st.get("env") or {}):
+                out.append(f"{jname}：{st.get('name') or st.get('id') or '（無名步驟）'}")
+    return out
+
+
+_MODE_READ = re.compile(r"VIBESEC_MODE|\boutputs\.mode\b")
+
+
+def step_mode_decisions(wf: dict) -> list[str]:
+    """阻擋判定一律由 gate_verdict.py 執行（GLOSSARY「阻擋判定」、docs/10 §9.1）：其他步驟的 run、env、if 等欄位不得讀 mode
+    （VIBESEC_MODE、steps.<id>.outputs.mode）。以前 G2 的 .env 檢查在 bash 裡依 VIBESEC_MODE 自己擋，是第二份判定（#209）。
+    job 與 workflow 層級的 env／if 會作用到每個步驟，一併檢查。"""
+    out = []
+    if _MODE_READ.search(repr({k: v for k, v in wf.items() if k in ("env", "defaults")})):
+        out.append("workflow 層級 env")
+    for jname, job in (wf.get("jobs") or {}).items():
+        if _MODE_READ.search(repr({k: v for k, v in (job or {}).items() if k != "steps"})):
+            out.append(f"{jname}：job 層級設定")
+        for st in (job or {}).get("steps") or []:
+            if "scripts/gate_verdict.py" in str(st.get("run") or ""):
+                continue
+            if _MODE_READ.search(repr(st)):
                 out.append(f"{jname}：{st.get('name') or st.get('id') or '（無名步驟）'}")
     return out
 
@@ -304,6 +326,26 @@ def selftest() -> list[str]:
             got = None, f"例外 {type(e).__name__}：{e}"
         if isinstance(got, tuple) or len(got) != want:
             fails.append(f"gate_mode_channels「{label}」應回報 {want} 項（得到 {got}）")
+    # 阻擋判定以外的步驟不得讀 mode（#209）：G2 .env 檢查以前的寫法、if 條件、job 層級；gate_verdict 與 action 的 shadow 輸出不算
+    for label, wf, want in [
+        ("G2 .env 步驟以前的寫法", {"jobs": {"g2": {"steps": [step(
+            'python3 -I "$ROOT/scripts/env_guard.py" --json > r.json\nif [ "${VIBESEC_MODE}" = "enforce" ]; then exit 1; fi',
+            {"VIBESEC_MODE": "${{ steps.trusted.outputs.mode }}"})]}}}, 1),
+        ("步驟 if 讀 outputs.mode", {"jobs": {"a": {"steps": [{"name": "s", "if": "steps.trusted.outputs.mode == 'enforce'",
+                                                            "run": "exit 1"}]}}}, 1),
+        ("job 層級 env", {"jobs": {"a": {"env": {"M": "${{ needs.x.outputs.mode }}"}, "steps": [step("echo")]}}}, 1),
+        ("workflow 層級 env", {"env": {"VIBESEC_MODE": "x"}, "jobs": {"a": {"steps": [step("echo")]}}}, 1),
+        ("gate_verdict 不檢查", {"jobs": {"a": {"steps": [step(
+            'python3 _trusted/scripts/gate_verdict.py enforce --trusted-root _trusted --mode "$VIBESEC_MODE"')]}}}, 0),
+        ("shadow 輸出不算", {"jobs": {"a": {"steps": [{"name": "s", "continue-on-error": "${{ steps.trusted.outputs.shadow == 'true' }}",
+                                                      "run": "python3 -I _trusted/scripts/env_guard.py --json"}]}}}, 0),
+    ]:
+        try:
+            got = step_mode_decisions(wf)
+        except Exception as e:
+            got = None, f"例外 {type(e).__name__}：{e}"
+        if isinstance(got, tuple) or len(got) != want:
+            fails.append(f"step_mode_decisions「{label}」應回報 {want} 項（得到 {got}）")
     return fails
 
 
