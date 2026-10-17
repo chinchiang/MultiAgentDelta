@@ -747,8 +747,9 @@ else:
 
 # --- 雙語集合（判定在 scripts/bilingual.py，有 selftest；#178）：集合內的 Markdown 必須中英雙語，集合外只寫正體中文 ---
 import bilingual as _bi
-_bi_files = sorted({p for p in [*(ROOT / f for f in _bi.SET_FILES), *(q for d in _bi.SET_DIRS for q in (ROOT / d).glob("**/*.md"))]
-                    if p.is_file() and _bi.in_set(p.relative_to(ROOT).as_posix())})
+_bi_files, _bi_missing = _bi.set_paths(ROOT)
+for _m in _bi_missing:
+    err(f"雙語集合的 {_m} 不存在：無法確認集合內的文件都是雙語（集合須與 CLAUDE.md 同步修改）")
 for _f in _bi_files:
     for _p in _bi.problems(_f.read_text(encoding="utf-8")):
         err(f"{_f.relative_to(ROOT)}：{_p}（雙語集合，CLAUDE.md 命名與格式慣例）")
