@@ -13,6 +13,8 @@
       .count(blocking=0, advisory=0)  累加發現計數
       .problem(text) / .note(text) / .awaiting_human(text) / .not_applicable(reason)   原樣轉給 verdict
       .fail_condition()               不是發現、卻讓閘門 fail（verdict 的 blocking +1，不計入 findings_count；G0 用）
+      .awaiting_blocking(ids)         待裁決的 blocking 發現（GLOSSARY.md）：計入 findings_count.blocking、依呼叫順序加進待人工裁決，
+                                      不計入 verdict 的 blocking（模型意見不能自行確認，docs/09 §5；G4 用）。與 fail_condition 相反
       .result() -> dict               記下 finished_at、套用控制覆蓋不變式、呼叫 verdict，回傳閘門結果
       .unreadable(problem, *, tool_name, version=None) -> dict
                                       政策讀不到：controls 全部 untested（原因＝problem）、deferred 維持 pending、
@@ -141,7 +143,7 @@ class GateRun:
         self.started_at = started_at or now()
         self._tools, self._cover = [], {}
         self._problems, self._notes, self._awaiting = [], [], []
-        self._blocking = self._advisory = self._fail_conditions = 0
+        self._blocking = self._advisory = self._fail_conditions = self._awaiting_blocking = 0
         self._na = None
 
     # ---- 累積
@@ -166,6 +168,17 @@ class GateRun:
         """不是發現、卻要讓閘門 fail 的條件：閘門判定的 blocking +1，不計入 findings_count；理由由呼叫端以 note() 加入。
         目前只有 G0 的 risk_tier 不一致使用（維持既有行為；改成正式規則須另開政策 PR，CLAUDE.md 規則 1）。"""
         self._fail_conditions += 1
+
+    def awaiting_blocking(self, ids) -> None:
+        """待裁決的 blocking 發現（#211）：blocking tier、未被 refute、尚無人工裁決的 LLM 審查發現。計入 findings_count.blocking
+        （enforce 下阻擋判定依計數擋），並以一筆待人工裁決列出 ids；不計入 verdict 的 blocking，所以沒有其他 blocking 時是 pending。
+        空清單 → 不做任何事。措辭沿用 G4 組裝原本的文字。"""
+        if not isinstance(ids, (list, tuple)):
+            raise ValueError(f"ids 必須是清單（得到 {ids!r}）")
+        ids = [_text("finding id", i) for i in ids]
+        if ids:
+            self._awaiting_blocking += len(ids)
+            self._awaiting.append("blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：" + "、".join(ids))
 
     def problem(self, text) -> None:
         self._problems.append(_text("problem", text))
@@ -201,7 +214,8 @@ class GateRun:
         coverage = self._coverage(self._cover, NOT_RUN)   # 控制覆蓋不變式：漏回報 → untested
         status, status_reason = verdict(blocking=self._blocking + self._fail_conditions, coverage=coverage, problems=self._problems,
                                         awaiting_human=self._awaiting, not_applicable=self._na, notes=self._notes)
-        return self._gate(mode, tier, status, status_reason, list(self._tools), self._blocking, self._advisory, coverage)
+        return self._gate(mode, tier, status, status_reason, list(self._tools), self._blocking + self._awaiting_blocking,
+                          self._advisory, coverage)
 
     def unreadable(self, problem, *, tool_name, version=None) -> dict:
         """政策讀不到：不使用已累積的內容；controls 全部 untested（原因＝problem）、deferred 維持 pending、
@@ -510,6 +524,39 @@ def selftest() -> list[str]:
         if g["status"] != "fail" or g["findings_count"]["blocking"] != 2:
             return f"有發現又有 fail_condition → fail、findings_count 只算發現（得到 {g['findings_count']}）"
     check("fail_condition()：不是發現、卻讓閘門 fail（G0 tier_fail 的暫行作法）", t_fail_condition)
+
+    def t_awaiting_blocking():
+        """待裁決的 blocking 發現（#211、#212）：計入 findings_count、加進待人工裁決，不計入 verdict 的 blocking。"""
+        from gate_verdict import verdict
+        why = "blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：VS-1、VS-2"
+        r = run(); r.cover("C1", "pass"); r.cover("C2", "pass"); r.count(advisory=1); r.awaiting_blocking(["VS-1", "VS-2"])
+        g = r.result()
+        want = verdict(blocking=0, coverage=g["coverage"], awaiting_human=[why])
+        if (g["status"], g["status_reason"]) != want or g["status"] != "pending" \
+                or g["findings_count"] != {"blocking": 2, "advisory": 1} or errs(g):
+            return f"沒有其他 blocking → pending、理由逐字、findings_count 計入（得到 {g['status']}：{g['status_reason']}、{g['findings_count']}）"
+        r = run(); r.cover("C1", "fail"); r.cover("C2", "pass"); r.count(blocking=1); r.awaiting_blocking(["VS-1"])
+        g = r.result()
+        if g["status"] != "fail" or g["findings_count"]["blocking"] != 2 or "待人工裁決：blocking 發現尚未裁決" not in (g["status_reason"] or ""):
+            return f"有其他 blocking → fail、計數相加、理由仍列出待裁決（得到 {g['status']}、{g['findings_count']}：{g['status_reason']}）"
+        r = run(); r.cover("C1", "pass"); r.cover("C2", "pass"); r.awaiting_human("rulings/：VS-9"); r.awaiting_blocking(["VS-1"]); r.awaiting_blocking(["VS-2"])
+        g = r.result()
+        want = verdict(blocking=0, coverage=g["coverage"], awaiting_human=["rulings/：VS-9",
+                       "blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：VS-1",
+                       "blocking 發現尚未裁決（模型意見不能自行確認，docs/09 §5）：VS-2"])
+        if (g["status"], g["status_reason"]) != want or g["findings_count"]["blocking"] != 2:
+            return f"可多次呼叫、依呼叫順序排在其他待人工裁決之後、計數累加（得到 {g['status_reason']}、{g['findings_count']}）"
+        r = run(); r.awaiting_blocking([])
+        if r.result()["findings_count"]["blocking"] != 0:
+            return "空清單 → 不計入、不加理由"
+        for bad in (["", "VS-1"], [" "], [3], "VS-1", None):
+            if not raises(lambda: run().awaiting_blocking(bad)):
+                return f"不合法的 ids（{bad!r}）應拋 ValueError"
+        r = GateRun("G4", controls=["A"], mode="shadow", scope="full"); r.awaiting_blocking(["VS-1"])
+        g = r.unreadable("p", tool_name="vibesec-g4-static")
+        if g["findings_count"] != {"blocking": 0, "advisory": 0}:
+            return "unreadable() 不使用已累積的待裁決 blocking"
+    check("awaiting_blocking()：待裁決的 blocking 發現（計入計數、不讓 status 變 fail）", t_awaiting_blocking)
 
     # ---- 控制覆蓋不變式
     def t_invariant():
