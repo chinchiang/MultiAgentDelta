@@ -7,7 +7,7 @@
 
 輸出：<out>/g4-static.sarif、<out>/g4-gate.json（VS-G4-LLM-REVIEW 為 pending，由 scripts/g4_review.py 接續判定）。
 退出碼：受信任政策的 mode 是 enforce 且有 blocking 發現 → 1；其餘 0；參數不合法 → 2（argparse）。
-mode 一律取自受信任政策（vibesec_policy.load_policy，ADR 0002）；--mode 已不使用、傳了也忽略，將在 #199 的第二階段移除。
+mode 一律取自受信任政策（vibesec_policy.load_policy，ADR 0002）；沒有 --mode 參數（#203 移除）。
 """
 from __future__ import annotations
 import argparse, json, os, pathlib, subprocess, sys, tempfile
@@ -314,7 +314,6 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="VibeSec G4 靜態檢查")
     ap.add_argument("--target", required=True, type=pathlib.Path, help="受測專案根目錄")
     ap.add_argument("--out", required=True, type=pathlib.Path, help="輸出目錄（g4-static.sarif、g4-gate.json）")
-    ap.add_argument("--mode", help="已不使用、傳了也忽略：mode 一律取自受信任政策（ADR 0002），將在 #199 的第二階段移除")
     ap.add_argument("--commit", default=None, help="受測 commit（寫入 gate JSON；沒給記 null）")
     a = ap.parse_args(argv)
     out = a.out.resolve()                 # 先以呼叫端 cwd 解析，再切換到受測專案
@@ -368,22 +367,18 @@ def selftest() -> list[str]:
             (hidden / sub / "supabase/migrations").mkdir(parents=True)
             (hidden / sub / "supabase/migrations/001.sql").write_text(rls, encoding="utf-8")
 
-        # 參數：--target／--out 必填。--mode 已不使用（#201，#199 第二階段移除）：mode 一律取自受信任政策，
-        # 缺席或不合法的 --mode 都不影響執行（以前 argparse 擋下 → G4 incomplete）
+        # 參數：--target／--out 必填。mode 一律取自受信任政策（ADR 0002）：--mode 已移除（#203），傳了 → argparse exit 2
         for label, args in [("沒有參數", []), ("缺 --target", ["--out", D / "o0"]),
-                            ("缺 --out", ["--target", clean])]:
+                            ("缺 --out", ["--target", clean]), ("帶已移除的 --mode", ["--target", clean, "--out", D / "o0", "--mode", "shadow"])]:
             rc = run(*args, cwd=D)
             if rc != 2:
                 fails.append(f"參數：{label} → exit 2（得到 {rc}）")
-        for label, extra in [("缺 --mode", []), ("--mode 不合法", ["--mode", "audit"])]:
-            out = D / f"o0-{len(extra)}"
-            rc = run("--target", clean, "--out", out, *extra, cwd=D)
-            gate = outputs(out)[1] or {}
-            if rc != 0 or gate.get("mode") != real_mode:
-                fails.append(f"參數：{label} → 照常執行、mode 取自政策（{real_mode}）（得到 exit {rc}、mode={gate.get('mode')}）")
+        rc = run("--target", clean, "--out", D / "o0-ok", cwd=D)
+        if rc != 0 or (outputs(D / "o0-ok")[1] or {}).get("mode") != real_mode:
+            fails.append(f"參數：只給 --target／--out → 照常執行、mode 取自政策（{real_mode}）（得到 exit {rc}）")
 
         # 沒有發現：exit 0、寫出 SARIF 與符合 schema 的 gate JSON；--commit 寫入 commit，沒給則為 null
-        rc = run("--target", clean, "--out", D / "o1", "--mode", "enforce", "--commit", "a" * 40, cwd=D)
+        rc = run("--target", clean, "--out", D / "o1", "--commit", "a" * 40, cwd=D)
         hits, gate = outputs(D / "o1")
         if rc != 0 or gate is None or hits:
             fails.append(f"沒有發現 → exit 0 並寫出空的 SARIF 與 gate JSON（exit {rc}，發現 {hits}）")
@@ -398,19 +393,18 @@ def selftest() -> list[str]:
             fails.append("沒給 --commit → gate JSON 的 commit 為 null")
 
         # 有 blocking 發現：受信任政策 shadow 只報告（exit 0）、enforce exit 1；兩者都要寫出結果。退出碼與閘門結果的 mode
-        # 都取自政策，--mode 傳反了也一樣（#201：以前由 --mode 決定）
-        for mode, cli_mode, want in (("shadow", "enforce", 0), ("enforce", "shadow", 1), ("enforce", None, 1)):
-            out = D / f"o-{mode}-{cli_mode}"
-            rc = run("--target", risky, "--out", out, *(["--mode", cli_mode] if cli_mode else []), cwd=D,
-                     script=tree_script(mode))
+        # 都取自政策（#201；以前由 --mode 決定）
+        for mode, want in (("shadow", 0), ("enforce", 1)):
+            out = D / f"o-{mode}"
+            rc = run("--target", risky, "--out", out, cwd=D, script=tree_script(mode))
             hits, gate = outputs(out)
             if rc != want or "vibesec.g4.supabase-rls-disabled" not in (hits or set()) \
                     or (gate or {}).get("findings_count", {}).get("blocking") != 1 or (gate or {}).get("mode") != mode:
-                fails.append(f"blocking 發現、政策 {mode}、--mode {cli_mode} → exit {want}、mode 記 {mode} 並回報"
+                fails.append(f"blocking 發現、政策 {mode} → exit {want}、mode 記 {mode} 並回報"
                              f"（exit {rc}，mode={(gate or {}).get('mode')}，發現 {hits}）")
 
         # 排除：只出現在 _trusted／.git／node_modules 的發現不回報
-        rc = run("--target", hidden, "--out", D / "o3", "--mode", "enforce", cwd=D)
+        rc = run("--target", hidden, "--out", D / "o3", cwd=D)
         hits, _ = outputs(D / "o3")
         if rc != 0 or hits is None or hits:
             fails.append(f"_trusted／.git／node_modules 不得掃描（exit {rc}，發現 {hits}）")

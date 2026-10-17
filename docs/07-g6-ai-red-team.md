@@ -99,7 +99,7 @@ garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
 python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-cost.json
 # 5) 觀測層：工具事件與用量遙測
 python3 scripts/g6_observe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-observations.json
-# 6) 彙整成單一 G6 結果（mode 取自受信任政策的 vibesec.yaml，ADR 0002；--mode 已不使用、傳了也忽略，#199 第二階段移除）
+# 6) 彙整成單一 G6 結果（mode 取自受信任政策的 vibesec.yaml，ADR 0002；沒有 --mode 參數）
 python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6-promptfoo-redteam.json \
   --garak-glob 'reports/g6-garak*.report.jsonl' --cost reports/g6-cost.json --observations reports/g6-observations.json \
   --gate reports/g6-gate.json --sarif reports/g6.sarif

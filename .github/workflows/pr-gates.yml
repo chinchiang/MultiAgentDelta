@@ -512,13 +512,12 @@ jobs:
         id: g4static
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         env:
-          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
           COMMIT_SHA: ${{ github.sha }}
-        # 判定程式是受信任樹的 scripts/g4_static.py（#151／#152）：政策與 vibesec_policy.py 取自它所在的 _trusted/；
-        # -I：不採用 PYTHON* 環境變數與使用者 site-packages。enforce 且有 blocking → exit 1（shadow 由 continue-on-error 只報告）
+        # 判定程式是受信任樹的 scripts/g4_static.py（#151／#152）：政策、mode 與 vibesec_policy.py 都取自它所在的 _trusted/
+        # （ADR 0002：不再以 --mode 傳入）；-I：不採用 PYTHON* 環境變數與使用者 site-packages。
+        # enforce 且有 blocking → exit 1（shadow 由 continue-on-error 只報告）
         run: |
-          python3 -I _trusted/scripts/g4_static.py --target . --out reports \
-            --mode "$VIBESEC_MODE" --commit "$COMMIT_SHA"
+          python3 -I _trusted/scripts/g4_static.py --target . --out reports --commit "$COMMIT_SHA"
 
       # LLM 審查不在 CI 跑：/vibesec-harness 產出 reports/g4-review.yaml，由人複製為 reviews/g4/<commit>.yaml 提交。
       # 這一步只讀該紀錄（schema、provider／family 一致性、對 PR head 是否過期），把 VS-G4-LLM-REVIEW 從 pending 推進到
@@ -561,7 +560,6 @@ jobs:
         if: always()
         continue-on-error: ${{ steps.trusted.outputs.shadow == 'true' }}
         env:
-          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
           # pull_request 的 github.sha 是合併 commit；過期判斷要對 PR head，否則 base 分支的變更也會讓紀錄過期
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -570,7 +568,7 @@ jobs:
         run: |
           VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/g4_review.py gate --static reports/g4-gate.json --head "$HEAD_SHA" \
             --base "$BASE_SHA" --pr-author "$PR_AUTHOR" --approvers "$APPROVERS" \
-            --out reports/g4-gate.json --comment reports/g4-comment.md --mode "$VIBESEC_MODE"
+            --out reports/g4-gate.json --comment reports/g4-comment.md   # 退出碼依受信任政策的 mode（ADR 0002）
 
       - name: Upload G4 static SARIF
         if: always() && hashFiles('reports/g4-static.sarif') != ''

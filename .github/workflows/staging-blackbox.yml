@@ -208,8 +208,7 @@ jobs:
           HAS_A: ${{ steps.tokens.outputs.has_a }}
           HAS_B: ${{ steps.tokens.outputs.has_b }}
           VIBESEC_TOKEN_DIR: ${{ steps.tokens.outputs.token_dir }}
-          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
-          VIBESEC_CONFIG: _trusted/vibesec.yaml
+          VIBESEC_CONFIG: _trusted/vibesec.yaml   # 政策與 mode 都取自這棵受信任樹（ADR 0002）
         run: |
           # 探針程式在 scripts/g5_api_probes.py（判定程式取自 default branch，與其他閘門相同）。
           # 不退回本分支的版本：workflow_dispatch 可在任何分支觸發，而這一步持有帳號 token，改跑本分支的程式
@@ -384,15 +383,15 @@ jobs:
           PF_RED_EXIT: ${{ steps.pfred.outputs.exit_code }}
           TARGET_ALLOWED: ${{ steps.target.outputs.allowed }}
           GUARD_REASON: ${{ steps.target.outputs.guard_reason }}
-          VIBESEC_MODE: ${{ steps.trusted.outputs.mode }}
+        # mode 由 g6_gate.py 從受信任樹的 vibesec.yaml 讀取（ADR 0002），不再以 --mode 傳入
         run: |
           if [ "${TARGET_ALLOWED}" != "true" ]; then
             python3 _trusted/scripts/g6_gate.py --target-denied "${GUARD_REASON:-目標未通過授權檢查或未執行}" \
-              --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE"
+              --gate reports/g6-gate.json --sarif reports/g6.sarif
             exit 0
           fi
           args=(--eval reports/g6-promptfoo.json --garak-glob 'reports/g6-garak*.report.jsonl' --garak-log reports/_garak.log --garak-config _trusted/config/garak/vibesec.probes.yaml
-                --cost reports/g6-cost.json --observations reports/g6-observations.json --gate reports/g6-gate.json --sarif reports/g6.sarif --mode "$VIBESEC_MODE")
+                --cost reports/g6-cost.json --observations reports/g6-observations.json --gate reports/g6-gate.json --sarif reports/g6.sarif)
           [ -n "${PF_EXIT:-}" ] && args+=(--eval-exit-code "$PF_EXIT")
           if [ -n "${PF_RED_SKIPPED:-}" ]; then args+=(--redteam-skipped "$PF_RED_SKIPPED")
           else

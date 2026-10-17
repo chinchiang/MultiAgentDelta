@@ -16,7 +16,7 @@ description: 依 vibesec.yaml 執行 G0–G6 閘門、彙整發現、呼叫 revi
 | 參數 | 預設 | 說明 |
 |---|---|---|
 | `--gate` | 依事件：有 `--target-url` 或 `VIBESEC_TARGET_URL` → `g5,g6`；有 `--target` → `g1,g2,g3,g4`；否則 `g1,g2,g3,g4`；`g0` 需明示 | 只跑指定閘門；與 `vibesec.yaml gates.*.enabled` 取交集。不可用它跳過 enforce 所需的閘門（跳過的閘門在 summary 標 `untested`，不是 pass） |
-| `--mode` | `vibesec.yaml` 的 `mode` | 只能 shadow → enforce；傳 `shadow` 但設定是 `enforce` 時忽略並在 summary 註明 |
+| `--mode` | `vibesec.yaml` 的 `mode` | 只交給阻擋判定（`gate_verdict.py enforce --mode`），只能 shadow → enforce；傳 `shadow` 但設定是 `enforce` 時忽略並在 summary 註明。閘門腳本沒有 `--mode`，閘門結果的 `mode` 一律記受信任設定的值（ADR 0002） |
 | `--diff` | `origin/main` 若存在，否則 full | diff-aware 閘門的比較基準 |
 | `--target` | 本 repo（`.`） | 被測專案的本機路徑（git repo 根目錄），例如 `../MultiAgentBeta`。**G0–G4** 都支援：設定、清單、政策一律取自本 repo，報告寫在本 repo 的 `reports/`（不寫進被測專案）。本 repo 的 blocking-policy `exceptions` 只核准給本 repo 路徑，掃外部專案時不套用（是否為本 repo 由 `Policy.is_this_repo` 判斷；不要為外部專案設定 `VIBESEC_PROJECT_ROOT`，設了就會被當成本 repo）。外部專案的 G4 LLM 審查紀錄只採信本 repo 的 `reviews/g4/external/<commit>.yaml`（見下方 G4）；G0 讀目標自己的威脅模型（見下方 G0），**不得改用本 repo 的模型或結果充數** |
 | `--target-url` | `$VIBESEC_TARGET_URL` | G5 / G6 目標；必須先確認是授權的測試環境 |
@@ -140,9 +140,9 @@ promptfoo eval -c config/promptfoo/tests.yaml -o reports/raw/G6/promptfoo.json -
 garak --config config/garak/vibesec.probes.yaml --report_prefix g6-garak
 python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/raw/G6/g6-cost.json   # 成本面（LLM10）
 python3 scripts/g6_gate.py --eval reports/raw/G6/promptfoo.json --redteam-skipped "<原因>" \
-  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --cost reports/raw/G6/g6-cost.json --gate reports/raw/G6/g6-gate.json --mode "$MODE"   # $MODE＝有效 mode（上表 --mode 列），必填
+  --garak-glob 'reports/raw/G6/g6-garak*.report.jsonl' --cost reports/raw/G6/g6-cost.json --gate reports/raw/G6/g6-gate.json   # mode 取自受信任設定（ADR 0002）
 # 目標被拒（TARGET_DENIED）時不跑上面任何工具，改用：
-# python3 scripts/g6_gate.py --target-denied "<target_guard 輸出>" --gate reports/raw/G6/g6-gate.json --mode "$MODE"
+# python3 scripts/g6_gate.py --target-denied "<target_guard 輸出>" --gate reports/raw/G6/g6-gate.json
 ```
 
 `project.contains_llm: false` → `not_applicable`，`status_reason: "project.contains_llm is false"`。對應 `checks` → `vibesec.g6.<check-kebab>`。

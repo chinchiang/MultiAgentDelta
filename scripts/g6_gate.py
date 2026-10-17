@@ -22,7 +22,7 @@
       --cost reports/g6-cost.json --observations reports/g6-observations.json \
       --gate reports/g6-gate.json --sarif reports/g6.sarif
   python3 scripts/g6_gate.py --target-denied "<原因>" --gate … --sarif …   # 目標未通過 scripts/target_guard.py
-  （mode 取自受信任政策，ADR 0002；--mode 已不使用、傳了也忽略，將在 #199 的第二階段移除）
+  （mode 取自受信任政策，ADR 0002；沒有 --mode 參數，#203 移除）
   python3 scripts/g6_gate.py selftest
 成本面（LLM10 denial_of_wallet_cost）由 scripts/g6_cost_probe.py 實測後以 --cost 帶入；未提供或無法解析 → untested。
 工具事件（LLM06 excessive_agency_telemetry）由 scripts/g6_observe.py 實測後以 --observations 帶入：高影響工具未經人工核准
@@ -524,7 +524,7 @@ def selftest() -> list[str]:
         def run(cost: dict | None, extra: list[str] | None = None, base: list[str] | None = None,
                 obs: dict | str | None = obs_ok) -> dict:
             args = (["--eval", str(dp / "eval.json"), "--redteam", str(dp / "red.json"),
-                     "--garak-glob", str(dp / "g6-garak*.report.jsonl")] if base is None else base) + ["--gate", str(dp / "gate.json"), "--mode", "shadow"]
+                     "--garak-glob", str(dp / "g6-garak*.report.jsonl")] if base is None else base) + ["--gate", str(dp / "gate.json")]
             if cost is not None:
                 (dp / "cost.json").write_text(json.dumps(cost), encoding="utf-8")
                 args += ["--cost", str(dp / "cost.json")]
@@ -543,7 +543,7 @@ def selftest() -> list[str]:
         import contextlib as _cl, io as _io
         with _cl.redirect_stdout(_io.StringIO()):
             main(["--eval", str(dp / "eval.json"), "--redteam", str(dp / "red.json"), "--garak-glob", str(dp / "g6-garak*.report.jsonl"),
-                  "--gate", str(dp / "gate-s.json"), "--sarif", str(dp / "g6.sarif"), "--mode", "shadow"])
+                  "--gate", str(dp / "gate-s.json"), "--sarif", str(dp / "g6.sarif")])
         doc = json.loads((dp / "g6.sarif").read_text(encoding="utf-8"))
         drv = doc["runs"][0]["tool"]["driver"]
         if list(doc)[:2] != ["$schema", "version"] or drv.get("name") != TOOL_NAME or drv.get("version") != TOOL_VERSION:
@@ -676,8 +676,8 @@ def selftest() -> list[str]:
         g = run({"state": "pass"}, ["--target-denied", "example.com 不在允許清單"])
         if g["status"] != "incomplete" or "授權" not in (g["status_reason"] or "") or g["tools"]:
             fails.append(f"--target-denied → incomplete 且不讀任何結果；實際 {g['status']} tools={g['tools']}")
-        # mode 取自受信任政策（#202，ADR 0002）：--mode 已不使用、傳了也忽略（以前必填，#161；#199 第二階段移除）。
-        # 一般路徑與 --target-denied 都一樣：沒帶、帶 shadow、帶不合法的值，閘門結果都記政策的 mode（enforce）
+        # mode 取自受信任政策（#202，ADR 0002）：一般路徑與 --target-denied 都記政策的 mode，兩個方向都測（寫死會被抓到）。
+        # --mode 已移除（#203；以前必填，#161）：傳了 → argparse exit 2、不寫結果
         from vibesec_policy import POLICY_UNREADABLE, mode_policy_root, modeless_policy_root
 
         def run_with(pr, extra):
@@ -688,24 +688,21 @@ def selftest() -> list[str]:
                 return rc, json.loads((dp / "gate.json").read_text(encoding="utf-8"))
             except SystemExit as e:
                 return f"SystemExit {e.code}", {}
-        with mode_policy_root("mode: enforce") as pr:
-            for path_extra in ([], ["--target-denied", "x"]):
-                for cli in ([], ["--mode", "shadow"], ["--mode", "x"]):
-                    rc, g = run_with(pr, path_extra + cli)
-                    if rc != 0 or g.get("mode") != "enforce":
-                        fails.append(f"--mode {cli[1:] or '未帶'}{'（--target-denied）' if path_extra else ''} → 忽略、照常寫出結果、"
-                                     f"mode 取自政策（enforce）（得到 {rc}、mode={g.get('mode')}）")
-        # 反方向：政策 shadow、--mode enforce → 記 shadow（寫死成 enforce 會被抓到）
+        for mode in ("enforce", "shadow"):
+            with mode_policy_root(f"mode: {mode}") as pr:
+                for path_extra in ([], ["--target-denied", "x"]):
+                    rc, g = run_with(pr, path_extra)
+                    if rc != 0 or g.get("mode") != mode:
+                        fails.append(f"政策 {mode}{'（--target-denied）' if path_extra else ''} → mode 記 {mode}"
+                                     f"（得到 {rc}、mode={g.get('mode')}）")
         with mode_policy_root("mode: shadow") as pr:
-            for path_extra in ([], ["--target-denied", "x"]):
-                rc, g = run_with(pr, path_extra + ["--mode", "enforce"])
-                if rc != 0 or g.get("mode") != "shadow":
-                    fails.append(f"政策 shadow、--mode enforce{'（--target-denied）' if path_extra else ''} → mode 記 shadow"
-                                 f"（得到 {rc}、mode={g.get('mode')}）")
+            rc, g = run_with(pr, ["--mode", "shadow"])
+            if rc != "SystemExit 2" or (dp / "gate.json").exists():
+                fails.append(f"帶已移除的 --mode → argparse exit 2、不寫結果（得到 {rc}）")
         # 受信任政策缺 mode → 政策讀不到：incomplete、mode 記 enforce（mode 不明）、寫明原因；--target-denied 也一樣
         with modeless_policy_root() as pr:
             for path_extra in ([], ["--target-denied", "x"]):
-                rc, g = run_with(pr, path_extra + ["--mode", "shadow"])
+                rc, g = run_with(pr, path_extra)
                 why = g.get("status_reason") or ""
                 if rc != 0 or g.get("status") != "incomplete" or g.get("mode") != "enforce" \
                         or POLICY_UNREADABLE + "（" not in why or "mode" not in why:
@@ -720,7 +717,7 @@ def selftest() -> list[str]:
     with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
         gp, sp = pathlib.Path(d, "G6.json"), pathlib.Path(d, "G6.sarif")
         sp.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF
-        rc = main(["--gate", str(gp), "--sarif", str(sp), "--mode", "shadow"], policy_root=pr)
+        rc = main(["--gate", str(gp), "--sarif", str(sp)], policy_root=pr)
         g = json.loads(gp.read_text(encoding="utf-8"))
         stale = sp.exists()
     # 接線（#184 決定 2）：coverage 是 vibesec.yaml 宣告的 5 個 check（untested、原因＝政策讀不到；control_id 取自 catalog）、
@@ -738,7 +735,7 @@ def selftest() -> list[str]:
     with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
         gp, sp = pathlib.Path(d, "G6.json"), pathlib.Path(d, "G6.sarif")
         sp.write_text('{"stale": true}', encoding="utf-8")
-        main(["--target-denied", "example.com 不在允許清單", "--gate", str(gp), "--sarif", str(sp), "--mode", "shadow"])
+        main(["--target-denied", "example.com 不在允許清單", "--gate", str(gp), "--sarif", str(sp)])
         g = json.loads(gp.read_text(encoding="utf-8"))
         if g["status"] != "incomplete" or g["tools"] or sp.exists():
             fails.append(f"--target-denied → incomplete、tools 為 []、舊 SARIF 刪掉（得到 {g['status']}、{g['tools']}、SARIF 存在：{sp.exists()}）")
@@ -769,7 +766,6 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     ap.add_argument("--cost", help="scripts/g6_cost_probe.py 的輸出（denial_of_wallet_cost）")
     ap.add_argument("--observations", help="scripts/g6_observe.py 的觀測檔（excessive_agency_telemetry）")
     ap.add_argument("--target-denied", help="目標未通過 scripts/target_guard.py 的原因：不讀任何結果，閘門 incomplete")
-    ap.add_argument("--mode", help="已不使用、傳了也忽略：mode 取自受信任政策（ADR 0002），將在 #199 的第二階段移除")
     a = ap.parse_args(argv)
     started = now()
     policy, problem = load_policy(policy_root)   # 只建立一次；讀不到 → 不讀任何結果、閘門 incomplete
