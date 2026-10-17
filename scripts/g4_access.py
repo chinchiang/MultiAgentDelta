@@ -214,8 +214,8 @@ def selftest() -> list[str]:
     本 repo 切成 enforce 時，有 blocking 發現的案例 exit 1，selftest 跟著失敗（#223）。改用固定 mode 的受信任樹副本。"""
     if not STATIC_SCRIPT.is_file():
         return [f"找不到 {STATIC_SCRIPT}"]
-    from vibesec_policy import trusted_tree
-    with trusted_tree("mode: shadow") as shadow_tree, trusted_tree("mode: enforce") as enforce_tree:
+    from vibesec_policy import tree_copy
+    with tree_copy("mode: shadow") as shadow_tree, tree_copy("mode: enforce") as enforce_tree:
         return _selftest(shadow_tree, enforce_tree)
 
 
@@ -347,8 +347,8 @@ def _selftest(shadow_tree: pathlib.Path, enforce_tree: pathlib.Path) -> list[str
         # 受信任政策的 vibesec.yaml 缺 mode（#200、#201）：靜態檢查回報政策讀不到 → 靜態失敗路徑。閘門結果 incomplete、
         # mode 記 enforce（mode 不明）、寫明原因，不拋例外（#183 決定 1；g4_access 的 exit 1 代表「有 blocking」，崩潰會誤導）。
         # 以前 g4_access 自己讀 mode（缺席時預設 shadow）再以 --mode 傳給靜態檢查
-        from vibesec_policy import POLICY_UNREADABLE, mode_policy_root, modeless_policy_root, trusted_tree
-        with trusted_tree("") as tree:
+        from vibesec_policy import POLICY_UNREADABLE, mode_policy_root, modeless_policy_root, tree_copy
+        with tree_copy("") as tree:
             try:
                 g = check(scan(repo, out, tree / "scripts/g4_static.py", policy_root=tree), "mode 缺席")
                 why = g["status_reason"] or ""

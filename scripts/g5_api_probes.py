@@ -682,7 +682,7 @@ def selftest():
     # incomplete（mode 記 enforce、未送出任何探針），不再缺席。目標指向會計數請求的本機假目標（127.0.0.1 在允許清單），
     # 所以「沒送探針」是實測的，不是因為授權檢查擋下
     import http.server, threading
-    from vibesec_policy import POLICY_UNREADABLE, trusted_tree
+    from vibesec_policy import POLICY_UNREADABLE, tree_copy
     hits = []
 
     class _Count(http.server.BaseHTTPRequestHandler):
@@ -696,8 +696,8 @@ def selftest():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         local = f"http://127.0.0.1:{srv.server_address[1]}"
-        with trusted_tree("mode: enforce") as enforce_tree, trusted_tree("mode: shadow") as shadow_tree, \
-                trusted_tree("") as modeless_tree:
+        with tree_copy("mode: enforce") as enforce_tree, tree_copy("mode: shadow") as shadow_tree, \
+                tree_copy("") as modeless_tree:
             # A：閘門結果的 mode 取自受信任政策；兩個方向都測（寫死會被抓到）。環境變數 VIBESEC_MODE 已不讀（#203；以前必填，
             # #186）：殘留在環境裡也不影響
             for tree, want, extra_env in [(enforce_tree, "enforce", {}), (shadow_tree, "shadow", {}),
@@ -709,7 +709,7 @@ def selftest():
                         fails.append(f"政策 {want}{'、環境殘留 VIBESEC_MODE=shadow' if extra_env else ''} → 照常寫出 gate JSON、"
                                      f"mode 取自政策（{want}）（得到 code={code}, mode={g and g.get('mode')}）")
             # A'：照常執行是真的送出探針：授權過的本機假目標、受信任政策合法
-            # （trusted_tree 才有 config/targets.yaml：只放政策檔的暫存 root 會讓授權檢查先擋下，「有送／沒送」就看不出來）
+            # （tree_copy 才有 config/targets.yaml：只放政策檔的暫存 root 會讓授權檢查先擋下，「有送／沒送」就看不出來）
             hits.clear()
             with tempfile.TemporaryDirectory() as d:
                 code, g = run_in(d, {"VIBESEC_TARGET_URL": local, "VIBESEC_CONFIG": str(enforce_tree / "vibesec.yaml")})
