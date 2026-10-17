@@ -8,7 +8,7 @@
   sed_target_substitution(text)           不得以 sed 把受測目標 URL 代入設定（URL 含 # 或 & 會壞）
   sarif_jobs_without_permission(wf)       有 upload-sarif 的 job，有效權限須含 security-events: write
   self_sarif_uploads_without_hashfiles(wf)  上傳自產 SARIF 的步驟須以 hashFiles(<該檔>) 為條件（閘門沒有判定任何發現時不寫 SARIF）
-  action_mode_reader_problems(action)      受信任設定 action 以受信任樹的 vibesec_mode 讀 mode，不內嵌自己的 regex（ADR 0002）
+  action_mode_reader_problems(action)      受信任設定 action 以受信任樹的 vibesec_mode 讀 mode，不內嵌自己的 regex（ADR 0002）；不輸出 mode（#220）
   gate_mode_channels(wf)                  workflow 不得以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）
   step_mode_decisions(wf)                 workflow 步驟不得讀 mode 自己判定；判定只在 gate_verdict（#209、GLOSSARY「阻擋判定」）
 
@@ -148,7 +148,8 @@ GATE_SCRIPTS = ("g4_static.py", "g4_review.py", "g5_api_probes.py", "g6_gate.py"
 
 def action_mode_reader_problems(action: dict) -> list[str]:
     """受信任設定 action 讀 mode 的步驟（#203）：以 python3 -I import 受信任樹的 vibesec_mode（read_mode、top_scalar），
-    不得內嵌 regex 或合法值清單。以前 action 自己寫一份 regex，與閘門讀 mode 的規則可能漂移（ADR 0002）。"""
+    不得內嵌 regex 或合法值清單。以前 action 自己寫一份 regex，與閘門讀 mode 的規則可能漂移（ADR 0002）。
+    mode 只用來算 shadow，不得經 action 的輸出（不論鍵名）或步驟輸出（不論寫法）交給 workflow（#220）。"""
     steps = [st for st in ((action.get("runs") or {}).get("steps") or [])
              if str(st.get("name", "")).startswith(CFG_STEP_NAME)]
     if len(steps) != 1:
@@ -163,9 +164,10 @@ def action_mode_reader_problems(action: dict) -> list[str]:
     if "python3 -I" not in run:
         out.append(f"「{CFG_STEP_NAME}」步驟沒有以 python3 -I 執行（工作目錄是 PR head，可蓋掉標準函式庫）")
     # mode 只用來算 shadow；阻擋判定自己讀受信任樹，workflow 不得讀 mode（step_mode_decisions），所以也不輸出（#220）
-    if "mode" in (action.get("outputs") or {}):
+    outputs = action.get("outputs") or {}
+    if "mode" in outputs or _MODE_READ.search(repr(outputs)):
         out.append("受信任設定 action 不得輸出 mode（只輸出 shadow；判定由 gate_verdict 讀受信任樹）")
-    if re.search(r"""^\s*print\(\s*f?["']mode=""", run, re.M):
+    if re.search(r"(?:(?<![\w.])|(?<=\\n))mode=(?!=)", run):   # print(f"mode=…")、echo "mode=…"、"…\nmode=…" 都算；mode == 比較不算
         out.append(f"「{CFG_STEP_NAME}」步驟把 mode 寫進步驟輸出（只輸出 shadow）")
     return out
 
@@ -302,8 +304,11 @@ def selftest() -> list[str]:
                                   "if mode not in (\"shadow\", \"enforce\"): sys.exit(2)\nPY\n"), 3),
         ("拿掉 -I", act(good_cfg.replace("python3 -I -", "python3 -")), 1),
         ("步驟缺席", {"runs": {"steps": []}}, 1),
-        ("輸出 mode（#220 以前）", {**act(good_cfg.replace("PY\n", 'print(f"mode={mode}")\nPY\n')),
+        ("輸出 mode（#220 以前）", {**act(good_cfg + 'print(f"mode={mode}")\n'),
                                   "outputs": {"mode": {"value": "${{ steps.cfg.outputs.mode }}"}}}, 2),
+        ("換鍵名輸出 mode", {**act(good_cfg), "outputs": {"gate_mode": {"value": "${{ steps.cfg.outputs.mode }}"}}}, 1),
+        ("其他寫法輸出 mode", act(good_cfg + 'sys.stdout.write("shadow=x\\nmode=" + mode)\n'), 1),
+        ("bash echo 輸出 mode", act(good_cfg + 'echo "mode=$M" >> "$GITHUB_OUTPUT"\n'), 1),
         ("只輸出 shadow", {**act(good_cfg), "outputs": {"shadow": {"value": "${{ steps.cfg.outputs.shadow }}"}}}, 0),
     ]:
         try:
