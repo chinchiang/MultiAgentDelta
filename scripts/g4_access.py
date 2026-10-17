@@ -195,13 +195,16 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
         record, ev, ref, reason, cap = find_external_record(target, commit, cfg, controls, review_root)
     else:
         record, ev, ref, reason, cap = find_self_record(target, commit, cfg, controls)
-    # 本機的信任問題：外部紀錄的信任結果，以及紀錄確認者是否有填（找紀錄、算信任問題留在呼叫端，ADR 0001）
+    # 本機的信任問題：外部紀錄的信任結果，以及紀錄確認者是否有填（找紀錄、算信任問題留在呼叫端，ADR 0001）。
     # 多則串成一則傳入（與以前 apply_cap 一次套用的文字相同）
-    trust = [c for c in (cap, g4_review.trust_cap(False, record["recorded_by"].get("handle", ""), None, [])) if c] if record else []
-    gate, _ = g4_review.derive_gate(static, record, ev, reason, ref, trust_problems=["；".join(trust)] if trust else [])
-    if notes:
-        gate["status_reason"] = "；".join(x for x in (gate.get("status_reason"), *notes) if x)
-    gate.update(scope="full", diff_base=None, commit=commit, started_at=started)
+    trust = []
+    if record is not None:
+        handle_cap = g4_review.trust_cap(False, record["recorded_by"].get("handle", ""), None, [])
+        trust = [c for c in (cap, handle_cap) if c]
+    # 外層欄位在組裝前改好（本機一律全量掃描、commit 取目標 HEAD），附註交給組裝接在理由末尾：都經過 GateRun
+    static = dict(static, scope="full", diff_base=None, commit=commit, started_at=started)
+    gate, _ = g4_review.derive_gate(static, record, ev, reason, ref, trust_problems=["；".join(trust)] if trust else [],
+                                    notes=notes)
     return gate
 
 
@@ -295,6 +298,8 @@ def selftest() -> list[str]:
             fails.append(f"靜態檢查與 CI 同一份程式碼：隱形 Unicode、RLS（得到 {sorted(hits)}）")
         if any(u == "linked.md" for _, u in hits):
             fails.append("不跟隨 symlink 掃到目標以外的檔案")
+        if "靜態檢查略過 1 個 symlink" not in (g["status_reason"] or ""):
+            fails.append(f"略過 symlink 的附註要寫進閘門理由（經組裝交給閘門判定，#213；得到 {g['status_reason']}）")
         if g["commit"] != head or g["scope"] != "full":
             fails.append("gate JSON 的 commit 取目標 HEAD、scope full")
         llm = next((c for c in g["coverage"] if c["control_id"] == g4_review.LLM_CONTROL), {})

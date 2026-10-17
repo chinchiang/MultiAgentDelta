@@ -245,30 +245,29 @@ _STRICTNESS = {"fail": 4, "untested": 3, "pending": 2, "pass": 1, "not_applicabl
 
 
 def _merge_coverage(entries: list[dict]) -> list[dict]:
-    """依出現順序合併同一控制的多筆 coverage：state 取較嚴者，理由依序串接（去重）。schema 允許紀錄 coverage 與靜態檢查
-    有同一個控制，或紀錄內重複；GateRun 每個控制只回報一次。"""
-    out: dict[str, dict] = {}
+    """依出現順序合併同一控制的多筆 coverage：state 取較嚴者；理由是所有筆的理由依序串接、去重（較寬鬆那筆的理由也保留，
+    讀者看得到每一個來源怎麼說）。schema 允許紀錄 coverage 與靜態檢查有同一個控制，或紀錄內重複；GateRun 每個控制只回報一次。"""
+    states: dict[str, str] = {}
+    reasons: dict[str, list[str]] = {}
     for c in entries:
-        cid, reason = c["control_id"], c.get("reason")
-        if cid not in out:
-            out[cid] = {"control_id": cid, "state": c["state"], "reason": reason}
-            continue
-        cur = out[cid]
-        if _STRICTNESS[c["state"]] > _STRICTNESS[cur["state"]]:
-            cur["state"] = c["state"]
-        cur["reason"] = "；".join(dict.fromkeys(r for r in (cur["reason"], reason) if r)) or None
-    return list(out.values())
+        cid = c["control_id"]
+        if cid not in states or _STRICTNESS[c["state"]] > _STRICTNESS[states[cid]]:
+            states[cid] = c["state"]
+        reasons.setdefault(cid, [])
+        if c.get("reason") and c["reason"] not in reasons[cid]:
+            reasons[cid].append(c["reason"])
+    return [{"control_id": cid, "state": st, "reason": "；".join(reasons[cid]) or None} for cid, st in states.items()]
 
 
 def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason: str | None, record_ref: str | None,
-                trust_problems=()) -> tuple[dict, list[dict]]:
+                trust_problems: list[str] | tuple[str, ...] = (), notes: list[str] | tuple[str, ...] = ()) -> tuple[dict, list[dict]]:
     """G4 組裝的唯一入口（#211、#213）：靜態結果＋（有效的）審查紀錄 → (G4 閘門結果, 審查發現)。
     record=None → 維持靜態結果、LLM 審查控制 pending。trust_problems：呼叫端算好的「審查紀錄未獲信任」理由（CI：紀錄或裁決
     由本 PR 引入卻未經非作者 approve；本機：外部紀錄的信任結果），當成待人工裁決交給閘門判定（以前由 apply_cap 在判定之外改寫）。
     狀態一律由 gate_verdict.verdict 判定（GateRun）；判定看的 coverage 就是輸出的 coverage。審查發現另外回傳（給 PR 留言用），
-    不再塞在閘門結果的私有欄位裡。"""
-    from gate_verdict import verdict
-    trust_problems = [str(t) for t in trust_problems if str(t).strip()]
+    不再塞在閘門結果的私有欄位裡。notes：呼叫端的附註（例如本機略過的 symlink），接在理由末尾、不影響狀態。
+    外層欄位（mode、scope、diff_base、commit、risk_tier、started_at）取自 static；呼叫端要改寫時在 static 裡改好再傳入。"""
+    trust_problems, extra_notes = list(trust_problems), list(notes)
     static_blocking = int((static.get("findings_count") or {}).get("blocking") or 0)
     static_advisory = int((static.get("findings_count") or {}).get("advisory") or 0)
     static_cov = [c for c in static.get("coverage") or [] if c.get("control_id") != LLM_CONTROL]
@@ -279,7 +278,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     problems: list[str] = []
     awaiting: list[str] = []
     notes: list[str] = []
-    gaps = []
+    gaps: list[dict] = []
     if record is None or ev is None:
         problems.append(fresh_reason or "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 完成並提交 reviews/g4/<commit>.yaml")
         record_cov = [{"control_id": LLM_CONTROL, "state": "pending", "reason": problems[-1]}]
@@ -316,34 +315,36 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     via_coverage = {g["text"] for g in gaps if g["state"] == "untested" and g["control_id"] in untested_now}
     if ev is not None and record is not None:
         problems.extend(p for p in ev["incomplete"] if p not in via_coverage)   # 紀錄本身的問題
-    awaiting_blocking_text = [gate_result.AWAITING_BLOCKING_PREFIX + "、".join(pending_ruling_blocking)] if pending_ruling_blocking else []
+
+    def build(cov: list[dict], trust: list[str]) -> gate_result.GateRun:
+        run = gate_result.GateRun("G4", controls=[c["control_id"] for c in cov], mode=static.get("mode"),
+                                  scope=static.get("scope"), commit=static.get("commit"), diff_base=static.get("diff_base"),
+                                  risk_tier=static.get("risk_tier"), started_at=static.get("started_at"))
+        for t in tools:
+            run.tool(t["name"], t["state"], version=t.get("version"), exit_code=t.get("exit_code"), output_ref=t.get("output_ref"),
+                     duration_seconds=t.get("duration_seconds"))
+        for c in cov:
+            run.cover(c["control_id"], c["state"], c["reason"])
+        # 只有經人工裁決 confirm 的 LLM blocking 才讓閘門 fail；待裁決的 blocking 計入 findings_count、列為待人工裁決
+        run.count(blocking=static_blocking + len(confirmed_blocking), advisory=static_advisory + llm_advisory)
+        for p in problems:
+            run.problem(p)
+        for a in awaiting:
+            run.awaiting_human(a)
+        run.awaiting_blocking(pending_ruling_blocking)
+        for t in trust:
+            run.awaiting_human(f"審查紀錄未獲信任：{t}")
+        for n in notes + extra_notes:
+            run.note(n)
+        return run
+
     # 信任問題：不算它們時本來會 pass，才把 LLM 審查控制的 coverage 降為 pending（#213 決定 3：維持 apply_cap 原本的行為）。
-    # coverage 的理由只記第一則（apply_cap 逐則套用時只有第一次會改寫 coverage）；全部的信任問題都列在 status_reason
-    if trust_problems and verdict(blocking=static_blocking + len(confirmed_blocking), coverage=coverage, problems=problems,
-                                  awaiting_human=awaiting + awaiting_blocking_text, notes=notes)[0] == "pass":
-        for c in coverage:
-            if c["control_id"] == LLM_CONTROL and c["state"] == "pass":
-                c.update(state="pending", reason=f"審查紀錄未獲信任：{trust_problems[0]}")
-    run = gate_result.GateRun("G4", controls=[c["control_id"] for c in coverage], mode=static.get("mode"),
-                              scope=static.get("scope"), commit=static.get("commit"), diff_base=static.get("diff_base"),
-                              risk_tier=static.get("risk_tier"), started_at=static.get("started_at"))
-    for t in tools:
-        run.tool(t["name"], t["state"], version=t.get("version"), exit_code=t.get("exit_code"), output_ref=t.get("output_ref"),
-                 duration_seconds=t.get("duration_seconds"))
-    for c in coverage:
-        run.cover(c["control_id"], c["state"], c["reason"])
-    # 只有經人工裁決 confirm 的 LLM blocking 才讓閘門 fail；待裁決的 blocking 計入 findings_count、列為待人工裁決
-    run.count(blocking=static_blocking + len(confirmed_blocking), advisory=static_advisory + llm_advisory)
-    for p in problems:
-        run.problem(p)
-    for a in awaiting:
-        run.awaiting_human(a)
-    run.awaiting_blocking(pending_ruling_blocking)
-    for t in trust_problems:
-        run.awaiting_human(f"審查紀錄未獲信任：{t}")
-    for n in notes:
-        run.note(n)
-    return run.result(), (list(ev["findings"]) if ev else [])
+    # 判定規則只有 GateRun／verdict 一份：先不帶信任問題建一次看狀態。coverage 的理由只記第一則（apply_cap 逐則套用時只有
+    # 第一次會改寫 coverage）；全部的信任問題都列在 status_reason
+    if trust_problems and build(coverage, []).result()["status"] == "pass":
+        coverage = [dict(c, state="pending", reason=f"審查紀錄未獲信任：{trust_problems[0]}")
+                    if c["control_id"] == LLM_CONTROL and c["state"] == "pass" else c for c in coverage]
+    return build(coverage, trust_problems).result(), (list(ev["findings"]) if ev else [])
 
 
 def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers: list[str]) -> str | None:
