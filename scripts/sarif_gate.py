@@ -504,13 +504,13 @@ def _envcheck_verdict_selftest() -> list[str]:
     env_guard.py --json → sarif_gate.py → gate_verdict.py enforce（受信任樹副本，命令列執行）確認
     政策把 env-not-ignored／env-committed 列為 blocking 時，enforce 下 exit 1；advisory 或 shadow 時 exit 0。"""
     import os, subprocess
-    from vibesec_policy import trusted_tree
+    from vibesec_policy import tree_copy
     fails = []
     git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
     for mode, tier, want_rc, want_blocking in [("enforce", "blocking", 1, 2), ("enforce", "advisory", 0, 0),
                                                 ("shadow", "blocking", 0, 2)]:
         label = f"mode {mode}、env 規則 {tier}"
-        with trusted_tree(f"mode: {mode}") as tree, tempfile.TemporaryDirectory() as d:
+        with tree_copy(f"mode: {mode}") as tree, tempfile.TemporaryDirectory() as d:
             D = pathlib.Path(d)
             pf = tree / "config/policy/blocking-policy.yaml"
             doc = yaml.safe_load(pf.read_text(encoding="utf-8"))

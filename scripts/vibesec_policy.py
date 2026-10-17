@@ -311,7 +311,7 @@ def modeless_policy_root():
 
 
 @contextlib.contextmanager
-def trusted_tree(mode_line: str):
+def tree_copy(mode_line: str):
     """selftest 用：受信任樹副本（scripts、config、schemas、vibesec.yaml），vibesec.yaml 的 mode 行換成 mode_line（空字串 → 拿掉）。
     給兩種測試用：只能經命令列執行、無法注入 policy_root 的（例如 CI 以 python3 -I 執行的 g4_static）；以及除了政策檔
     還要讀同一棵樹其他設定的（例如 G5 的授權檢查讀 config/targets.yaml）。yield 暫存 root。"""
@@ -583,9 +583,9 @@ def selftest() -> list[str]:
     with mode_policy_root("mode: enforce") as tmp:
         if getattr(load_policy(tmp, project_root=None)[0], "mode", None) != "enforce":
             fails.append("mode_policy_root：mode 行換成 enforce")
-    with trusted_tree("mode: enforce") as tree:
+    with tree_copy("mode: enforce") as tree:
         if not (tree / "scripts/vibesec_mode.py").is_file() or getattr(load_policy(tree, project_root=None)[0], "mode", None) != "enforce":
-            fails.append("trusted_tree：含 scripts、政策與換過 mode 的 vibesec.yaml")
+            fails.append("tree_copy：含 scripts、政策與換過 mode 的 vibesec.yaml")
     if tmp.exists():
         fails.append("temp_policy_root：離開時刪除暫存 root")
     # 契約：record() 的形狀就是 finding.schema.json 的 exception（harness 原樣搬進 findings.json）；缺欄、多欄、型別不符 → 不通過

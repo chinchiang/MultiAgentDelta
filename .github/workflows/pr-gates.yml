@@ -659,6 +659,18 @@ jobs:
           fi
           VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/validate.py
 
+      # 同一份 PR 樹在 mode: enforce 下再跑一次（#223）：本 repo 平常是 shadow，selftest 若依賴 repo 目前的 mode
+      # （例如有 blocking 時以為一定 exit 0），只有切到 enforce 那天才會壞。改在暫存副本，不動工作區的 vibesec.yaml；
+      # 改 mode 用 vibesec_policy.set_mode_line（selftest 用的同一個 helper），找不到唯一的 mode 行就失敗。
+      - name: 執行 validate.py（PR 版本，mode 改為 enforce 的副本）
+        run: |
+          set -euo pipefail
+          T="$RUNNER_TEMP/enforce-tree"
+          rsync -a --exclude _trusted ./ "$T/"
+          python3 -I -c 'import pathlib, sys; sys.path.insert(0, sys.argv[1] + "/scripts"); from vibesec_policy import set_mode_line; set_mode_line(pathlib.Path(sys.argv[1]) / "vibesec.yaml", "mode: enforce")' "$T"
+          grep -qx 'mode: enforce' "$T/vibesec.yaml" || { echo "::error::無法把副本的 mode 改成 enforce"; exit 1; }
+          cd "$T" && python3 scripts/validate.py
+
       # nightly／staging 失敗通知的判定邏輯（開／留言／關 issue、靶場預期狀態）。這兩支只在 main 的排程中執行，
       # 壞掉時不會有人發現，所以在每個 PR 跑單元測試。runner 內建 Node（node:test 需 ≥ 18）；
       # 測試檔清單明列：檔案缺漏時 node 直接失敗，不會變成「0 個測試、通過」。

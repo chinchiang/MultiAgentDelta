@@ -336,14 +336,14 @@ def selftest() -> list[str]:
 
     import contextlib, re
     sys.path.insert(0, str(ROOT / "scripts"))
-    from vibesec_policy import trusted_tree
+    from vibesec_policy import tree_copy
     real_mode = re.search(r"(?m)^mode:\s*(\S+)", (ROOT / "vibesec.yaml").read_text(encoding="utf-8")).group(1)
     trees = contextlib.ExitStack()   # mode 不同的受信任樹副本（CLI 不能注入 policy_root），selftest 結束時刪除
     tree_of: dict[str, pathlib.Path] = {}
 
     def tree_script(mode: str) -> pathlib.Path:
         if mode not in tree_of:
-            tree_of[mode] = trees.enter_context(trusted_tree(f"mode: {mode}")) / "scripts/g4_static.py"
+            tree_of[mode] = trees.enter_context(tree_copy(f"mode: {mode}")) / "scripts/g4_static.py"
         return tree_of[mode]
 
     def outputs(out: pathlib.Path):
