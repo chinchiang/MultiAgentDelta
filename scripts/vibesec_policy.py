@@ -245,7 +245,7 @@ def effective_mode(policy: Policy | None) -> str:
 def g4_enforce_reminder(policy: Policy) -> str | None:
     """enforce 下 G4 不在 incomplete_gate_is_blocking_in_enforce 時的提醒（validate.py 印成 WARN，不擋）；否則 None。
     維持現狀是 #215 的人工決定：單人維護時 G4 紀錄無法由非作者確認，加進清單會讓 enforce 下所有 PR 都無法合併。
-    提醒是為了切換 enforce 時不在沒人注意的情況下沿用這個決定。"""
+    提醒是為了切換 enforce 時不在沒人注意的情況下沿用這個決定。重新評估的條件與 docs/05「信任上限」一段同步，改一邊要改另一邊。"""
     if policy.mode != "enforce" or "G4" in policy.incomplete_blocking_gates:
         return None
     return ("enforce 下 G4 未完成（incomplete／pending）不擋 merge（G4 不在 incomplete_gate_is_blocking_in_enforce，#215 決定維持）；"
@@ -325,11 +325,16 @@ def trusted_tree(mode_line: str):
         yield tree
 
 
-def write_exceptions(root: pathlib.Path, exceptions) -> None:
-    """selftest 用：把 root 的 blocking-policy.yaml 的 exceptions 換成 exceptions，其餘照舊。"""
+def write_policy_key(root: pathlib.Path, key: str, value) -> None:
+    """selftest 用：把 root 的 blocking-policy.yaml 最上層的 key 換成 value，其餘照舊。"""
     path = pathlib.Path(root) / "config/policy/blocking-policy.yaml"
     pol = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    path.write_text(yaml.safe_dump(dict(pol, exceptions=list(exceptions)), allow_unicode=True), encoding="utf-8")
+    path.write_text(yaml.safe_dump({**pol, key: value}, allow_unicode=True), encoding="utf-8")
+
+
+def write_exceptions(root: pathlib.Path, exceptions) -> None:
+    """selftest 用：把 root 的 blocking-policy.yaml 的 exceptions 換成 exceptions，其餘照舊。"""
+    write_policy_key(root, "exceptions", list(exceptions))
 
 
 def selftest() -> list[str]:
@@ -645,10 +650,7 @@ def selftest() -> list[str]:
     for mode_line, gates, want in [("mode: enforce", ["G1", "G2"], True), ("mode: shadow", ["G1", "G2"], False),
                                    ("mode: enforce", ["G1", "G2", "G4"], False)]:
         with mode_policy_root(mode_line) as root:
-            pf = root / "config/policy/blocking-policy.yaml"
-            doc = yaml.safe_load(pf.read_text(encoding="utf-8"))
-            doc["incomplete_gate_is_blocking_in_enforce"] = gates
-            pf.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+            write_policy_key(root, "incomplete_gate_is_blocking_in_enforce", gates)
             got = g4_enforce_reminder(Policy(root))
         if bool(got) != want or (got and ("#215" not in got or "COLLABORATOR" not in got)):
             fails.append(f"g4_enforce_reminder（{mode_line}、{gates}）應{'提醒並附 #215 與重新評估條件' if want else '不提醒'}（得到 {got!r}）")
