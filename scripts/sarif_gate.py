@@ -495,6 +495,49 @@ def selftest() -> list[str]:
             pol, _ = load_policy(pr, project_root=None)
             if load_context(pol)["mode"] != m:
                 fails.append(f"load_context：mode 取自政策（{m}），不讀 ROOT 的 vibesec.yaml（得到 {load_context(pol)['mode']}）")
+    fails += _envcheck_verdict_selftest()
+    return fails
+
+
+def _envcheck_verdict_selftest() -> list[str]:
+    """.env 檢查的阻擋判定只走 gate_verdict（#209；以前 workflow 的 bash 另做一份）：以 CI 同一條鏈
+    env_guard.py --json → sarif_gate.py → gate_verdict.py enforce（受信任樹副本，命令列執行）確認
+    政策把 env-not-ignored／env-committed 列為 blocking 時，enforce 下 exit 1；advisory 或 shadow 時 exit 0。"""
+    import os, subprocess
+    from vibesec_policy import trusted_tree
+    fails = []
+    git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+    for mode, tier, want_rc, want_blocking in [("enforce", "blocking", 1, 2), ("enforce", "advisory", 0, 0),
+                                                ("shadow", "blocking", 0, 2)]:
+        label = f"mode {mode}、env 規則 {tier}"
+        with trusted_tree(f"mode: {mode}") as tree, tempfile.TemporaryDirectory() as d:
+            D = pathlib.Path(d)
+            pf = tree / "config/policy/blocking-policy.yaml"
+            doc = yaml.safe_load(pf.read_text(encoding="utf-8"))
+            env_rules = ("vibesec.g2.env-not-ignored", "vibesec.g2.env-committed")
+            for k in ("blocking", "advisory"):
+                doc[k] = [r for r in doc.get(k) or [] if r["rule_id"] not in env_rules]
+            doc[tier] += [{"rule_id": r, "why": "selftest"} for r in env_rules]
+            pf.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+            repo = D / "repo"; repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True, env=git_env)
+            (repo / ".env").write_text("X=1\n", encoding="utf-8")   # .gitignore 缺席 + .env 已提交 → 兩條規則各一筆
+            subprocess.run(["git", "-C", str(repo), "add", "-f", ".env"], check=True, env=git_env)
+            envcheck, sarif_f, g2 = D / "g2-envcheck.json", D / "gitleaks.sarif", D / "g2-gate.json"
+            sarif_f.write_text(json.dumps({"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "gitleaks"}}, "results": []}]}),
+                               encoding="utf-8")
+            py = lambda *a, **kw: subprocess.run([sys.executable, "-I", *map(str, a)], capture_output=True, text=True,
+                                                 timeout=120, **kw)
+            envcheck.write_text(py(tree / "scripts/env_guard.py", "--target", repo, "--json").stdout, encoding="utf-8")
+            py(tree / "scripts/sarif_gate.py", "--gate", "G2", "--tool", f"gitleaks={sarif_f}", "--envcheck", envcheck, "--out", g2)
+            try:
+                g = json.loads(g2.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as e:
+                fails.append(f".env 檢查的阻擋判定（{label}）：sarif_gate 沒寫出 G2 gate JSON（{type(e).__name__}）"); continue
+            v = py(tree / "scripts/gate_verdict.py", "enforce", "--trusted-root", tree, "--gate", f"G2={g2}")
+            if g["findings_count"]["blocking"] != want_blocking or v.returncode != want_rc:
+                fails.append(f".env 檢查的阻擋判定（{label}）：G2 blocking 應為 {want_blocking}、gate_verdict 應 exit {want_rc}"
+                             f"（得到 {g['findings_count']}、exit {v.returncode}）")
     return fails
 
 
