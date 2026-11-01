@@ -10,5 +10,5 @@
 # 冷卻期對齊 vibesec.yaml cooldown_days（14）：pr-gates 的 G1 會對本鎖定檔做冷卻期檢查。--exclude-newer 請用帶 Z 的
 # UTC 時間（只寫日期時 uv 依本機時區解讀，可能多放進半天內發布的版本）。
 -r requirements-ci.in
-semgrep==1.179.0
-checkov==3.3.22
+semgrep==1.181.0
+checkov==3.3.29
