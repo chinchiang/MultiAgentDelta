@@ -16,8 +16,8 @@
 5. **validate**：`python3 -I scripts/ci_validate.py --trusted /tmp/wt-main` 必須退出碼 0，也就是 CI repo-validate 的三次 validate 都 0 個錯誤：PR 版、受信任樹版驗受驗樹（PR head；抓版本錯開，#207、#235）、mode 改成 enforce 的副本（#223）。副本只含 git 追蹤的檔案與尚未 git add 的新檔（加上 `.git`），和 CI checkout 出來的樹一致。validate 會自動執行所有 `scripts/*.py` 的 selftest，不必另外跑迴圈。退出碼 2 代表無法判定，不算通過（#238）。
 6. **code review**：`/mattpocock-skills:code-review`。Standards、Spec 兩個 sub-agent 平行執行，結果分兩軸彙整，每軸各寫一句最嚴重的問題。完成條件是兩軸的每項意見都已修正，或在 PR 寫明不改的理由。修正之後，重跑第 2、5 步。
 7. **本機 gitleaks**：`"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .`，必須沒有發現。`fetch_gitleaks.py` 照 nightly 釘選的版本與 SHA-256 取得並快取 gitleaks，退出碼 2 代表沒拿到經驗證的 binary，不能略過這一步（#241）。
-8. **開 PR、等 CI**：讀閘門表格，對照「判準」。
-9. **維護者說了才合併**：`gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`。
+8. **開 PR、等 CI**：CI 跑完後用 `compare_ci.py` 和最近一個合併的 PR 比對（見「判準」）。
+9. **維護者說了才合併**：`gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`。`<sha>` 要給完整 40 碼，短 SHA 會被 GitHub 拒絕（`Could not coerce value ... to GitObjectID`）。
 
 其他規則：
 - spec 沒涵蓋、而且會影響不變欄位（status、status_reason、findings_count、coverage、退出碼）的地方，先問維護者，附上推薦答案，並把決定寫回 issue 留言。
@@ -54,31 +54,23 @@ python3 scripts/compare_evals.py /tmp/ev-main.json /tmp/ev-branch.json   # 0 逐
 ### CI：和最近一個合併的 PR 相同
 
 ```bash
-read -r n br < <(gh pr list --state merged --limit 1 --json number,headRefName --jq '.[0] | "\(.number) \(.headRefName)"')
-gh pr checks "$n"                                                    # pass／skipping 的數量
-id=$(gh run list --workflow pr-gates.yml --branch "$br" --limit 1 --json databaseId --jq '.[0].databaseId')
-gh run view "$id" --log | grep '| G' | sed 's/.*Z //' | sort -u     # 閘門表格
+base=$(gh pr list --state merged --limit 1 --json number --jq '.[0].number')
+python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 只有預期內差異、1 有需要說明的差異、2 無法比對、4 用法錯誤
 ```
 
-- 本 PR 的 check 數量和閘門表格，要和最近一個合併的 PR 相同；有差異時，逐項說明是哪個改動造成的。
-- shadow 下 blocking 發現也是綠燈，所以一定要讀表格，不能只看 check 的顏色。
+- `compare_ci.py` 只讀 GitHub API，一次輸出 check（各狀態數量、差異、不是 workflow 產生的 check 及其來源）、閘門表格、G1（已知漏洞、KEV 命中、slopcheck 是否略過，以及當天 main 的 nightly）、repo-validate 三次 validate 的錯誤與警告，最後把差異分成「預期內」與「需要說明」（#240）。輸出可以直接貼到對話或 PR 留言。
+- 預期內只有三種：Dependabot 的 `.github/dependabot.yml` 設定驗證 check（PR 改到該檔時 GitHub 才建立）；G1 已知漏洞筆數和當天 nightly 相同；G1 的 allowlist 句只出現在 slopcheck 有掃描的那一邊。其餘差異都要在 PR 逐項說明是哪個改動造成的。
+- 退出碼 2 代表無法比對，不算通過：PR 的 check 或 workflow run 還沒結束（CI 未完成，腳本不比對、也不輪詢，用背景等待 CI 跑完再執行）、找不到 run 或 job、log 缺少需要的行、`gh` 失敗。
+- shadow 下 blocking 發現也是綠燈，所以一定要看表格的比對結果，不能只看 check 的顏色。
 
 參考值（2026-10-17）：15 pass／5 skipping。各列由誰決定：
 
 | 閘門 | 狀態 | blocking／advisory | 由誰決定 |
 | --- | --- | --- | --- |
-| G1 | `pass` | 0／當天 nightly 的筆數 | advisory 是 grype 的已知漏洞（非 KEV），其中包含 #128（遞移相依被上游卡住）；漏洞資料庫每天更新，筆數跟著變，所以以當天 main 的 nightly 為準（指令見表格下方），不和最近合併的 PR 比。PR 改到相依清單或規則檔（含 `*.md`）時，G1 才會掃描，這時會多出一句「忽略的 allowlist 條目：requests…已過期」，見 #210 |
+| G1 | `pass` | 0／當天 nightly 的筆數 | advisory 是 grype 的已知漏洞（非 KEV），其中包含 #128（遞移相依被上游卡住）；漏洞資料庫每天更新，筆數跟著變，所以以當天（UTC）main 的 nightly 為準（`compare_ci.py` 會一併取得），不和最近合併的 PR 比。PR 改到相依清單或規則檔（含 `*.md`）時，G1 的 slopcheck 才會掃描，這時會多出一句「忽略的 allowlist 條目：requests…已過期」，見 #210 |
 | G2 | `pass` | 0／0 | |
 | G3 | `pass` | 0／0 | |
 | G4 | `incomplete` | 0／0 | CI 不跑 LLM 審查；enforce 下也不擋，見 #215 |
-
-當天 nightly 的 G1 advisory 筆數：
-
-```bash
-nid=$(gh run list --workflow nightly-full.yml --branch main --limit 1 --json databaseId --jq '.[0].databaseId')
-jid=$(gh run view "$nid" --json jobs --jq '.jobs[] | select(.name | startswith("G1 全量供應鏈")) | .databaseId')
-gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$jid/logs" | grep '已知漏洞（非 KEV'
-```
 
 ## 容易踩的坑
 
@@ -115,8 +107,8 @@ Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`
 5. **validate**: `python3 -I scripts/ci_validate.py --trusted /tmp/wt-main` must exit 0, meaning all three validate runs of CI's repo-validate job report 0 errors: the PR version, the trusted-tree version checking the project tree (the PR head; catches version skew, #207, #235), and a copy with mode switched to enforce (#223). The copy holds only git-tracked files and new files not yet added (plus `.git`), matching the tree CI checks out. validate runs every `scripts/*.py` selftest automatically; no separate loop is needed. Exit code 2 means the result could not be determined and does not count as a pass (#238).
 6. **Code review**: `/mattpocock-skills:code-review`. Standards and Spec sub-agents run in parallel; report the two axes separately, with one line for the worst issue in each. The step is done when every finding on both axes is fixed or the PR states why it was left as is. After fixing, rerun steps 2 and 5.
 7. **Local gitleaks**: `"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .` must find nothing. `fetch_gitleaks.py` gets and caches gitleaks at the version and SHA-256 pinned in nightly; exit code 2 means no verified binary was obtained, and the step cannot be skipped (#241).
-8. **Open the PR and wait for CI**: read the gate table and check it against "Pass criteria".
-9. **Merge only when the maintainer says so**: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
+8. **Open the PR and wait for CI**: once CI finishes, compare it with the most recently merged PR using `compare_ci.py` (see "Pass criteria").
+9. **Merge only when the maintainer says so**: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`. `<sha>` must be the full 40-character SHA; GitHub rejects a short SHA (`Could not coerce value ... to GitObjectID`).
 
 Other rules:
 - Where the spec is silent and the change affects invariant fields (status, status_reason, findings_count, coverage, exit codes), ask the maintainer with a recommended answer, and record the decision as an issue comment.
@@ -153,31 +145,23 @@ When the numbers disagree, compare the tool sets before suspecting the code.
 ### CI: identical to the most recently merged PR
 
 ```bash
-read -r n br < <(gh pr list --state merged --limit 1 --json number,headRefName --jq '.[0] | "\(.number) \(.headRefName)"')
-gh pr checks "$n"                                                    # pass/skipping counts
-id=$(gh run list --workflow pr-gates.yml --branch "$br" --limit 1 --json databaseId --jq '.[0].databaseId')
-gh run view "$id" --log | grep '| G' | sed 's/.*Z //' | sort -u     # gate table
+base=$(gh pr list --state merged --limit 1 --json number --jq '.[0].number')
+python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 expected differences only, 1 differences to explain, 2 cannot compare, 4 usage error
 ```
 
-- This PR's check counts and gate table must match the most recently merged PR; explain every difference by the change that caused it.
-- In shadow mode a blocking finding still shows green, so always read the table rather than the check colours.
+- `compare_ci.py` only reads the GitHub API. In one run it prints the checks (counts per state, differences, and checks not produced by a workflow with their source), the gate table, G1 (known vulnerabilities, KEV hits, whether slopcheck was skipped, and that day's nightly on main), and the errors and warnings of the three validate runs in repo-validate, then sorts the differences into "expected" and "to explain" (#240). The output can be pasted straight into the conversation or a PR comment.
+- Only three kinds of difference are expected: Dependabot's `.github/dependabot.yml` configuration check (GitHub creates it only when the PR touches that file); a G1 known-vulnerability count equal to that day's nightly; and the G1 allowlist line appearing only on the side where slopcheck scanned. Every other difference must be explained in the PR by the change that caused it.
+- Exit code 2 means the comparison could not be made and does not count as a pass: the PR's checks or workflow runs have not finished (CI incomplete; the script does not compare and does not poll, so wait for CI in the background and run it afterwards), a run or job is missing, a log lacks a required line, or `gh` failed.
+- In shadow mode a blocking finding still shows green, so always read the gate-table comparison rather than the check colours.
 
 Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 
 | Gate | Status | blocking/advisory | Decided by |
 | --- | --- | --- | --- |
-| G1 | `pass` | 0/the count in that day's nightly | The advisory findings are grype known vulnerabilities (not in KEV), including #128 (a transitive dependency blocked upstream). The vulnerability database updates daily and the count moves with it, so compare against that day's nightly on main (command below the table), not against the last merged PR. G1 scans only when the PR touches dependency manifests or rule files (including `*.md`), and then adds the line "忽略的 allowlist 條目：requests…已過期"; see #210 |
+| G1 | `pass` | 0/the count in that day's nightly | The advisory findings are grype known vulnerabilities (not in KEV), including #128 (a transitive dependency blocked upstream). The vulnerability database updates daily and the count moves with it, so compare against that day's (UTC) nightly on main (`compare_ci.py` fetches it), not against the last merged PR. G1's slopcheck scans only when the PR touches dependency manifests or rule files (including `*.md`), and then adds the line "忽略的 allowlist 條目：requests…已過期"; see #210 |
 | G2 | `pass` | 0/0 | |
 | G3 | `pass` | 0/0 | |
 | G4 | `incomplete` | 0/0 | CI does not run the LLM review; it does not block in enforce either, see #215 |
-
-G1 advisory count in that day's nightly:
-
-```bash
-nid=$(gh run list --workflow nightly-full.yml --branch main --limit 1 --json databaseId --jq '.[0].databaseId')
-jid=$(gh run view "$nid" --json jobs --jq '.jobs[] | select(.name | startswith("G1 全量供應鏈")) | .databaseId')
-gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$jid/logs" | grep '已知漏洞（非 KEV'
-```
 
 ## Gotchas
 
