@@ -293,8 +293,7 @@ def selftest() -> list[str]:
             fails.append(f"KEV：政策讀不到 → 經過檢查執行（退出碼 2、KEV 的 tool 列 error）並附上來源紀錄（得到 {rc}、{sm}、{g['tools']}）")
     # 退出碼、訊息與併入的 tool 列依政策 tier（#244）。政策變更（AGENTS.md 規則 1）以 tier_overrides 模擬：kev-hit 降級後
     # 命中是 advisory → 退出碼 0、只警告；已知漏洞升級後是 blocking → 退出碼 1 並有 ::error::（Policy.tier 不套用路徑型的政策例外）
-    from vibesec_policy import temp_policy_root, write_policy_key
-    import yaml
+    from vibesec_policy import override_tier, temp_policy_root
     no_hit = {"matches": [m for m in grype["matches"] if m["artifact"]["name"] == "safe"]}
     for label, demote, data, want_rc, want_level in [
         ("現行政策（kev-hit blocking）有命中", False, grype, 1, "error"),
@@ -304,11 +303,8 @@ def selftest() -> list[str]:
     ]:
         out = io.StringIO()
         with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(out):
-            if demote:   # 每個風險層級都改：不依賴 repo 目前的 risk_tier
-                key, rid = ("promote_to_blocking", VULN_RULE) if demote == "promote" else ("demote_to_advisory", RULE)
-                pol = yaml.safe_load((pr / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
-                write_policy_key(pr, "tier_overrides", {t: {**ov, key: [*(ov.get(key) or []), rid]}
-                                                        for t, ov in (pol.get("tier_overrides") or {}).items()})
+            if demote:   # 模擬政策變更：每個風險層級都改，不依賴 repo 目前的 risk_tier
+                override_tier(pr, *(("promote_to_blocking", VULN_RULE) if demote == "promote" else ("demote_to_advisory", RULE)))
             g, k, js, sf, gp = (pathlib.Path(d, n) for n in ("g.json", "k.json", "out.json", "out.sarif", "G1.json"))
             g.write_text(json.dumps(data)); k.write_text(json.dumps(kev_feed))
             gp.write_text(json.dumps({**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}), encoding="utf-8")
@@ -327,12 +323,7 @@ def selftest() -> list[str]:
     return fails
 
 
-def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
-    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
-    if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
-        fails = selftest()
-        print("\n".join(f"FAIL {x}" for x in fails) or "g1_kev selftest ok")
-        return 1 if fails else 0
+def parse_args(argv) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--grype", required=True)
     ap.add_argument("--kev-feed", required=True)
@@ -340,8 +331,11 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     ap.add_argument("--json", required=True)
     ap.add_argument("--merge-gate", help="併入既有的 G1 gate-result（就地更新）；檔案不存在則略過")
     ap.add_argument("--kev-source", help="scripts/fetch_kev.py 的來源紀錄（--meta）；附進摘要，看得出用了官網、鏡像或舊快取")
-    a = ap.parse_args(argv)
+    return ap.parse_args(argv)
 
+
+def check_run(a: argparse.Namespace) -> gate_result.CheckRun:
+    """KEV 的檢查執行（#245）；輸入都是檔案，沒有要注入的外部依賴（#246：四個 producer 同一個接縫）。"""
     def with_source(summary):   # 附上 fetch_kev.py 的來源紀錄（政策讀不到時也附，看得出用了哪份 feed）
         if a.kev_source:
             try:
@@ -358,7 +352,18 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
         to_sarif=lambda summary, found, policy: to_sarif(summary.get("hits") or [], summary.get("vulnerable") or [], policy),
         unreadable=lambda problem: with_source({"rule_id": RULE, "status": "incomplete", "status_reason": problem}),
         report=report, notes=notes,
-    ).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json, merge_gate=a.merge_gate)
+    )
+
+
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
+    if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
+        fails = selftest()
+        print("\n".join(f"FAIL {x}" for x in fails) or "g1_kev selftest ok")
+        return 1 if fails else 0
+    a = parse_args(argv)
+    return check_run(a).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json, merge_gate=a.merge_gate)
+
 
 if __name__ == "__main__":
     sys.exit(main())
