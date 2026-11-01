@@ -150,7 +150,8 @@ flowchart LR
 
 ```text
 MultiAgentDelta/
-├── CLAUDE.md                      # AI 協作者規範（不可違反的規則、命名慣例）
+├── AGENTS.md                      # AI 協作者規範（不可違反的規則、命名慣例；唯一來源）
+├── CLAUDE.md                      # 只有 @AGENTS.md 一行，讓 Claude Code 載入 AGENTS.md
 ├── README.md
 ├── vibesec.yaml                   # 主設定：mode、risk_tier、G0–G6 參數、審查與評分規則
 ├── .pre-commit-config.yaml        # 本機：gitleaks / semgrep / g1_slopcheck / env_guard
@@ -178,7 +179,7 @@ MultiAgentDelta/
 │   ├── catalogs/                  # ID 唯一來源：ASVS 5.0、CWE 對應、LLM Top 10 2025、MAESTRO、CVE 參考（cve-references.yaml）
 │   ├── policy/blocking-policy.yaml# blocking 清單、tier_overrides、exceptions（人類獨立 PR 才能改）
 │   ├── providers.yaml             # 模型 provider：family、allowed_data_classes、金鑰環境變數
-│   ├── targets.yaml               # G5/G6 授權目標允許清單（預設只允許本機靶場；CLAUDE.md 規則 8）
+│   ├── targets.yaml               # G5/G6 授權目標允許清單（預設只允許本機靶場；AGENTS.md 規則 8）
 │   ├── harness/                   # harness 系統提示與 4 個角色 prompt（sub-agent 與外部 provider 共用）
 │   ├── slopsquat/                 # G1：allowlist、blacklist、冷卻期、popular npm/PyPI 清單
 │   ├── gitleaks.toml              # G2

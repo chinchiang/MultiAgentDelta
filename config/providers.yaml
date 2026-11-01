@@ -3,7 +3,7 @@
 #   complete(messages, json_schema, temperature) 呼叫；harness 不直接依賴任一家 SDK。
 # 規則：
 #   - 金鑰只從環境變數讀（api_key_env），本檔不得出現明文金鑰。
-#   - allowed_data_classes 決定哪些內容可以送給該 provider（CLAUDE.md 第 7 條「不得外傳」）。
+#   - allowed_data_classes 決定哪些內容可以送給該 provider（AGENTS.md 第 7 條「不得外傳」）。
 #   - family 相同的 provider 只算「一個模型家族」；高風險控制需 ≥ 2 個不同 family。
 #   - 模型名稱為啟動前需盤點的佔位值；標 "確認可用版本" 者請以供應商當日文件為準。
 
@@ -33,7 +33,7 @@ providers:
     enabled: true
 
   # AWS Bedrock 上的 Anthropic 模型（同 family：anthropic）。呼叫用明確的 IAM 憑證，不使用隱含帳號。
-  # 人工決定（2026-10-10，repo 擁有者）：啟用，允許 public／internal 送到 AWS（CLAUDE.md 規則 7）；confidential／pii 仍只走地端。
+  # 人工決定（2026-10-10，repo 擁有者）：啟用，允許 public／internal 送到 AWS（AGENTS.md 規則 7）；confidential／pii 仍只走地端。
   # 需要 boto3。憑證二擇一：AWS_ACCESS_KEY_ID＋AWS_SECRET_ACCESS_KEY（必要時 AWS_SESSION_TOKEN），
   # 或 AWS_PROFILE 指名的 profile（AWS SSO：先 `aws sso login --profile <名稱>`；token 過期 → state: error）。
   anthropic-bedrock:
@@ -76,7 +76,7 @@ providers:
     temperature: 0
     json_mode: true
     # 人工決定（2026-10-07 @chinchiang）：作為 G4 高風險審查的第二個 family，允許接收 internal（例如受測專案的原始碼）。
-    # confidential／pii 仍只走 sensitive_data_providers（onprem_vllm）。祕密在送出前仍須遮罩（CLAUDE.md 規則 7）。
+    # confidential／pii 仍只走 sensitive_data_providers（onprem_vllm）。祕密在送出前仍須遮罩（AGENTS.md 規則 7）。
     allowed_data_classes: [public, internal]
     enabled: true
 
@@ -126,7 +126,7 @@ providers:
     enabled: false                    # 有地端環境時改 true
 
   # ------------------------------------------------- 公司內網 LLM（llm.iec.inventec）
-  # 人工決定（2026-10-10，repo 擁有者）：視同地端，允許四種分級（CLAUDE.md 規則 7）。
+  # 人工決定（2026-10-10，repo 擁有者）：視同地端，允許四種分級（AGENTS.md 規則 7）。
   # 只在公司內網／VPN 解析得到；連不到 → state: error，審查記 incomplete，不改送雲端。
   # GLM 與 DeepSeek 是兩個不同 family：兩者都可用時，高風險審查的 2 family 可完全在內網達成。
   iec-glm:

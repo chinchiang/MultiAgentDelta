@@ -7,7 +7,7 @@
 | 設定 | `vibesec.yaml` → `gates.g5_dast_api`（`stage: staging`、`target_url_env: VIBESEC_TARGET_URL`、`tools: [zap-baseline, zap-api-scan, api-probes]`、`two_account_test: required`、`account_a_token_env: VIBESEC_TOKEN_A`、`account_b_token_env: VIBESEC_TOKEN_B`、`checks: [bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata, swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check, cors_reflect_origin]`（另有 `protected_paths`）、`timeout_seconds: 1800`） |
 | 設定檔 | `config/zap/api-scan.conf`、`config/zap/two-account-context.yaml` |
 | 負責 | Red Team |
-| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（CLAUDE.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流不接受手動輸入的目標；目標主機還必須在 `config/targets.yaml` 的允許清單（`scripts/target_guard.py`，預設只允許本機靶場），否則不送任何探針、G5／G6 `incomplete` |
+| 硬規則 | 探針只能對 `VIBESEC_TARGET_URL` 指向的、已授權的測試環境執行（AGENTS.md 規則 8）。CI 中由 repo 管理者設定的 Actions 變數 `vars.VIBESEC_TARGET_URL` 提供，工作流不接受手動輸入的目標；目標主機還必須在 `config/targets.yaml` 的允許清單（`scripts/target_guard.py`，預設只允許本機靶場），否則不送任何探針、G5／G6 `incomplete` |
 
 ## 對抗成因
 
@@ -19,7 +19,7 @@
 ## 觸發時機與性質
 
 - 部署到 staging 後、上線前；定期複測。
-- 需要 `VIBESEC_TARGET_URL`、`VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B`。**缺任一 → G5 `incomplete`**（`two_account_test: required`），不得記 pass（CLAUDE.md 規則 2）；但已實測到 blocking 發現時記 `fail`（blocking 優先，比照 G6），未完成項目寫進 `status_reason`，避免缺一個帳號就讓 blocking 發現在 enforce 下放行。
+- 需要 `VIBESEC_TARGET_URL`、`VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B`。**缺任一 → G5 `incomplete`**（`two_account_test: required`），不得記 pass（AGENTS.md 規則 2）；但已實測到 blocking 發現時記 `fail`（blocking 優先，比照 G6），未完成項目寫進 `status_reason`，避免缺一個帳號就讓 blocking 發現在 enforce 下放行。
 - 性質：實證型發現（雙帳號 BOLA 成功、`alg:none` 被接受、SSRF 讀到中繼資料）為 blocking 且 `evidence_grade: E3`；資訊外溢多為 advisory。
 
 ## 核心任務
@@ -166,7 +166,7 @@ docker run --rm -v "$PWD:/zap/wrk:rw" -t ghcr.io/zaproxy/zaproxy:stable \
 
 ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`、`zap_baseline`）與 SARIF 結果，再併入 `reports/g5-gate.json`：
 - conf 為 IGNORE／OUTOFSCOPE 的警示略過；conf 沒列且 riskcode 0（Informational）略過。
-- rule_id 以 `config/catalogs/cwe-map.yaml` 的 `implemented_by` 反查（`zap:10038` → `vibesec.g3.missing-csp`、`zap:40040` → `vibesec.g5.cors-reflect-origin`），查不到記 `zap:<pluginid>`（CLAUDE.md 規則 3）；tier 一律查 `blocking-policy`，外部規則預設 advisory。其他 ZAP 規則要不要對到 vibesec 規則屬政策決定，由人類在獨立 PR 決定。
+- rule_id 以 `config/catalogs/cwe-map.yaml` 的 `implemented_by` 反查（`zap:10038` → `vibesec.g3.missing-csp`、`zap:40040` → `vibesec.g5.cors-reflect-origin`），查不到記 `zap:<pluginid>`（AGENTS.md 規則 3）；tier 一律查 `blocking-policy`，外部規則預設 advisory。其他 ZAP 規則要不要對到 vibesec 規則屬政策決定，由人類在獨立 PR 決定。
 - 報告缺席或無法解析 → 該掃描 `untested` → G5 `incomplete`（incomplete ≠ pass）。
 - 報告沒有任何 site（`site: []` 或缺 `site`：spider 沒掃到目標、目標不可達或 API 定義匯入失敗）→ 該掃描 `untested`；有 site 但零警示 → `pass`。
 - 只採計 origin 與授權目標（`--target`，即已通過 `target_guard` 的 `VIBESEC_TARGET_URL`）相同的 site：scheme、host 不分大小寫，port 依 scheme 補預設值（`https://x` 與 `https://x:443` 相同）。報告只有別的 origin（重新導向、舊報告、設定錯誤）→ 該掃描 `untested`，理由列出實際的 site；別的 origin 上的警示不列為發現。沒給 `--target` → 兩個掃描都 `untested`。
@@ -232,7 +232,7 @@ ZAP 的 JSON 報告由 `scripts/g5_zap.py` 轉成 G5 的覆蓋（`zap_api_scan`�
 1. **缺 Token 行為**：移除 `VIBESEC_TOKEN_B` → 沒有 blocking 發現時 G5 `incomplete`（`status_reason` 說明 `has_b=False`），絕不 pass；已有 blocking 發現時 G5 `fail`，`status_reason` 以「另有未完成項目」列出缺 token（`scripts/g5_api_probes.py selftest` 驗證）。
 2. **靶場正例**（`examples/vulnapp`）：bob 的 token 讀 alice 的 `/users/1/notes` 回 200 → `bola-cross-account`（修補版回 403）；`alg:none` 被接受；`/fetch?url=` 抓到 loopback canary → `ssrf-internal-fetch`（本機沒有雲端 metadata，`ssrf-metadata` 只在雲端環境可能命中；修補版在應用層回 400）；`/docs` 回 200。
 3. **反例**：修復後 B 讀 A 回 404、`alg:none` 回 401、SSRF 被 egress allowlist 擋 → 對應 finding `retest_result: fixed`、`validation_status: confirmed`。
-4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（CLAUDE.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 探針（`scripts/g5_api_probes.py`）與 `scripts/g6_cost_probe.py` 都不送任何請求。
+4. **只打授權目標**：`scripts/target_guard.py` 拒絕不在 `config/targets.yaml` 允許清單的主機、帶帳密的 URL、非 http/https 與雲端 metadata 位址，deny 清單優先（AGENTS.md 規則 8）；`python3 scripts/target_guard.py selftest`（由 `scripts/validate.py` 執行）覆蓋這些拒絕，並確認 repo 的清單允許本機靶場、不允許 example.com。被拒時 G5 探針（`scripts/g5_api_probes.py`）與 `scripts/g6_cost_probe.py` 都不送任何請求。
 4a. **ZAP 接線**：`python3 scripts/g5_zap.py selftest` 以合成報告驗證規則對應、IGNORE 過濾、來源合併與「報告缺席 → untested」。
 5. **證據留存**：每個 blocking 發現有 `evidence_grade: E3`；原始 HTTP 交換存證（`reports/g5/*.http`）尚未實作，目前證據在 SARIF 與 gate JSON。
 6. **回填白箱**：Stack Trace 洩漏的路徑在 SARIF 有對應位置；BOLA 端點能對回 G4 的 `missing-owner-filter` finding。

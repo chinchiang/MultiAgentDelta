@@ -1,7 +1,7 @@
 # VibeSec CWE 對照表
 # rule_id → { cwe, title, control_ids, gate, policy_tier }
 # 規則：finding.cwe 與 finding.control_id 只能從本檔與 asvs-5.0-controls.yaml / llm-top10-2025.yaml /
-#       maestro-layers.yaml 查表；查不到就填 null 並在 notes 說明（CLAUDE.md 規則 3）。
+#       maestro-layers.yaml 查表；查不到就填 null 並在 notes 說明（AGENTS.md 規則 3）。
 # 外部工具規則（gitleaks:、semgrep:、checkov:、zap: …）若未列於此，harness 以工具自帶的 CWE 標籤為準，
 # 並在 notes 標記「cwe_source: tool」。
 # policy_tier 僅為預設建議；正式阻擋與否以 config/policy/blocking-policy.yaml 為準（scripts/vibesec_policy.py 是唯一查詢入口，
@@ -102,21 +102,21 @@ rules:
   # 政策檔未列 → vibesec_policy 的 vibesec.* 預設 advisory，與 docs/01 阻擋政策表一致。
   vibesec.g0.threat-gate-disabled:
     cwe: null
-    notes: "威脅模型的覆蓋缺口（威脅指定的驗證閘門未啟用），不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（CLAUDE.md 規則 3）"
+    notes: "威脅模型的覆蓋缺口（威脅指定的驗證閘門未啟用），不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（AGENTS.md 規則 3）"
     title: "threats[].gate 指向的閘門在 vibesec.yaml 不是 enabled: true（該威脅實際沒有閘門把關）"
     control_ids: [ASVS5-V15.1]
     gate: G0
     policy_tier: advisory
   vibesec.g0.maestro-missing:
     cwe: null
-    notes: "威脅建模方法論缺口，不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（CLAUDE.md 規則 3）"
+    notes: "威脅建模方法論缺口，不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（AGENTS.md 規則 3）"
     title: "project.contains_llm 為 true，但威脅模型（或 vibesec.yaml gates.g0_threat_model）的 methodologies 沒有 MAESTRO"
     control_ids: [ASVS5-V15.1, MAESTRO-L7]
     gate: G0
     policy_tier: advisory
   vibesec.g0.threats-empty-public:
     cwe: null
-    notes: "威脅模型內容缺口，不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（CLAUDE.md 規則 3）"
+    notes: "威脅模型內容缺口，不是程式弱點，MITRE CWE 無對應類別，不指派 CWE（AGENTS.md 規則 3）"
     title: "system.exposure 為 public，但 threats[] 為空（應至少列 STRIDE 六類各一）"
     control_ids: [ASVS5-V15.1]
     gate: G0
@@ -154,7 +154,7 @@ rules:
     policy_tier: advisory
   # 以前與 env-not-ignored 是同一條：已提交的 .env 只記成 advisory 的「.gitignore 少一條規則」（位置 .gitignore），
   # 但 blocking-policy 對 env-not-ignored 的理由是「尚未實際提交祕密」。拆開後 tier 由 blocking-policy 決定
-  # （目前未列入 → default_tier advisory；要升 blocking 須由人類在獨立 PR 修改政策，CLAUDE.md 規則 1）
+  # （目前未列入 → default_tier advisory；要升 blocking 須由人類在獨立 PR 修改政策，AGENTS.md 規則 1）
   vibesec.g2.env-committed:
     cwe: CWE-538
     title: ".env／.env.* 機密檔已被 git 追蹤（.env.example 等範本除外）"
@@ -405,7 +405,7 @@ rules:
     policy_tier: advisory
   vibesec.g1.sbom-incomplete:
     cwe: null
-    notes: "MITRE CWE 沒有對應「SBOM 漏列元件」的弱點類別；這是證據完整性缺口，不是程式弱點，所以不指派 CWE（CLAUDE.md 規則 3）"
+    notes: "MITRE CWE 沒有對應「SBOM 漏列元件」的弱點類別；這是證據完整性缺口，不是程式弱點，所以不指派 CWE（AGENTS.md 規則 3）"
     title: "鎖定檔釘選的套件不在 CycloneDX SBOM（漏列的套件不會被 grype／KEV 比對）"
     control_ids: [VS-G1-SBOM]
     gate: G1

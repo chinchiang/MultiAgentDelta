@@ -13,7 +13,7 @@ Claude Code 的 reviewer sub-agent 能自己讀 repo，scripts/review_provider.p
   - 給 --diff-base（diff）：威脅模型全文，加上 diff_base..commit 每個變更 hunk 前後 40 行。
 內容一律取自 commit（git show），不讀工作目錄。
 
-不可違反（CLAUDE.md 規則 7）：
+不可違反（AGENTS.md 規則 7）：
   - 送出前以 gitleaks（本 repo 的 config/gitleaks-packet.toml：與 config/gitleaks.toml 同一套規則，但沒有任何 allowlist）
     掃描要附上的內容，命中的字串一律換成遮罩加 sha256 指紋
     （至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）。被測程式碼的 `gitleaks:allow` 註解不採信

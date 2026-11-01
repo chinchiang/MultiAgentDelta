@@ -1,5 +1,5 @@
 # VibeSec gitleaks 設定（審查包遮罩專用；scripts/review_packet.py）
-# 送給外部模型前，以本檔掃描要附上的內容，命中的字串換成遮罩加 sha256 指紋（CLAUDE.md 規則 7）。
+# 送給外部模型前，以本檔掃描要附上的內容，命中的字串換成遮罩加 sha256 指紋（AGENTS.md 規則 7）。
 #
 # 與 config/gitleaks.toml 的差異：只有偵測規則，沒有任何 allowlist（全域 [allowlist]／[[allowlists]] 與規則層
 # [rules.allowlist] 都沒有）。那些 allowlist 是給 G2 掃本 repo 用的（靶場、fixtures、lock 檔、stopwords、

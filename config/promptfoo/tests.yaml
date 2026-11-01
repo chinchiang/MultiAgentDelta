@@ -1,6 +1,6 @@
 # VibeSec G6 — promptfoo 決定性測試（不需要任何模型金鑰）
 # 斷言全為字串／JavaScript／延遲檢查，直接打靶場 /chat；不呼叫評分模型。
-# 用法（只能對已授權的 VIBESEC_TARGET_URL 執行；CLAUDE.md 規則 8）：
+# 用法（只能對已授權的 VIBESEC_TARGET_URL 執行；AGENTS.md 規則 8）：
 #   export VIBESEC_TARGET_URL=http://localhost:8000
 #   promptfoo eval -c config/promptfoo/tests.yaml --output reports/g6-promptfoo.json
 #   python3 scripts/g6_cost_probe.py --target "$VIBESEC_TARGET_URL" --out reports/g6-cost.json

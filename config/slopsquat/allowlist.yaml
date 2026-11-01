@@ -7,7 +7,7 @@
 #   1. 每筆必須有 approved_by（人）與 expires（日期）；逾期自動失效，G1 重新阻擋。
 #   2. version 可為精確版本或範圍；省略代表所有版本（不建議）。
 #   3. 只放行 G1 的 slopsquat / cooldown / low-download 判定；不放行已知 CVE（那由 blocking-policy 處理）。
-#   4. 修改本檔須走獨立 PR，由 AppSec 審核（CLAUDE.md 規則 1）。
+#   4. 修改本檔須走獨立 PR，由 AppSec 審核（AGENTS.md 規則 1）。
 
 version: 1
 

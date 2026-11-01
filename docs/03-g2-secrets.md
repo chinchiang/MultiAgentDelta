@@ -37,7 +37,7 @@
    - `git ls-files | grep -E '^\.env($|\.)'` 有結果（`.env` 已被追蹤）→ `vibesec.g2.env-committed`（CWE-538，每個檔一筆，位置是該檔）+ 事故 SOP。以前與上一條共用 `env-not-ignored`，已提交的 `.env` 只記成「`.gitignore` 少一條規則」；目前未列入 blocking-policy（default_tier advisory），要升 blocking 由人類在獨立 PR 修改政策。
    - `git ls-files` 失敗（無法確認有沒有追蹤 `.env`）→ `.env` 檢查記 error，G2 `incomplete`（不是 pass）。
 5. **LLM 供應商金鑰專用規則**（gitleaks 預設沒有或較舊）：見下表。
-6. **報告只保留遮罩與指紋**（CLAUDE.md 規則 7）：`--redact`；finding 不記原值；`sha256(secret)[:12]` 指紋目前只用在審查包遮罩（`review_packet.py`，用沒有 allowlist 的 `config/gitleaks-packet.toml`，見 docs/09 §6），G2 finding 的指紋欄位尚未實作。
+6. **報告只保留遮罩與指紋**（AGENTS.md 規則 7）：`--redact`；finding 不記原值；`sha256(secret)[:12]` 指紋目前只用在審查包遮罩（`review_packet.py`，用沒有 allowlist 的 `config/gitleaks-packet.toml`，見 docs/09 §6），G2 finding 的指紋欄位尚未實作。
 
 ### 金鑰樣式（`config/gitleaks.toml`）
 

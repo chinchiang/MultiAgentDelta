@@ -5,7 +5,7 @@
 #   blocking  = 高確定性、可機器判定、修法明確的發現；enforce 模式下擋 PR / 部署。
 #   advisory  = 需人工判斷的架構建議、縱深防禦缺口、尚待驗證的線索；只報告。
 #
-# 不可違反（CLAUDE.md 第 1 條）：harness agent 與任何 AI 協作者不得修改本檔把 blocking 降為 advisory
+# 不可違反（AGENTS.md 第 1 條）：harness agent 與任何 AI 協作者不得修改本檔把 blocking 降為 advisory
 # 以讓檢查通過。政策變更必須由人類在獨立 PR 中決定。
 #
 # 查表順序：exceptions → tier_overrides.<risk_tier> → blocking → advisory → default_tier

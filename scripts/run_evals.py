@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """VibeSec 評測執行器：把 evals/cases 實際送進本機可執行的工具，計算各閘門的召回率與精確率。
 
-原則（CLAUDE.md #2：incomplete ≠ pass）：
+原則（AGENTS.md #2：incomplete ≠ pass）：
   - 只有「預期規則確實由本機某個執行器實作」的案例才會執行並計分。
   - 其餘案例（需要 fixture、需要靶場／模型、工具缺席）記為 untested，附原因，不計入召回率／精確率，也不算通過。
   - 執行器失敗（網路、registry 逾時、工具錯誤）→ 該案例 incomplete，同樣不計分。
@@ -17,7 +17,7 @@
   vulnapp   — 標記 input.target_app: vulnapp 的 G5 / G6 案例（靶場確實可重現該行為者才標記）：
               G5 執行 staging workflow 中同一份 api-probes 程式碼（取自 .github/workflows/staging-blackbox.yml）；
               G6 把 prompt 送到靶場 /chat，以與 config/promptfoo/tests.yaml 相同的決定性斷言判定。
-              靶場只在本機啟動（127.0.0.1），符合 CLAUDE.md #8。
+              靶場只在本機啟動（127.0.0.1），符合 AGENTS.md #8。
   zap       — 回應標頭案例（input.headers）且預期規則由 ZAP 實作：本機 stub ＋ docker 跑 ZAP baseline（與 staging 同映像、同 conf），
               再以 scripts/g5_zap.py 對回 vibesec 規則；本機沒有 docker → untested
   integration — expected.gate_status 案例（工具／環境失敗情境）：依 input.integration 以受控情境跑 CI 同一支判定程式
@@ -408,7 +408,7 @@ class KevRunner(Runner):
 
 
 class Vulnapp:
-    """在 127.0.0.1 隨機埠啟動 examples/vulnapp（只對本機靶場；CLAUDE.md #8）。整個評測共用一個實例。"""
+    """在 127.0.0.1 隨機埠啟動 examples/vulnapp（只對本機靶場；AGENTS.md #8）。整個評測共用一個實例。"""
 
     HOST = "127.0.0.1"   # 固定本機；不接受外部輸入的 URL，也不經 urllib（避免 file:// 等 scheme）
 
@@ -838,7 +838,7 @@ class ZapRunner(Runner):
     """回應標頭案例（input.kind: config + input.headers）且預期規則由 ZAP 實作（cwe-map implemented_by: zap:<id>）：
     在 127.0.0.1 起一個回傳案例標頭的 HTML stub，以 docker 跑 ZAP baseline（映像與 staging 的 zaproxy/action-baseline
     預設相同；設定檔同為 config/zap/api-scan.conf），再以 scripts/g5_zap.py（staging 同一支）把警示對回 vibesec 規則。
-    只掃本機 stub（CLAUDE.md #8）。本機沒有 docker 或 daemon 無法連線 → untested。"""
+    只掃本機 stub（AGENTS.md #8）。本機沒有 docker 或 daemon 無法連線 → untested。"""
     name = "zap"
     IMAGE = os.environ.get("VIBESEC_ZAP_IMAGE", "ghcr.io/zaproxy/zaproxy:stable")   # = action-baseline 的 docker_name 預設值
 
@@ -1317,7 +1317,7 @@ def main(argv=None) -> int:
         ids = sorted(r["id"] for r in rows if r["outcome"] in ("TP", "TN", "STATUS_OK"))
         pathlib.Path(a.write_baseline).write_text(
             "# run_evals.py --baseline 的基準：這些案例在 nightly 必須實測且判定正確（TP／TN／閘門狀態正確）。\n"
-            "# 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。\n"
+            "# 由 --write-baseline 產生；縮減清單等同放寬檢查，須由人類在獨立 PR 中決定（AGENTS.md 規則 1）。\n"
             + "executed:\n" + "".join(f"  - {i}\n" for i in ids), encoding="utf-8")
     print(md)
     if regressions:

@@ -1,4 +1,4 @@
-# 外部專案的 G4 審查紀錄（reviews/g4/external/*.yaml）不能自證（CLAUDE.md 規則 6：職責分離）。
+# 外部專案的 G4 審查紀錄（reviews/g4/external/*.yaml）不能自證（AGENTS.md 規則 6：職責分離）。
 # 本 PR 新增或修改的外部紀錄，recorded_by 必須是「在目前 head SHA 上 approve、且不是 PR 作者、有 repo 寫入關係」的人。
 # 本 repo 自己的紀錄（reviews/g4/<commit>.yaml）由 pr-gates.yml 的 G4 job 檢查；外部紀錄不進 G4 job 的閘門推導，
 # 所以在這裡單獨檢查。判定程式取自 default branch（_trusted/），PR head 只當資料讀取。

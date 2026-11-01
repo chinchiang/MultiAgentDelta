@@ -20,7 +20,7 @@ VS-G4-LLM-REVIEW（LLM 審查紀錄）：
     · 紀錄通過 g4_review 的規則檢查。
   紀錄尚未提交到本 repo（未經 PR 與 CODEOWNERS）或 recorded_by.handle 空白 → 最高 pending。
   沒有可用紀錄 → VS-G4-LLM-REVIEW 維持 pending，G4 最多 incomplete（有靜態 blocking 則 fail）。
-原則（CLAUDE.md #2）：靜態檢查腳本找不到或執行失敗、目標不是 git repo 根目錄 → incomplete，絕不視為通過。
+原則（AGENTS.md #2）：靜態檢查腳本找不到或執行失敗、目標不是 git repo 根目錄 → incomplete，絕不視為通過。
 
 用法：python3 scripts/g4_access.py [--target <dir>] [--out-dir reports/raw/G4] [--gate reports/gates/G4.json]
       python3 scripts/g4_access.py selftest

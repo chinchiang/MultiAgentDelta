@@ -54,7 +54,7 @@ advisory 原文以 `gh api /advisories/<GHSA>` 取得。
 
 ### 1. advisory 原文的觸發條件
 
-對應的 CVE 與 CWE 編號見 advisory 原文；本 repo 的 `config/catalogs/` 沒有收錄，依 CLAUDE.md 規則 3 這裡只以 GHSA ID 引用。
+對應的 CVE 與 CWE 編號見 advisory 原文；本 repo 的 `config/catalogs/` 沒有收錄，依 AGENTS.md 規則 3 這裡只以 GHSA ID 引用。
 
 - **GHSA-379c-qx7v-6h59**：`vulnerable_version_range: < 5.0.1`、`first_patched_version: 5.0.1`、`vulnerable_functions: []`。描述：folder-based builder 未驗證 metadata 的 `file_name` 欄位就與資料集目錄相接；攻擊者提供含 `../` 的 `file_name` 可讀任意本機檔案，**在呼叫 `save_to_disk` 或 `push_to_hub` 時**被嵌入輸出。也就是需要：(a) 載入的資料集由 folder-based builder（`imagefolder`／`audiofolder`／`videofolder`／`pdffolder`）處理，(b) 攻擊者控制該資料集的 metadata 檔。
 - **GHSA-27vj-qcqg-25rc**：`vulnerable_version_range: >= 0.9.0, < 2026.6.0`、`first_patched_version: 2026.6.0`、`vulnerable_functions: []`。描述：`fsspec.implementations.reference.ReferenceFileSystem` 以未沙箱化的 `jinja2.Template(...).render(...)` 渲染 references JSON（Kerchunk 格式）的欄位；觸發方式是受害者以 `fsspec.filesystem("reference", fo=URL)` 或 `reference://` 開啟攻擊者控制的 references JSON。
@@ -161,7 +161,7 @@ Advisory text was fetched with `gh api /advisories/<GHSA>`.
 
 ### 1. Trigger conditions in the advisory text
 
-The corresponding CVE and CWE IDs are in the advisory text. They are not in this repo's `config/catalogs/`, so per CLAUDE.md rule 3 this note cites only the GHSA IDs.
+The corresponding CVE and CWE IDs are in the advisory text. They are not in this repo's `config/catalogs/`, so per AGENTS.md rule 3 this note cites only the GHSA IDs.
 
 - **GHSA-379c-qx7v-6h59**: `vulnerable_version_range: < 5.0.1`, `first_patched_version: 5.0.1`, `vulnerable_functions: []`. Description: the folder-based builders join the metadata `file_name` field to the dataset directory without validating it. An attacker who supplies a `file_name` containing `../` can read arbitrary local files, which are embedded into the output **when `save_to_disk` or `push_to_hub` is called**. Two conditions are needed: (a) the dataset is processed by a folder-based builder (`imagefolder`/`audiofolder`/`videofolder`/`pdffolder`), and (b) the attacker controls that dataset's metadata file.
 - **GHSA-27vj-qcqg-25rc**: `vulnerable_version_range: >= 0.9.0, < 2026.6.0`, `first_patched_version: 2026.6.0`, `vulnerable_functions: []`. Description: `fsspec.implementations.reference.ReferenceFileSystem` renders fields of a references JSON (Kerchunk format) with un-sandboxed `jinja2.Template(...).render(...)`. It is triggered when the victim opens an attacker-controlled references JSON with `fsspec.filesystem("reference", fo=URL)` or `reference://`.

@@ -521,7 +521,7 @@ jobs:
         with:
           requirements: requirements-ci.txt
 
-      # 職責分離（CLAUDE.md 規則 6）：本 PR 新增／修改的 reviews/g4 紀錄不能自證。取得「在目前 head SHA 上
+      # 職責分離（AGENTS.md 規則 6）：本 PR 新增／修改的 reviews/g4 紀錄不能自證。取得「在目前 head SHA 上
       # approve、且不是 PR 作者」的帳號（每人只看最後一次 review；之後的 CHANGES_REQUESTED／DISMISSED 會取消）。
       # 查詢失敗 → 空清單 → 紀錄不被信任（fail closed），G4 最高 pending。
       - name: 取得目前 head 上的非作者 approve
@@ -675,7 +675,7 @@ jobs:
       # 壞掉時不會有人發現，所以在每個 PR 跑單元測試。runner 內建 Node（node:test 需 ≥ 18）；
       # 測試檔清單明列：檔案缺漏時 node 直接失敗，不會變成「0 個測試、通過」。
       # 人工裁決（rulings/*.yaml）的 decided_by 是檔案內自填的，ruling.py 只擋 bot 名稱。PR 作者不得替自己的 PR
-      # 寫裁決：本 PR 新增或修改的 ruling，decided_by.handle 必須不是 PR 作者（職責分離，CLAUDE.md 規則 6）。
+      # 寫裁決：本 PR 新增或修改的 ruling，decided_by.handle 必須不是 PR 作者（職責分離，AGENTS.md 規則 6）。
       # 搭配 .github/CODEOWNERS 要求 rulings/ 由 owner 審核；兩者都要在 branch protection 啟用 code owner review 才完整。
       - name: 人工裁決不得由 PR 作者自填
         if: github.event_name == 'pull_request'

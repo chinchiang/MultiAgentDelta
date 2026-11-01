@@ -15,7 +15,7 @@ custom 檢查）；trivy config；gate JSON 由 scripts/sarif_gate.py 的 derive
   - 本 repo blocking-policy 的 exceptions 只核准給本 repo 路徑，不套用。
   - 目標裡的 `checkov:skip=`、`trivy:ignore` 行內註解工具一定會採信 → status_reason 列出檔案，需人工確認。
 --base <ref>：semgrep diff-aware（--baseline-commit，只報相對 base 新增的發現；scope: diff）；checkov／trivy 仍全量。
-原則（CLAUDE.md #2）：任一工具缺席／逾時／失敗、目標不是 git repo 根目錄 → incomplete，絕不視為通過。
+原則（AGENTS.md #2）：任一工具缺席／逾時／失敗、目標不是 git repo 根目錄 → incomplete，絕不視為通過。
 
 用法：python3 scripts/g3_sast.py [--target <dir>] [--base <ref>] [--out-dir reports/raw/G3] [--gate reports/gates/G3.json]
       python3 scripts/g3_sast.py selftest

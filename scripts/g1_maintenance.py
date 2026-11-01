@@ -9,9 +9,9 @@
       列為 not_applicable 並附原因（Actions 版本由 Dependabot 追蹤）。
 
 不可違反：
-  - incomplete ≠ pass（CLAUDE.md #2）：SBOM 缺漏、API 失敗、套件查無資料 → 退出碼 2、JSON status=incomplete，
+  - incomplete ≠ pass（AGENTS.md #2）：SBOM 缺漏、API 失敗、套件查無資料 → 退出碼 2、JSON status=incomplete，
     絕不把「沒查到」寫成「沒有命中」。
-  - 只記錄日期與旗標，不換算分數、不與 CVSS／EPSS 混算（CLAUDE.md #4）。
+  - 只記錄日期與旗標，不換算分數、不與 CVSS／EPSS 混算（AGENTS.md #4）。
 
 用法：
   python3 scripts/g1_maintenance.py --sbom reports/sbom.cdx.json --sarif reports/g1-maintenance.sarif \\

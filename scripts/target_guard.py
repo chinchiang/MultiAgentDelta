@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VibeSec 目標授權檢查：G5／G6 探針送出前，確認目標在 config/targets.yaml 的允許範圍內（CLAUDE.md 規則 8）。
+"""VibeSec 目標授權檢查：G5／G6 探針送出前，確認目標在 config/targets.yaml 的允許範圍內（AGENTS.md 規則 8）。
 
   python3 scripts/target_guard.py check <url>   # 0 允許；1 拒絕；2 設定缺席或無法解析（incomplete ≠ pass）
   python3 scripts/target_guard.py same-origin <url> <base>   # 0 同源；1 非同源或無法解析

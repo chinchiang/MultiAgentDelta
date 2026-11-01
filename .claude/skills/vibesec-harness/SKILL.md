@@ -107,7 +107,7 @@ python3 scripts/g4_access.py --target "$TARGET" --out-dir reports/raw/G4 --gate 
 
 ### G5 DAST / API（只打授權靶場）
 
-**送出任何 G5／G6 請求之前**先做目標授權檢查（CLAUDE.md 規則 8）。退出碼非 0 → G5、G6 都記 `incomplete`，`status_reason` 寫檢查輸出，**不得**送出任何請求（含健康檢查）：
+**送出任何 G5／G6 請求之前**先做目標授權檢查（AGENTS.md 規則 8）。退出碼非 0 → G5、G6 都記 `incomplete`，`status_reason` 寫檢查輸出，**不得**送出任何請求（含健康檢查）：
 
 ```bash
 python3 scripts/target_guard.py check "$VIBESEC_TARGET_URL" || echo TARGET_DENIED   # 0 允許；1 不在 config/targets.yaml；2 清單無法讀取

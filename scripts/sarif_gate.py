@@ -14,7 +14,7 @@
   - 否則以 config/catalogs/cwe-map.yaml 的 implemented_by（<tool>:<id>）對回 vibesec 規則
   - 都對不到 → 保留外部 ID（<tool>:<ruleId>），tier 取 blocking-policy 的 default_tier
 tier：blocking-policy.yaml 的 blocking 清單 + tier_overrides[risk_tier]；exceptions（未過期）把 blocking 降為 advisory，發現保留。
-狀態（incomplete ≠ pass，CLAUDE.md #2）：
+狀態（incomplete ≠ pass，AGENTS.md #2）：
   有 blocking → fail；否則任一工具輸出缺席、無法解析或自報執行失敗（invocations executionSuccessful=false、
   toolExecutionNotifications 有 level error）→ incomplete；否則 → pass。
 退出碼：0（寫出 gate JSON；狀態由 summary 依 mode 決定是否阻擋）；2 = 缺 PyYAML（無法判定）。
@@ -161,7 +161,7 @@ def load_semgrep_aliases() -> dict[str, str]:
 
 def map_rule(tool: str, rule_id: str, pol: dict, declared: str | None = None) -> list[str]:
     # 1) SARIF 自帶 vibesec_rule_id；2) 本 repo 規則檔的 metadata.vibesec_rule_id（semgrep）；
-    # 只採用 cwe-map 有登錄的 ID（CLAUDE.md #3），否則回到原本的對應邏輯
+    # 只採用 cwe-map 有登錄的 ID（AGENTS.md #3），否則回到原本的對應邏輯
     known = pol.get("controls") or {}
     if declared and declared in known:
         return [declared]

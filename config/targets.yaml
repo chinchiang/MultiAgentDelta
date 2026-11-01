@@ -1,4 +1,4 @@
-# VibeSec G5／G6 攻擊性探針的目標範圍（CLAUDE.md 規則 8：靶場只能打靶場）
+# VibeSec G5／G6 攻擊性探針的目標範圍（AGENTS.md 規則 8：靶場只能打靶場）
 #
 # scripts/target_guard.py 在送出任何 G5／G6 探針前比對 VIBESEC_TARGET_URL：
 #   1. 只收 http / https；URL 帶帳密（user@host）一律拒絕（避免 127.0.0.1@evil.example 這類混淆）。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VibeSec CVE 參考目錄（config/catalogs/cve-references.yaml）的核對：CLAUDE.md 規則 3「CVE 只能查目錄」。
+"""VibeSec CVE 參考目錄（config/catalogs/cve-references.yaml）的核對：AGENTS.md 規則 3「CVE 只能查目錄」。
 
 由 scripts/validate.py 呼叫：
   catalog_problems(cves)                  目錄每筆的欄位是否完整、格式是否正確（GHSA ID、日期、KEV 分欄）
@@ -49,7 +49,7 @@ def reference_problems(cves: dict, files, root: pathlib.Path) -> list[str]:
         for i, line in enumerate(lines, 1):
             for m in CVE_RE.finditer(line):
                 if m.group(0) not in (cves or {}):
-                    out.append(f"{rel}:{i}: {m.group(0)} 不在 {CATALOG}（CLAUDE.md 規則 3：查證後再加入）")
+                    out.append(f"{rel}:{i}: {m.group(0)} 不在 {CATALOG}（AGENTS.md 規則 3：查證後再加入）")
     return out
 
 
@@ -82,7 +82,7 @@ def selftest() -> list[str]:
         (root / "a.md").write_text(f"見 {real}。\n另見 {fake} 與 {real}\n", encoding="utf-8")
         (root / "b.yml").write_text(f"# CVE-2099-XXXXX 是佔位字串，不是 ID\nx: 1\n", encoding="utf-8")
         got = reference_problems({real: {}}, [root / CATALOG, root / "a.md", root / "b.yml"], root)
-        if got != [f"a.md:2: {fake} 不在 {CATALOG}（CLAUDE.md 規則 3：查證後再加入）"]:
+        if got != [f"a.md:2: {fake} 不在 {CATALOG}（AGENTS.md 規則 3：查證後再加入）"]:
             fails.append(f"reference_problems：只回報不在目錄的 CVE 並附行號，佔位字串與目錄檔本身不算（得到 {got}）")
     # 本 repo 的實際目錄：每筆欄位完整
     try:

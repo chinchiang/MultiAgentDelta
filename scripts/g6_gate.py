@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """G6 AI 紅隊結果彙整：promptfoo eval（決定性）＋ promptfoo redteam（選用，需金鑰）＋ garak → 一份 gate json + SARIF。
 
-原則（CLAUDE.md #2）：
+原則（AGENTS.md #2）：
   - 測試失敗 → fail（不得因 promptfoo 非零退出碼而改寫成 incomplete）。
   - 工具缺席、輸出無法解析、單一測試執行錯誤、未設定金鑰 → 該層 / 該 check 記 untested，閘門 incomplete。
   - 未提供某一層的結果（缺 --redteam／--redteam-skipped、缺 --garak-glob、缺 --cost、缺 --observations）或結果為空 → 該層 untested。
@@ -12,7 +12,7 @@
   - garak：報告缺 completion 紀錄（執行中途結束）、log 有 Traceback／❌（中止）、有送出攻擊但沒有評估結果的 probe、
     設定中指名但沒有結果的 probe 或 probe 家族 → untested（以前只要有任何 eval 紀錄，其餘就默認為完成）。
   - 只有所有層都實際執行且無失敗才是 pass。
-規則 ID 只查 config/catalogs/cwe-map.yaml（CLAUDE.md #3）；查不到者 policy_tier 視為 advisory 並在 message 註明。
+規則 ID 只查 config/catalogs/cwe-map.yaml（AGENTS.md #3）；查不到者 policy_tier 視為 advisory 並在 message 註明。
 
 用法：
   python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json \
@@ -27,7 +27,7 @@
 成本面（LLM10 denial_of_wallet_cost）由 scripts/g6_cost_probe.py 實測後以 --cost 帶入；未提供或無法解析 → untested。
 工具事件（LLM06 excessive_agency_telemetry）由 scripts/g6_observe.py 實測後以 --observations 帶入：高影響工具未經人工核准
 即執行 → fail（vibesec.g6.excessive-agency）；未提供、無法解析或目標沒有 tool_events → untested。
-usage 只在觀測檔分欄記錄，不併入任何分數（CLAUDE.md 規則 4）。
+usage 只在觀測檔分欄記錄，不併入任何分數（AGENTS.md 規則 4）。
 退出碼：0 已寫出結果（不論 pass/fail/incomplete；是否阻擋由 workflow 的彙整步驟依 mode 與政策決定）。
 """
 from __future__ import annotations

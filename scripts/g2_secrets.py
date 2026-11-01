@@ -7,8 +7,8 @@ scripts/env_guard.py；gate JSON 由 scripts/sarif_gate.py 的 derive() 推導�
 --target <dir>：被掃描的 git repo 根目錄（預設本 repo）。設定與阻擋政策一律取自本 repo，輸出寫在本 repo
   （不寫進被測專案）。blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用；
   目標專案自己的 `gitleaks:allow` 註解也不採信（--ignore-gitleaks-allow），例外只能經 blocking-policy 核准。
-原則（CLAUDE.md #2）：gitleaks 缺席／逾時／失敗、目標不是 git repo 根目錄、shallow clone（不是全歷史）
-  → incomplete，絕不視為通過。報告只留遮罩（gitleaks --redact），不印出原始祕密（CLAUDE.md #7）。
+原則（AGENTS.md #2）：gitleaks 缺席／逾時／失敗、目標不是 git repo 根目錄、shallow clone（不是全歷史）
+  → incomplete，絕不視為通過。報告只留遮罩（gitleaks --redact），不印出原始祕密（AGENTS.md #7）。
 
 用法：python3 scripts/g2_secrets.py [--target <dir>] [--out-dir reports/raw/G2] [--gate reports/gates/G2.json]
       python3 scripts/g2_secrets.py selftest

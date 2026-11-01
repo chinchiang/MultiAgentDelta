@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
       # 不設 continue-on-error、不吞退出碼：未加 --error 時 semgrep 有命中也回 0，非 0 = 工具錯誤（規則載入失敗、
-      # registry 下載失敗、當掉）。此時刪掉不完整的 SARIF，job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
+      # registry 下載失敗、當掉）。此時刪掉不完整的 SARIF，job 變紅並由 notify 開 issue（incomplete ≠ pass，AGENTS.md #2）。
       - name: Semgrep scan（全庫、無 diff baseline）
         run: |
           mkdir -p reports
@@ -192,7 +192,7 @@ jobs:
           enrichment = {}
 
           # KEV 清單：由前一步 scripts/fetch_kev.py 取得（官網 → 鏡像 → 快取），格式檢查與 g1_kev.py 共用。
-          # feed 不可用 → kev_set = None：每筆 kev 記 null（未知），不是 false（incomplete ≠ pass，CLAUDE.md #2）
+          # feed 不可用 → kev_set = None：每筆 kev 記 null（未知），不是 false（incomplete ≠ pass，AGENTS.md #2）
           import sys; sys.path.insert(0, "scripts")
           from g1_kev import load_kev
           kev_set, kev_released, kev_reason = None, None, None
@@ -238,7 +238,7 @@ jobs:
           EOF
 
       # KEV 命中 → vibesec.g1.kev-hit（blocking）。不設 continue-on-error：有命中時 scripts/g1_kev.py 退出碼 1、
-      # 缺 grype 結果或 KEV feed（下載失敗且無快取）時退出碼 2（incomplete ≠ pass，CLAUDE.md #2），兩者都讓 job 變紅並由 notify 開 issue。
+      # 缺 grype 結果或 KEV feed（下載失敗且無快取）時退出碼 2（incomplete ≠ pass，AGENTS.md #2），兩者都讓 job 變紅並由 notify 開 issue。
       # SARIF 照常上傳（下一步 if: always()）。
       - name: G1 KEV 命中（vibesec.g1.kev-hit）
         run: |
@@ -255,7 +255,7 @@ jobs:
 
       # 維護狀態 → vibesec.g1.unmaintained-dependency（advisory）：SBOM 套件逐一查 deps.dev（deprecated／最新版過舊）。
       # if: always()：KEV 命中讓前一步失敗時仍要查。不設 continue-on-error：缺 SBOM、API 失敗、查無套件 → 退出碼 2，
-      # job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。advisory 命中本身不讓步驟失敗。
+      # job 變紅並由 notify 開 issue（incomplete ≠ pass，AGENTS.md #2）。advisory 命中本身不讓步驟失敗。
       - name: G1 維護狀態（vibesec.g1.unmaintained-dependency）
         if: always()
         run: |
@@ -350,7 +350,7 @@ jobs:
           subject-path: reports/sbom.cdx.json
 
       # 驗證 → vibesec.g1.sbom-missing-provenance（advisory）。不設 continue-on-error：缺 SBOM、缺 gh、權限／網路錯誤
-      # → 退出碼 2，job 變紅並由 notify 開 issue（incomplete ≠ pass，CLAUDE.md #2）。
+      # → 退出碼 2，job 變紅並由 notify 開 issue（incomplete ≠ pass，AGENTS.md #2）。
       - name: G1 SBOM 來源證明（vibesec.g1.sbom-missing-provenance）
         if: always()
         env:
@@ -500,9 +500,9 @@ jobs:
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
           echo "VIBESEC_GITLEAKS=$RUNNER_TEMP/gitleaks" >> "$GITHUB_ENV"
-      - name: 執行評測（靶場只在 127.0.0.1 啟動；CLAUDE.md 規則 8）
+      - name: 執行評測（靶場只在 127.0.0.1 啟動；AGENTS.md 規則 8）
         # 退出碼 1 = 相對 baseline 退步（任何 FP／FN，或應實測的案例變成 untested／incomplete）→ job 標紅。
-        # 不得以 continue-on-error 或縮減 baseline 讓它轉綠（CLAUDE.md 規則 1、2）。
+        # 不得以 continue-on-error 或縮減 baseline 讓它轉綠（AGENTS.md 規則 1、2）。
         run: |
           python3 scripts/run_evals.py --baseline evals/baseline.yaml \
             --json reports/evals.json --md reports/evals.md

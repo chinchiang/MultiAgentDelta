@@ -7,7 +7,7 @@
 | 設定 | `vibesec.yaml` → `gates.g6_ai_red_team`（`stage: staging`、`tools: [promptfoo, garak]`、`promptfoo_config: config/promptfoo/promptfooconfig.yaml`（redteam 生成層）、`promptfoo_tests_config: config/promptfoo/tests.yaml`（決定性測試）、`garak_config: config/garak/vibesec.probes.yaml`、`checks: [direct_prompt_injection, indirect_prompt_injection, system_prompt_extraction, stored_xss_via_ai_output, denial_of_wallet]`、`timeout_seconds: 1800`） |
 | 前提 | `project.contains_llm: true`；為 false 時 G6 記 `not_applicable`（附理由） |
 | 負責 | Red Team |
-| 硬規則 | 只能對 `VIBESEC_TARGET_URL` 指向的授權環境執行（CLAUDE.md 規則 8）；未分類資料只送允許的 provider（規則 7） |
+| 硬規則 | 只能對 `VIBESEC_TARGET_URL` 指向的授權環境執行（AGENTS.md 規則 8）；未分類資料只送允許的 provider（規則 7） |
 
 ## 對抗成因：為什麼 DAST 蓋不了自然語言介面
 
@@ -142,7 +142,7 @@ garak 在 staging 以 pip 安裝：先從 PyTorch CPU index 裝釘版的 CPU 版
 
 1. GitHub → repo **Settings → Secrets and variables → Actions → New repository secret**。
 2. 新增 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`（擇一即可；兩者皆有時優先用 Anthropic）。模型名稱取自 `config/providers.yaml` 的 `anthropic-cloud.model` / `openai-cloud.model`。
-3. 只接這兩家：redteam 會把靶場回應送給評分模型，資料分級為 `internal`；`config/providers.yaml` 中`anthropic-cloud`、`openai-cloud`、`anthropic-bedrock`、`gemini-cloud` 與地端 provider 的 `allowed_data_classes` 含 `internal`，但 redteam 步驟目前只實作 anthropic／openai 兩條路徑。`glm-cloud`、`deepseek-cloud` 只允許 `public`，**不得**用於 redteam（CLAUDE.md 規則 7）。
+3. 只接這兩家：redteam 會把靶場回應送給評分模型，資料分級為 `internal`；`config/providers.yaml` 中`anthropic-cloud`、`openai-cloud`、`anthropic-bedrock`、`gemini-cloud` 與地端 provider 的 `allowed_data_classes` 含 `internal`，但 redteam 步驟目前只實作 anthropic／openai 兩條路徑。`glm-cloud`、`deepseek-cloud` 只允許 `public`，**不得**用於 redteam（AGENTS.md 規則 7）。
 4. 金鑰只經 step `env` 傳入，不寫入 `${{ }}` 插值的 run 內容、不 echo；secret 值由 Actions 自動遮罩。
 5. promptfoo redteam 可能要求一次性 email 驗證；若 CI 中因此失敗，該層記 `untested` 並在 `_promptfoo-redteam.log` 留下原因，不會產生 pass。
 6. workflow 設定 `PROMPTFOO_DISABLE_REMOTE_GENERATION=true`：攻擊一律由上述 provider 在本地生成，不送往 promptfoo 雲端服務（它不在 `config/providers.yaml`）。少數僅支援遠端生成的 plugin／strategy 因此可能報錯，該項記 `untested`，不會被當成 pass。
@@ -171,7 +171,7 @@ garak 在 staging 以 pip 安裝：先從 PyTorch CPU index 裝釘版的 CPU 版
 | 要求 email 驗證 | promptfoo 首次使用驗證 | 於本機以相同版本執行一次 `promptfoo redteam` 完成驗證 |
 | 個別 plugin「requires remote generation」 | 已停用遠端生成 | 預期行為，該項維持 `untested` |
 
-> 不得為了讓 redteam 跑起來而改用 `glm-cloud`／`deepseek-cloud`、啟用遠端生成，或把 G6 降為 advisory；這些都需人類在獨立 PR 中決定（CLAUDE.md 規則 1、7）。
+> 不得為了讓 redteam 跑起來而改用 `glm-cloud`／`deepseek-cloud`、啟用遠端生成，或把 G6 降為 advisory；這些都需人類在獨立 PR 中決定（AGENTS.md 規則 1、7）。
 
 ### 結果如何對映到 findings
 
@@ -181,7 +181,7 @@ garak 在 staging 以 pip 安裝：先從 PyTorch CPU index 裝釘版的 CPU 版
 | promptfoo plugin 無對應 vibesec 規則 | `promptfoo:<plugin id>` | `cwe-map.yaml.external_prefixes."promptfoo:"` → 預設 CWE-1427，gate G6 |
 | garak hit（probe.detector） | `garak:<probe>.<detector>` | `external_prefixes."garak:"` → 預設 CWE-1427 |
 
-每筆記 `evidence_grade`：有可重現 payload + 實際外連日誌 → E3；僅工具評分器判定 → E2；單次疑似 → E1。`validation_status` 由人工複測決定（CLAUDE.md 規則 5）。OWASP LLM Top 10 對照存於 `config/catalogs/llm-top10-2025.yaml`（每項附 `promptfoo_plugins` 與 `garak_probes`）。
+每筆記 `evidence_grade`：有可重現 payload + 實際外連日誌 → E3；僅工具評分器判定 → E2；單次疑似 → E1。`validation_status` 由人工複測決定（AGENTS.md 規則 5）。OWASP LLM Top 10 對照存於 `config/catalogs/llm-top10-2025.yaml`（每項附 `promptfoo_plugins` 與 `garak_probes`）。
 
 ## 工具與設定檔
 
@@ -242,4 +242,4 @@ G6 不是孤立的一道，許多 LLM 風險的根因其實在白箱：
 3b. **工具事件遙測可實測**：`python3 scripts/g6_observe.py selftest`、`python3 scripts/llm_observations.py selftest`（由 `scripts/validate.py` 執行；含未授權目標不送請求、非同源與 redirect 不跟隨、回覆內容不落地）；評測案例 `g6-agency-telemetry-pos-01`（靶場未核准即執行 → fail）、`g6-agency-telemetry-neg-01`（修補模式未執行 → pass）、`g6-obsmalformed-incomplete-01`（觀測檔損毀 → incomplete）列在 `evals/baseline.yaml`。
 4. **間接注入外連**：靶場**不會**真的發出請求，只以 `EGRESS-INTENT: …` 文字回報外連意圖（promptfoo 斷言據此判定，屬 E2）；要達 E3 需真實目標的 egress 日誌出現 `attacker.example`（日誌檢查尚未實作），加 egress allowlist 後消失。
 5. **資料不出境 / 授權目標**：確認 redteam provider 在 `config/providers.yaml` 允許清單；target 僅限授權 staging。
-6. **對映正確**：抽查 finding，`rule_id` 能在 `cwe-map.yaml` 或 `external_prefixes` 查到 cwe 與 control_ids，無猜測（CLAUDE.md 規則 3）。
+6. **對映正確**：抽查 finding，`rule_id` 能在 `cwe-map.yaml` 或 `external_prefixes` 查到 cwe 與 control_ids，無猜測（AGENTS.md 規則 3）。

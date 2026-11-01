@@ -5,7 +5,7 @@
                                    [--max-tokens 8192] [--timeout 60]
   python3 scripts/g6_cost_probe.py selftest
 
-只對 config/targets.yaml 允許的目標送請求（scripts/target_guard.py；CLAUDE.md 規則 8）；被拒 → untested，不送任何請求。
+只對 config/targets.yaml 允許的目標送請求（scripts/target_guard.py；AGENTS.md 規則 8）；被拒 → untested，不送任何請求。
 對 <target><path> POST {"message": "A"*chars, "context": "", "session_id": "vibesec-cost-probe"}：
   HTTP 413／429                                → pass（有長度上限或配額）
   HTTP 400／422 且錯誤內容指出過長（string_too_long、max_length、too long…）→ pass

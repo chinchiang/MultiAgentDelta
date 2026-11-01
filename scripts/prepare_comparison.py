@@ -20,7 +20,7 @@
     去標籤後輸入相同但答案不同者。排除清單只寫在 answer-key.json。
   - packet_id = HMAC-SHA256(salt, 案例 ID) 前 12 hex：同一 salt 可重現；salt 只存在 answer-key.json，避免由 ID 反推。
   - agent 的 role 寫 auto 時依案例 domain 取 docs/09 §8 的主責角色（三組同一規則，不影響比較；但角色會透露領域）。
-  - 計畫依 config/providers.yaml 驗證（CLAUDE.md 規則 6、7）：provider 存在且 enabled；allowed_data_classes 含審查包分級；
+  - 計畫依 config/providers.yaml 驗證（AGENTS.md 規則 6、7）：provider 存在且 enabled；allowed_data_classes 含審查包分級；
     confidential／pii 只能用 rotation.sensitive_data_providers；A 恰 1 個 agent；B ≥2 個 agent 且只有 1 個 family；
     C ≥2 個 agent 且 ≥2 個 family。任一不符 → 不寫任何檔案（離開碼 4）。
 離開碼：0 已準備；4 參數、設定或計畫驗證錯誤。
