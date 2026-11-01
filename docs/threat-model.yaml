@@ -58,7 +58,7 @@ flows:
 trust_boundaries:
   - { id: tb-pr,      name: 不可信 PR 內容進入 CI（fork 唯讀權杖、無 secrets）,          zones: [z-internet, z-runner] }
   - { id: tb-secrets, name: 持有 secrets 的 job 與執行期下載的第三方程式碼,             zones: [z-runner, z-vendor] }
-  - { id: tb-target,  name: 攻擊性探針只打靶場或授權目標（CLAUDE.md 規則 8）,           zones: [z-runner, z-internet] }
+  - { id: tb-target,  name: 攻擊性探針只打靶場或授權目標（AGENTS.md 規則 8）,           zones: [z-runner, z-internet] }
   - { id: tb-agent,   name: AI agent 讀取不可信 GitHub 內容並持有 repo 寫入權,          zones: [z-github, z-agent] }
 
 # 致命三要素：c-claude 三者皆成立且沒有切斷任何一隻腳——靠 HITL（合併前由維護者核准、政策變更交人類）與工具限制降低風險。
@@ -196,14 +196,14 @@ threats:
   - id: t-ruling-forgery
     category: STRIDE-S
     target: a-rulings
-    description: PR 作者自填人工裁決，將 requires_human 改為 false、證據升 E3，繞過人工裁決（CLAUDE.md 規則 6）。
+    description: PR 作者自填人工裁決，將 requires_human 改為 false、證據升 E3，繞過人工裁決（AGENTS.md 規則 6）。
     mitigation: CODEOWNERS 涵蓋 rulings/；repo-validate 拒絕 decided_by 為 PR 作者（PR #42）。殘留：需 branch protection 開啟 code owner review；單一維護者無法職責分離（VIBESEC_SINGLE_MAINTAINER 僅警告）。
     status: open
     gate: G4
   - id: t-review-forgery
     category: STRIDE-S
     target: c-ci-pr
-    description: PR 作者在同一個 PR 自寫 reviews/g4/<commit>.yaml（宣稱兩個 family 都跑過、無發現），讓自己 PR 的 G4 顯示 pass（第二次 harness 審查發現，CLAUDE.md 規則 6）。
+    description: PR 作者在同一個 PR 自寫 reviews/g4/<commit>.yaml（宣稱兩個 family 都跑過、無發現），讓自己 PR 的 G4 顯示 pass（第二次 harness 審查發現，AGENTS.md 規則 6）。
     mitigation: g4_review.py gate 對本 PR 新增／修改的紀錄設信任上限——需非 PR 作者在目前 head SHA 上 approve 且 recorded_by 不是 PR 作者，否則 G4 最高 pending；recorded_by 空白一律不採信。殘留：單一維護者無法取得非作者 approve，此時 G4 停在 pending（fail closed，不擋 merge）。
     status: mitigated
     gate: G4
@@ -225,7 +225,7 @@ threats:
     category: STRIDE-T
     target: a-policy
     description: 以 PR 放寬閘門、把 blocking 改 advisory、縮減 baseline 或改 provider 資料分級以讓檢查通過。
-    mitigation: CLAUDE.md 規則 1、7；CODEOWNERS 涵蓋政策檔與 baseline；validate.py 強制每條規則有實作；baseline 只增不減的流程約定。
+    mitigation: AGENTS.md 規則 1、7；CODEOWNERS 涵蓋政策檔與 baseline；validate.py 強制每條規則有實作；baseline 只增不減的流程約定。
     status: mitigated
     gate: null
   - id: t-agent-injection
@@ -246,7 +246,7 @@ threats:
     category: STRIDE-I
     target: a-llm-keys
     description: 祕密經 log、artifact、SARIF 或 issue 外洩。
-    mitigation: secrets 由 Actions 遮罩；token 只寫 0600 暫存檔、不進 GITHUB_ENV／outputs；notify 只傳狀態與計數；報告只留遮罩與指紋（CLAUDE.md 規則 7）；G2 gitleaks 在 PR 掃 PR 範圍的 commit，nightly g2-history 掃全部歷史（含已刪除的檔案），內建規則命中一律 blocking（PR #72、#73）。
+    mitigation: secrets 由 Actions 遮罩；token 只寫 0600 暫存檔、不進 GITHUB_ENV／outputs；notify 只傳狀態與計數；報告只留遮罩與指紋（AGENTS.md 規則 7）；G2 gitleaks 在 PR 掃 PR 範圍的 commit，nightly g2-history 掃全部歷史（含已刪除的檔案），內建規則命中一律 blocking（PR #72、#73）。
     status: mitigated
     gate: G2
   - id: t-vulnerable-deps

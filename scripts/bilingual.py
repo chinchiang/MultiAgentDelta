@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VibeSec 雙語集合的檢查（CLAUDE.md 命名與格式慣例、#178）：集合內的 Markdown 必須中英雙語，集合外只寫正體中文。
+"""VibeSec 雙語集合的檢查（AGENTS.md「文件語言」、#178）：集合內的 Markdown 必須中英雙語，集合外只寫正體中文。
 
 由 scripts/validate.py 呼叫：
   set_paths(root)          root 底下屬於雙語集合的 Markdown，以及缺席的集合項目與譯本（缺席 → validate 報 ERR，不是略過）
@@ -12,7 +12,7 @@
 from __future__ import annotations
 import pathlib, re, sys
 
-# 雙語集合：檔案逐一列出；目錄以目錄為準（之後新增的檔案自動屬於集合）。與 CLAUDE.md「命名與格式慣例」的列舉同步（AGENTS.md 合併後改為它的「文件語言」）
+# 雙語集合：檔案逐一列出；目錄以目錄為準（之後新增的檔案自動屬於集合）。與 AGENTS.md「文件語言」的列舉同步
 SET_FILES = ("GLOSSARY.md",)
 # 譯本 → 來源：來源只寫正體中文（AGENTS.md 每回合載入 agent 的 context，不放兩種語言），英文另放譯本；
 # 譯本即使位在集合目錄內也不屬於雙語集合，改以標題結構與來源相同來確認兩者同步
@@ -29,8 +29,7 @@ def set_paths(root: pathlib.Path) -> tuple[list[pathlib.Path], list[str]]:
     found += [p for d in SET_DIRS if (root / d).is_dir() for p in (root / d).glob("**/*.md") if p.is_file()]
     found = [p for p in found if p.relative_to(root).as_posix() not in TRANSLATIONS]
     missing = [f for f in SET_FILES if not (root / f).is_file()] + [d for d in SET_DIRS if not (root / d).is_dir()]
-    # 過渡期（prefactor）：main 還沒有 AGENTS.md 與譯本，只在兩者缺一時回報；AGENTS.md 合併後改成兩者都必須存在
-    missing += [f for pair in TRANSLATIONS.items() if any((root / f).is_file() for f in pair) for f in pair if not (root / f).is_file()]
+    missing += [f for pair in TRANSLATIONS.items() for f in pair if not (root / f).is_file()]
     return sorted(set(found)), missing
 
 
@@ -112,7 +111,7 @@ def selftest() -> list[str]:
             fails.append(f"set_paths：集合內的 Markdown（含子目錄、不含集合外與非 .md）應為 {want}（得到 {got}）")
         if missing != ["AGENTS.md"]:
             fails.append(f"set_paths：譯本在、來源缺席時應回報來源（得到 {missing}）")
-        if set_paths(R / "none")[1] != list(SET_FILES) + list(SET_DIRS):
+        if set_paths(R / "none")[1] != list(SET_FILES) + list(SET_DIRS) + [f for p in TRANSLATIONS.items() for f in p]:
             fails.append("set_paths：root 不存在 → 集合項目全部缺席")
     doc = lambda zh="## 甲\n\n內容\n\n### 乙\n", en="## A\n\ntext\n\n### B\n", head=SWITCH: (
         f"{head}\n\n{ZH}\n\n# 標題\n\n{zh}\n---\n\n{EN}\n\n# Title\n\n{en}")

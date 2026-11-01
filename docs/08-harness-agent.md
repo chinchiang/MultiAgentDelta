@@ -215,7 +215,7 @@ vibesec report --format summary|sarif
 
 CLI 讀同一份 `vibesec.yaml`，實作同一個狀態機，透過 `config/providers.yaml` 的統一 `complete()` 介面呼叫多家 provider。本 repo 的文件與 schema 即其驗收標準。
 
-## 11. 禁止行為（摘自 CLAUDE.md，harness 必須遵守）
+## 11. 禁止行為（摘自 AGENTS.md，harness 必須遵守）
 
 1. 不得停用、跳過、放寬 `enabled: true` 的閘門；不得修改 `blocking-policy.yaml` 把 blocking 降為 advisory。
 2. 工具缺席 / 逾時 / API 失敗 / 缺帳號 / 缺文件 / 環境無法啟動 → `incomplete`，絕不 `pass`。

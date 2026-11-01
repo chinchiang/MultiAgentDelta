@@ -13,7 +13,7 @@
 紀錄來源：harness 寫 reports/g4-review.yaml（reports/ 不入版控），人工複製為 reviews/g4/<commit>.yaml 提交；
 reviews/ 由 CODEOWNERS 審核。此工具不呼叫任何模型、不裁決、不改嚴重度／tier，只讀紀錄並推導狀態。
 
-狀態推導（docs/05「阻擋政策」；incomplete ≠ pass，CLAUDE.md #2）：
+狀態推導（docs/05「阻擋政策」；incomplete ≠ pass，AGENTS.md #2）：
   靜態 blocking，或 LLM 審查發現屬 blocking 且經人工裁決 confirm            → fail
   否則任一發現 requires_human 且沒有有效裁決（rulings/）、有待裁決的 blocking 發現，
       或審查紀錄未獲信任（紀錄或裁決由本 PR 引入卻未經非作者 approve）                → pending
@@ -351,7 +351,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
 def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers: list[str]) -> str | None:
     """紀錄能否把 G4 推到 pass。回傳 None = 可信；否則回傳理由（閘門最高 pending）。
     紀錄由本 PR 新增或修改時不能自證：recorded_by 不得是 PR 作者，且必須是在目前 head SHA 上 approve 的
-    非作者之一——確認紀錄的人要親自核准，不能只填別人的帳號（比照 rulings/ 的職責分離，CLAUDE.md 規則 6；N6）。已在 base 分支上的紀錄經過另一個 PR 審查合併，視為可信。"""
+    非作者之一——確認紀錄的人要親自核准，不能只填別人的帳號（比照 rulings/ 的職責分離，AGENTS.md 規則 6；N6）。已在 base 分支上的紀錄經過另一個 PR 審查合併，視為可信。"""
     h = str(handle or "").lstrip("@").strip().lower()
     author = str(pr_author or "").lstrip("@").strip().lower()
     if not h:

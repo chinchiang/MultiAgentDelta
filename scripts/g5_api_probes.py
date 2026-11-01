@@ -10,7 +10,7 @@ mode 取自受信任政策（VIBESEC_CONFIG 所在的樹，ADR 0002）；mode �
 VIBESEC_TOKEN_DIR、HAS_A、HAS_B。不讀 VIBESEC_MODE（#203 移除；以前必填，#186）。
 輸出：reports/g5-api-probes.sarif、reports/g5-gate.json（目前目錄）。
 """
-# G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（CLAUDE.md #8）。
+# G5 api-probes — 僅對已授權 VIBESEC_TARGET_URL 執行（AGENTS.md #8）。
 # checks: bola_idor, jwt_alg_none, jwt_alg_confusion, ssrf_metadata,
 #         swagger_exposed, graphql_introspection, debug_stacktrace, rate_limit, session_check
 import json, os, re, time, base64, pathlib, datetime, urllib.request, urllib.error, urllib.parse, hashlib, hmac, sys
@@ -234,7 +234,7 @@ def main():
     TA = _read("a"); TB = _read("b")
     HAS_A = os.environ.get("HAS_A") == "true"; HAS_B = os.environ.get("HAS_B") == "true"
 
-    # 授權檢查（CLAUDE.md 規則 8；workflow 的 target 步驟已查過，這裡再查一次）→ 連線性檢查
+    # 授權檢查（AGENTS.md 規則 8；workflow 的 target 步驟已查過，這裡再查一次）→ 連線性檢查
     incomplete_reason = None
     try:
         _ok, _why = guard_check(URL, ROOT)

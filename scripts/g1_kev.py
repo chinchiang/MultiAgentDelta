@@ -6,8 +6,8 @@
 輸出：SARIF（上傳 Code Scanning）與 JSON 摘要。
 
 不可違反：
-  - incomplete ≠ pass（CLAUDE.md #2）：缺 grype 結果或 KEV feed 無法解析 → 退出碼 2、JSON status=incomplete，絕不輸出「沒有命中」。
-  - 評分不混算（CLAUDE.md #4）：CVSS、EPSS、KEV 分欄記錄；這裡只記 KEV 是否收錄與收錄日期，不改嚴重度、不相乘。
+  - incomplete ≠ pass（AGENTS.md #2）：缺 grype 結果或 KEV feed 無法解析 → 退出碼 2、JSON status=incomplete，絕不輸出「沒有命中」。
+  - 評分不混算（AGENTS.md #4）：CVSS、EPSS、KEV 分欄記錄；這裡只記 KEV 是否收錄與收錄日期，不改嚴重度、不相乘。
 
 用法：
   python3 scripts/fetch_kev.py --out .cache/kev.json --meta reports/kev-source.json   # 官網 → 鏡像 → 快取
@@ -85,7 +85,7 @@ def find_hits(grype: dict, kev: dict[str, str | None]) -> list[dict]:
 
 
 def best_cvss(v: dict) -> dict | None:
-    """取 grype 提供的 CVSS：v4.0 優先，其次 v3.x。只照抄向量與分數，不換算、不與 EPSS／KEV 相乘（CLAUDE.md #4）。"""
+    """取 grype 提供的 CVSS：v4.0 優先，其次 v3.x。只照抄向量與分數，不換算、不與 EPSS／KEV 相乘（AGENTS.md #4）。"""
     entries = [c for c in v.get("cvss") or [] if isinstance(c, dict) and c.get("vector")]
     def rank(c):
         ver = str(c.get("version") or "")
@@ -127,7 +127,7 @@ def to_sarif(hits: list[dict], vulns: list[dict] | None, policy: "Policy") -> di
         "message": {"text": f"{h['package']}@{h['version']} 含 {h['cve']}，已收錄於 CISA KEV（{h['kev_date']}）"
                             + (f"；可升級至 {', '.join(h['fixed_versions'])}" if h["fixed_versions"] else "；尚無修正版")},
         "locations": [{"physicalLocation": {"artifactLocation": {"uri": h["uri"]}}}],
-        # 分欄記錄（CLAUDE.md #4）：KEV 與日期各自一欄，不與 CVSS／EPSS 混算
+        # 分欄記錄（AGENTS.md #4）：KEV 與日期各自一欄，不與 CVSS／EPSS 混算
         "properties": {"policy_tier": kev_tier, "cve": h["cve"], "kev": True, "kev_date": h["kev_date"],
                        "package": h["package"], "version": h["version"], "ecosystem": h["ecosystem"]},
     } for h in hits]

@@ -23,7 +23,7 @@
 └── scripts/
 ```
 
-新增的 ADR 與 `GLOSSARY.md` 一樣遵守 CLAUDE.md 的雙語規範：先正體中文、再英文，以 `<a id="zh-tw"></a>`、`<a id="english"></a>` 分段，兩者有出入時以正體中文版為準。
+新增的 ADR 與 `GLOSSARY.md` 一樣遵守 AGENTS.md 的雙語規範：先正體中文、再英文，以 `<a id="zh-tw"></a>`、`<a id="english"></a>` 分段，兩者有出入時以正體中文版為準。
 
 ## 使用用語檔的詞彙
 
@@ -62,7 +62,7 @@ If either is missing, **proceed silently**: don't flag its absence or suggest cr
 └── scripts/
 ```
 
-New ADRs follow the same bilingual rule as `GLOSSARY.md` and CLAUDE.md: Traditional Chinese first, then English, separated by `<a id="zh-tw"></a>` and `<a id="english"></a>`; if they disagree, the Traditional Chinese version prevails.
+New ADRs follow the bilingual rule in AGENTS.md, as `GLOSSARY.md` does: Traditional Chinese first, then English, separated by `<a id="zh-tw"></a>` and `<a id="english"></a>`; if they disagree, the Traditional Chinese version prevails.
 
 ## Use the glossary's vocabulary
 

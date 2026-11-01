@@ -2,7 +2,7 @@
 # 用法：checkov -d . --config-file config/checkov/.checkov.yaml
 # 輸出：SARIF（上傳 GitHub Code Scanning，rule_id 前綴 checkov:）+ CLI 摘要
 # soft-fail: true → 影子模式（只報告不阻擋）；切到 enforce 時由 harness 依 blocking-policy 決定 exit code，
-#              不是靠 checkov 本身的 exit code（CLAUDE.md 規則 1：不得改政策讓檢查通過）。
+#              不是靠 checkov 本身的 exit code（AGENTS.md 規則 1：不得改政策讓檢查通過）。
 # check: 為「只跑這些檢查」的 allow-list，用來把 PR 階段控制在數分鐘內並降低噪音；
 #        夜間全量（nightly-full.yml）可改用 --config-file config/checkov/.checkov.yaml --check '' 跑完整規則集。
 

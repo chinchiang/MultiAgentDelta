@@ -191,7 +191,7 @@ ASVS ID 為 vibesec 自編到節，非官方需求編號（見 `config/catalogs/
 1. **Schema 驗證**：`python3 scripts/validate.py` 對 `project.threat_model` 跑 `threat-model.schema.json`。
 2. **Trifecta 單元測試**：`evals/` 內含正例（三 true 無 mitigation → fail）與反例（三 true + `tool_allowlist` → pass）。
 3. **分級一致性**：以 `system.exposure × data_sensitivity × agents` 重算，與宣告值比對。
-4. **人工審查**：AppSec 與 Red Team 各一人簽核 g0-report.md；分歧記錄為少數意見，不多數決（CLAUDE.md 規則 6）。
+4. **人工審查**：AppSec 與 Red Team 各一人簽核 g0-report.md；分歧記錄為少數意見，不多數決（AGENTS.md 規則 6）。
 5. **下游回饋**：G1–G6 的 `coverage[]` 中每個 `control_id` 應能回溯到 `threats[].gate`；G6 若證實間接注入可外連，而 G0 宣稱已切斷 `external_comms` → 回頭把 G0 標 `fail` 並重審。
 
 ## 常見錯誤
@@ -199,4 +199,4 @@ ASVS ID 為 vibesec 自編到節，非官方需求編號（見 `config/catalogs/
 - 把「有 HITL」當成已切斷三要素：HITL 是補償，不是切腳。
 - 把 LLM 輸出畫在信任邊界內：模型輸出必須視為不可信輸入（這也是 G3 污點來源包含 LLM 輸出的理由）。
 - `risk_tier` 只寫在 vibesec.yaml、threat-model 沒更新：G0 會 fail。
-- 用模型自評信心當證據等級：模型提出的威脅一律 E0/E1，人工確認後才升級（CLAUDE.md 規則 5）。
+- 用模型自評信心當證據等級：模型提出的威脅一律 E0/E1，人工確認後才升級（AGENTS.md 規則 5）。

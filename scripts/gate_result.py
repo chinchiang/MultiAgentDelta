@@ -168,13 +168,13 @@ class GateRun:
 
     def fail_condition(self) -> None:
         """不是發現、卻要讓閘門 fail 的條件：閘門判定的 blocking +1，不計入 findings_count；理由由呼叫端以 note() 加入。
-        目前只有 G0 的 risk_tier 不一致使用（維持既有行為；改成正式規則須另開政策 PR，CLAUDE.md 規則 1）。"""
+        目前只有 G0 的 risk_tier 不一致使用（維持既有行為；改成正式規則須另開政策 PR，AGENTS.md 規則 1）。"""
         self._fail_conditions += 1
 
     def awaiting_blocking(self, ids) -> None:
         """待裁決的 blocking 發現（#211、#212）：blocking tier、未被 refute、尚無人工裁決的 LLM 審查發現。計入 findings_count.blocking
         （enforce 下阻擋判定依計數擋，不因沒人裁決就放過），並以一筆待人工裁決列出 ids；不計入 verdict 的 blocking，所以沒有其他
-        blocking 時是 pending（模型意見不能自行確認，docs/09 §5；多模型審查與人工裁決的規則見 CLAUDE.md 規則 6）。
+        blocking 時是 pending（模型意見不能自行確認，docs/09 §5；多模型審查與人工裁決的規則見 AGENTS.md 規則 6）。
         空清單 → 不做任何事。"""
         if not isinstance(ids, (list, tuple)):
             raise ValueError(f"ids 必須是清單（得到 {ids!r}）")
@@ -275,11 +275,11 @@ def _optional_choice(name, v, allowed):
 
 
 def _in_catalog(name, v, known) -> str | None:
-    """CLAUDE.md 規則 3：ID 只能查目錄；null 允許，查不到 → ValueError。"""
+    """AGENTS.md 規則 3：ID 只能查目錄；null 允許，查不到 → ValueError。"""
     if v is None:
         return None
     if not isinstance(v, str) or v not in known():
-        raise ValueError(f"{name} {v!r} 不在 config/catalogs/（CLAUDE.md 規則 3：ID 只能查目錄，查不到請填 null 並在 notes 說明）")
+        raise ValueError(f"{name} {v!r} 不在 config/catalogs/（AGENTS.md 規則 3：ID 只能查目錄，查不到請填 null 並在 notes 說明）")
     return v
 
 

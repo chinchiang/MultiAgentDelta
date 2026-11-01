@@ -80,6 +80,6 @@ JWKS 端點：`GET /.well-known/jwks.json` 公開 RS256 公鑰（n/e）；RSA �
 
 patched 模式下 G5 api-probes 的各項檢查（含 `jwt_alg_confusion`、`swagger_exposed`、`graphql_introspection`、`rate_limit`）都應為 `pass`；整體 G5 狀態要 ZAP 也有結果才會是 `pass`（ZAP 沒跑 → `zap_*` 為 `untested`，G5 `incomplete`）。patched 模式的 `/openapi.json` 需登入，所以判斷靶場是否就緒要用 `/`（`scripts/run_evals.py` 即如此）。
 
-## 安全界線（對應 CLAUDE.md #8）
+## 安全界線（對應 AGENTS.md #8）
 
 此靶場是 VibeSec 唯一允許被 G5/G6 攻擊性探針打擊的目標，且**只能**在 `VIBESEC_TARGET_URL` 指向本靶場、於已授權的隔離環境時執行。切勿將本 app 對外暴露。

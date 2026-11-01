@@ -13,7 +13,7 @@
     沒給 --target → 無法確認 site 是受測目標，兩個掃描都 untested。
   - 規則在 conf 為 IGNORE／OUTOFSCOPE → 略過；conf 沒列且 riskcode 0（Informational）→ 略過；其餘列為發現。
   - 規則 ID：以 config/catalogs/cwe-map.yaml 的 implemented_by（zap:<id>）反查 vibesec 規則；查不到 → zap:<pluginid>
-    （CLAUDE.md 規則 3：不自行對應）。tier 一律由 scripts/vibesec_policy.py 決定（外部規則預設 advisory）。
+    （AGENTS.md 規則 3：不自行對應）。tier 一律由 scripts/vibesec_policy.py 決定（外部規則預設 advisory）。
   - 同一 pluginid 在兩個掃描都出現只記一次（來源合併）。
 退出碼：0 已寫出結果；2 參數或寫檔錯誤。
 """

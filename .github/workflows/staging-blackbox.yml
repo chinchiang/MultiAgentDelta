@@ -1,6 +1,6 @@
 # VibeSec Staging 黑箱 — G5 DAST/API + G6 LLM/Agent 紅隊（由外而內）
 # 部署至 Staging 後、上線前執行；每週定期複測。
-# 不可違反（CLAUDE.md #8）：攻擊性探針只能對 VIBESEC_TARGET_URL 指向的、已授權的測試環境執行。
+# 不可違反（AGENTS.md #8）：攻擊性探針只能對 VIBESEC_TARGET_URL 指向的、已授權的測試環境執行。
 # incomplete ≠ pass：目標無法連線／缺帳號 token → 閘門 incomplete，絕不通過。
 # 目標必須在 config/targets.yaml 的允許清單（scripts/target_guard.py）；不在清單 → 不送任何探針，G5／G6 incomplete。
 # mode、政策與判定程式取自 default branch（.github/actions/vibesec-trusted）；enforce 模式下對外部目標的
@@ -86,7 +86,7 @@ jobs:
           if [ -n "$INPUT_URL" ]; then URL="$INPUT_URL"; LAB=false; else URL="http://127.0.0.1:8000"; LAB=true; fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "is_vulnapp=$LAB" >> "$GITHUB_OUTPUT"
-          # CLAUDE.md 規則 8：送出任何探針前比對 config/targets.yaml（取自 default branch）。
+          # AGENTS.md 規則 8：送出任何探針前比對 config/targets.yaml（取自 default branch）。
           # 被拒或清單無法讀取 → allowed=false：之後打目標的步驟全部略過，G5／G6 記 incomplete。
           set +e
           GUARD=$(python3 _trusted/scripts/target_guard.py check "$URL" 2>&1); code=$?
@@ -257,7 +257,7 @@ jobs:
           echo "promptfoo eval exit=$code"
 
       # 生成層：只有設定 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret 時執行。
-      # 靶場回應屬 internal，依 config/providers.yaml 只允許 anthropic-cloud / openai-cloud（CLAUDE.md 規則 7）；
+      # 靶場回應屬 internal，依 config/providers.yaml 只允許 anthropic-cloud / openai-cloud（AGENTS.md 規則 7）；
       # GLM / DeepSeek 只允許 public，不在此使用。金鑰只經 env 傳入，不寫入 log。
       - name: G6 promptfoo redteam（選用；需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret）
         id: pfred
@@ -267,7 +267,7 @@ jobs:
         env:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
           PROMPTFOO_DISABLE_TELEMETRY: "1"
-          # 不用 promptfoo 雲端遠端生成：purpose 與靶場回應不得送往 providers.yaml 以外的服務（CLAUDE.md 規則 7）
+          # 不用 promptfoo 雲端遠端生成：purpose 與靶場回應不得送往 providers.yaml 以外的服務（AGENTS.md 規則 7）
           PROMPTFOO_DISABLE_REMOTE_GENERATION: "true"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

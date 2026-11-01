@@ -27,7 +27,7 @@ def warn(m): warns.append(m)
 try:
     import yaml
 except ImportError:
-    # 工具缺席不能等於通過（CLAUDE.md 規則 2）：以前只 warn 並 exit 0，所有檢查與 selftest 都被略過（第四次審視 S-14）
+    # 工具缺席不能等於通過（AGENTS.md 規則 2）：以前只 warn 並 exit 0，所有檢查與 selftest 都被略過（第四次審視 S-14）
     print("ERROR: PyYAML 未安裝，無法驗證（incomplete ≠ pass）", file=sys.stderr)
     sys.exit(2)
 
@@ -185,11 +185,11 @@ if yaml is not None:
         exp = (c.get("expected") or {})
         cid, rid = exp.get("control_id"), exp.get("rule_id")
         if cid and known_controls and cid not in known_controls:
-            err(f"{rel}: control_id {cid} 不在 catalogs（CLAUDE.md 規則 3：ID 只能查目錄）")
+            err(f"{rel}: control_id {cid} 不在 catalogs（AGENTS.md 規則 3：ID 只能查目錄）")
         if rid and known_rules and rid not in known_rules:
-            err(f"{rel}: rule_id {rid} 不在 cwe-map/semgrep（CLAUDE.md 規則 3：ID 只能查目錄）")
+            err(f"{rel}: rule_id {rid} 不在 cwe-map/semgrep（AGENTS.md 規則 3：ID 只能查目錄）")
 
-    # 文件與設定內出現的 ID 也只能來自目錄（CLAUDE.md 規則 3）：以前只查 eval 案例，
+    # 文件與設定內出現的 ID 也只能來自目錄（AGENTS.md 規則 3）：以前只查 eval 案例，
     # 文件寫錯的 rule_id／控制 ID（例如不存在的 vibesec.g5.bola-idor）一路沒被發現（第一輪審查 D）。
     # 結尾接 -* 或 * 的是萬用寫法（vibesec.g3.sql-*），不是 ID；scripts/ 的 selftest 會故意用目錄外的 ID，不掃。
     _docs = sorted({*glob.glob(str(ROOT / "**/*.md"), recursive=True), *glob.glob(str(ROOT / ".claude/**/*.md"), recursive=True),
@@ -213,13 +213,13 @@ if yaml is not None:
             if known_cwes:
                 for m in _cwe_pat.finditer(line):
                     if m.group(0) not in known_cwes:
-                        err(f"{rel}:{i}: {m.group(0)} 不在 cwe-map.yaml 的 cwes（CLAUDE.md 規則 3）"); _bad_ids += 1
+                        err(f"{rel}:{i}: {m.group(0)} 不在 cwe-map.yaml 的 cwes（AGENTS.md 規則 3）"); _bad_ids += 1
             if f in _cfg:
                 continue
             for label, pat, known in _id_pats:
                 for m in pat.finditer(line):
                     if known and m.group(0) not in known:
-                        err(f"{rel}:{i}: {label} {m.group(0)} 不在 catalogs（CLAUDE.md 規則 3）"); _bad_ids += 1
+                        err(f"{rel}:{i}: {label} {m.group(0)} 不在 catalogs（AGENTS.md 規則 3）"); _bad_ids += 1
             for m in _path_pat.finditer(line):
                 p = re.sub(r":\d+(?:-\d+)?(?:,\d+)*$", "", m.group(1)).rstrip("/")
                 if re.search(r"[*<>{}\[\]$…]|\.\.", p):
@@ -229,13 +229,13 @@ if yaml is not None:
     if not _bad_ids: ok(f"文件／設定中的 CWE、rule_id、控制 ID 皆在目錄（{len(_docs) + len(_cfg)} 檔）")
     if not _bad_paths: ok("文件以反引號引用的 repo 路徑皆存在")
 
-    # CVE 也只能來自目錄（CLAUDE.md 規則 3）：以前 catalogs 沒有 CVE 目錄、這裡也不檢查，
+    # CVE 也只能來自目錄（AGENTS.md 規則 3）：以前 catalogs 沒有 CVE 目錄、這裡也不檢查，
     # CVE-2026-33634 等引用從未查證（第五次審查 #5）。判定在 scripts/cve_catalog.py（有 selftest）
     import cve_catalog
     _cve_cat = ROOT / cve_catalog.CATALOG
     _cves = ((load_yaml(_cve_cat) or {}).get("cves") or {}) if _cve_cat.exists() else None
     if _cves is None:
-        err(f"缺 {cve_catalog.CATALOG}：無法核對文件與設定引用的 CVE（CLAUDE.md 規則 3）")
+        err(f"缺 {cve_catalog.CATALOG}：無法核對文件與設定引用的 CVE（AGENTS.md 規則 3）")
     else:
         _p = cve_catalog.catalog_problems(_cves)
         for m in _p: err(m)
@@ -254,7 +254,7 @@ if yaml is not None:
         if d.get("control_id") and d["control_id"] not in known_controls:
             warn(f"finding.example.json control_id {d['control_id']} 不在 catalogs")
 
-# --- 實際發出的規則 ID／控制 ID 必須在 catalogs（CLAUDE.md #3）---
+# --- 實際發出的規則 ID／控制 ID 必須在 catalogs（AGENTS.md #3）---
 # workflow 與 scripts 中寫死的 vibesec.gN.* 與 VS-G*-* 若不在目錄，該發現就查不到 CWE 與阻擋政策（等於被靜默降級）。
 if yaml is not None and known_rules:
     _VARIANT = re.compile(r"-(supabase-)?js$")
@@ -314,7 +314,7 @@ if yaml is not None:
             if good: ok(f"implemented_by ok: {rid} ← {ref}")
             else: err(f"cwe-map {rid}: implemented_by {ref}：{why}")
 
-# --- 每條目錄規則都要有實作（CLAUDE.md #1、#2）---
+# --- 每條目錄規則都要有實作（AGENTS.md #1、#2）---
 # 「政策說會擋、實際沒有任何東西發出這條規則」是最危險的落差：enforce 模式下等於靜默放行。
 #   自動實作 = semgrep 規則、workflow／scripts 中實際發出的 "vibesec.gN.x" 字面值、implemented_by 的工具規則（review: 除外）
 #   blocking（blocking-policy.yaml 的 blocking 或任一 tier_overrides.promote_to_blocking）→ 必須有自動實作，否則錯誤
@@ -404,7 +404,7 @@ if yaml is not None:
             _no_ho = sorted({str(c.get(_k)) for c in cases.values()} - {str(cases[x].get(_k)) for x in ho if x in cases})
             if _no_ho:
                 err(f"evals 沒有 held-out 案例的 {_k}：{_no_ho}")
-        # 案例的 control_id 必須是該規則在 cwe-map 的 control_ids 之一（CLAUDE.md 規則 3：ID 只能查目錄）；
+        # 案例的 control_id 必須是該規則在 cwe-map 的 control_ids 之一（AGENTS.md 規則 3：ID 只能查目錄）；
         # 以前 13 案寫成相鄰但不對應的 ID（ASVS5-V8.1 對 missing-owner-filter），報表依控制彙整時就錯位
         _cm = (load_yaml(ROOT / "config/catalogs/cwe-map.yaml") or {}).get("rules") or {}
         for cid, c in sorted(cases.items()):
@@ -584,7 +584,7 @@ try:
                 _order = {"L1": 1, "L2": 2, "L3": 3}
                 _decl, _model = _vb.get("risk_tier"), _d.get("risk_tier")
                 if _decl != _model:
-                    # docs/01：兩者應一致，且推導值不得高於宣告值。改 vibesec.yaml risk_tier 是政策決定（CLAUDE.md 規則 1），
+                    # docs/01：兩者應一致，且推導值不得高於宣告值。改 vibesec.yaml risk_tier 是政策決定（AGENTS.md 規則 1），
                     # 由人類在獨立 PR 決定；在那之前以警告呈現，G0 會照實標出差異。
                     _msg = f"risk_tier 不一致：vibesec.yaml {_decl}、威脅模型 {_model}"
                     if _order.get(_model, 0) > _order.get(_decl, 0):
@@ -749,15 +749,15 @@ else:
 import bilingual as _bi
 _bi_files, _bi_missing = _bi.set_paths(ROOT)
 for _m in _bi_missing:
-    err(f"雙語集合的 {_m} 不存在：無法確認集合內的文件都是雙語（集合須與 CLAUDE.md 同步修改）")
+    err(f"雙語集合或譯本的 {_m} 不存在：無法確認文件語言（集合與譯本須與 AGENTS.md「文件語言」同步修改）")
 for _f in _bi_files:
     for _p in _bi.problems(_f.read_text(encoding="utf-8")):
-        err(f"{_f.relative_to(ROOT)}：{_p}（雙語集合，CLAUDE.md 命名與格式慣例）")
+        err(f"{_f.relative_to(ROOT)}：{_p}（雙語集合，AGENTS.md 文件語言）")
 for _tr, _src in _bi.TRANSLATIONS.items():
     if (ROOT / _tr).is_file() and (ROOT / _src).is_file():
         for _p in _bi.translation_problems((ROOT / _src).read_text(encoding="utf-8"), (ROOT / _tr).read_text(encoding="utf-8")):
-            err(f"{_tr}（{_src} 的英文譯本）：{_p}")
-ok(f"雙語集合 {len(_bi_files)} 份文件與譯本已檢查")
+            err(f"{_tr}（{_src} 的英文譯本）：{_p}（AGENTS.md 文件語言）")
+ok(f"雙語集合 {len(_bi_files)} 份文件與譯本 {len(_bi.TRANSLATIONS)} 份已檢查")
 
 # --- CI 設定的不變式（判定在 scripts/ci_invariants.py，有 selftest）：防止已修過的弱點被改回去 ---
 import ci_invariants as _ci

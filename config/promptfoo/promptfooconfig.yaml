@@ -1,8 +1,8 @@
 # VibeSec G6 — promptfoo 紅隊「生成層」設定（需要模型金鑰）
-# 用法（只能對 VIBESEC_TARGET_URL 指向的、已授權的測試環境執行；CLAUDE.md 規則 8）：
+# 用法（只能對 VIBESEC_TARGET_URL 指向的、已授權的測試環境執行；AGENTS.md 規則 8）：
 #   export VIBESEC_TARGET_URL=http://localhost:8000
 #   promptfoo redteam run -c config/promptfoo/promptfooconfig.yaml --output reports/g6-promptfoo-redteam.json
-# 攻擊生成與評分需要一個模型。依 CLAUDE.md 規則 7：靶場回應屬 internal，只能送 config/providers.yaml 中
+# 攻擊生成與評分需要一個模型。依 AGENTS.md 規則 7：靶場回應屬 internal，只能送 config/providers.yaml 中
 # allowed_data_classes 含 internal 的 provider（anthropic-cloud、openai-cloud）。CI 由 ANTHROPIC_API_KEY / OPENAI_API_KEY
 # secret 決定；兩者皆無 → redteam 層記 untested，不產生 pass。
 # 不需金鑰的決定性測試在 config/promptfoo/tests.yaml（promptfoo eval）。

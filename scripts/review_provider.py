@@ -6,7 +6,7 @@
   python3 scripts/review_provider.py selftest
 
 規則：
-  - 只送給 allowed_data_classes 包含 --data-class 的 provider；不符 → state=refused，不送出任何內容（CLAUDE.md 規則 7、docs/08 §12）。
+  - 只送給 allowed_data_classes 包含 --data-class 的 provider；不符 → state=refused，不送出任何內容（AGENTS.md 規則 7、docs/08 §12）。
     本工具不替內容判定分級，也不降級；分級由呼叫端依 docs/08 §12 決定。
   - 金鑰只從 api_key_env 讀，不印、不寫入輸出。缺金鑰 → state=missing；逾時 → timeout；HTTP／解析失敗 → error。
     這些狀態都不是意見，呼叫端必須照實記錄（incomplete ≠ pass，規則 2），不得補假意見。
@@ -42,7 +42,7 @@ def load_provider(name: str, root: pathlib.Path = ROOT) -> dict:
     return {"name": name, **(pv[name] or {})}
 
 
-# confidential／pii 只能送 rotation.sensitive_data_providers 列出的地端／內網 provider（CLAUDE.md 規則 7）。
+# confidential／pii 只能送 rotation.sensitive_data_providers 列出的地端／內網 provider（AGENTS.md 規則 7）。
 # 這是 allowed_data_classes 之外的第二道硬防線：就算有人誤把某雲端 provider 的 allowed_data_classes 開到 pii，
 # 這裡仍會擋下，與 prepare_comparison.py 的判定對齊（不只靠逐一維護每個 provider 的清單）。
 SENSITIVE_CLASSES = ("confidential", "pii")
@@ -256,7 +256,7 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
                 "note": f"no provider allowed for data_class={data_class}：{provider} 只收 {p.get('allowed_data_classes')}（未送出任何內容）"}
     if data_class in SENSITIVE_CLASSES and provider not in load_sensitive_providers(root):
         return {**out, "state": "refused",
-                "note": f"data_class={data_class} 只能送 rotation.sensitive_data_providers；{provider} 不在清單（未送出任何內容，CLAUDE.md 規則 7）"}
+                "note": f"data_class={data_class} 只能送 rotation.sensitive_data_providers；{provider} 不在清單（未送出任何內容，AGENTS.md 規則 7）"}
     key = env.get(p.get("api_key_env") or "", "")
     profile = ""
     if p.get("kind") == "bedrock":

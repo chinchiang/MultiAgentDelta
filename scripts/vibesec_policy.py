@@ -30,7 +30,7 @@ p.is_this_repo(project)：None、root，或 project_root（存在的目錄）→
   python3 scripts/vibesec_policy.py selftest
 
 政策檔缺席或無法解析、risk_tier／tier_overrides／applies_only_to_gates／incomplete_gate_is_blocking_in_enforce
-不合法 → 例外（incomplete ≠ pass，CLAUDE.md #2）；要改政策必須由人類在獨立 PR 決定（規則 1）。
+不合法 → 例外（incomplete ≠ pass，AGENTS.md #2）；要改政策必須由人類在獨立 PR 決定（規則 1）。
 """
 from __future__ import annotations
 import contextlib, fnmatch, os, pathlib, sys
@@ -255,7 +255,7 @@ def g4_enforce_reminder(policy: Policy) -> str | None:
 
 def load_policy(root: pathlib.Path | str | None = None, **kw) -> tuple[Policy | None, str | None]:
     """閘門開始時建立一次 Policy：(Policy, None)。政策檔缺席、無法解析或不合法 → (None, 未完成原因)；
-    閘門記一筆未完成原因、狀態 incomplete，不分類任何發現（incomplete ≠ pass，CLAUDE.md #2）。kw 原樣交給 Policy。"""
+    閘門記一筆未完成原因、狀態 incomplete，不分類任何發現（incomplete ≠ pass，AGENTS.md #2）。kw 原樣交給 Policy。"""
     try:
         return Policy(root, **kw), None
     except ModeError as e:   # mode 錯誤也是政策讀不到的一種：同一個前綴、同一條閘門路徑（#200）

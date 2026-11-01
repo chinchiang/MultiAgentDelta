@@ -44,7 +44,7 @@ function body({ evaluation, runUrl, sha, date }) {
     '',
     ...evaluation.problems.map((p) => `- ${p}`),
     '',
-    '> 處理原則：先找根因。不得以 `continue-on-error`、移除檢查或放寬閘門讓它轉綠（CLAUDE.md 規則 1、2）。',
+    '> 處理原則：先找根因。不得以 `continue-on-error`、移除檢查或放寬閘門讓它轉綠（AGENTS.md 規則 1、2）。',
     '> 此 issue 由 staging-blackbox 自動維護：之後再出問題會在這裡留言，恢復時自動關閉。',
   ].join('\n');
 }

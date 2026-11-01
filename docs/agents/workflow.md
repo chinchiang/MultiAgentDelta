@@ -4,7 +4,7 @@
 
 # Agent 工作流程：實作 ticket、開 PR、合併
 
-實作任何 ticket（`/mattpocock-skills:implement`）時依本檔執行。規則以 `CLAUDE.md` 為準，本檔只寫流程、判準與容易踩的坑。
+實作任何 ticket（`/mattpocock-skills:implement`）時依本檔執行。規則以 `AGENTS.md` 為準，本檔只寫流程、判準與容易踩的坑。
 
 ## 每張 ticket 的步驟
 
@@ -21,7 +21,7 @@
 
 其他規則：
 - spec 沒涵蓋、而且會影響不變欄位（status、status_reason、findings_count、coverage、退出碼）的地方，先問維護者，附上推薦答案，並把決定寫回 issue 留言。
-- PR 要逐項列出「變嚴」的變動（放寬見 CLAUDE.md 規則 1）。
+- PR 要逐項列出「變嚴」的變動（放寬見 AGENTS.md 規則 1）。
 - 對外的動作要先問，例如觸發 staging-blackbox、改 issue 標籤。PR 合併、issue 關閉之後，如果 issue 仍掛著 `needs-triage`，先問要不要拿掉。
 - commit、PR、issue 都用正體中文；結尾的 attribution 依 harness 的指示。
 - 新一輪 architecture review 的流程：`improve-codebase-architecture` → `grilling`（一輪問完當下所有能問的題目，每題附推薦答案）→ `to-spec`（父 issue，標 `ready-for-agent`）→ `to-tickets`（GitHub 原生 sub-issue，加上阻擋關係）→ 依序對每張 ticket 執行 `implement`。
@@ -84,7 +84,7 @@ gh run view "$id" --log | grep '| G' | sed 's/.*Z //' | sort -u     # 閘門表�
 - **`python3 -I`**：g4_static 和 action 都以 `-I` 執行，import 一定要放在 `sys.path.insert` 之後。
 - **ID 掃描**：`validate.py` 會掃 scripts 裡的 `vibesec.gN.*`、`VS-G*-*`，測試資料也一樣，所以要用目錄裡存在的 ID。
 - **不變式會掃到註解**：`step_mode_decisions` 會略過 bash 的註解行，其他不變式不一定。註解裡改寫說法，避開被禁止的字樣。
-- **雙語**：只有雙語集合（見 CLAUDE.md）要中英兩段一起改；集合外的文件只寫正體中文。`validate.py` 會檢查集合內的錨點、切換連結與標題結構（`scripts/bilingual.py`），句子是否逐一對應要靠 review。
+- **雙語**：只有雙語集合（見 AGENTS.md「文件語言」）要中英兩段一起改；改 `AGENTS.md` 時要同步改英文譯本 `docs/agents/rules.en.md`；其他文件只寫正體中文。`validate.py` 會檢查集合內的錨點、切換連結與標題結構，以及譯本與 `AGENTS.md` 的標題結構（`scripts/bilingual.py`），句子是否逐一對應要靠 review。
 - **selftest 的 mode**：selftest 用 `tree_copy("mode: …")` 固定 mode，不依賴 repo 目前的 `vibesec.yaml`。CI 的 repo-validate 會在 mode 改為 enforce 的副本裡再跑一次 validate，依賴 repo mode 的 selftest 在 PR 階段就會失敗（#223）。
 - **staging-blackbox**：repo 沒有設定 `vars.VIBESEC_TARGET_URL`，所以 staging-blackbox 只會打 job 內啟動的 vulnapp。
 - **合併條件**：`main` 沒有 required status checks。要確認某個 check 是不是合併條件，用 `gh api repos/chinchiang/MultiAgentDelta/rulesets` 查（#209）。
@@ -95,7 +95,7 @@ gh run view "$id" --log | grep '| G' | sed 's/.*Z //' | sort -u     # 閘門表�
 
 # Agent workflow: implementing a ticket, opening a PR, merging
 
-Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`). `CLAUDE.md` holds the rules; this file covers only the process, the pass criteria, and the gotchas.
+Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`). `AGENTS.md` holds the rules; this file covers only the process, the pass criteria, and the gotchas.
 
 ## Steps for every ticket
 
@@ -112,7 +112,7 @@ Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`
 
 Other rules:
 - Where the spec is silent and the change affects invariant fields (status, status_reason, findings_count, coverage, exit codes), ask the maintainer with a recommended answer, and record the decision as an issue comment.
-- The PR lists every change that makes checks stricter (for relaxing, see CLAUDE.md rule 1).
+- The PR lists every change that makes checks stricter (for relaxing, see AGENTS.md rule 1).
 - Ask before outward-facing actions, such as triggering staging-blackbox or changing issue labels. After a PR is merged and its issue closes, if the issue still has `needs-triage`, ask whether to remove it.
 - Commits, PRs, and issues are written in Traditional Chinese; the closing attribution follows the harness instructions.
 - A new architecture review round: `improve-codebase-architecture` → `grilling` (each round asks every question that can be asked now, each with a recommended answer) → `to-spec` (a parent issue labelled `ready-for-agent`) → `to-tickets` (native GitHub sub-issues with blocking relationships) → `implement` for each ticket in order.
@@ -175,7 +175,7 @@ Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 - **`python3 -I`**: g4_static and the action run with `-I`, so imports must come after `sys.path.insert`.
 - **ID scan**: `validate.py` scans scripts for `vibesec.gN.*` and `VS-G*-*`, test data included, so use IDs that exist in the catalogs.
 - **Invariants scan comments**: `step_mode_decisions` skips bash comment lines; other invariants may not. Reword comments to avoid the forbidden strings.
-- **Bilingual docs**: only the bilingual set (see CLAUDE.md) needs both language sections updated together; files outside the set are Traditional Chinese only. `validate.py` checks the anchors, language links, and heading structure inside the set (`scripts/bilingual.py`); sentence-by-sentence correspondence is left to review.
+- **Bilingual docs**: only the bilingual set (see "文件語言" in AGENTS.md) needs both language sections updated together; a change to `AGENTS.md` also updates its English translation `docs/agents/rules.en.md`; all other documents are Traditional Chinese only. `validate.py` checks the anchors, language links, and heading structure inside the set, and that the translation has the same heading structure as `AGENTS.md` (`scripts/bilingual.py`); sentence-by-sentence correspondence is left to review.
 - **Selftest mode**: selftests pin the mode with `tree_copy("mode: …")` instead of relying on the repo's current `vibesec.yaml`. CI's repo-validate runs validate again in a copy whose mode is enforce, so a selftest that depends on the repo's mode fails at the PR stage (#223).
 - **staging-blackbox**: the repo has no `vars.VIBESEC_TARGET_URL`, so staging-blackbox only hits the vulnapp started inside the job.
 - **Merge requirements**: `main` has no required status checks. To check whether a given check gates merging, query `gh api repos/chinchiang/MultiAgentDelta/rulesets` (#209).

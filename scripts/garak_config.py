@@ -10,7 +10,7 @@ staging-blackbox.yml 以前用 `sed "s#http://localhost:8000/chat#${VIBESEC_TARG
   python3 scripts/garak_config.py --template config/garak/vibesec.probes.yaml --target "$VIBESEC_TARGET_URL" --out garak.yaml
   python3 scripts/garak_config.py selftest
 
-授權檢查（config/targets.yaml）不在這裡：呼叫端只在 target_guard 通過後才執行 garak（CLAUDE.md 規則 8）。
+授權檢查（config/targets.yaml）不在這裡：呼叫端只在 target_guard 通過後才執行 garak（AGENTS.md 規則 8）。
 """
 from __future__ import annotations
 import argparse, json, pathlib, sys

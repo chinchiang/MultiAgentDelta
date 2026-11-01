@@ -1,5 +1,5 @@
 # gitleaks 精確指紋例外（commit:檔案:規則:行號）。只排除下列已確認的誤報，規則本身不放寬；
-# 同一規則的任何新命中照樣會擋。新增或移除條目須由 owner 在獨立 PR 決定（CLAUDE.md 規則 1；CODEOWNERS 保護本檔）。
+# 同一規則的任何新命中照樣會擋。新增或移除條目須由 owner 在獨立 PR 決定（AGENTS.md 規則 1；CODEOWNERS 保護本檔）。
 #
 # 2026-10-12：generic-api-key 把舊版 scripts/validate.py 的 selftest 腳本檔名清單
 # （一長串以引號括起的 .py 檔名）與 scripts/gate_verdict.py 的工具別名對照表誤判為金鑰。

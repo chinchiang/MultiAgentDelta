@@ -7,7 +7,7 @@
   apply   <ruling.yaml> --findings reports/findings.json  驗證通過後，把結果寫回 findings.json
   selftest                                               內建規則自我測試（validate.py 會呼叫）
 
-不可違反（CLAUDE.md #5、#6）：
+不可違反（AGENTS.md #5、#6）：
   - 裁決者必須是人（decided_by.type = human，handle 不得是模型／bot）。
   - 模型共識不是依據：confirm 必須有 reproduced／manual_review，且附至少一筆非 model_review 的證據。
   - 每一則 minority 意見都必須逐一回應；意見本身不刪除、不覆寫。

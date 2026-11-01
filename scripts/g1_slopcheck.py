@@ -5,7 +5,7 @@
 四層：(1) registry 存在性 + 週下載量；(2) 名稱相似度 vs popular 清單 + blacklist；
       (3) 安裝階段 hook（npm postinstall/preinstall/install）；(4) 新套件冷卻期。
 
-原則（CLAUDE.md #2）：網路失敗、registry 無法查詢、鎖定檔尚無解析器 → 標記 incomplete，絕不視為通過。
+原則（AGENTS.md #2）：網路失敗、registry 無法查詢、鎖定檔尚無解析器 → 標記 incomplete，絕不視為通過。
 退出碼：0 無阻擋；1 有 blocking 發現；2 無法完成檢查（incomplete）。
 用法：python3 scripts/g1_slopcheck.py [--target <dir>] [--staged] [--manifest <path> ...] [--rules-file <path> ...]
       [--changed-files <list>] [--base <ref>] [--sarif <out>] [--gate <out>] | selftest | --help
@@ -53,7 +53,7 @@ def read_vibesec():
 
 def config_problems():
     """缺席或壞掉就會讓 G1 變寬鬆的設定（門檻退回內建值、安裝腳本樣式／黑名單／熱門清單變空）：
-    回傳未完成原因（incomplete ≠ pass，CLAUDE.md #2）。allowlist.yaml 與 blocking-policy 的例外壞掉只會更嚴，不在此列。"""
+    回傳未完成原因（incomplete ≠ pass，AGENTS.md #2）。allowlist.yaml 與 blocking-policy 的例外壞掉只會更嚴，不在此列。"""
     out = []
     try:
         import yaml
@@ -1520,7 +1520,7 @@ def selftest():
                 fails.append(f"--changed-files 沒給 --base 也是 scope diff（得到 {g.get('scope')}）")
             gate.unlink()
         # 設定檔缺席或壞掉 → 門檻退回內建值、安裝腳本樣式／黑名單／熱門清單變空，檢查變寬鬆卻照樣記 pass（fail-open）。
-        # 會讓檢查變寬鬆的設定必須讀得到，否則 incomplete 並列出檔名（CLAUDE.md #2）；allowlist／例外壞掉只會更嚴，不在此列。
+        # 會讓檢查變寬鬆的設定必須讀得到，否則 incomplete 並列出檔名（AGENTS.md #2）；allowlist／例外壞掉只會更嚴，不在此列。
         import shutil
         real_cfg_dir, real_vibesec = CFG_DIR, ROOT / "vibesec.yaml"
         npm_check = lambda pkg, ver, c: ([], None)

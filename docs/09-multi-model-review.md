@@ -12,7 +12,7 @@ def complete(messages: list[Message], json_schema: dict, temperature: float = 0)
 ```
 
 - `messages`：`[{"role": "system", "content": <角色提示>}, {"role": "user", "content": <審查包>}]`。
-- `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。`scripts/review_provider.py` 依審查包判斷契約：`output` 要 `{"opinions", "general"}` 者為 G4 審查摘要，否則為 §3 的單一 opinion；回應不是 JSON 或不符契約時重試一次，再不符記 `error`，不替模型改寫格式。重試時在原審查包後附上「上一次哪裡不符、應回什麼形狀」；temperature 0 下送出同一份內容只會得到同一個回應，不附說明的重試沒有意義。被拒絕的回應原樣保存在輸出的 `rejected_attempts`（不採用，只供稽核）；無法解析成 JSON 的文字不保存（記為 `null`）。供應商 `finish_reason`／`stop_reason`／`stopReason` 顯示被內容過濾或截斷（不是 `stop`／`end_turn`／`stop_sequence`）時直接記 `error`，不當成格式錯誤重試。所有回傳路徑（含 `note`、被拒絕的回應）都會遮罩供應商金鑰；Bedrock 另遮罩 `AWS_SECRET_ACCESS_KEY` 與 `AWS_SESSION_TOKEN`，遮罩後留 SHA-256 指紋。`anthropic-bedrock` 已由人類決定啟用（2026-10-10，只收 `public`／`internal`，CLAUDE.md 規則 7）；憑證可用明確金鑰，或 `aws_profile_env`（預設 `AWS_PROFILE`）指名的 AWS SSO profile，只用這個指名的 profile，不落到預設憑證鏈；SSO token 過期記 `error`。
+- `json_schema`：角色輸出契約（§3）；provider 若支援 JSON mode / structured output 就啟用，不支援則在回應後以 schema 驗證，驗證失敗重試一次後記 error。`scripts/review_provider.py` 依審查包判斷契約：`output` 要 `{"opinions", "general"}` 者為 G4 審查摘要，否則為 §3 的單一 opinion；回應不是 JSON 或不符契約時重試一次，再不符記 `error`，不替模型改寫格式。重試時在原審查包後附上「上一次哪裡不符、應回什麼形狀」；temperature 0 下送出同一份內容只會得到同一個回應，不附說明的重試沒有意義。被拒絕的回應原樣保存在輸出的 `rejected_attempts`（不採用，只供稽核）；無法解析成 JSON 的文字不保存（記為 `null`）。供應商 `finish_reason`／`stop_reason`／`stopReason` 顯示被內容過濾或截斷（不是 `stop`／`end_turn`／`stop_sequence`）時直接記 `error`，不當成格式錯誤重試。所有回傳路徑（含 `note`、被拒絕的回應）都會遮罩供應商金鑰；Bedrock 另遮罩 `AWS_SECRET_ACCESS_KEY` 與 `AWS_SESSION_TOKEN`，遮罩後留 SHA-256 指紋。`anthropic-bedrock` 已由人類決定啟用（2026-10-10，只收 `public`／`internal`，AGENTS.md 規則 7）；憑證可用明確金鑰，或 `aws_profile_env`（預設 `AWS_PROFILE`）指名的 AWS SSO profile，只用這個指名的 profile，不落到預設憑證鏈；SSO token 過期記 `error`。
 - `temperature` 固定 `0`（例外：`anthropic-bedrock` 為 `null`，見欄位表），讓同一 `prompt_version` 下的輸出可比較。
 
 六個 `family`：`anthropic`、`openai`、`google`（Gemini）、`glm`、`deepseek`、`nvidia`（Nemotron，本機 LM Studio）（`schemas/finding.schema.json` 另允許 `fake` 供 evals 用）。`family` 是「同一基礎模型血統」的標籤；同一 family 的兩個 provider（例如雲端 OpenAI 與地端 vLLM 跑的 OpenAI 系開源模型）**不算**兩個 family。
@@ -103,7 +103,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
   仍分歧 ──▶ requires_human: true；所有意見保留，少數方 minority: true
 ```
 
-硬規則（來自 CLAUDE.md 第 6 條與 `vibesec.yaml review.*`）：
+硬規則（來自 AGENTS.md 第 6 條與 `vibesec.yaml review.*`）：
 
 1. **第一輪不交換**（`round1_independent: true`）：審查包不含任何模型意見、也不含工具以外的「初步結論」。確保共同盲點可被量測。
 2. **最多兩輪交叉**（`max_cross_rounds: 2`），`round` 欄位 1–3。`scripts/g4_review.py` 檢查輪次結構，不符即紀錄不採用：每個出現在意見中的（角色, provider）都必須有第 1 輪獨立意見；第 N 輪（N ≥ 2）之前必須有第 N−1 輪（不能跳輪）；同一（角色, provider）同一輪只能有一筆。第 1 輪之後缺席（逾時、錯誤）是允許的，該 provider 以第 1 輪意見計（見第 3 點）。第一輪是否真的獨立（審查包沒有夾帶他人意見）無法從紀錄驗證，仍靠第 1 點的流程保證。
@@ -126,7 +126,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 ## 6. 輪替與成本政策
 
 - 角色 → 偏好 family 在 `providers.yaml rotation.roles` 定義（例如 `appsec: [anthropic, openai]`、`supplychain-cicd: [openai, deepseek]`）。第一個可用且資料分級允許者為主、第二個為第二 family。
-- **資料外傳雙重防線**（`scripts/review_provider.py`）：送出前除了檢查 provider 的 `allowed_data_classes` 是否涵蓋該分級，`confidential`／`pii` 另要求 provider 必須列於 `rotation.sensitive_data_providers`，否則 `state=refused`、不送出任何內容。即使有人誤把某雲端 provider 的 `allowed_data_classes` 開到 `pii`，這道防線仍會擋下（CLAUDE.md 規則 7）。
+- **資料外傳雙重防線**（`scripts/review_provider.py`）：送出前除了檢查 provider 的 `allowed_data_classes` 是否涵蓋該分級，`confidential`／`pii` 另要求 provider 必須列於 `rotation.sensitive_data_providers`，否則 `state=refused`、不送出任何內容。即使有人誤把某雲端 provider 的 `allowed_data_classes` 開到 `pii`，這道防線仍會擋下（AGENTS.md 規則 7）。
 - 每個發現的審查呼叫上限：`角色數 × 2 family × 3 round`。超過預算（設定於 `config/providers.yaml` 的 `rotation.budget`，**目前只是設定，沒有程式強制執行**）→ 剩餘發現 `pending`，`notes` 記 `review budget exhausted`，**不得**為省錢改用單 family 放行高風險控制。
 - 審查包只送 diff 周邊 ±40 行與被引用的檔案，不送整個 repo；G4 架構審查送威脅模型與元件清單。由 `scripts/review_packet.py` 從受測 commit 產生：full 範圍附威脅模型全文與其以 `path:line` 引用的檔案，diff 範圍附每個變更 hunk 前後 40 行；內容先經 gitleaks 掃描並遮罩命中字串，gitleaks 缺席或超過大小上限就不產生（不截斷）。遮罩用 `config/gitleaks-packet.toml`：與 G2 的 `config/gitleaks.toml` 同一套規則，但沒有任何 allowlist（G2 的 lock 檔路徑、stopwords、`example`／`synthetic` 標記是給掃本 repo 用的，套在遮罩上會讓外部專案的真祕密明文送出），掃描時暫存檔也改用中性檔名，避開 gitleaks 內建預設的路徑 allowlist；內建規則自帶的 allowlist 無法移除，屬已知殘留。
 - （規劃，尚未實作）同一 `rule_id + path` 在 30 天內已有 E3 人工裁決 → 不重送，沿用舊裁決並標 `retest_result`。
@@ -197,7 +197,7 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 
 | 規則 | 理由 |
 |---|---|
-| `decided_by.type` 必須是 `human`，handle／role 不得是模型或 bot | 模型不能裁決模型（CLAUDE.md #6） |
+| `decided_by.type` 必須是 `human`，handle／role 不得是模型或 bot | 模型不能裁決模型（AGENTS.md #6） |
 | `confirm` 的 basis 只能是 `reproduced` 或 `manual_review`，且附 ≥ 1 筆非 `model_review` 的證據 | 模型共識不是依據；一致最多 E2（§4 第 5 點） |
 | 每則 `minority` 意見都必須在 `minority_acknowledged[]` 回應（`accepted`／`rejected` + 說明），也不能列出不存在的 | 少數意見不得被默默忽略 |
 | `refute` 不得以 `insufficient_evidence` 為依據；證據不足請 `defer` | 沒證據不等於誤報 |
@@ -205,5 +205,5 @@ Round 3（交叉質疑 2） 同上，最後一輪。
 | 只有 `requires_human: true` 的 finding 可被裁決；同一 finding 不可重複 apply | 避免覆蓋既有裁決 |
 | `apply` 只改 `validation_status`、`evidence_grade`（confirm → E3）、`review.requires_human`、`review.human_decision`、`review.ruling_ref`，並追加裁決證據 | 不改嚴重度、CVSS、policy_tier、priority，也不刪除或改寫任何模型意見 |
 
-裁決不能降低 `policy_tier`。要把 blocking 降為 advisory 屬於政策變更，須由人類在獨立 PR 修改 `config/policy/blocking-policy.yaml`（CLAUDE.md #1）。
+裁決不能降低 `policy_tier`。要把 blocking 降為 advisory 屬於政策變更，須由人類在獨立 PR 修改 `config/policy/blocking-policy.yaml`（AGENTS.md #1）。
 

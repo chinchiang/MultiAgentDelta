@@ -7,7 +7,7 @@
 
 傳統交付有「人類撰寫 → 同儕審查 → 測試」三道把關。Vibe Coding（開發者依賴 AI 產生程式碼並「全部接受」）把前兩道壓掉，只剩測試。Stanford Perry 等人（ACM CCS 2023）的受控實驗顯示：使用 AI 助手的受試者寫出**更不安全**的程式碼，卻**更相信**其安全。VulDetectBench 則指出 LLM 對「有沒有漏洞」的二元判斷約 80%，但定位根因的能力 **< 30%**。兩個數字合起來的結論是：
 
-1. 測試必須變成 CI/CD 中**不可繞過**的閘門（CLAUDE.md 規則 1）。
+1. 測試必須變成 CI/CD 中**不可繞過**的閘門（AGENTS.md 規則 1）。
 2. AI 審查只能當**輔助分流層**，確定性工具與人工裁決才是主體（`docs/09-multi-model-review.md`）。
 
 ## 2. 四大病徵 → 閘門映射
@@ -50,7 +50,7 @@
 │   JWT alg:none / 混淆、SSRF 169.254.169.254、 直接 / 間接注入、System Prompt 提取、  │
 │   設定外溢、rate limit)                     AI 輸出 XSS、Denial of Wallet)        │
 │                                                                              │
-│  工作流：.github/workflows/staging-blackbox.yml；只能打授權靶場（CLAUDE.md 規則 8） │
+│  工作流：.github/workflows/staging-blackbox.yml；只能打授權靶場（AGENTS.md 規則 8） │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -61,7 +61,7 @@
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-狀態語意（`schemas/gate-result.schema.json`）：`pass / fail / pending / untested / not_applicable / incomplete`。工具缺席、逾時、API 失敗、缺帳號、缺文件、環境無法啟動 → `incomplete` 並寫 `status_reason`，**永遠不等於 pass**（CLAUDE.md 規則 2）。
+狀態語意（`schemas/gate-result.schema.json`）：`pass / fail / pending / untested / not_applicable / incomplete`。工具缺席、逾時、API 失敗、缺帳號、缺文件、環境無法啟動 → `incomplete` 並寫 `status_reason`，**永遠不等於 pass**（AGENTS.md 規則 2）。
 
 ## 4. 白箱 ↔ 黑箱雙向映射
 
@@ -86,13 +86,13 @@
 | **blocking** | 高確定性、可機器判定、修法明確 | 硬編碼金鑰、幻覺 / 冷卻期未滿 / 黑名單套件、未參數化 SQL、`alg:none`、雙帳號 BOLA 實證、KEV 命中 | shadow：報告並標示「enforce 時會擋」；enforce：PR 檢查失敗（exit code 1） |
 | **advisory** | 需人工判斷的架構 / 設計建議 | 缺 owner filter（可能本就是公開資源）、單層 middleware 授權、CORS 寬鬆、缺 rate limit、缺 HITL | 兩種模式都只報告；進 risk register 由 reviewer 裁決 |
 
-政策檔：`config/policy/blocking-policy.yaml`。試點預設 `mode: shadow`；驗收後改 `enforce`。**任何人都不能為了讓檢查通過而把 blocking 降成 advisory**；要改政策只能由人類在獨立 PR 中決定（CLAUDE.md 規則 1）。
+政策檔：`config/policy/blocking-policy.yaml`。試點預設 `mode: shadow`；驗收後改 `enforce`。**任何人都不能為了讓檢查通過而把 blocking 降成 advisory**；要改政策只能由人類在獨立 PR 中決定（AGENTS.md 規則 1）。
 
 ### 5.2 輸出標準化（SARIF）
 
 - 所有程式位置類發現統一輸出 **SARIF 2.1.0**（`reports/vibesec.sarif`），上傳 GitHub Code Scanning / GitLab Security Dashboard，並以 `config/catalogs/cwe-map.yaml` 對照 CWE。
 - 架構類發現（沒有單一程式位置）進 `reports/risk_register.json`。
-- 每筆 finding 同時符合 `schemas/finding.schema.json`：`control_id`、`cwe`、`cve`、CVSS v4.0 向量、EPSS + 查詢日、KEV + 日期、`evidence_grade`、`validation_status`、`priority`、`owner`、`due_date`、`evidence_refs`、`retest_result` 分欄，**不混算**（CLAUDE.md 規則 4、5）。
+- 每筆 finding 同時符合 `schemas/finding.schema.json`：`control_id`、`cwe`、`cve`、CVSS v4.0 向量、EPSS + 查詢日、KEV + 日期、`evidence_grade`、`validation_status`、`priority`、`owner`、`due_date`、`evidence_refs`、`retest_result` 分欄，**不混算**（AGENTS.md 規則 4、5）。
 - 工具原生規則保留原名並加前綴：`gitleaks:`、`semgrep:`、`trivy:`、`grype:`、`checkov:`、`zap:`、`promptfoo:`、`garak:`。
 
 ### 5.3 差異感知（Diff-Aware）

@@ -12,7 +12,7 @@
      SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES。
 
 不可違反：
-  - incomplete ≠ pass（CLAUDE.md #2）：缺 syft、syft 失敗、SBOM 無法解析或格式不符、兩次產出不同、
+  - incomplete ≠ pass（AGENTS.md #2）：缺 syft、syft 失敗、SBOM 無法解析或格式不符、兩次產出不同、
     受測樹含尚無解析器的鎖定檔（pnpm-lock.yaml、yarn.lock、bun.lock、Pipfile.lock、pdm.lock、pylock.toml）→ status=incomplete、退出碼 2。
   - 本程式不放寬也不改寫政策：tier 一律取自 config/policy/blocking-policy.yaml（scripts/vibesec_policy.py）。
 

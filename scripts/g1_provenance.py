@@ -8,7 +8,7 @@ nightly 以 actions/attest-build-provenance 為 reports/sbom.cdx.json 簽發來�
 判定：
   - verify 成功 → pass
   - gh 明確回報找不到證明或驗證失敗 → 命中 vibesec.g1.sbom-missing-provenance（advisory）
-  - 缺 SBOM、缺 gh、權限／網路錯誤等無法判定 → incomplete，退出碼 2（incomplete ≠ pass，CLAUDE.md #2）
+  - 缺 SBOM、缺 gh、權限／網路錯誤等無法判定 → incomplete，退出碼 2（incomplete ≠ pass，AGENTS.md #2）
 
 用法：
   python3 scripts/g1_provenance.py --sbom reports/sbom.cdx.json --repo owner/repo \\

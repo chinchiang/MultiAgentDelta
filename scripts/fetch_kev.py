@@ -5,7 +5,7 @@
   1. CISA 官網 feed
   2. CISA 維護的官方 GitHub 鏡像（cisagov/kev-data）
 兩者皆失敗時，若既有快取（--out 指向的檔案）仍是結構完整的 feed，沿用並標記 source=cache；
-連快取都沒有 → KEV 未知（incomplete ≠ pass，CLAUDE.md #2）：不寫出 feed，下游 g1_kev.py 會記 incomplete、
+連快取都沒有 → KEV 未知（incomplete ≠ pass，AGENTS.md #2）：不寫出 feed，下游 g1_kev.py 會記 incomplete、
 nightly 富化的 kev 欄位記 null（未知），絕不記 false。
 
 每次執行都寫出來源紀錄（--meta），分欄記錄使用的來源、feed 的 dateReleased、取得時間與失敗原因，

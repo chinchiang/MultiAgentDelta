@@ -1,5 +1,5 @@
 # 需要人類決定的檔案：由 owner 審核（branch protection 需開啟「Require review from Code Owners」才會強制）。
-# 依據 CLAUDE.md：規則 1（閘門與政策只能由人類在獨立 PR 決定）、規則 6（分歧交人工裁決）、規則 7（provider 資料分級）。
+# 依據 AGENTS.md：規則 1（閘門與政策只能由人類在獨立 PR 決定）、規則 6（分歧交人工裁決）、規則 7（provider 資料分級）。
 
 # 人工裁決紀錄：裁決者不得是 PR 作者（另由 pr-gates repo-validate 檢查 decided_by）
 /rulings/                          @chinchiang
@@ -31,6 +31,7 @@
 # Claude Code 的 reviewer agents 與 harness skill：決定審查角色與閘門的執行方式
 /.claude/                          @chinchiang
 # AI 協作者的規則：放寬它等於放寬所有 agent 的行為約束
+/AGENTS.md                         @chinchiang
 /CLAUDE.md                         @chinchiang
 
 # 根目錄的 Python 檔：CI 的 heredoc Python 在 PR head 目錄執行，同名檔可蓋掉標準函式庫（已改 python3 -I，此為第二道）

@@ -8,7 +8,7 @@
 探針：config/promptfoo/tests.yaml 的每個 test（與 promptfoo eval 同一份宣告）；body 與 promptfoo http target 相同
 （message＝prompt、context＝document、tools＝逗號分隔工具清單）。以 options.transformVars 產生輸入的 test
 （20 萬字元 denial_of_wallet）不送：成本面已由 g6_cost_probe.py 實測，這裡不重複放大目標成本。
-安全界線（CLAUDE.md 規則 8）：
+安全界線（AGENTS.md 規則 8）：
   - 目標須通過 scripts/target_guard.py（config/targets.yaml）；被拒或允許清單讀不到 → 不送任何請求。
   - 每個最終 URL 須與授權目標同源（target_guard.same_origin）；不跟隨 redirect（3xx 記為該探針無法判定）。
   - 只送 http/https。

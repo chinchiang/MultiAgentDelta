@@ -266,7 +266,7 @@ def scan(COMMIT: str | None, REPORTS: pathlib.Path, policy_root: pathlib.Path = 
     advisory = len(results) - blocking
     # 狀態反映發現本身；shadow 只決定是否擋下 merge（見下方 exit 與 job 的 continue-on-error），不把 fail 改寫成 pass。
     # CI 只跑靜態部分；VS-G4-LLM-REVIEW（跨檔授權推理、BOLA/IDOR、HITL）在此仍 pending → G4 最多是 incomplete，
-    # 不報 pass（incomplete ≠ pass，CLAUDE.md #2；docs/05「reviewer 缺席 → incomplete 或 pending；不得 pass」）。
+    # 不報 pass（incomplete ≠ pass，AGENTS.md #2；docs/05「reviewer 缺席 → incomplete 或 pending；不得 pass」）。
     # G4 不在 blocking-policy 的 incomplete_gate_is_blocking_in_enforce，所以 incomplete 不擋 merge；要擋須人類另開 PR 改政策。
     LLM_PENDING = "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 或人工完成"
     def _state(*ids, ctl=None):

@@ -60,7 +60,7 @@ function failureBody({ needs, evals, runUrl, sha, date }) {
     '',
     regressionSection(evals, evalsFailed),
     '',
-    '> 處理原則：先找根因。不得以 `continue-on-error`、縮減 `evals/baseline.yaml` 或放寬閘門讓它轉綠（CLAUDE.md 規則 1、2）；baseline 要縮減須由人類在獨立 PR 決定。',
+    '> 處理原則：先找根因。不得以 `continue-on-error`、縮減 `evals/baseline.yaml` 或放寬閘門讓它轉綠（AGENTS.md 規則 1、2）；baseline 要縮減須由人類在獨立 PR 決定。',
     '> 此 issue 由 nightly 自動維護：之後再失敗會在這裡留言，恢復綠燈時自動關閉。',
   ].join('\n');
 }

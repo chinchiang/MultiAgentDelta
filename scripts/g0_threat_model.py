@@ -144,7 +144,7 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
         """status 只區分兩種收尾：incomplete（提早結束，reasons 是未完成原因）與完成（reasons 是附註）；
         實際狀態由 gate_verdict.verdict 判定（GateRun.result）。tier_fail（risk_tier 宣告低於推導值或與 vibesec.yaml
         不一致）不是發現、卻要讓 G0 fail：維持既有行為，以 GateRun.fail_condition 交給 verdict（findings_count 不計入；
-        改成正式規則須另開政策 PR，CLAUDE.md 規則 1）。"""
+        改成正式規則須另開政策 PR，AGENTS.md 規則 1）。"""
         gate.tool("vibesec-g0", tool["state"], output_ref=str(findings_ref))
         for cid, c in cov.items():
             reason = c["reason"]
