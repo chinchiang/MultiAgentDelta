@@ -8,12 +8,12 @@
 
 ## 每張 ticket 的步驟
 
-0. **準備 main 的 worktree**：`git fetch -q origin && git worktree add /tmp/wt-main origin/main`。第 3、4、7 步都用這份 `origin/main`；第 9 步合併後移除（`git worktree remove /tmp/wt-main`）。
+0. **準備 main 的 worktree**：`git fetch -q origin && git worktree add /tmp/wt-main origin/main`。第 3、4、5、7 步都用這份 `origin/main`；第 9 步合併後移除（`git worktree remove /tmp/wt-main`）。
 1. **TDD**：先寫測試，確認是**紅燈**。紅燈要是回報 FAIL，不是崩潰。測試注入見下方「容易踩的坑」。
 2. **突變測試**：對每條新檢查各做一個突變，確認突變真的套用了（diff 非空），而且 selftest 回報 FAIL，不是崩潰。突變和 mode 切換都在 `/tmp/wt-main`、另一個 worktree 或受信任樹副本（`vibesec_policy.tree_copy`）裡做，追蹤中的檔案（例如 `vibesec.yaml`）保持原樣。
 3. **worktree 比對**：用同一組情境分別跑 `/tmp/wt-main` 和分支，逐項比對輸出與退出碼。比對前要正規化時間戳、SHA、暫存路徑、duration。完成條件是兩邊一致，或每項差異都在 PR 列為預期的變更；兩邊同時拋例外，或同時沒有產出，不算一致。
 4. **評測逐案比對**：在同一台機器、用同一組參數，分別在 `/tmp/wt-main` 和分支各跑一次 `run_evals`，再用 `compare_evals.py` 比對，必須 exit 0（見「判準」）。動到 G5、G6 或 workflow 時，接 vulnapp 的版本也要再比對一次（拿掉 `--no-target`）。
-5. **validate**：`python3 scripts/validate.py` 必須 0 個錯誤。它會自動執行所有 `scripts/*.py` 的 selftest，不必另外跑迴圈。
+5. **validate**：`python3 -I scripts/ci_validate.py --trusted /tmp/wt-main` 必須退出碼 0，也就是 CI repo-validate 的三次 validate 都 0 個錯誤：PR 版、受信任樹版驗受驗樹（PR head；抓版本錯開，#207、#235）、mode 改成 enforce 的副本（#223）。副本只含 git 追蹤的檔案與尚未 git add 的新檔（加上 `.git`），和 CI checkout 出來的樹一致。validate 會自動執行所有 `scripts/*.py` 的 selftest，不必另外跑迴圈。退出碼 2 代表無法判定，不算通過（#238）。
 6. **code review**：`/mattpocock-skills:code-review`。Standards、Spec 兩個 sub-agent 平行執行，結果分兩軸彙整，每軸各寫一句最嚴重的問題。完成條件是兩軸的每項意見都已修正，或在 PR 寫明不改的理由。修正之後，重跑第 2、5 步。
 7. **本機 gitleaks**：`"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .`，必須沒有發現。`fetch_gitleaks.py` 照 nightly 釘選的版本與 SHA-256 取得並快取 gitleaks，退出碼 2 代表沒拿到經驗證的 binary，不能略過這一步（#241）。
 8. **開 PR、等 CI**：讀閘門表格，對照「判準」。
@@ -82,7 +82,7 @@ gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$
 
 ## 容易踩的坑
 
-- **版本錯開**：PR CI 用的是 PR head 的 workflow 和 action，呼叫的卻是 `_trusted/`（main）的腳本。action 或 workflow 會用到的新 module 或函式，要先用 prefactor PR 合進 main（#207）。
+- **版本錯開**：PR CI 用的是 PR head 的 workflow 和 action，呼叫的卻是 `_trusted/`（main）的腳本。action 或 workflow 會用到的新 module 或函式，要先用 prefactor PR 合進 main（#207）。validate 層面的版本錯開（受信任樹的檢查不認得 PR 的新檔案），第 5 步的 `ci_validate.py` 在本機就會抓到（#235、#238）。
 - **CodeQL 名稱規則**：CodeQL 會把名稱含 `trusted`、`secret`、`key` 的函式回傳值當成敏感資料（#208）。遇到時，把函式改名。
 - **gitleaks 誤判成串的識別碼**：程式裡成串以引號括起的識別碼或檔名，會被 gitleaks 的 `generic-api-key` 判成祕密，G2 變成 `fail`。實例有工具別名表（`"api-…": "較長的識別碼字串"`）和舊版 `validate.py` 的 selftest 檔名清單。寫法有兩種：比照 `scripts/gate_verdict.py` 的 `TOOL_ALIASES`，把前綴另存成變數再串接；或者不寫死清單，改由程式推導，例如 `validate.py` 現在自動偵測有 selftest 的腳本。這種誤報一旦進了 main，就會永遠留在 git 歷史裡，nightly 的全歷史掃描每晚都會失敗，只能由 owner 在 `.gitleaksignore` 加指紋（#139；2026-10-12、10-13 各發生一次，見 `.gitleaksignore` 的說明）。推送前見第 7 步。
 - **Checkov 卡住**：Checkov 的 check run 偶爾會卡在 `in_progress`，但 SARIF 其實已經收到。重跑 G3 IaC 那個 job 就會恢復。
@@ -107,12 +107,12 @@ Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`
 
 ## Steps for every ticket
 
-0. **Prepare a main worktree**: `git fetch -q origin && git worktree add /tmp/wt-main origin/main`. Steps 3, 4, and 7 all use this `origin/main`; remove it after the merge in step 9 (`git worktree remove /tmp/wt-main`).
+0. **Prepare a main worktree**: `git fetch -q origin && git worktree add /tmp/wt-main origin/main`. Steps 3, 4, 5, and 7 all use this `origin/main`; remove it after the merge in step 9 (`git worktree remove /tmp/wt-main`).
 1. **TDD**: write the test first and confirm it is **red**. Red means it reports FAIL rather than crashing. For test injection, see "Gotchas" below.
 2. **Mutation testing**: make one mutation per new check, confirm the mutation was actually applied (non-empty diff), and confirm the selftest reports FAIL rather than crashing. Do mutations and mode switches inside `/tmp/wt-main`, another worktree, or a trusted-tree copy (`vibesec_policy.tree_copy`), and leave tracked files (such as `vibesec.yaml`) untouched.
 3. **Worktree comparison**: run the same scenarios on `/tmp/wt-main` and on the branch, and compare outputs and exit codes item by item. Normalize timestamps, SHAs, temporary paths, and durations first. The step is done when the two sides match, or when every difference is listed in the PR as an intended change; both sides raising, or both producing nothing, does not count as a match.
 4. **Case-by-case eval comparison**: on the same machine with the same flags, run `run_evals` once in `/tmp/wt-main` and once on the branch, then compare with `compare_evals.py`, which must exit 0 (see "Pass criteria"). When G5, G6, or a workflow changes, also compare the vulnapp run (drop `--no-target`).
-5. **validate**: `python3 scripts/validate.py` must report 0 errors. It runs every `scripts/*.py` selftest automatically; no separate loop is needed.
+5. **validate**: `python3 -I scripts/ci_validate.py --trusted /tmp/wt-main` must exit 0, meaning all three validate runs of CI's repo-validate job report 0 errors: the PR version, the trusted-tree version checking the project tree (the PR head; catches version skew, #207, #235), and a copy with mode switched to enforce (#223). The copy holds only git-tracked files and new files not yet added (plus `.git`), matching the tree CI checks out. validate runs every `scripts/*.py` selftest automatically; no separate loop is needed. Exit code 2 means the result could not be determined and does not count as a pass (#238).
 6. **Code review**: `/mattpocock-skills:code-review`. Standards and Spec sub-agents run in parallel; report the two axes separately, with one line for the worst issue in each. The step is done when every finding on both axes is fixed or the PR states why it was left as is. After fixing, rerun steps 2 and 5.
 7. **Local gitleaks**: `"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .` must find nothing. `fetch_gitleaks.py` gets and caches gitleaks at the version and SHA-256 pinned in nightly; exit code 2 means no verified binary was obtained, and the step cannot be skipped (#241).
 8. **Open the PR and wait for CI**: read the gate table and check it against "Pass criteria".
@@ -181,7 +181,7 @@ gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$
 
 ## Gotchas
 
-- **Version skew**: PR CI runs the PR head's workflows and actions but calls the scripts in `_trusted/` (main). A new module or function that an action or workflow needs must land in main first through a prefactor PR (#207).
+- **Version skew**: PR CI runs the PR head's workflows and actions but calls the scripts in `_trusted/` (main). A new module or function that an action or workflow needs must land in main first through a prefactor PR (#207). Version skew at the validate level (the trusted tree's checks do not recognize the PR's new files) is caught locally by `ci_validate.py` in step 5 (#235, #238).
 - **CodeQL naming**: CodeQL treats return values of functions whose names contain `trusted`, `secret`, or `key` as sensitive data (#208). When this happens, rename the function.
 - **gitleaks false positives on runs of identifiers**: runs of quoted identifiers or file names in code are flagged as secrets by gitleaks' `generic-api-key` rule, turning G2 into `fail`. Real cases were a tool-alias table (`"api-…": "a long identifier string"`) and the old selftest file-name list in `validate.py`. Two ways to write them: follow `TOOL_ALIASES` in `scripts/gate_verdict.py` and keep the prefix in a variable that you concatenate, or derive the list in code instead of hard-coding it, as `validate.py` now detects scripts that have a selftest. Once such a false positive reaches main it stays in git history for good, so nightly's full-history scan fails every night until the owner adds a fingerprint to `.gitleaksignore` (#139; it happened on 2026-10-12 and again on 10-13, see the notes in `.gitleaksignore`). Before pushing, see step 7.
 - **Stuck Checkov**: the Checkov check run sometimes stays `in_progress` even though the SARIF has been received. Rerunning the G3 IaC job clears it.
