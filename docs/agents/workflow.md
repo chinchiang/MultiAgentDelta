@@ -15,7 +15,7 @@
 4. **評測逐案比對**：在同一台機器、用同一組參數，分別在 `/tmp/wt-main` 和分支各跑一次 `run_evals`，再用 `compare_evals.py` 比對，必須 exit 0（見「判準」）。動到 G5、G6 或 workflow 時，接 vulnapp 的版本也要再比對一次（拿掉 `--no-target`）。
 5. **validate**：`python3 scripts/validate.py` 必須 0 個錯誤。它會自動執行所有 `scripts/*.py` 的 selftest，不必另外跑迴圈。
 6. **code review**：`/mattpocock-skills:code-review`。Standards、Spec 兩個 sub-agent 平行執行，結果分兩軸彙整，每軸各寫一句最嚴重的問題。完成條件是兩軸的每項意見都已修正，或在 PR 寫明不改的理由。修正之後，重跑第 2、5 步。
-7. **本機 gitleaks**：`gitleaks git --log-opts="--text origin/main..HEAD" --no-banner --redact .`，必須沒有發現。
+7. **本機 gitleaks**：`"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .`，必須沒有發現。`fetch_gitleaks.py` 照 nightly 釘選的版本與 SHA-256 取得並快取 gitleaks，退出碼 2 代表沒拿到經驗證的 binary，不能略過這一步（#241）。
 8. **開 PR、等 CI**：讀閘門表格，對照「判準」。
 9. **維護者說了才合併**：`gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`。
 
@@ -40,7 +40,7 @@ python3 scripts/compare_evals.py /tmp/ev-main.json /tmp/ev-branch.json   # 0 逐
 - `evals/baseline.yaml` 是 nightly 完整環境的契約。本機缺工具時，`run_evals --baseline` 一定會報退步、exit 1，這是正常的。
 - 兩邊全部都是 untested 時，比對結果也會是逐案相同，但這只代表環境沒有跑到那些案例。被比對的閘門要有實際執行的案例（summary 的 `executed` 大於 0）。
 - run_evals 會讀這些工具：`VIBESEC_GITLEAKS` 或 PATH 上的 `gitleaks`、`VIBESEC_CHECKOV` 或 PATH 上的 `checkov`，以及 PATH 上的 `semgrep`、`docker`、`uv`、`git`。缺的工具會讓對應的案例變成 untested。
-- **gitleaks**：版本和 SHA-256 要與 `.github/workflows/nightly-full.yml` 的 `GITLEAKS_VERSION`、`GITLEAKS_SHA256` 相同。下載 tarball 之後先 `sha256sum -c`，解壓縮，再把 `VIBESEC_GITLEAKS` 指向解出來的 binary。
+- **gitleaks**：版本和 SHA-256 要與 `.github/workflows/nightly-full.yml` 的 `GITLEAKS_VERSION`、`GITLEAKS_SHA256` 相同。用 `export VIBESEC_GITLEAKS="$(python3 -I scripts/fetch_gitleaks.py)"`：它從 nightly 讀出釘選值，下載後先核對雜湊才解壓縮，快取在 `$XDG_CACHE_HOME/vibesec/`（預設 `~/.cache/vibesec/`），第二次起不再下載。
 
 參考值（2026-10-17；本機有 gitleaks 8.28.0（`VIBESEC_GITLEAKS`）、`uv`、`docker`，沒有 semgrep、syft、grype、checkov；沒設 `VIBESEC_GITLEAKS` 時，G2 的 7 個案例會變成 untested）：
 
@@ -114,7 +114,7 @@ Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`
 4. **Case-by-case eval comparison**: on the same machine with the same flags, run `run_evals` once in `/tmp/wt-main` and once on the branch, then compare with `compare_evals.py`, which must exit 0 (see "Pass criteria"). When G5, G6, or a workflow changes, also compare the vulnapp run (drop `--no-target`).
 5. **validate**: `python3 scripts/validate.py` must report 0 errors. It runs every `scripts/*.py` selftest automatically; no separate loop is needed.
 6. **Code review**: `/mattpocock-skills:code-review`. Standards and Spec sub-agents run in parallel; report the two axes separately, with one line for the worst issue in each. The step is done when every finding on both axes is fixed or the PR states why it was left as is. After fixing, rerun steps 2 and 5.
-7. **Local gitleaks**: `gitleaks git --log-opts="--text origin/main..HEAD" --no-banner --redact .` must find nothing.
+7. **Local gitleaks**: `"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .` must find nothing. `fetch_gitleaks.py` gets and caches gitleaks at the version and SHA-256 pinned in nightly; exit code 2 means no verified binary was obtained, and the step cannot be skipped (#241).
 8. **Open the PR and wait for CI**: read the gate table and check it against "Pass criteria".
 9. **Merge only when the maintainer says so**: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
 
@@ -139,7 +139,7 @@ python3 scripts/compare_evals.py /tmp/ev-main.json /tmp/ev-branch.json   # 0 ide
 - `evals/baseline.yaml` is the contract for nightly's full environment. When local tools are missing, `run_evals --baseline` always reports regressions and exits 1; that is expected.
 - Two runs where every case is untested also compare as identical, but that only means the environment ran none of those cases. The gates under comparison must have executed cases (`executed` greater than 0 in the summary).
 - run_evals uses these tools: `VIBESEC_GITLEAKS` or `gitleaks` on PATH, `VIBESEC_CHECKOV` or `checkov` on PATH, and `semgrep`, `docker`, `uv`, and `git` on PATH. A missing tool turns its cases into untested.
-- **gitleaks**: the version and SHA-256 must match `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `.github/workflows/nightly-full.yml`. Download the tarball, run `sha256sum -c`, extract it, and point `VIBESEC_GITLEAKS` at the extracted binary.
+- **gitleaks**: the version and SHA-256 must match `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `.github/workflows/nightly-full.yml`. Use `export VIBESEC_GITLEAKS="$(python3 -I scripts/fetch_gitleaks.py)"`: it reads the pinned values from nightly, verifies the hash before extracting the download, and caches the binary under `$XDG_CACHE_HOME/vibesec/` (default `~/.cache/vibesec/`), so later runs do not download again.
 
 Reference values (2026-10-17; this machine has gitleaks 8.28.0 (`VIBESEC_GITLEAKS`), `uv`, and `docker`, but not semgrep, syft, grype, or checkov; without `VIBESEC_GITLEAKS`, 7 G2 cases become untested):
 
