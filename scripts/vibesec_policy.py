@@ -332,6 +332,17 @@ def write_policy_key(root: pathlib.Path, key: str, value) -> None:
     path.write_text(yaml.safe_dump({**pol, key: value}, allow_unicode=True), encoding="utf-8")
 
 
+def override_tier(root: pathlib.Path, key: str, rule_id: str) -> None:
+    """selftest 用：在 root 的 blocking-policy.yaml 每個風險層級的 tier_overrides.<key>（promote_to_blocking／demote_to_advisory）
+    加上 rule_id，模擬政策變更（AGENTS.md 規則 1）；每個層級都改，不依賴 vibesec.yaml 目前的 risk_tier。"""
+    if key not in ("promote_to_blocking", "demote_to_advisory"):
+        raise ValueError(f"override_tier 的 key 只能是 promote_to_blocking 或 demote_to_advisory（得到 {key!r}）")
+    path = pathlib.Path(root) / "config/policy/blocking-policy.yaml"
+    pol = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    write_policy_key(root, "tier_overrides", {t: {**ov, key: [*(ov.get(key) or []), rule_id]}
+                                               for t, ov in (pol.get("tier_overrides") or {}).items()})
+
+
 def write_exceptions(root: pathlib.Path, exceptions) -> None:
     """selftest 用：把 root 的 blocking-policy.yaml 的 exceptions 換成 exceptions，其餘照舊。"""
     write_policy_key(root, "exceptions", list(exceptions))
@@ -654,6 +665,17 @@ def selftest() -> list[str]:
             got = g4_enforce_reminder(Policy(root))
         if bool(got) != want or (got and ("#215" not in got or "COLLABORATOR" not in got)):
             fails.append(f"g4_enforce_reminder（{mode_line}、{gates}）應{'提醒並附 #215 與重新評估條件' if want else '不提醒'}（得到 {got!r}）")
+    # override_tier：每個風險層級都改，Policy.tier 跟著變；key 只能是升級或降級（#246）
+    with temp_policy_root() as tmp:
+        override_tier(tmp, "demote_to_advisory", "vibesec.g1.kev-hit")
+        override_tier(tmp, "promote_to_blocking", "vibesec.g1.unmaintained-dependency")
+        got = (Policy(tmp).tier("vibesec.g1.kev-hit"), Policy(tmp).tier("vibesec.g1.unmaintained-dependency"))
+        if got != ("advisory", "blocking"):
+            fails.append(f"override_tier：kev-hit 降級、unmaintained-dependency 升級應生效（得到 {got}）")
+        try:
+            override_tier(tmp, "promote", "vibesec.g1.kev-hit"); fails.append("override_tier：不合法的 key 應 ValueError")
+        except ValueError:
+            pass
     return fails
 
 

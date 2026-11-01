@@ -17,7 +17,8 @@
   python3 scripts/g1_maintenance.py --sbom reports/sbom.cdx.json --sarif reports/g1-maintenance.sarif \\
                                     --json reports/g1-maintenance.json
   python3 scripts/g1_maintenance.py selftest
-退出碼：0 已完成（有無命中皆是；advisory 不讓步驟失敗）；2 incomplete。
+退出碼依政策 tier（#246）：0 已完成且沒有 blocking 發現（現行政策 advisory：有無命中皆是，不讓步驟失敗）；
+        1 有 blocking 發現（政策把規則升為 blocking 時）；2 incomplete。
 """
 from __future__ import annotations
 import argparse, datetime, json, os, pathlib, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
@@ -412,7 +413,7 @@ def selftest() -> list[str]:
     # 接線（#246）：生命週期（SARIF 寫出或刪掉舊檔、退出碼）在 gate_result 測；這裡確認維護狀態經過檢查執行、
     # deps.dev 經由工廠注入，以及維護狀態自己的輸出（incomplete 時列出無法判定的套件，#243）
     import contextlib, io, tempfile
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, temp_policy_root
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, override_tier, temp_policy_root
     recent = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     entry_db = {("pypi", "old"): DB[("pypi", "old")],   # 用實際時鐘：fresh 取相對日期，不會隨時間變成 stale
                 ("pypi", "fresh"): {"versions": [ver("1.0", recent, default=True)]}}
@@ -420,28 +421,31 @@ def selftest() -> list[str]:
         if name == "boom":
             raise FetchError("down")
         return entry_db.get((system, name))
-    for label, broken, purls, want_rc, want_sarif, want_hits, want_out in [
-        ("政策讀不到", True, ["pkg:pypi/old@0.9"], 2, "缺席", [], "::error::維護狀態檢查未完成（incomplete ≠ pass）：" + POLICY_UNREADABLE),
-        ("部分命中＋無法判定", False, ["pkg:pypi/old@0.9", "pkg:pypi/boom@1"], 2, "缺席", ["old"], "  無法判定 pkg:pypi/boom@1："),
-        ("全部判定完成、有命中", False, ["pkg:pypi/old@0.9", "pkg:pypi/fresh@1.0"], 0, "1 筆", ["old"], "維護狀態：查 2 個套件，命中 1 個"),
+    for label, policy, purls, want_rc, want_sarif, want_hits, want_out in [
+        ("政策讀不到（從 main 進入）", "broken", ["pkg:pypi/old@0.9"], 2, "缺席", [], "::error::維護狀態檢查未完成（incomplete ≠ pass）：" + POLICY_UNREADABLE),
+        ("部分命中＋無法判定", "ok", ["pkg:pypi/old@0.9", "pkg:pypi/boom@1"], 2, "缺席", ["old"], "  無法判定 pkg:pypi/boom@1："),
+        ("全部判定完成、有命中", "ok", ["pkg:pypi/old@0.9", "pkg:pypi/fresh@1.0"], 0, "1 筆", ["old"], "維護狀態：查 2 個套件，命中 1 個"),
         # 退出碼依政策 tier（#242 Q5）：政策把規則升為 blocking 時退出 1 並說明原因（現行政策是 advisory）
         ("規則升為 blocking、有命中", "promote", ["pkg:pypi/old@0.9"], 1, "1 筆", ["old"], f"::error::維護狀態命中 1 個（{RULE}，blocking）"),
     ]:
         out = io.StringIO()
-        with (broken_policy_root() if broken is True else temp_policy_root()) as pr, tempfile.TemporaryDirectory() as d, \
+        with (broken_policy_root() if policy == "broken" else temp_policy_root()) as pr, tempfile.TemporaryDirectory() as d, \
                 contextlib.redirect_stdout(out):
-            if broken == "promote":   # 每個風險層級都升級：不依賴 repo 目前的 risk_tier
-                import yaml
-                from vibesec_policy import write_policy_key
-                pol = yaml.safe_load((pr / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
-                write_policy_key(pr, "tier_overrides", {k: {**ov, "promote_to_blocking": [*(ov.get("promote_to_blocking") or []), RULE]}
-                                                        for k, ov in (pol.get("tier_overrides") or {}).items()})
+            if policy == "promote":
+                override_tier(pr, "promote_to_blocking", RULE)
             sp, js, sf = pathlib.Path(d, "sbom.json"), pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
             sp.write_text(json.dumps({"components": [{"purl": u} for u in purls]}))
-            a = parse_args(["--sbom", str(sp), "--sarif", str(sf), "--json", str(js)])   # deps.dev 經由工廠注入（#246）
-            rc = check_run(a, fetch=entry_fake).execute(policy_root=pr, sarif_path=a.sarif, json_path=a.json)
-            s = json.loads(js.read_text(encoding="utf-8"))
-            sarif_seen = "缺席" if not sf.exists() else f"{len(json.loads(sf.read_text(encoding='utf-8'))['runs'][0]['results'])} 筆"
+            argv = ["--sbom", str(sp), "--sarif", str(sf), "--json", str(js)]
+            if policy == "broken":   # 從進入點：main 要把 policy_root 與輸出路徑交給檢查執行（政策讀不到時不查 deps.dev）
+                rc = main(argv, policy_root=pr)
+            else:                    # deps.dev 經由工廠注入（#246）
+                a = parse_args(argv)
+                rc = check_run(a, fetch=entry_fake).execute(policy_root=pr, sarif_path=a.sarif, json_path=a.json)
+            s = json.loads(js.read_text(encoding="utf-8")) if js.exists() else {}
+            try:   # 輸出路徑接錯（SARIF 位置寫成摘要）→ 記成失敗，不在讀檔時崩潰
+                sarif_seen = "缺席" if not sf.exists() else f"{len(json.loads(sf.read_text(encoding='utf-8'))['runs'][0]['results'])} 筆"
+            except (KeyError, IndexError, TypeError, ValueError):
+                sarif_seen = "不是 SARIF"
         hits = sorted(h["name"] for h in s.get("hits") or [])
         if (rc, sarif_seen, hits) != (want_rc, want_sarif, want_hits) or want_out not in out.getvalue():
             fails.append(f"維護狀態接線「{label}」：應為退出碼 {want_rc}、SARIF {want_sarif}、命中 {want_hits}、輸出含 {want_out!r}"

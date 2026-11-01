@@ -318,7 +318,7 @@ class CheckRun:
         if incomplete:
             if self._incomplete_report:
                 self._incomplete_report(summary)
-            sep = " " if self.label[-1].isascii() else ""   # 中英之間空格：「SBOM 檢查」「維護狀態檢查」
+            sep = " " if self.label[-1].isascii() and self.label[-1].isalnum() else ""   # 英數字結尾才空格：「SBOM 檢查」「維護狀態檢查」
             print(f"::error::{self.label}{sep}檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
             return 2
         if self._report:
@@ -1096,6 +1096,12 @@ def selftest() -> list[str]:
         out = execute(check_run({"status": "incomplete", "status_reason": "x"}, label="SBOM"))[4]
         if "::error::SBOM 檢查未完成（incomplete ≠ pass）：x" not in out:
             return f"英數字結尾的 label 後面空一格（得到 {out!r}）"
+        out = execute(check_run({"status": "incomplete", "status_reason": "x"}, label="G1（SBOM）"))[4]
+        if "::error::G1（SBOM）檢查未完成（incomplete ≠ pass）：x" not in out:
+            return f"非英數字結尾（含 ASCII 以外的標點）的 label 不加空格（得到 {out!r}）"
+        out = execute(check_run({"status": "incomplete", "status_reason": "x"}, label="sbom-v2)"))[4]
+        if "::error::sbom-v2)檢查未完成（incomplete ≠ pass）：x" not in out:
+            return f"以 ASCII 標點結尾的 label 不加空格（得到 {out!r}）"
     check("CheckRun：incomplete_report 與未完成訊息", t_cr_incomplete_report)
     return fails
 

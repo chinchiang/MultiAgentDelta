@@ -15,7 +15,8 @@ nightly 以 actions/attest-build-provenance 為 reports/sbom.cdx.json 簽發來�
       --signer-workflow owner/repo/.github/workflows/nightly-full.yml \\
       --sarif reports/g1-provenance.sarif --json reports/g1-provenance.json
   python3 scripts/g1_provenance.py selftest
-退出碼：0 已完成（有無命中皆是）；2 incomplete。
+退出碼依政策 tier（#246）：0 已完成且沒有 blocking 發現（現行政策 advisory：有無命中皆是）；1 有 blocking 發現
+（政策把規則升為 blocking 時）；2 incomplete。
 """
 from __future__ import annotations
 import argparse, datetime, json, pathlib, re, shutil, subprocess, sys
@@ -127,29 +128,33 @@ def selftest() -> list[str]:
     # 接線（#246）：生命週期（SARIF 寫出或刪掉舊檔、退出碼）在 gate_result 測；這裡確認來源證明經過檢查執行、
     # 驗證經由工廠注入（gh 怎麼被呼叫見上方 gh_verify 的測試），以及來源證明自己的輸出
     import contextlib, io
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, temp_policy_root
-    for label, broken, verify, want_rc, want_results, want_out in [
-        ("政策讀不到", True, None, 2, None, "::error::SBOM 來源證明檢查未完成（incomplete ≠ pass）：" + POLICY_UNREADABLE),
-        ("驗證成功", False, lambda *a: (0, "ok"), 0, 0, "SBOM 來源證明：已驗證"),
-        ("找不到證明", False, lambda *a: (1, "no attestations found"), 0, 1, f"SBOM 來源證明：缺少或無效（{RULE}，advisory）"),
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, override_tier, temp_policy_root
+    for label, policy, verify, want_rc, want_results, want_out in [
+        ("政策讀不到（從 main 進入）", "broken", None, 2, None, "::error::SBOM 來源證明檢查未完成（incomplete ≠ pass）：" + POLICY_UNREADABLE),
+        ("驗證成功", "ok", lambda *a: (0, "ok"), 0, 0, "SBOM 來源證明：已驗證"),
+        ("找不到證明", "ok", lambda *a: (1, "no attestations found"), 0, 1, f"SBOM 來源證明：缺少或無效（{RULE}，advisory）"),
         # 退出碼依政策 tier（#242 Q5）：政策把規則升為 blocking 時退出 1 並說明原因（現行政策是 advisory）
         ("規則升為 blocking、找不到證明", "promote", lambda *a: (1, "no attestations found"), 1, 1, f"::error::SBOM 缺少可驗證的來源證明（{RULE}，blocking）"),
     ]:
         out = io.StringIO()
-        with (broken_policy_root() if broken is True else temp_policy_root()) as pr, tempfile.TemporaryDirectory() as d, \
+        with (broken_policy_root() if policy == "broken" else temp_policy_root()) as pr, tempfile.TemporaryDirectory() as d, \
                 contextlib.redirect_stdout(out):
-            if broken == "promote":   # 每個風險層級都升級：不依賴 repo 目前的 risk_tier
-                import yaml
-                from vibesec_policy import write_policy_key
-                pol = yaml.safe_load((pr / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
-                write_policy_key(pr, "tier_overrides", {k: {**ov, "promote_to_blocking": [*(ov.get("promote_to_blocking") or []), RULE]}
-                                                        for k, ov in (pol.get("tier_overrides") or {}).items()})
+            if policy == "promote":
+                override_tier(pr, "promote_to_blocking", RULE)
             sb, js, sf = pathlib.Path(d, "sbom.json"), pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
             sb.write_text("{}")
-            a = parse_args(["--sbom", str(sb), "--repo", "o/r", "--signer-workflow", "o/r/w.yml", "--sarif", str(sf), "--json", str(js)])
-            cr = check_run(a, verify=verify) if verify else check_run(a)
-            rc = cr.execute(policy_root=pr, sarif_path=a.sarif, json_path=a.json)
-            res = len(json.loads(sf.read_text(encoding="utf-8"))["runs"][0]["results"]) if sf.exists() else None
+            argv = ["--sbom", str(sb), "--repo", "o/r", "--signer-workflow", "o/r/w.yml", "--sarif", str(sf), "--json", str(js)]
+            if verify is None:   # 從進入點：main 要把 policy_root 與輸出路徑交給檢查執行（政策讀不到時不呼叫 gh）
+                rc = main(argv, policy_root=pr)
+            else:                # 驗證經由工廠注入（#246）
+                a = parse_args(argv)
+                rc = check_run(a, verify=verify).execute(policy_root=pr, sarif_path=a.sarif, json_path=a.json)
+            try:   # 輸出路徑接錯（SARIF 位置寫成摘要）→ 記成失敗，不在讀檔時崩潰
+                res = len(json.loads(sf.read_text(encoding="utf-8"))["runs"][0]["results"]) if sf.exists() else None
+            except (KeyError, IndexError, TypeError, ValueError):
+                res = "不是 SARIF"
+            if not js.exists():
+                res = "缺摘要 JSON"
         if (rc, res) != (want_rc, want_results) or want_out not in out.getvalue():
             fails.append(f"來源證明接線「{label}」：應為退出碼 {want_rc}、SARIF 結果 {want_results}、輸出含 {want_out!r}"
                          f"（得到 {rc}、{res}、{out.getvalue()!r}）")

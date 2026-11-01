@@ -293,8 +293,7 @@ def selftest() -> list[str]:
             fails.append(f"KEV：政策讀不到 → 經過檢查執行（退出碼 2、KEV 的 tool 列 error）並附上來源紀錄（得到 {rc}、{sm}、{g['tools']}）")
     # 退出碼、訊息與併入的 tool 列依政策 tier（#244）。政策變更（AGENTS.md 規則 1）以 tier_overrides 模擬：kev-hit 降級後
     # 命中是 advisory → 退出碼 0、只警告；已知漏洞升級後是 blocking → 退出碼 1 並有 ::error::（Policy.tier 不套用路徑型的政策例外）
-    from vibesec_policy import temp_policy_root, write_policy_key
-    import yaml
+    from vibesec_policy import override_tier, temp_policy_root
     no_hit = {"matches": [m for m in grype["matches"] if m["artifact"]["name"] == "safe"]}
     for label, demote, data, want_rc, want_level in [
         ("現行政策（kev-hit blocking）有命中", False, grype, 1, "error"),
@@ -304,11 +303,8 @@ def selftest() -> list[str]:
     ]:
         out = io.StringIO()
         with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(out):
-            if demote:   # 每個風險層級都改：不依賴 repo 目前的 risk_tier
-                key, rid = ("promote_to_blocking", VULN_RULE) if demote == "promote" else ("demote_to_advisory", RULE)
-                pol = yaml.safe_load((pr / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
-                write_policy_key(pr, "tier_overrides", {t: {**ov, key: [*(ov.get(key) or []), rid]}
-                                                        for t, ov in (pol.get("tier_overrides") or {}).items()})
+            if demote:   # 模擬政策變更：每個風險層級都改，不依賴 repo 目前的 risk_tier
+                override_tier(pr, *(("promote_to_blocking", VULN_RULE) if demote == "promote" else ("demote_to_advisory", RULE)))
             g, k, js, sf, gp = (pathlib.Path(d, n) for n in ("g.json", "k.json", "out.json", "out.sarif", "G1.json"))
             g.write_text(json.dumps(data)); k.write_text(json.dumps(kev_feed))
             gp.write_text(json.dumps({**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}), encoding="utf-8")

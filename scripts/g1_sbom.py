@@ -411,8 +411,8 @@ def parse_args(argv) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
-def check_run(a: argparse.Namespace, *, syft=run_syft) -> gate_result.CheckRun:
-    """SBOM 的檢查執行（#245）；syft 是外部依賴，只給 selftest 注入（#246：四個 producer 同一個接縫）。"""
+def check_run(a: argparse.Namespace) -> gate_result.CheckRun:
+    """SBOM 的檢查執行（#245）。外部依賴 syft 以 $VIBESEC_SYFT 指定（selftest 指向假的 syft 腳本，走真正的 run_syft）。"""
     sbom = pathlib.Path(a.sbom)
 
     def unreadable(problem):   # 政策讀不到：不產生 SBOM、不分類發現
@@ -428,7 +428,7 @@ def check_run(a: argparse.Namespace, *, syft=run_syft) -> gate_result.CheckRun:
     # 生命週期（政策讀不到、摘要、SARIF 寫出或刪掉舊檔、併入 G1、退出碼）由檢查執行負責（#245）
     return gate_result.CheckRun(
         label="SBOM", tool_name=TOOL_NAME, version=VERSION, merge_into=("G1", CONTROL),
-        check=lambda policy: run(pathlib.Path(a.target), a.commit, sbom, syft),
+        check=lambda policy: run(pathlib.Path(a.target), a.commit, sbom),
         findings=findings, to_sarif=lambda summary, found, policy: to_sarif(found),
         unreadable=unreadable, report=report,
     )
