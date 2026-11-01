@@ -753,7 +753,11 @@ for _m in _bi_missing:
 for _f in _bi_files:
     for _p in _bi.problems(_f.read_text(encoding="utf-8")):
         err(f"{_f.relative_to(ROOT)}：{_p}（雙語集合，CLAUDE.md 命名與格式慣例）")
-ok(f"雙語集合 {len(_bi_files)} 份文件已檢查")
+for _tr, _src in _bi.TRANSLATIONS.items():
+    if (ROOT / _tr).is_file() and (ROOT / _src).is_file():
+        for _p in _bi.translation_problems((ROOT / _src).read_text(encoding="utf-8"), (ROOT / _tr).read_text(encoding="utf-8")):
+            err(f"{_tr}（{_src} 的英文譯本）：{_p}")
+ok(f"雙語集合 {len(_bi_files)} 份文件與譯本已檢查")
 
 # --- CI 設定的不變式（判定在 scripts/ci_invariants.py，有 selftest）：防止已修過的弱點被改回去 ---
 import ci_invariants as _ci
