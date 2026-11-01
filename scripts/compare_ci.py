@@ -22,7 +22,7 @@ CI 未完成：PR 的 check 或 workflow run 還沒結束，或 github-actions �
 不輪詢、不寫入 GitHub（不留言、不合併）。
 """
 from __future__ import annotations
-import datetime, json, re, subprocess, sys
+import collections, json, re, subprocess, sys
 from typing import NamedTuple
 
 
@@ -66,22 +66,26 @@ class ValidateRun(NamedTuple):
 
 
 VALIDATE_LABELS = ("PR 版", "受信任樹版", "enforce 副本")
+_VALIDATE_SUMMARY = re.compile(r"通過 (\d+) 項；警告 (\d+)；錯誤 (\d+)")
 
 
 def parse_validate(text: str) -> list[ValidateRun]:
     """repo-validate job log → 三次執行（依序：PR 版、受信任樹版、enforce 副本）。摘要行不是剛好三行 → InputError。
-    摘要行之後緊接著的 WARN／ERR 行屬於那一次。"""
-    runs: list[list] = []
+    摘要行之後緊接著的 WARN／ERR 行屬於那一次；中間隔了別的行就不再收。"""
+    runs: list[ValidateRun] = []
+    collecting = False
     for ln in log_lines(text):
-        if m := re.fullmatch(r"通過 (\d+) 項；警告 (\d+)；錯誤 (\d+)", ln.strip()):
-            runs.append([int(m[1]), int(m[2]), int(m[3]), [], [], True])
-        elif runs and runs[-1][5] and (m := re.match(r"^\s+(WARN|ERR) ", ln)):
-            runs[-1][3 if m[1] == "WARN" else 4].append(ln.strip())
-        elif runs:
-            runs[-1][5] = False
+        if m := _VALIDATE_SUMMARY.fullmatch(ln.strip()):
+            runs.append(ValidateRun(int(m[1]), int(m[2]), int(m[3]), (), ()))
+            collecting = True
+        elif collecting and (m := re.match(r"^\s+(WARN|ERR) ", ln)):
+            field = "warn_lines" if m[1] == "WARN" else "err_lines"
+            runs[-1] = runs[-1]._replace(**{field: getattr(runs[-1], field) + (ln.strip(),)})
+        else:
+            collecting = False
     if len(runs) != len(VALIDATE_LABELS):
         raise InputError(f"repo-validate 的 log 應有 {len(VALIDATE_LABELS)} 行 validate 摘要（找到 {len(runs)} 行）")
-    return [ValidateRun(p, w, e, tuple(wl), tuple(el)) for p, w, e, wl, el, _ in runs]
+    return runs
 
 
 class G1Info(NamedTuple):
@@ -90,14 +94,21 @@ class G1Info(NamedTuple):
     slop_skipped: bool  # slopcheck 因為沒有相依清單或規則檔變更而略過
 
 
+# g1_slopcheck.py 印在 stderr 的結果行：略過一種、有掃描四種（通過、阻擋、無法完成、未實測）。
+# 「有掃描」要找到正面證據；兩種都找不到（例如措辭改了）→ 無法比對，不推定為有掃描。
+SLOP_SKIPPED = "G1 slopcheck：無相依清單或規則檔變更，略過。"
+SLOP_SCANNED = ("✅ G1 快篩通過。", "⛔ G1 阻擋：", "⚠️ G1 無法完成檢查（網路/registry", "⚠️ G1 有控制未實測")
+
+
 def parse_g1(text: str) -> G1Info:
-    """PR 的 G1 job log → G1Info。已知漏洞或 KEV 那行剛好一行，否則 InputError。"""
+    """PR 的 G1 job log → G1Info。已知漏洞、KEV、slopcheck 結果行都要剛好一行，否則 InputError。"""
     lines = log_lines(text)
     kev = _one(lines, r"KEV：檢查 \d+ 筆 grype 結果，命中 (\d+) 筆", "G1 job 的 KEV 命中")
-    return G1Info(parse_nightly_g1(text, "G1 job"), kev, any(SLOP_SKIPPED in ln for ln in lines))
-
-
-SLOP_SKIPPED = "G1 slopcheck：無相依清單或規則檔變更，略過。"
+    skipped = [ln for ln in lines if SLOP_SKIPPED in ln]
+    scanned = [ln for ln in lines if any(ln.lstrip().startswith(x) for x in SLOP_SCANNED)]
+    if len(skipped) + len(scanned) != 1:
+        raise InputError(f"G1 job 的 slopcheck 結果行應剛好一行（略過 {len(skipped)} 行、有掃描 {len(scanned)} 行）")
+    return G1Info(parse_known_vulns(text, "G1 job"), kev, bool(skipped))
 
 
 def _one(lines: list[str], pattern: str, what: str) -> int:
@@ -107,7 +118,7 @@ def _one(lines: list[str], pattern: str, what: str) -> int:
     return hit[0]
 
 
-def parse_nightly_g1(text: str, where: str = "nightly 的 G1 job") -> int:
+def parse_known_vulns(text: str, where: str = "nightly 的 G1 job") -> int:
     """G1 job log（PR 或 nightly）→ 已知漏洞（非 KEV）筆數；不是剛好一行 → InputError。"""
     return _one(log_lines(text), r"已知漏洞（非 KEV[^）]*）：(\d+) 筆", f"{where}的已知漏洞（非 KEV）")
 
@@ -147,6 +158,7 @@ ACTIONS = "github-actions"
 DEPENDABOT_CHECK = ("dependabot", ".github/dependabot.yml")
 SOURCE_NOTE = {"github-advanced-security": "code scanning：各 job 上傳的 SARIF", "dependabot": "Dependabot 設定驗證",
                "commit status": "commit status API"}
+BUCKETS = ("pass", "skipping", "fail", "cancel", "pending")
 
 
 class Report(NamedTuple):
@@ -155,114 +167,133 @@ class Report(NamedTuple):
     unexplained: list # 需要說明的差異
 
 
+class _Acc(NamedTuple):
+    """各節共用的輸出累積器。"""
+    out: list
+    expected: list
+    unexplained: list
+
+
 def compare(pr: dict, base: dict, nightly: dict) -> Report:
-    """pr、base：{"number", "checks", "logs": {"summary", "validate", "g1"}}；nightly：{"date", "run_id", "g1_log"}。
+    """pr、base：{"number", "checks", "logs": {"summary", "validate", "g1"}}；nightly：{"date", "same_day", "run_id", "g1_log"}。
     log 解析失敗 → InputError。"""
-    out: list[str] = []
-    expected: list[str] = []
-    unexplained: list[str] = []
+    acc = _Acc([], [], [])
     P, B = f"#{pr['number']}", f"#{base['number']}"
-
-    # 1. check
-    out.append(f"## check（{P} 對 基準 {B}）")
-    for who, side in ((P, pr), (B, base)):
-        n: dict[str, int] = {}
-        for c in side["checks"]:
-            n[bucket(c["state"])] = n.get(bucket(c["state"]), 0) + 1
-        out.append(f"- {who}：" + "、".join(f"{k} {n[k]}" for k in ("pass", "skipping", "fail", "cancel", "pending") if k in n))
-    key = lambda c: (c["source"], c["name"])
-    pm, bm = {key(c): c for c in pr["checks"]}, {key(c): c for c in base["checks"]}
-    others: dict[str, list[str]] = {}
-    for c in pr["checks"]:
-        if c["source"] != ACTIONS:
-            others.setdefault(c["source"], []).append(c["name"])
-    out.append("- 不是 workflow 產生的 check（" + P + "）：" + ("無" if not others else "；".join(
-        f"{src}（{SOURCE_NOTE.get(src, '來源不明')}）{len(v)} 個：{'、'.join(sorted(v))}" for src, v in sorted(others.items()))))
-    for k in sorted(set(pm) | set(bm)):
-        a, b = pm.get(k), bm.get(k)
-        name = f"{k[1]}（{k[0]}）"
-        if a and b:
-            if bucket(a["state"]) != bucket(b["state"]):
-                unexplained.append(f"check {name} 結果不同：{B} {b['state']} → {P} {a['state']}")
-            continue
-        where = P if a else B
-        msg = f"check {name} 只在 {where}"
-        (expected if k == DEPENDABOT_CHECK else unexplained).append(
-            msg + ("（GitHub 在 PR 改到 .github/dependabot.yml 時才建立）" if k == DEPENDABOT_CHECK else ""))
-    for c in pr["checks"]:
-        if bucket(c["state"]) in ("fail", "cancel"):
-            unexplained.append(f"{P} 的 check {c['name']}（{c['source']}）是 {c['state']}")
-
-    # 2. 閘門表格與 3. G1
-    pt, bt = parse_gate_table(pr["logs"]["summary"]), parse_gate_table(base["logs"]["summary"])
+    _compare_checks(acc, P, pr["checks"], B, base["checks"])
     pg, bg = parse_g1(pr["logs"]["g1"]), parse_g1(base["logs"]["g1"])
-    nightly_known = parse_nightly_g1(nightly["g1_log"])
-    out.append("## 閘門表格（| 閘門 | 狀態 | blocking | advisory | 說明 |）")
+    nightly_known = parse_known_vulns(nightly["g1_log"])
+    _compare_gate_tables(acc, P, parse_gate_table(pr["logs"]["summary"]), pg,
+                         B, parse_gate_table(base["logs"]["summary"]), bg, nightly, nightly_known)
+    _compare_g1(acc, P, pg, B, bg, nightly, nightly_known)
+    _compare_validate(acc, P, parse_validate(pr["logs"]["validate"]), B, parse_validate(base["logs"]["validate"]))
+    acc.out.append("## 結論")
+    acc.out.append("- 預期內：" + ("無" if not acc.expected else ""))
+    acc.out.extend(f"  - {x}" for x in acc.expected)
+    acc.out.append("- 需要說明：" + ("無" if not acc.unexplained else ""))
+    acc.out.extend(f"  - {x}" for x in acc.unexplained)
+    return Report(*acc)
+
+
+def _compare_checks(acc: _Acc, P: str, pr_checks: list, B: str, base_checks: list) -> None:
+    """各狀態數量、不是 workflow 產生的 check；以（來源, 名稱）為單位比對結果的多重集合，同名的 check 也逐個算。"""
+    acc.out.append(f"## check（{P} 對 基準 {B}）")
+    groups = {}
+    for who, checks in ((P, pr_checks), (B, base_checks)):
+        n = collections.Counter(bucket(c["state"]) for c in checks)
+        acc.out.append(f"- {who}：" + "、".join(f"{k} {n[k]}" for k in BUCKETS if k in n))
+        others = collections.defaultdict(list)
+        for c in checks:
+            if c["source"] != ACTIONS:
+                others[c["source"]].append(c["name"])
+        acc.out.append(f"  不是 workflow 產生的：" + ("無" if not others else "；".join(
+            f"{src}（{SOURCE_NOTE.get(src, '來源不明')}）{len(v)} 個：{'、'.join(sorted(v))}" for src, v in sorted(others.items()))))
+        g = collections.defaultdict(collections.Counter)
+        for c in checks:
+            g[(c["source"], c["name"])][bucket(c["state"])] += 1
+        groups[who] = g
+    for ident in sorted(set(groups[P]) | set(groups[B])):
+        a, b = groups[P].get(ident, collections.Counter()), groups[B].get(ident, collections.Counter())
+        if a == b:
+            continue
+        name = f"{ident[1]}（{ident[0]}）"
+        if not a or not b:
+            msg = f"check {name} 只在 {P if a else B}"
+            if ident == DEPENDABOT_CHECK:
+                acc.expected.append(msg + "（GitHub 在 PR 改到 .github/dependabot.yml 時才建立）")
+            else:
+                acc.unexplained.append(msg)
+        else:
+            show = lambda c: "、".join(f"{k} {c[k]}" for k in BUCKETS if c[k])
+            acc.unexplained.append(f"check {name} 結果或個數不同：{B} {show(b)} → {P} {show(a)}")
+    for c in pr_checks:
+        if bucket(c["state"]) in ("fail", "cancel"):
+            acc.unexplained.append(f"{P} 的 check {c['name']}（{c['source']}）是 {c['state']}")
+
+
+def _compare_gate_tables(acc: _Acc, P: str, pt: dict, pg: G1Info, B: str, bt: dict, bg: G1Info,
+                         nightly: dict, nightly_known: int) -> None:
+    acc.out.append("## 閘門表格（| 閘門 | 狀態 | blocking | advisory | 說明 |）")
     for who, t in ((P, pt), (B, bt)):
-        out.append(f"- {who}：")
-        out += [f"  | {g} | " + " | ".join(cells) + " |" for g, cells in t.items()]
-    scanned = {P: not pg.slop_skipped, B: not bg.slop_skipped}
+        acc.out.append(f"- {who}：")
+        acc.out.extend(f"  | {g} | " + " | ".join(cells) + " |" for g, cells in t.items())
     for g in sorted(set(pt) | set(bt)):
         a, b = pt.get(g), bt.get(g)
         if a is None or b is None:
-            unexplained.append(f"閘門 {g} 只在 {P if a else B} 的表格裡")
-            continue
-        if a == b:
-            continue
-        if g != "G1" or len(a) != 4 or len(b) != 4:
-            unexplained.append(f"閘門 {g} 的列不同：{B} {b} → {P} {a}")
-            continue
-        if a[:2] != b[:2]:
-            unexplained.append(f"G1 的狀態或 blocking 不同：{B} {b[:2]} → {P} {a[:2]}")
-        if a[2] != b[2]:
-            same_delta = a[2].isdigit() and b[2].isdigit() and int(a[2]) - int(b[2]) == pg.known - bg.known
-            if pg.known == nightly_known and same_delta:
-                expected.append(f"G1 advisory {b[2]} → {a[2]}：已知漏洞筆數和 {nightly['date']} 的 nightly 相同（{nightly_known}）")
-            else:
-                unexplained.append(f"G1 advisory {b[2]} → {a[2]}：和已知漏洞的變化（{bg.known} → {pg.known}）"
+            acc.unexplained.append(f"閘門 {g} 只在 {P if a else B} 的表格裡")
+        elif a != b and (g != "G1" or len(a) != 4 or len(b) != 4):
+            acc.unexplained.append(f"閘門 {g} 的列不同：{B} {b} → {P} {a}")
+        elif a != b:
+            _compare_g1_row(acc, (P, a, pg), (B, b, bg), nightly, nightly_known)
+
+
+def _compare_g1_row(acc: _Acc, pr_row: tuple, base_row: tuple, nightly: dict, nightly_known: int) -> None:
+    """G1 列：advisory 的變化要和已知漏洞的變化一致、且 PR 的已知漏洞和 nightly 相同；allowlist 句只能出現在有掃描的那邊。"""
+    (P, a, pg), (B, b, bg) = pr_row, base_row
+    if a[:2] != b[:2]:
+        acc.unexplained.append(f"G1 的狀態或 blocking 不同：{B} {b[:2]} → {P} {a[:2]}")
+    if a[2] != b[2]:
+        same_delta = a[2].isdigit() and b[2].isdigit() and int(a[2]) - int(b[2]) == pg.known - bg.known
+        if pg.known == nightly_known and same_delta:
+            acc.expected.append(f"G1 advisory {b[2]} → {a[2]}：已知漏洞筆數和 {nightly['date']} 的 nightly 相同（{nightly_known}）")
+        else:
+            acc.unexplained.append(f"G1 advisory {b[2]} → {a[2]}：和已知漏洞的變化（{bg.known} → {pg.known}）"
                                    f"或 nightly（{nightly_known}）對不上")
-        na, nb = _note_parts(a[3]), _note_parts(b[3])
-        if na[1] != nb[1]:
-            unexplained.append(f"G1 說明不同（allowlist 句以外）：{B}「{b[3]}」→ {P}「{a[3]}」")
-        elif na[0] != nb[0]:
-            if na[0] and nb[0]:
-                unexplained.append(f"G1 的 allowlist 句兩邊不同：{B}「{'；'.join(nb[0])}」→ {P}「{'；'.join(na[0])}」")
-            else:
-                who = P if na[0] else B
-                if scanned[who]:
-                    expected.append(f"G1 的 allowlist 句只在 {who}：那一邊的 slopcheck 有掃描（改到相依清單或規則檔，含 *.md；#210）")
-                else:
-                    unexplained.append(f"G1 的 allowlist 句只在 {who}，但那一邊的 slopcheck 略過了")
-    out.append("## G1")
+    (allow_a, rest_a), (allow_b, rest_b) = _note_parts(a[3]), _note_parts(b[3])
+    if rest_a != rest_b:
+        acc.unexplained.append(f"G1 說明不同（allowlist 句以外）：{B}「{b[3]}」→ {P}「{a[3]}」")
+    elif allow_a != allow_b and allow_a and allow_b:
+        acc.unexplained.append(f"G1 的 allowlist 句兩邊不同：{B}「{'；'.join(allow_b)}」→ {P}「{'；'.join(allow_a)}」")
+    elif allow_a != allow_b:
+        who, info = (P, pg) if allow_a else (B, bg)
+        if not info.slop_skipped:
+            acc.expected.append(f"G1 的 allowlist 句只在 {who}：那一邊的 slopcheck 有掃描（改到相依清單或規則檔，含 *.md；#210）")
+        else:
+            acc.unexplained.append(f"G1 的 allowlist 句只在 {who}，但那一邊的 slopcheck 略過了")
+
+
+def _compare_g1(acc: _Acc, P: str, pg: G1Info, B: str, bg: G1Info, nightly: dict, nightly_known: int) -> None:
+    acc.out.append("## G1")
     for who, x in ((P, pg), (B, bg)):
-        out.append(f"- {who}：已知漏洞（非 KEV）{x.known} 筆；KEV 命中 {x.kev_hits} 筆；slopcheck "
-                   + ("略過（無相依清單或規則檔變更）" if x.slop_skipped else "有掃描"))
-    day = nightly["date"] + ("" if nightly.get("same_day", True) else "（PR 當天沒有已結束的 nightly，取之前最近的一次）")
-    out.append(f"- main nightly（{day}，run {nightly['run_id']}）：已知漏洞（非 KEV）{nightly_known} 筆")
+        acc.out.append(f"- {who}：已知漏洞（非 KEV）{x.known} 筆；KEV 命中 {x.kev_hits} 筆；slopcheck "
+                       + ("略過（無相依清單或規則檔變更）" if x.slop_skipped else "有掃描"))
+    day = nightly["date"] + ("" if nightly["same_day"] else "（PR 當天沒有已結束的 nightly，取之前最近的一次）")
+    acc.out.append(f"- main nightly（{day}，run {nightly['run_id']}）：已知漏洞（非 KEV）{nightly_known} 筆")
     if pg.known != nightly_known:
-        unexplained.append(f"{P} 的 G1 已知漏洞 {pg.known} 筆，和 {nightly['date']} 的 nightly（{nightly_known} 筆）不同")
+        acc.unexplained.append(f"{P} 的 G1 已知漏洞 {pg.known} 筆，和 {nightly['date']} 的 nightly（{nightly_known} 筆）不同")
     if pg.kev_hits != bg.kev_hits:
-        unexplained.append(f"KEV 命中數不同：{B} {bg.kev_hits} → {P} {pg.kev_hits}")
+        acc.unexplained.append(f"KEV 命中數不同：{B} {bg.kev_hits} → {P} {pg.kev_hits}")
 
-    # 4. validate
-    pv, bv = parse_validate(pr["logs"]["validate"]), parse_validate(base["logs"]["validate"])
-    out.append("## validate（repo-validate 的三次執行）")
+
+def _compare_validate(acc: _Acc, P: str, pv: list, B: str, bv: list) -> None:
+    acc.out.append("## validate（repo-validate 的三次執行）")
     for label, a, b in zip(VALIDATE_LABELS, pv, bv):
-        out.append(f"- {label}：{P} 通過 {a.passed}、警告 {a.warnings}、錯誤 {a.errors}；"
-                   f"{B} 通過 {b.passed}、警告 {b.warnings}、錯誤 {b.errors}")
-        out += [f"  {P} {ln}" for ln in a.warn_lines + a.err_lines]
+        acc.out.append(f"- {label}：{P} 通過 {a.passed}、警告 {a.warnings}、錯誤 {a.errors}；"
+                       f"{B} 通過 {b.passed}、警告 {b.warnings}、錯誤 {b.errors}")
+        acc.out.extend(f"  {P} {ln}" for ln in a.warn_lines + a.err_lines)
         if a.errors:
-            unexplained.append(f"validate {label}：{P} 有 {a.errors} 個錯誤")
+            acc.unexplained.append(f"validate {label}：{P} 有 {a.errors} 個錯誤")
         if a.warn_lines != b.warn_lines or a.warnings != b.warnings:
-            unexplained.append(f"validate {label} 的警告不同：{B} {list(b.warn_lines)} → {P} {list(a.warn_lines)}")
-
-    # 5. 結論
-    out.append("## 結論")
-    out.append("- 預期內：" + ("無" if not expected else ""))
-    out += [f"  - {x}" for x in expected]
-    out.append("- 需要說明：" + ("無" if not unexplained else ""))
-    out += [f"  - {x}" for x in unexplained]
-    return Report(out, expected, unexplained)
+            acc.unexplained.append(f"validate {label} 的警告不同：{B} {list(b.warn_lines)} → {P} {list(a.warn_lines)}")
 
 
 ALLOW_PREFIX = "忽略的 allowlist 條目"
@@ -312,8 +343,12 @@ JOB_SUMMARY, JOB_VALIDATE, JOB_G1 = "VibeSec Summary", "倉庫驗證", "G1 供�
 NIGHTLY, JOB_NIGHTLY_G1 = "nightly-full.yml", "G1 全量供應鏈"
 
 
-def fetch_side(gh, number: int, *, logs: bool = True) -> dict:
-    """一個 PR 的 head、check、workflow run（含 job 數）；logs=True 時再取 pr-gates 三個 job 的 log。"""
+def _jobs(gh, run_id) -> list[dict]:
+    return _jsonl(gh, f"{REPO}/actions/runs/{run_id}/jobs?per_page=100", ".jobs[] | {id, name, status}")
+
+
+def fetch_side(gh, number: int) -> dict:
+    """一個 PR 的 head、check、workflow run（含 job 清單與 job 數）。log 另由 fetch_logs 取。"""
     head = gh(["api", f"{REPO}/pulls/{number}", "--jq", ".head.sha"]).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise InputError(f"#{number}：取不到 head SHA")
@@ -327,21 +362,23 @@ def fetch_side(gh, number: int, *, logs: bool = True) -> dict:
                   ".workflow_runs[] | {id, name, path, event, status, created_at}")
     if not runs:
         raise InputError(f"#{number}：head {head[:7]} 找不到任何 workflow run")
-    jobs = {}
     for r in runs:
-        jobs[r["id"]] = _jsonl(gh, f"{REPO}/actions/runs/{r['id']}/jobs?per_page=100", ".jobs[] | {id, name, status}")
-        r["jobs"] = len(jobs[r["id"]])
-    side = {"number": number, "head": head, "checks": checks, "runs": runs}
-    if not logs:
-        return side
-    gates = sorted((r for r in runs if r["path"].startswith(PR_GATES) and r["event"] == "pull_request"),
+        r["job_list"] = _jobs(gh, r["id"])
+        r["jobs"] = len(r["job_list"])
+    return {"number": number, "head": head, "checks": checks, "runs": runs}
+
+
+def fetch_logs(gh, side: dict) -> dict:
+    """side 加上最近一次 pr-gates（pull_request）run 的建立時間，以及 Summary、repo-validate、G1 三個 job 的 log。"""
+    number, head = side["number"], side["head"]
+    gates = sorted((r for r in side["runs"] if r["path"].startswith(PR_GATES) and r["event"] == "pull_request"),
                    key=lambda r: r["created_at"])
     if not gates:
         raise InputError(f"#{number}：head {head[:7]} 找不到 pr-gates 的 pull_request run")
     g = gates[-1]
     where = f"#{number} pr-gates run {g['id']}"
     side["gates_created"] = g["created_at"]
-    side["logs"] = {key: _job_log(gh, _pick_job(jobs[g["id"]], prefix, where)["id"])
+    side["logs"] = {key: _job_log(gh, _pick_job(g["job_list"], prefix, where)["id"])
                     for key, prefix in (("summary", JOB_SUMMARY), ("validate", JOB_VALIDATE), ("g1", JOB_G1))}
     return side
 
@@ -357,8 +394,7 @@ def fetch_nightly(gh, when: str) -> dict:
     pick = max(same, key=lambda r: r["created_at"]) if same else max(before, key=lambda r: r["created_at"], default=None)
     if pick is None:
         raise InputError(f"找不到 {day} 或之前已結束的 main nightly")
-    jobs = _jsonl(gh, f"{REPO}/actions/runs/{pick['id']}/jobs?per_page=100", ".jobs[] | {id, name, status}")
-    job = _pick_job(jobs, JOB_NIGHTLY_G1, f"nightly run {pick['id']}")
+    job = _pick_job(_jobs(gh, pick["id"]), JOB_NIGHTLY_G1, f"nightly run {pick['id']}")
     return {"date": pick["created_at"][:10], "same_day": bool(same), "run_id": pick["id"], "g1_log": _job_log(gh, job["id"])}
 
 
@@ -369,17 +405,14 @@ def main(argv: list[str], *, gh=gh_runner) -> int:
         return 4
     pr_n, base_n = int(argv[0]), int(argv[2])
     try:
-        pr = fetch_side(gh, pr_n, logs=False)
-        why = incomplete_reason(pr)
-        if why:
-            print(f"CI 未完成（#{pr_n}）：{why}；不比對。")
-            return 2
-        pr = fetch_side(gh, pr_n)
-        base = fetch_side(gh, base_n)
-        why = incomplete_reason(base)
-        if why:
-            print(f"基準 PR #{base_n} 的 CI 未完成：{why}；不比對。")
-            return 2
+        sides = []
+        for label, n in (("", pr_n), ("基準 PR ", base_n)):   # 先判斷 PR 完成了沒：未完成就不取基準與 log
+            side = fetch_side(gh, n)
+            if why := incomplete_reason(side):
+                print(f"{label}#{n} 的 CI 未完成：{why}；不比對。")
+                return 2
+            sides.append(fetch_logs(gh, side))
+        pr, base = sides
         rep = compare(pr, base, fetch_nightly(gh, pr["gates_created"]))
     except InputError as e:
         print(f"無法比對：{e}")
@@ -515,14 +548,29 @@ def selftest() -> list[str]:
             return "缺已知漏洞行應 InputError"
         except InputError:
             pass
-        if parse_nightly_g1(_fx_nightly(91)["g1_log"]) != 91:
+        if parse_known_vulns(_fx_nightly(91)["g1_log"]) != 91:
             return "nightly 筆數"
         try:
-            parse_nightly_g1(_fx_log("沒有"))
+            parse_known_vulns(_fx_log("沒有"))
             return "nightly 缺行應 InputError"
         except InputError:
             return None
     check("G1：已知漏洞、KEV 命中、slopcheck 略過；nightly 筆數", t_g1)
+
+    def t_slop_evidence():   # 有掃描要有正面證據：措辭改了、兩種行都找不到 → 無法比對，不推定為有掃描（fail-closed）
+        base = _fx_g1().replace("✅ G1 快篩通過。", "{}")
+        bad = []
+        for label, line in (("兩種都沒有", "G1 快篩：完成"), ("兩種都有", "✅ G1 快篩通過。\n" + SLOP_SKIPPED)):
+            try:
+                parse_g1(base.replace("{}", line))
+                bad.append(label)
+            except InputError:
+                pass
+        for line in ("⛔ G1 阻擋：1 筆 blocking 供應鏈發現。", "⚠️ G1 有控制未實測 → incomplete，絕不視為通過：x"):
+            if parse_g1(base.replace("{}", line)).slop_skipped is not False:
+                bad.append(f"{line[:8]} 應算有掃描")
+        return f"{bad}" if bad else None
+    check("G1：slopcheck 是否掃描要有正面證據", t_slop_evidence)
 
     # ---- 完成判斷
     def t_incomplete():
@@ -563,6 +611,28 @@ def selftest() -> list[str]:
             return f"完全相同應沒有差異（預期內 {rep.expected}、需要說明 {rep.unexplained}）"
         return f"輸出缺少：{miss}" if miss else None
     check("完全相同：0 項差異；輸出含各節", t_same)
+
+    def t_others_both_sides():
+        rep, _, _ = cls(_fx_side(), _fx_side(249, checks=_fx_checks(extra=[DEPENDABOT])))
+        text = "\n".join(rep.lines)
+        return None if text.count("不是 workflow 產生的") == 2 and "dependabot（Dependabot 設定驗證）" in text \
+            else f"兩邊都要列出不是 workflow 產生的 check 與來源（得到 {text[:400]!r}）"
+    check("check：兩邊都列出不是 workflow 產生的 check", t_others_both_sides)
+
+    def t_same_name():
+        dup = _fx_checks(extra=[("CodeQL", "github-advanced-security", "success")])
+        _, e, u = cls(_fx_side(checks=dup), _fx_side(249))
+        return None if u >= 1 else "同名同來源的 check 多一個 → 需要說明（不能合併成一項）"
+    check("check：同名 check 的個數不同 → 需要說明", t_same_name)
+
+    def t_nightly_fallback():   # 維護者決定（#240 留言）：當天沒有 nightly → 取之前最近一次，相同算預期內，輸出註明
+        old = {**_fx_nightly(), "same_day": False, "date": "2026-10-31"}
+        rep, e, u = cls(_fx_side(), _fx_side(249), old)
+        if (e, u) != (0, 0) or "取之前最近的一次" not in "\n".join(rep.lines):
+            return f"相同 → 沒有差異、輸出註明不是當天（得到 {e}、{u}）"
+        _, e, u = cls(_fx_side(), _fx_side(249), {**old, "g1_log": _fx_nightly(91)["g1_log"]})
+        return None if u >= 1 else "不是當天、筆數不同 → 需要說明"
+    check("G1：當天沒有 nightly → 取之前最近一次並註明", t_nightly_fallback)
 
     def t_dependabot():
         _, e, u = cls(_fx_side(checks=_fx_checks(extra=[DEPENDABOT])), _fx_side(249))

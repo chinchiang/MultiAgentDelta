@@ -72,7 +72,6 @@ python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 只有預期內�
 | G3 | `pass` | 0／0 | |
 | G4 | `incomplete` | 0／0 | CI 不跑 LLM 審查；enforce 下也不擋，見 #215 |
 
-
 ## 容易踩的坑
 
 - **版本錯開**：PR CI 用的是 PR head 的 workflow 和 action，呼叫的卻是 `_trusted/`（main）的腳本。action 或 workflow 會用到的新 module 或函式，要先用 prefactor PR 合進 main（#207）。validate 層面的版本錯開（受信任樹的檢查不認得 PR 的新檔案），第 5 步的 `ci_validate.py` 在本機就會抓到（#235、#238）。
@@ -163,7 +162,6 @@ Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 | G2 | `pass` | 0/0 | |
 | G3 | `pass` | 0/0 | |
 | G4 | `incomplete` | 0/0 | CI does not run the LLM review; it does not block in enforce either, see #215 |
-
 
 ## Gotchas
 
