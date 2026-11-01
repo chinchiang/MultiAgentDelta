@@ -150,7 +150,7 @@ flowchart LR
 
 ```text
 MultiAgentDelta/
-├── AGENTS.md                      # AI 協作者規範（不可違反的規則、命名慣例；唯一來源）
+├── AGENTS.md                      # AI 協作者規範（不可違反的規則、命名慣例；唯一來源，只寫正體中文；英文譯本 docs/agents/rules.en.md）
 ├── CLAUDE.md                      # 只有 @AGENTS.md 一行，讓 Claude Code 載入 AGENTS.md
 ├── README.md
 ├── vibesec.yaml                   # 主設定：mode、risk_tier、G0–G6 參數、審查與評分規則

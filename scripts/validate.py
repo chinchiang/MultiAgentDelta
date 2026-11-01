@@ -749,11 +749,15 @@ else:
 import bilingual as _bi
 _bi_files, _bi_missing = _bi.set_paths(ROOT)
 for _m in _bi_missing:
-    err(f"雙語集合的 {_m} 不存在：無法確認集合內的文件都是雙語（集合須與 AGENTS.md 同步修改）")
+    err(f"雙語集合或譯本的 {_m} 不存在：無法確認文件語言（集合與譯本須與 AGENTS.md「文件語言」同步修改）")
 for _f in _bi_files:
     for _p in _bi.problems(_f.read_text(encoding="utf-8")):
-        err(f"{_f.relative_to(ROOT)}：{_p}（雙語集合，AGENTS.md 命名與格式慣例）")
-ok(f"雙語集合 {len(_bi_files)} 份文件已檢查")
+        err(f"{_f.relative_to(ROOT)}：{_p}（雙語集合，AGENTS.md 文件語言）")
+for _tr, _src in _bi.TRANSLATIONS.items():
+    if (ROOT / _tr).is_file() and (ROOT / _src).is_file():
+        for _p in _bi.translation_problems((ROOT / _src).read_text(encoding="utf-8"), (ROOT / _tr).read_text(encoding="utf-8")):
+            err(f"{_tr}（{_src} 的英文譯本）：{_p}（AGENTS.md 文件語言）")
+ok(f"雙語集合 {len(_bi_files)} 份文件與譯本 {len(_bi.TRANSLATIONS)} 份已檢查")
 
 # --- CI 設定的不變式（判定在 scripts/ci_invariants.py，有 selftest）：防止已修過的弱點被改回去 ---
 import ci_invariants as _ci

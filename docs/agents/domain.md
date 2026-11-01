@@ -62,7 +62,7 @@ If either is missing, **proceed silently**: don't flag its absence or suggest cr
 └── scripts/
 ```
 
-New ADRs follow the same bilingual rule as `GLOSSARY.md` and AGENTS.md: Traditional Chinese first, then English, separated by `<a id="zh-tw"></a>` and `<a id="english"></a>`; if they disagree, the Traditional Chinese version prevails.
+New ADRs follow the bilingual rule in AGENTS.md, as `GLOSSARY.md` does: Traditional Chinese first, then English, separated by `<a id="zh-tw"></a>` and `<a id="english"></a>`; if they disagree, the Traditional Chinese version prevails.
 
 ## Use the glossary's vocabulary
 
