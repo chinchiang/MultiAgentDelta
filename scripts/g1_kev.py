@@ -17,8 +17,9 @@
   python3 scripts/g1_kev.py ... --merge-gate reports/g1-gate.json
   python3 scripts/g1_kev.py selftest
 退出碼依政策 tier（#244）：0 已完成且沒有 blocking 發現；1 有 blocking 發現（現行政策下即 KEV 命中：讓 nightly 轉紅、
-        notify 開 issue；SARIF 照常寫出）；2 incomplete（輸入缺漏或無法解析）。kev-hit 只有在 tier_overrides 的
-        demote_to_advisory 列出時才是 advisory（政策變更，AGENTS.md 規則 1）：這時命中只警告、退出碼 0。
+        notify 開 issue；SARIF 照常寫出）；2 incomplete（輸入缺漏或無法解析）。kev-hit 的有效 tier 由阻擋政策決定
+        （例如 tier_overrides 的 demote_to_advisory，或 applies_only_to_gates 不含 G1；政策變更，AGENTS.md 規則 1；
+        路徑型的政策例外不套用）：為 advisory 時命中只警告、退出碼 0。
 """
 from __future__ import annotations
 import argparse, datetime, json, pathlib, re, sys
@@ -169,7 +170,6 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
             "matches_checked": len(grype.get("matches") or []), "hits": hits, "vulnerable": vulns}, hits
 
 
-KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
 def tier_counts(hits: list[dict], vulns: list[dict], policy: "Policy") -> tuple[int, int]:
     """(blocking, advisory)：KEV 命中與已知漏洞各依政策 tier 計數；退出碼、併入的計數與 tool 列共用（#244）。"""
     kev_tier, vuln_tier = policy.tier(RULE), policy.tier(VULN_RULE)
@@ -177,6 +177,7 @@ def tier_counts(hits: list[dict], vulns: list[dict], policy: "Policy") -> tuple[
     return blocking, len(hits) + len(vulns) - blocking
 
 
+KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
 def merge_gate(gate: dict, summary: dict, hits: list[dict], sarif_ref: str | None, policy: "Policy | None") -> dict:
     """把 KEV 結果（子結果）併入既有 G1 gate-result，狀態由 gate_verdict.merge 判定（只升不降、blocking 優先）。
     KEV 無法判定 → 控制 untested；命中 → 控制 fail，閘門是否 fail 依 vibesec.g1.kev-hit 的政策 tier。
@@ -330,8 +331,8 @@ def selftest() -> list[str]:
         if rc != 2 or g["status"] != "incomplete" \
                 or g["tools"][-1:] != [gate_result.tool(TOOL_NAME, "ran", version=TOOL_VERSION, exit_code=2)] or sf.exists():
             fails.append(f"KEV：一般 incomplete → tool 列 ran／exit_code 2、舊 SARIF 刪掉（得到 {rc}、SARIF 存在={sf.exists()}、{g['tools']}）")
-    # 退出碼、訊息與併入的 tool 列依政策 tier（#244）：kev-hit 只能由 tier_overrides 的 demote_to_advisory 降級（政策變更，
-    # AGENTS.md 規則 1；Policy.tier 不套用路徑型的政策例外）。降級後命中是 advisory → 退出碼 0、只警告，不再讓 nightly 轉紅
+    # 退出碼、訊息與併入的 tool 列依政策 tier（#244）。政策變更（AGENTS.md 規則 1）以 tier_overrides 模擬：kev-hit 降級後
+    # 命中是 advisory → 退出碼 0、只警告；已知漏洞升級後是 blocking → 退出碼 1 並有 ::error::（Policy.tier 不套用路徑型的政策例外）
     from vibesec_policy import temp_policy_root, write_policy_key
     import yaml
     no_hit = {"matches": [m for m in grype["matches"] if m["artifact"]["name"] == "safe"]}
@@ -339,12 +340,14 @@ def selftest() -> list[str]:
         ("現行政策（kev-hit blocking）有命中", False, grype, 1, "error"),
         ("kev-hit 由 demote_to_advisory 降級、有命中", True, grype, 0, "warning"),
         ("沒有 KEV 命中", False, no_hit, 0, None),
+        ("已知漏洞由 promote_to_blocking 升級、沒有 KEV 命中", "promote", no_hit, 1, "error"),
     ]:
         out = io.StringIO()
         with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(out):
-            if demote:   # 每個風險層級都降級：不依賴 repo 目前的 risk_tier
+            if demote:   # 每個風險層級都改：不依賴 repo 目前的 risk_tier
+                key, rid = ("promote_to_blocking", VULN_RULE) if demote == "promote" else ("demote_to_advisory", RULE)
                 pol = yaml.safe_load((pr / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
-                write_policy_key(pr, "tier_overrides", {t: {**ov, "demote_to_advisory": [*(ov.get("demote_to_advisory") or []), RULE]}
+                write_policy_key(pr, "tier_overrides", {t: {**ov, key: [*(ov.get(key) or []), rid]}
                                                         for t, ov in (pol.get("tier_overrides") or {}).items()})
             g, k, js, sf, gp = (pathlib.Path(d, n) for n in ("g.json", "k.json", "out.json", "out.sarif", "G1.json"))
             g.write_text(json.dumps(data)); k.write_text(json.dumps(kev_feed))
@@ -353,11 +356,12 @@ def selftest() -> list[str]:
                       policy_root=pr)
             merged = json.loads(gp.read_text(encoding="utf-8"))
         tool_rc = [x.get("exit_code") for x in merged["tools"] if x["name"] == TOOL_NAME]
-        kev_lines = [ln for ln in out.getvalue().splitlines() if ln.startswith("::") and "KEV 命中" in ln]
+        # 讓步驟變紅或警告的訊息（KEV 命中、blocking 的已知漏洞）：層級與實際 tier 都要對
+        rid, tier_word = (VULN_RULE, "blocking") if demote == "promote" else (RULE, "advisory" if demote else "blocking")
+        kev_lines = [ln for ln in out.getvalue().splitlines() if ln.startswith("::") and f"（{rid}，" in ln]
         want_lines = [] if want_level is None else [f"::{want_level}::"]
-        tier_word = "advisory" if demote else "blocking"
         if rc != want_rc or tool_rc != [want_rc] or [ln[:len(want_lines[0])] for ln in kev_lines] != want_lines \
-                or (kev_lines and f"（{RULE}，{tier_word}）" not in kev_lines[0]):
+                or (kev_lines and f"（{rid}，{tier_word}）" not in kev_lines[0]):
             fails.append(f"KEV 進入點「{label}」：應為退出碼 {want_rc}、併入的 tool 列 exit_code {want_rc}、"
                          f"命中訊息 {want_level or '無'}（{tier_word}）（得到 {rc}、{tool_rc}、{kev_lines}）")
     return fails
@@ -411,11 +415,14 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     print(f"已知漏洞（非 KEV，{vuln_tier}）：{len(vulns)} 筆")
     print(f"KEV：檢查 {summary['matches_checked']} 筆 grype 結果，命中 {len(hits)} 筆"
           + "".join(f"\n  {h['cve']} {h['package']}@{h['version']}（KEV {h['kev_date']}）" for h in hits))
-    # 退出碼與訊息依政策 tier（#244）：有 blocking 發現 → 1（讓 nightly 轉紅）；kev-hit 被 tier_overrides 降級時只警告
+    # 退出碼與訊息依政策 tier（#244）：有 blocking 發現 → 1（讓 nightly 轉紅），每一類 blocking 發現都有 ::error:: 說明原因；
+    # kev-hit 的有效 tier 為 advisory 時只警告
     if hits:
-        level = "error" if kev_tier == "blocking" else "warning"
-        print(f"::{level}::KEV 命中 {len(hits)} 筆（{RULE}，{kev_tier}）：需升級或移除受影響套件")
-    return 1 if tier_counts(hits, vulns, policy)[0] else 0
+        print(f"::{'error' if kev_tier == 'blocking' else 'warning'}::KEV 命中 {len(hits)} 筆（{RULE}，{kev_tier}）：需升級或移除受影響套件")
+    if vulns and vuln_tier == "blocking":
+        print(f"::error::已知漏洞 {len(vulns)} 筆（{VULN_RULE}，blocking）：需升級或移除受影響套件")
+    blocking, _ = tier_counts(hits, vulns, policy)
+    return 1 if blocking else 0
 
 
 if __name__ == "__main__":
