@@ -10,7 +10,7 @@
 
 不可違反：
   - incomplete ≠ pass（AGENTS.md #2）：SBOM 缺漏、API 失敗、套件查無資料 → 退出碼 2、JSON status=incomplete，
-    絕不把「沒查到」寫成「沒有命中」。
+    絕不把「沒查到」寫成「沒有命中」。incomplete 時不寫 SARIF、刪掉舊檔，已判定的命中只留在 JSON（#243）。
   - 只記錄日期與旗標，不換算分數、不與 CVSS／EPSS 混算（AGENTS.md #4）。
 
 用法：
@@ -420,10 +420,38 @@ def selftest() -> list[str]:
         s, stale = json.loads(js.read_text(encoding="utf-8")), sf.exists()
     if rc != 2 or s.get("status") != "incomplete" or not str(s.get("status_reason")).startswith(POLICY_UNREADABLE + "（") or stale:
         fails.append(f"維護狀態：政策檔讀不到 → 退出碼 2、incomplete 並寫明原因、不留 SARIF（得到 {rc}、{s}、SARIF 存在：{stale}）")
+    # 政策讀得到、一般 incomplete（缺 SBOM）→ 同樣刪掉舊 SARIF、不寫新檔（#243）：nightly 上傳不完整的 SARIF，
+    # Code Scanning 會當成「這次沒有命中」而關掉無法判定套件的既有 alert；部分發現只留在摘要 JSON（incomplete ≠ pass）
+    from vibesec_policy import temp_policy_root
+    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        js, sf = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
+        sf.write_text("上一次的結果", encoding="utf-8")
+        rc = main(["--sbom", str(pathlib.Path(d, "none.json")), "--sarif", str(sf), "--json", str(js)], policy_root=pr)
+        s, stale = json.loads(js.read_text(encoding="utf-8")), sf.exists()
+    if rc != 2 or s.get("status") != "incomplete" or "缺 SBOM" not in str(s.get("status_reason")) or stale:
+        fails.append(f"維護狀態：一般 incomplete（缺 SBOM）→ 退出碼 2、incomplete、不留 SARIF（得到 {rc}、{s}、SARIF 存在：{stale}）")
+    # 從進入點：部分命中＋無法判定 → incomplete、不留 SARIF，命中與無法判定的清單都留在摘要 JSON；全部判定完成 → 照常寫出 SARIF
+    for label, purls, want_rc, want_st, want_sarif in [
+        ("部分命中＋無法判定", ["pkg:pypi/old@0.9", "pkg:pypi/boom@1"], 2, "incomplete", None),
+        ("全部判定完成、有命中", ["pkg:pypi/old@0.9", "pkg:pypi/fresh@1.0"], 0, "pass", 1),
+    ]:
+        with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            sp, js, sf = pathlib.Path(d, "sbom.json"), pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
+            sp.write_text(json.dumps({"components": [{"purl": u} for u in purls]}))
+            sf.write_text("上一次的結果", encoding="utf-8")
+            rc = main(["--sbom", str(sp), "--sarif", str(sf), "--json", str(js)], policy_root=pr, fetch=fake)
+            s = json.loads(js.read_text(encoding="utf-8"))
+            raw = sf.read_text(encoding="utf-8") if sf.exists() else None   # 留著舊檔 → 記成「舊檔」，不在讀檔時崩潰
+            n_sarif = None if raw is None else "舊檔" if raw == "上一次的結果" else len(json.loads(raw)["runs"][0]["results"])
+        names = sorted(h["name"] for h in s.get("hits") or [])
+        if rc != want_rc or s.get("status") != want_st or n_sarif != want_sarif or names != ["old"] \
+                or (want_st == "incomplete" and [u.get("purl") for u in s.get("unresolved") or []] != ["pkg:pypi/boom@1"]):
+            fails.append(f"維護狀態進入點「{label}」：應為退出碼 {want_rc}、{want_st}、SARIF 結果 {want_sarif} 筆、"
+                         f"摘要命中 [old]（得到 {rc}、{s.get('status')}、{n_sarif}、{names}、unresolved {s.get('unresolved')}）")
     return fails
 
 
-def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+def main(argv=None, policy_root: pathlib.Path = ROOT, fetch=fetch_deps_dev) -> int:
     """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
         fails = selftest()
@@ -440,14 +468,17 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     if problem:
         summary, hits = {"rule_id": RULE, "status": "incomplete", "status_reason": problem}, []
     else:
-        summary, hits = run(pathlib.Path(a.sbom))
+        summary, hits = run(pathlib.Path(a.sbom), fetch=fetch)   # fetch 只給 selftest 注入；命令列參數不變
     for out in (a.sarif, a.json):
         pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    if policy:
+    if summary["status"] == "incomplete":
+        # 政策讀不到或一般 incomplete：不寫 SARIF（上傳步驟以 hashFiles 略過），也不讓上一次的結果被當成這次的。
+        # 一般 incomplete 仍可能有部分命中，但不完整的 SARIF 會讓 Code Scanning 關掉無法判定套件的既有 alert；
+        # 命中與無法判定的清單只留在摘要 JSON（#243，推翻 #182「部分發現照常寫出」）
+        gate_result.remove_stale(a.sarif)
+    else:
         pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(hits, policy), ensure_ascii=False, indent=2), encoding="utf-8")
-    else:   # 沒有分類任何發現：不寫 SARIF（上傳步驟以 hashFiles 略過），也不讓上一次的結果被當成這次的
-        pathlib.Path(a.sarif).unlink(missing_ok=True)
     print(f"維護狀態：查 {summary.get('packages_checked', 0)} 個套件，命中 {len(hits)} 個；"
           f"不適用 {len(summary.get('not_applicable') or [])} 個；無法判定 {len(summary.get('unresolved') or [])} 個"
           + "".join(f"\n  {h['name']}@{h['version']}：{', '.join(s['signal'] for s in h['signals'])}" for h in hits))
