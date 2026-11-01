@@ -9,10 +9,13 @@ workflow 文件第 7 步要求推送前跑本機 gitleaks，版本與 SHA-256 �
 退出碼：0 成功；2 無法取得（incomplete ≠ pass）。
 """
 from __future__ import annotations
-import hashlib, os, pathlib, re, sys, tarfile, tempfile
+import hashlib, os, pathlib, re, stat, sys, tarfile, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NIGHTLY = ROOT / ".github/workflows/nightly-full.yml"
+# 與 nightly 相同的 release 資產；pinned() 核對 nightly 的下載網址也是這個範本，nightly 換資產時退出碼 2（不默默不一致）
+URL = "https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_linux_x64.tar.gz"
+MAX_BYTES = 64 * 1024 * 1024   # 下載上限（8.28.0 的 tarball 約 7 MB）：異常回應不得塞爆磁碟
 
 
 class FetchProblem(Exception):
@@ -23,7 +26,11 @@ def pinned(workflow_text: str) -> tuple[str, str]:
     """nightly workflow 的 (GITLEAKS_VERSION, GITLEAKS_SHA256)。workflow 內每一處釘選都必須相同，否則 FetchProblem
     （不默默挑其中一份）；缺席或格式不對同樣 FetchProblem。"""
     versions = set(re.findall(r'^\s*GITLEAKS_VERSION:\s*"?([^"\s#]+)"?', workflow_text, re.M))
-    hashes = set(re.findall(r"^\s*GITLEAKS_SHA256:\s*\"?([^\"\s#]+)\"?", workflow_text, re.M))
+    hashes = set(re.findall(r'^\s*GITLEAKS_SHA256:\s*"?([^"\s#]+)"?', workflow_text, re.M))
+    urls = set(re.findall(r'"?(https://github\.com/gitleaks/gitleaks/releases/download/[^"\s]+)"?', workflow_text))
+    want_url = URL.format(v="${GITLEAKS_VERSION}")
+    if urls != {want_url}:
+        raise FetchProblem(f"nightly 的 gitleaks 下載網址和本腳本不同（nightly：{sorted(urls)}；本腳本：{want_url}）")
     if len(versions) != 1 or len(hashes) != 1:
         raise FetchProblem(f"nightly workflow 的 gitleaks 釘選值不是唯一一組（版本 {sorted(versions)}、雜湊 {len(hashes)} 種）")
     (version,), (sha,) = versions, hashes
@@ -34,43 +41,73 @@ def pinned(workflow_text: str) -> tuple[str, str]:
     return version, sha
 
 
-URL = "https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_linux_x64.tar.gz"   # 與 nightly 相同的 release 資產
-
-
-def https_download(url: str, dest: pathlib.Path) -> None:
-    """以 HTTPS 下載到 dest（GitHub release 會轉址到 objects.githubusercontent.com；轉址後仍須是 HTTPS）。"""
-    import urllib.request
+def https_download(url: str, dest: pathlib.Path, *, opener=None, max_bytes: int = MAX_BYTES) -> None:
+    """以 HTTPS 下載到 dest，超過 max_bytes 即停（OSError）。GitHub release 會轉址到 objects.githubusercontent.com，
+    轉址後仍須是 HTTPS。opener 只給 selftest 注入。"""
     if not url.startswith("https://"):
         raise OSError(f"只接受 HTTPS：{url}")
-    with urllib.request.urlopen(url, timeout=60) as r:   # noqa: S310  網址固定為 https 的 GitHub release
+    if opener is None:
+        import urllib.request
+        opener = urllib.request.urlopen
+    with opener(url, timeout=60) as r:
         if not r.geturl().startswith("https://"):
             raise OSError(f"轉址到非 HTTPS：{r.geturl()}")
+        size = 0
         with open(dest, "wb") as f:
             while chunk := r.read(1 << 16):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise OSError(f"下載超過 {max_bytes} bytes，視為異常回應")
                 f.write(chunk)
 
 
+def _sha256(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _private_dir(path: pathlib.Path) -> pathlib.Path:
+    """建立（只有擁有者可存取）或確認 path：必須是自己擁有的目錄、group／other 不可寫，否則 FetchProblem
+    （別人可寫的快取目錄可能被預先放進任意 binary 與「正確」的驗證紀錄）。"""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = path.lstat()
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o022:
+        raise FetchProblem(f"快取目錄 {path} 不是自己擁有、或 group／other 可寫，不採信")
+    return path
+
+
 def ensure(version: str, sha256: str, *, cache_root: pathlib.Path, download) -> pathlib.Path:
-    """<cache_root>/gitleaks-<版本>/gitleaks 的絕對路徑。快取命中（binary 可執行、驗證紀錄＝sha256）就不下載；
-    否則以 download(url, dest) 下載到快取目錄內的暫存檔，SHA-256 相符才打開 tarball，只取名為 gitleaks 的一般檔案
-    （不接受符號連結、子目錄或路徑穿越）。任何失敗 → FetchProblem，不留下 binary 以外的暫存檔、也不留未驗證的 binary。"""
-    target = pathlib.Path(cache_root) / f"gitleaks-{version}"
+    """<cache_root>/gitleaks-<版本>/gitleaks 的絕對路徑。
+    快取命中：快取目錄是自己擁有且 group／other 不可寫、binary 可執行、驗證紀錄寫的 tarball 雜湊＝sha256，
+    而且**重新計算的 binary 雜湊＝紀錄裡的 binary 雜湊**（紀錄本身是公開值，不能只看它）。否則先刪過期的 binary，
+    以 download(url, dest) 下載到快取目錄內的暫存檔，tarball 的 SHA-256 相符才打開，只取名為 gitleaks 的一般檔案
+    （不接受符號連結、子目錄或路徑穿越）。任何失敗 → FetchProblem，不留暫存檔、也不留未驗證的 binary。"""
+    root = _private_dir(pathlib.Path(cache_root))
+    target = _private_dir(root / f"gitleaks-{version}")
     binary, marker = target / "gitleaks", target / "tarball.sha256"
-    if binary.is_file() and os.access(binary, os.X_OK) and marker.is_file() \
-            and marker.read_text(encoding="utf-8").strip() == sha256:
+    try:
+        recorded = marker.read_text(encoding="utf-8").split()
+    except OSError:
+        recorded = []
+    if len(recorded) == 2 and recorded[0] == sha256 and binary.is_file() and not binary.is_symlink() \
+            and os.access(binary, os.X_OK) and _sha256(binary) == recorded[1]:
         return binary.resolve()
-    target.mkdir(parents=True, exist_ok=True)
-    for stale in (binary, marker):   # 別的雜湊驗證過的 binary 不沿用：先刪，下載失敗時也不會留著被誤用
+    for stale in (binary, marker):   # 過期或被改過的 binary 不沿用：先刪，下載失敗時也不會留著被誤用
         stale.unlink(missing_ok=True)
     fd, name = tempfile.mkstemp(dir=target, prefix=".download-", suffix=".tar.gz")
     os.close(fd)
-    tmp, part = pathlib.Path(name), target / ".gitleaks.part"
+    fd, part_name = tempfile.mkstemp(dir=target, prefix=".gitleaks-", suffix=".part")
+    os.close(fd)
+    tmp, part = pathlib.Path(name), pathlib.Path(part_name)
     try:
         try:
             download(URL.format(v=version), tmp)
         except OSError as e:
             raise FetchProblem(f"下載失敗：{e}") from e
-        if hashlib.sha256(tmp.read_bytes()).hexdigest() != sha256:
+        if _sha256(tmp) != sha256:
             raise FetchProblem("下載的 tarball 和 nightly 釘選的 SHA-256 不符，不解壓縮")
         try:
             with tarfile.open(tmp, "r:gz") as tf:
@@ -81,9 +118,9 @@ def ensure(version: str, sha256: str, *, cache_root: pathlib.Path, download) -> 
         except tarfile.TarError as e:
             raise FetchProblem(f"tarball 無法解析：{type(e).__name__}") from e
         part.write_bytes(data)
-        part.chmod(0o755)
+        part.chmod(0o700)
         part.replace(binary)
-        marker.write_text(sha256 + "\n", encoding="utf-8")
+        marker.write_text(f"{sha256} {hashlib.sha256(data).hexdigest()}\n", encoding="utf-8")
         return binary.resolve()
     finally:
         tmp.unlink(missing_ok=True)
@@ -94,7 +131,7 @@ def selftest() -> list[str]:
     fails: list[str] = []
 
     def check(name, fn):
-        """fn 回傳 None 表示通過；回傳字串或拋例外表示失敗（stub 階段的 NotImplementedError 也記成失敗）。"""
+        """fn 回傳 None 表示通過；回傳字串或拋例外表示失敗。"""
         try:
             why = fn()
         except Exception as e:
@@ -110,7 +147,10 @@ def selftest() -> list[str]:
         return None
 
     SHA = "ab" * 32   # 64 個 hex；只當測試資料，不是任何 binary 的真實雜湊
-    job = lambda v, s: f'      - name: x\n        env:\n          GITLEAKS_VERSION: "{v}"\n          GITLEAKS_SHA256: {s}\n'
+    NIGHTLY_URL = ('            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/'
+                   'gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"\n')
+    job = lambda v, s, url=NIGHTLY_URL: (f'      - name: x\n        env:\n          GITLEAKS_VERSION: "{v}"\n'
+                                         f'          GITLEAKS_SHA256: {s}\n        run: |\n          curl -o x \\\n{url}')
 
     def t_pinned():
         if pinned(job("8.28.0", SHA) + job("8.28.0", SHA)) != ("8.28.0", SHA):
@@ -120,7 +160,9 @@ def selftest() -> list[str]:
                             ("兩個 job 版本不同", job("8.28.0", SHA) + job("8.29.0", SHA)),
                             ("兩個 job 雜湊不同", job("8.28.0", SHA) + job("8.28.0", "cd" * 32)),
                             ("版本格式不對", job("latest", SHA)),
-                            ("雜湊格式不對", job("8.28.0", "abc"))]:
+                            ("雜湊格式不對", job("8.28.0", "abc")),
+                            ("nightly 換了下載資產", job("8.28.0", SHA, NIGHTLY_URL.replace("linux_x64", "linux_arm64"))),
+                            ("nightly 沒有下載網址", job("8.28.0", SHA, ""))]:
             if not raises(lambda text=text: pinned(text)):
                 return f"{label} → FetchProblem（不可默默挑一份或退回預設）"
     check("pinned：從 nightly workflow 讀出唯一一組釘選值", t_pinned)
@@ -198,6 +240,56 @@ def selftest() -> list[str]:
             if not why or list(pathlib.Path(d).rglob("gitleaks")):
                 return f"重新下載失敗 → FetchProblem，舊 binary 已刪除（得到 {why}、{list(pathlib.Path(d).rglob('gitleaks'))}）"
     check("ensure：快取的驗證紀錄和釘選雜湊不同時重新下載", t_ensure_stale_cache)
+
+    def t_ensure_tampered():   # 驗證紀錄是公開值：快取命中要重新核對 binary 本身，被換掉就重新下載
+        with tempfile.TemporaryDirectory() as d:
+            b = ensure("8.28.0", GOOD_SHA, cache_root=pathlib.Path(d), download=downloader(GOOD, []))
+            b.write_bytes(b"#!/bin/sh\necho evil\n")
+            calls = []
+            b2 = ensure("8.28.0", GOOD_SHA, cache_root=pathlib.Path(d), download=downloader(GOOD, calls))
+            if len(calls) != 1 or b2.read_bytes() != b"#!/bin/sh\necho 8.28.0\n":
+                return f"binary 被換掉（紀錄沒變）→ 不沿用、重新下載（得到 {len(calls)} 次下載、{b2.read_bytes()!r}）"
+    check("ensure：快取命中時重新核對 binary 本身", t_ensure_tampered)
+
+    def t_ensure_unsafe_dir():   # 別人可寫或不屬於自己的快取目錄不採信（可能被預先放進任意 binary）
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            ensure("8.28.0", GOOD_SHA, cache_root=root, download=downloader(GOOD, []))
+            target = root / "gitleaks-8.28.0"
+            if target.stat().st_mode & 0o077:
+                return f"新建的快取目錄只有擁有者能存取（得到 {oct(target.stat().st_mode & 0o777)}）"
+            target.chmod(0o777)
+            if not raises(lambda: ensure("8.28.0", GOOD_SHA, cache_root=root, download=downloader(GOOD, []))):
+                return "快取目錄 group／other 可寫 → FetchProblem"
+            target.chmod(0o700); root.chmod(0o777)
+            if not raises(lambda: ensure("8.28.0", GOOD_SHA, cache_root=root, download=downloader(GOOD, []))):
+                return "快取根目錄 group／other 可寫 → FetchProblem"
+            root.chmod(0o700)
+    check("ensure：拒絕別人可寫的快取目錄", t_ensure_unsafe_dir)
+
+    def t_download_limit():   # 下載有大小上限、轉址後須是 HTTPS（比照 fetch_kev 的 MAX_BYTES）
+        class Resp(io.BytesIO):
+            def __init__(self, data, url): super().__init__(data); self._url = url
+            def geturl(self): return self._url
+            def __enter__(self): return self
+            def __exit__(self, *a): self.close()
+        with tempfile.TemporaryDirectory() as d:
+            dest = pathlib.Path(d, "x")
+            for label, data, final, limit, ok in [("正常", b"abc", "https://objects.example/x", 10, True),
+                                                   ("超過上限", b"x" * 11, "https://objects.example/x", 10, False),
+                                                   ("轉址到 HTTP", b"abc", "http://objects.example/x", 10, False)]:
+                try:
+                    https_download("https://github.com/x", dest, opener=lambda url, timeout: Resp(data, final), max_bytes=limit)
+                    got = True
+                except OSError:
+                    got = False
+                if got != ok:
+                    return f"{label} → {'成功' if ok else 'OSError'}（得到 {'成功' if got else 'OSError'}）"
+            try:
+                https_download("http://github.com/x", dest, opener=lambda url, timeout: Resp(b"", url)); return "非 HTTPS 網址 → OSError"
+            except OSError:
+                pass
+    check("https_download：大小上限與 HTTPS", t_download_limit)
 
     # ---- main：stdout 只印 binary 路徑，其餘在 stderr；無法取得 → 退出碼 2
     import contextlib
