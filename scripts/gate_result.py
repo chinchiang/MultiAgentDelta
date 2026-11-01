@@ -21,8 +21,8 @@
                                       只有閘門自己的一列 tool（error）；不使用已累積的內容
   tool(name, state, *, version=None, exit_code=None, output_ref=None, duration_seconds=None) -> dict
   sarif(driver, rules, results) -> dict      自產 SARIF 2.1.0 文件骨架；rules、results 照原樣放入
-  remove_stale(path) -> bool                 刪掉過期的自產 SARIF（這一次沒有判定任何發現時用：政策讀不到、
-                                             G1 sbom／kev／provenance 的 incomplete）；檔案不存在不出錯
+  remove_stale(path) -> bool                 刪掉過期的自產 SARIF（incomplete 一律用：政策讀不到、G1 sbom／kev／
+                                             maintenance／provenance 的 incomplete；部分發現只留在摘要 JSON，#243）；檔案不存在不出錯
   now() -> str                               UTC、精度到秒、+00:00
   finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, location=None, commit=None, created_at=None, …)
                                              完整的發現（schemas/finding.schema.json）與決定性的發現 ID（GLOSSARY.md「發現 ID」）：
@@ -117,7 +117,9 @@ def sarif(driver, rules, results) -> dict:
 
 def remove_stale(path) -> bool:
     """刪掉上一次留下的自產 SARIF（不讓上一次的發現被當成這一次的結果）；回傳是否刪了檔案。
-    這一次沒有判定任何發現時才用（政策讀不到、G1 sbom／kev／provenance 的 incomplete）；還有部分發現時應照常寫出 SARIF。"""
+    incomplete 一律用它（政策讀不到、G1 sbom／kev／maintenance／provenance 的 incomplete），不寫新的 SARIF；
+    部分發現只留在摘要 JSON。不完整的 SARIF 上傳後會被 Code Scanning 當成完整結果，關掉這次無法判定之處的既有 alert
+    （#243，推翻 #182 的「還有部分發現時照常寫出」）。"""
     p = pathlib.Path(path)
     if p.is_file():
         p.unlink()
