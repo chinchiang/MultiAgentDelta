@@ -20,6 +20,10 @@ _避免_：報告、gate report
 閘門單次執行的累積過程：先宣告本閘門的控制，再逐步記下 tool、控制覆蓋、發現計數與未完成原因，最後產出閘門結果。宣告了卻沒有回報的控制視同未實測；宣告為由後續步驟併入的控制則記為待併入。
 _避免_：job、step（那是 workflow 的單位）
 
+**檢查執行（check run）**：
+閘門內一項檢查的單次執行：讀政策、執行檢查、寫出摘要 JSON 與 SARIF（incomplete 時刪掉舊 SARIF、不寫新檔），並依政策 tier 決定退出碼。併入閘門結果的檢查執行就是子結果（例如 G1 的 SBOM、KEV）；nightly 的維護狀態、來源證明是不併入的檢查執行。程式中是閘門結果 module 的 `CheckRun`，和閘門執行並列。
+_避免_：子閘門、sub-gate；不併入的檢查執行不叫子結果
+
 **發現（finding）**：
 一筆具體的問題紀錄，帶有規則 ID 與政策 tier。
 _避免_：告警、issue、漏洞（漏洞是發現的一種，不是同義詞）
@@ -70,7 +74,7 @@ incomplete 不等於 pass。
 _避免_：用 untested 當閘門狀態；用「通過」描述 incomplete
 
 **子結果（sub-result）**：
-同一道閘門分段產出的部分結果（例如 G1 的 SBOM 與 KEV 檢查），併入閘門結果後才是完整的判定。
+同一道閘門分段產出的部分結果，也就是併入閘門結果的檢查執行（例如 G1 的 SBOM 與 KEV 檢查），併入閘門結果後才是完整的判定。
 _避免_：子閘門、sub-gate
 
 **最終判定（finalization）**：
@@ -141,6 +145,10 @@ _Avoid_: report, gate report
 The accumulation for one execution of a gate: the gate first declares its controls, then records tools, coverage, finding counts, and problems, and finally produces the gate result. A declared control that is never reported counts as untested; a control declared as merged by a later step is recorded as pending merge.
 _Avoid_: job, step (those are workflow units)
 
+**Check run**:
+One execution of a single check within a gate: read the policy, run the check, write the summary JSON and SARIF (when incomplete, delete the stale SARIF and write none), and set the exit code from the policy tier. A check run merged into the gate result is a sub-result (for example G1's SBOM and KEV); the nightly maintenance and provenance checks are check runs that are not merged. In code it is `CheckRun` in the gate result module, alongside the gate run.
+_Avoid_: sub-gate; do not call a check run that is not merged a sub-result
+
 **Finding**:
 A concrete problem record carrying a rule ID and a policy tier.
 _Avoid_: alert, issue, vulnerability (a vulnerability is one kind of finding, not a synonym)
@@ -191,7 +199,7 @@ Incomplete does not equal pass.
 _Avoid_: using untested as a gate status; describing incomplete as "passed"
 
 **Sub-result**:
-A partial result produced in stages by the same gate (for example G1's SBOM and KEV checks); the verdict is complete only after it is merged into the gate result.
+A partial result produced in stages by the same gate, that is, a check run merged into the gate result (for example G1's SBOM and KEV checks); the verdict is complete only after it is merged into the gate result.
 _Avoid_: sub-gate
 
 **Finalization**:
