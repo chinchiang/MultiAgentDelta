@@ -409,45 +409,43 @@ def selftest() -> list[str]:
             assess(pkg, torch_db, 730, now); fails.append(f"{label} → 應無法判定（incomplete ≠ pass）")
         except Undecidable:
             pass
-    # 政策檔讀不到 → 進入點就停：摘要 incomplete 並寫明未完成原因、不寫 SARIF（舊檔刪除；上傳步驟以 hashFiles 略過）、退出碼 2
-    # （不再以例外結束；也不執行檢查，因為無法決定發現的 tier）
+    # 從進入點（main）：SARIF 只在全部判定完成時寫出；incomplete（政策讀不到、缺 SBOM、部分命中＋無法判定）一律刪掉舊檔、
+    # 不寫新檔，命中與無法判定的清單只留在摘要 JSON（#243）。nightly 上傳不完整的 SARIF，Code Scanning 會當成
+    # 「這次沒有命中」而關掉無法判定套件的既有 alert（incomplete ≠ pass）。政策讀不到時不執行檢查（無法決定 tier）。
     import contextlib, io, tempfile
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
-    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        js, sf = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
-        sf.write_text("上一次的結果", encoding="utf-8")
-        rc = main(["--sbom", str(pathlib.Path(d, "none.json")), "--sarif", str(sf), "--json", str(js)], policy_root=pr)
-        s, stale = json.loads(js.read_text(encoding="utf-8")), sf.exists()
-    if rc != 2 or s.get("status") != "incomplete" or not str(s.get("status_reason")).startswith(POLICY_UNREADABLE + "（") or stale:
-        fails.append(f"維護狀態：政策檔讀不到 → 退出碼 2、incomplete 並寫明原因、不留 SARIF（得到 {rc}、{s}、SARIF 存在：{stale}）")
-    # 政策讀得到、一般 incomplete（缺 SBOM）→ 同樣刪掉舊 SARIF、不寫新檔（#243）：nightly 上傳不完整的 SARIF，
-    # Code Scanning 會當成「這次沒有命中」而關掉無法判定套件的既有 alert；部分發現只留在摘要 JSON（incomplete ≠ pass）
-    from vibesec_policy import temp_policy_root
-    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        js, sf = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
-        sf.write_text("上一次的結果", encoding="utf-8")
-        rc = main(["--sbom", str(pathlib.Path(d, "none.json")), "--sarif", str(sf), "--json", str(js)], policy_root=pr)
-        s, stale = json.loads(js.read_text(encoding="utf-8")), sf.exists()
-    if rc != 2 or s.get("status") != "incomplete" or "缺 SBOM" not in str(s.get("status_reason")) or stale:
-        fails.append(f"維護狀態：一般 incomplete（缺 SBOM）→ 退出碼 2、incomplete、不留 SARIF（得到 {rc}、{s}、SARIF 存在：{stale}）")
-    # 從進入點：部分命中＋無法判定 → incomplete、不留 SARIF，命中與無法判定的清單都留在摘要 JSON；全部判定完成 → 照常寫出 SARIF
-    for label, purls, want_rc, want_st, want_sarif in [
-        ("部分命中＋無法判定", ["pkg:pypi/old@0.9", "pkg:pypi/boom@1"], 2, "incomplete", None),
-        ("全部判定完成、有命中", ["pkg:pypi/old@0.9", "pkg:pypi/fresh@1.0"], 0, "pass", 1),
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, temp_policy_root
+    STALE = "上一次的結果"
+    recent = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry_db = {("pypi", "old"): DB[("pypi", "old")],   # main() 用實際時鐘：fresh 取相對日期，不會隨時間變成 stale
+                ("pypi", "fresh"): {"versions": [ver("1.0", recent, default=True)]}}
+    def entry_fake(system, name):
+        if name == "boom":
+            raise FetchError("down")
+        return entry_db.get((system, name))
+    for label, broken, purls, want_rc, want_st, reason, want_sarif, want_hits, want_unres in [
+        ("政策讀不到", True, None, 2, "incomplete", POLICY_UNREADABLE + "（", "缺席", [], []),
+        ("一般 incomplete（缺 SBOM）", False, None, 2, "incomplete", "缺 SBOM", "缺席", [], []),
+        ("部分命中＋無法判定", False, ["pkg:pypi/old@0.9", "pkg:pypi/boom@1"], 2, "incomplete", "", "缺席", ["old"], ["pkg:pypi/boom@1"]),
+        ("全部判定完成、有命中", False, ["pkg:pypi/old@0.9", "pkg:pypi/fresh@1.0"], 0, "pass", None, "1 筆", ["old"], []),
+        ("全部判定完成、沒有命中", False, ["pkg:pypi/fresh@1.0"], 0, "pass", None, "0 筆", [], []),
     ]:
-        with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        with (broken_policy_root() if broken else temp_policy_root()) as pr, tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stdout(io.StringIO()):
             sp, js, sf = pathlib.Path(d, "sbom.json"), pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
-            sp.write_text(json.dumps({"components": [{"purl": u} for u in purls]}))
-            sf.write_text("上一次的結果", encoding="utf-8")
-            rc = main(["--sbom", str(sp), "--sarif", str(sf), "--json", str(js)], policy_root=pr, fetch=fake)
+            if purls is not None:
+                sp.write_text(json.dumps({"components": [{"purl": u} for u in purls]}))
+            sf.write_text(STALE, encoding="utf-8")
+            rc = main(["--sbom", str(sp), "--sarif", str(sf), "--json", str(js)], policy_root=pr, fetch=entry_fake)
             s = json.loads(js.read_text(encoding="utf-8"))
             raw = sf.read_text(encoding="utf-8") if sf.exists() else None   # 留著舊檔 → 記成「舊檔」，不在讀檔時崩潰
-            n_sarif = None if raw is None else "舊檔" if raw == "上一次的結果" else len(json.loads(raw)["runs"][0]["results"])
-        names = sorted(h["name"] for h in s.get("hits") or [])
-        if rc != want_rc or s.get("status") != want_st or n_sarif != want_sarif or names != ["old"] \
-                or (want_st == "incomplete" and [u.get("purl") for u in s.get("unresolved") or []] != ["pkg:pypi/boom@1"]):
-            fails.append(f"維護狀態進入點「{label}」：應為退出碼 {want_rc}、{want_st}、SARIF 結果 {want_sarif} 筆、"
-                         f"摘要命中 [old]（得到 {rc}、{s.get('status')}、{n_sarif}、{names}、unresolved {s.get('unresolved')}）")
+            sarif_seen = "缺席" if raw is None else "舊檔" if raw == STALE else f"{len(json.loads(raw)['runs'][0]['results'])} 筆"
+        hits = sorted(h["name"] for h in s.get("hits") or [])
+        unres = [u.get("purl") for u in s.get("unresolved") or []]
+        got_reason = s.get("status_reason")   # reason：None＝不應有原因；""＝要有原因；其他＝原因須包含該字串
+        reason_ok = got_reason is None if reason is None else bool(got_reason) and reason in got_reason
+        if (rc, s.get("status"), sarif_seen, hits, unres) != (want_rc, want_st, want_sarif, want_hits, want_unres) or not reason_ok:
+            fails.append(f"維護狀態進入點「{label}」：應為退出碼 {want_rc}、{want_st}、SARIF {want_sarif}、命中 {want_hits}、"
+                         f"無法判定 {want_unres}（得到 {rc}、{s.get('status')}、{sarif_seen}、{hits}、{unres}、原因 {s.get('status_reason')}）")
     return fails
 
 
