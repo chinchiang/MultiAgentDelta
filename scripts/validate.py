@@ -765,7 +765,7 @@ _rr_problems = _rr.problems(ROOT)
 for _p in _rr_problems:
     err(f"規則引用：{_p}")
 if not _rr_problems:
-    ok("規則引用都指向 AGENTS.md，編號都在「不可違反的規則」的範圍內")
+    ok(f"規則引用：{len(_rr.tracked_files(ROOT))} 個檔已檢查，都指向 AGENTS.md，編號都在「不可違反的規則」的範圍內")
 
 # --- CI 設定的不變式（判定在 scripts/ci_invariants.py，有 selftest）：防止已修過的弱點被改回去 ---
 import ci_invariants as _ci

@@ -10,17 +10,21 @@
                    AGENTS.md 缺席、讀不出規則清單、清單編號不連續、git 列不出檔案 → 也是問題（拿不到證據 ≠ 沒有問題）。
 
 認得的寫法：<檔名>（AGENTS.md 或 CLAUDE.md，可加反引號）之後，可隔空白或冒號，接
-  規則 N／規則N／#N／第 N 條／第N條／rule N（含列舉：規則 3、7；#2、#7；rules 1 and 2）。
-只認阿拉伯數字，所以 AGENTS.md 說明引用格式的那句（字面上的「規則 N」）不算引用；
+  規則 N／規則N／#N／第 N 條／第N條／rule N／rule #N（含列舉：規則 3、7；規則 1 與 9；第 1、9 條；#2、#7；
+  rules 1, 2, and 9；範圍：規則 1–9 檢查兩個端點）。只比對同一行之內。
+「AGENTS.md #N」一律視為規則引用：檔名後面緊接 issue 編號的寫法有歧義，會被報成編號超出範圍。
+只認 ASCII 數字，所以 AGENTS.md 說明引用格式的那句（字面上的「規則 N」）不算引用；
 規則檔清單裡的 CLAUDE.md（後面不接編號）也不算。
 
   python3 scripts/rule_refs.py selftest
 """
 from __future__ import annotations
-import pathlib, re, subprocess, sys
+import os, pathlib, re, subprocess, sys
+from typing import NamedTuple
 
 SOURCE = "AGENTS.md"
-SECTION = "## 不可違反的規則"
+SECTION_TITLE = "不可違反的規則"
+SECTION = f"## {SECTION_TITLE}"
 EXCLUDE_DIRS = ("reports/",)   # 執行期報告
 
 
@@ -30,52 +34,61 @@ def rule_count(agents_text: str) -> tuple[int | None, str | None]:
     try:
         start = next(i for i, ln in enumerate(lines) if ln.strip() == SECTION)
     except StopIteration:
-        return None, f"找不到「{SECTION[3:]}」一節"
+        return None, f"找不到「{SECTION_TITLE}」一節"
     nums = []
     for ln in lines[start + 1:]:
         if ln.startswith("## "):
             break
-        if m := re.match(r"^(\d+)\. ", ln):
+        if m := re.match(r"^([0-9]+)\. ", ln):
             nums.append(int(m[1]))
     if not nums:
-        return None, f"「{SECTION[3:]}」一節沒有編號清單"
+        return None, f"「{SECTION_TITLE}」一節沒有編號清單"
     if nums != list(range(1, len(nums) + 1)):
-        return None, f"「{SECTION[3:]}」的編號不是 1 起連續（{nums}）"
+        return None, f"「{SECTION_TITLE}」的編號不是 1 起連續（{nums}）"
     return len(nums), None
 
 
-def references(text: str) -> list[tuple[int, str, list[int], str]]:
-    """一份文字 → [(行號, 檔名, [編號…], 原文)]。"""
-    out = []
-    for i, ln in enumerate(text.splitlines(), 1):
-        for m in _REF.finditer(ln):
-            out.append((i, m["file"], [int(n) for n in re.findall(r"\d+", m["nums"])], m[0]))
-    return out
+class Ref(NamedTuple):
+    line: int        # 行號（1 起）
+    file: str        # 引用的檔名：AGENTS.md 或 CLAUDE.md
+    numbers: list    # 引用的規則編號（列舉與範圍的每個端點）
+    raw: str         # 原文
 
 
-# <檔名>（可加反引號）＋可隔空白或冒號＋一種寫法；列舉只接在同一種寫法後面（規則 3、7；#2、#7；rules 1 and 2）
+# 只認 ASCII 數字（\d 也會比對全形數字）。列舉：、,，與和及 and（含 ", and"）；範圍：1–9 只檢查兩個端點
+_N = r"[0-9]+"
+_AND = r"(?:\s*[、,，]\s*(?:and\s+)?|\s*[與和及]\s*|\s+and\s+)"
+_TO = r"\s*[–\-~～]\s*"
+# <檔名>（前面要是邊界，可加反引號）＋可隔空白或冒號＋一種寫法
 _REF = re.compile(
-    r"(?<![\w-])`?(?P<file>AGENTS\.md|CLAUDE\.md)`?\s*[：:]?\s*"
-    r"(?P<nums>規則\s*\d+(?:\s*[、,，]\s*\d+)*"
-    r"|#\d+(?:\s*[、,，]\s*#?\d+)*"
-    r"|第\s*\d+\s*條"
-    r"|[Rr]ules?\s+\d+(?:(?:\s*,\s*|\s+and\s+)\d+)*)")
+    rf"(?<![\w-])`?(?P<file>AGENTS\.md|CLAUDE\.md)`?\s*[：:]?\s*"
+    rf"(?P<nums>規則\s*{_N}(?:(?:{_AND}|{_TO}){_N})*"
+    rf"|#{_N}(?:{_AND}#?{_N})*"
+    rf"|第\s*{_N}(?:{_AND}{_N})*\s*條"
+    rf"|[Rr]ules?\s+#?{_N}(?:(?:{_AND}|{_TO})#?{_N})*)")
+
+
+def references(text: str) -> list[Ref]:
+    """一份文字 → 每個規則引用一個 Ref。只比對同一行之內。"""
+    return [Ref(i, m["file"], [int(n) for n in re.findall(_N, m["nums"])], m[0])
+            for i, ln in enumerate(text.splitlines(), 1) for m in _REF.finditer(ln)]
 
 
 def text_problems(text: str, n_rules: int) -> list[tuple[int, str]]:
     """一份文字裡有問題的引用：[(行號, 訊息)]。"""
     out = []
-    for line, name, nums, raw in references(text):
-        if name != SOURCE:
-            out.append((line, f"「{raw}」：規範的唯一來源是 {SOURCE}，引用要指向 {SOURCE}"))
-        bad = [n for n in nums if not 1 <= n <= n_rules]
+    for r in references(text):
+        if r.file != SOURCE:
+            out.append((r.line, f"「{r.raw}」：規範的唯一來源是 {SOURCE}，引用要指向 {SOURCE}"))
+        bad = [n for n in r.numbers if not 1 <= n <= n_rules]
         if bad:
-            out.append((line, f"「{raw}」：{SOURCE} 只有規則 1–{n_rules}，沒有 {'、'.join(map(str, bad))}"))
+            out.append((r.line, f"「{r.raw}」：{SOURCE} 只有規則 1–{n_rules}，沒有 {'、'.join(map(str, bad))}"))
     return out
 
 
 def tracked_files(root: pathlib.Path) -> list[str]:
-    """root 底下 git 追蹤的檔案，加上尚未 git add、沒被 .gitignore 排除的新檔（相對路徑）；git 失敗 → RuntimeError。"""
+    """root 底下 git 追蹤的檔案，加上尚未 git add、沒被 .gitignore 排除的新檔（相對路徑；不含 reports/）；
+    git 失敗 → RuntimeError。巢狀 repo（例如 CI 的 _trusted/）會以目錄出現，由 problems 略過。"""
     try:
         r = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                            capture_output=True, text=True, timeout=60)
@@ -87,7 +100,8 @@ def tracked_files(root: pathlib.Path) -> list[str]:
 
 
 def problems(root) -> list[str]:
-    """root 底下每個有問題的引用一項（「路徑:行：…」）；拿不到規則數或檔案清單 → 一項說明，不回傳空清單。"""
+    """root 底下每個有問題的引用一項（「路徑:行：…」）；拿不到規則數或檔案清單 → 一項說明，不回傳空清單。
+    略過：目錄（巢狀 repo、submodule）、工作樹已刪的檔、含 NUL 的二進位檔。讀不到或不是 UTF-8 的文字檔 → 問題。"""
     root = pathlib.Path(root)
     try:
         n, why = rule_count((root / SOURCE).read_text(encoding="utf-8"))
@@ -101,9 +115,20 @@ def problems(root) -> list[str]:
         return [f"列不出要掃描的檔案（{e}）：無法確認規則引用"]
     out = []
     for f in files:
+        path = root / f
+        if path.is_dir() or not path.exists():
+            continue
         try:
-            text = (root / f).read_text(encoding="utf-8")
-        except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError):   # 工作樹刪掉的檔、submodule、二進位檔
+            data = path.read_bytes()
+        except OSError as e:
+            out.append(f"{f}：讀不到（{type(e).__name__}），無法確認規則引用")
+            continue
+        if b"\0" in data:
+            continue
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            out.append(f"{f}：不是 UTF-8 文字，無法確認規則引用")
             continue
         out += [f"{f}:{line}：{msg}" for line, msg in text_problems(text, n)]
     return out
@@ -149,11 +174,25 @@ def selftest() -> list[str]:
     def t_forms():
         text = "\n".join([f"a（{_A} 規則 3）", f"b {_A} 規則7", f"c `{_A}` #2", f"d {_A} 第 1 條", f"e {_A} 第4條",
                           f"f {_A} rule 5", f"g {_A}：規則 6", f"h {_A} 規則 3、7", f"i {_A} #2、#8", f"j {_A} rules 1 and 2"])
-        got = [(ln, f, ns) for ln, f, ns, _ in references(text)]
+        got = [(r.line, r.file, r.numbers) for r in references(text)]
         want = [(1, _A, [3]), (2, _A, [7]), (3, _A, [2]), (4, _A, [1]), (5, _A, [4]), (6, _A, [5]), (7, _A, [6]),
                 (8, _A, [3, 7]), (9, _A, [2, 8]), (10, _A, [1, 2])]
         return None if got == want else f"得到 {got}"
     check("references：規則 N／規則N／#N／第 N 條／第N條／rule N、冒號、反引號、列舉都認得", t_forms)
+
+    def t_lists():   # code review：列舉、範圍與大寫也要每個編號都檢查
+        cases = {f"{_A} 第 1、9 條": [1, 9], f"{_A} 規則 1–9": [1, 9], f"{_A} 規則 1-9": [1, 9], f"{_A} 規則 1 與 9": [1, 9],
+                 f"{_A} 規則 1和9": [1, 9], f"{_A} 規則 2 及 9": [2, 9], f"{_A} rules 1, 2, and 9": [1, 2, 9],
+                 f"{_A} rule #9": [9], f"{_A} Rule 3": [3], f"{_A} Rules 1 and 2": [1, 2]}
+        bad = {t: [r.numbers for r in references(t)] for t, want in cases.items() if [r.numbers for r in references(t)] != [want]}
+        return f"{bad}" if bad else None
+    check("references：列舉（、／與／和／及／and）、範圍（1–9）、rule #N、大寫 Rule", t_lists)
+
+    def t_boundary():
+        texts = [f"MY_{_A} 規則 9", f"x-{_A} 規則 9", f"{_A} 規則 ９", f"{_A} 第 ３ 條"]
+        hit = [t for t in texts if references(t)]
+        return f"不是引用卻被認成引用（檔名前面要是邊界、只認 ASCII 數字）：{hit}" if hit else None
+    check("references：檔名前面要是邊界；全形數字不算", t_boundary)
 
     def t_claude():
         got = text_problems(f"x（{_C} 規則 1）\ny {_C} #2", 8)
@@ -208,6 +247,24 @@ def selftest() -> list[str]:
             (D / "AGENTS.md").unlink()
             if not problems(D):
                 bad.append("AGENTS.md 缺席 → 問題")
+        with tempfile.TemporaryDirectory() as t:   # CI 在工作區 checkout 出 _trusted/ 巢狀 repo：ls-files --others 會列出目錄
+            D = pathlib.Path(t)
+            git_tree(D, {"AGENTS.md": _agents(8), "big5.txt": "x", "nul.bin": "x"})
+            git_tree(D / "_trusted", {"AGENTS.md": _agents(8)})
+            (D / "big5.txt").write_bytes("見 ".encode() + _A.encode() + "規則 1".encode("big5"))   # 非 UTF-8 的文字檔
+            (D / "nul.bin").write_bytes(b"\x00\x01" + _A.encode() + "規則 99".encode())        # 含 NUL 的二進位檔
+            got = problems(D)
+            if len(got) != 1 or not got[0].startswith("big5.txt") or "UTF-8" not in got[0]:
+                bad.append(f"巢狀 repo 目錄略過、二進位檔略過、非 UTF-8 文字檔回報問題（不默默略過）（得到 {got}）")
+            if os.name == "posix" and os.geteuid() != 0:   # root 讀得到 0o000 的檔，測不出來
+                (D / "big5.txt").write_text("x", encoding="utf-8")
+                (D / "big5.txt").chmod(0)
+                try:
+                    got = problems(D)
+                finally:
+                    (D / "big5.txt").chmod(0o644)
+                if len(got) != 1 or not got[0].startswith("big5.txt") or "讀不到" not in got[0]:
+                    bad.append(f"讀不到的檔（PermissionError）→ 問題，不讓 validate 崩潰（得到 {got}）")
         with tempfile.TemporaryDirectory() as t:
             (pathlib.Path(t) / "AGENTS.md").write_text(_agents(8), encoding="utf-8")
             if not problems(pathlib.Path(t)):
@@ -222,7 +279,7 @@ if __name__ == "__main__":
         _fails = selftest()
         for f in _fails:
             print(f"FAIL {f}")
-        print("rule_refs selftest ok" if not _fails else f"selftest 失敗 {len(_fails)} 項")
+        print("selftest 通過" if not _fails else f"selftest 失敗 {len(_fails)} 項")
         sys.exit(1 if _fails else 0)
     print(__doc__.strip(), file=sys.stderr)
     sys.exit(4)
