@@ -82,17 +82,17 @@ def enforce_copy(project: pathlib.Path):
         shutil.rmtree(d, ignore_errors=True)
 
 
-def run_all(project: pathlib.Path, trusted: pathlib.Path, *, runner, make_copy, environ=None) -> tuple[int, list[str]]:
+def run_all(project: pathlib.Path, main_tree: pathlib.Path, *, runner, make_copy, environ=None) -> tuple[int, list[str]]:
     """依序跑三次 validate，回傳 (退出碼, 輸出行)。runner(cmd, cwd=, env=) -> (退出碼, 輸出)；
     make_copy(project) 是 context manager，yield mode 改成 enforce 的副本根目錄，建不起來 → CopyProblem；
     environ 預設 os.environ（selftest 注入）。任何一次無法判定（找不到唯一的摘要行、退出碼和摘要不一致、
     副本建不起來、受信任樹的 validate 不認 VIBESEC_PROJECT_ROOT）→ 2，優先於有錯誤 → 1。"""
-    project, trusted = pathlib.Path(project).resolve(), pathlib.Path(trusted).resolve()
-    if not trusted.is_dir():
-        return 2, [f"--trusted {trusted} 不存在（通常是 workflow 第 0 步建立的 main worktree）"]
-    trusted_validate = trusted / "scripts/validate.py"
-    if not trusted_validate.is_file():
-        return 2, [f"--trusted {trusted} 沒有 scripts/validate.py：不是受信任樹（通常是 workflow 第 0 步的 main worktree）"]
+    project, main_tree = pathlib.Path(project).resolve(), pathlib.Path(main_tree).resolve()
+    if not main_tree.is_dir():
+        return 2, [f"--trusted {main_tree} 不存在（通常是 workflow 第 0 步建立的 main worktree）"]
+    main_validate = main_tree / "scripts/validate.py"
+    if not main_validate.is_file():
+        return 2, [f"--trusted {main_tree} 沒有 scripts/validate.py：不是受信任樹（通常是 workflow 第 0 步的 main worktree）"]
     environ = os.environ if environ is None else environ
     # 第 1、3 次不得被呼叫端的 VIBESEC_PROJECT_ROOT 誤導；三次都帶 RUNNING，讓巢狀的 ci_validate 停下來
     base = {**{k: v for k, v in environ.items() if k != "VIBESEC_PROJECT_ROOT"}, RUNNING: "1"}
@@ -113,8 +113,8 @@ def run_all(project: pathlib.Path, trusted: pathlib.Path, *, runner, make_copy, 
 
     run_one("PR 版", [PYTHON, str(project / "scripts/validate.py")], project, base)
     label = "受信任樹版驗受驗樹"
-    if "VIBESEC_PROJECT_ROOT" in trusted_validate.read_text(encoding="utf-8", errors="replace"):
-        run_one(label, [PYTHON, str(trusted_validate)], project, {**base, "VIBESEC_PROJECT_ROOT": str(project)})
+    if "VIBESEC_PROJECT_ROOT" in main_validate.read_text(encoding="utf-8", errors="replace"):
+        run_one(label, [PYTHON, str(main_validate)], project, {**base, "VIBESEC_PROJECT_ROOT": str(project)})
     else:   # CI 遇到這種舊樹會警告並略過；本機 fail closed：它會去驗受信任樹本身，結果不代表受驗樹
         lines.extend([f"== {label}", "  無法判定：受信任樹的 validate.py 不認 VIBESEC_PROJECT_ROOT（會去驗受信任樹本身）"])
         results.append((label, None))
@@ -312,12 +312,12 @@ def main(argv=None, *, runner=None, make_copy=None, environ=None) -> int:
         print("\n".join(f"FAIL {x}" for x in fails) or "ci_validate selftest ok")
         return 1 if fails else 0
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--trusted", required=True, help="受信任樹（通常是 workflow 第 0 步的 main worktree，例如 /tmp/wt-main）")
+    ap.add_argument("--trusted", required=True, dest="main_tree", help="受信任樹（通常是 workflow 第 0 步的 main worktree，例如 /tmp/wt-main）")
     a = ap.parse_args(argv)
     if (os.environ if environ is None else environ).get(RUNNING):
         print(f"已在 ci_validate 執行的 validate 裡（{RUNNING}=1），不再巢狀執行（incomplete ≠ pass）")
         return 2
-    rc, lines = run_all(ROOT, pathlib.Path(a.trusted), runner=runner or subprocess_runner, make_copy=make_copy or enforce_copy)
+    rc, lines = run_all(ROOT, pathlib.Path(a.main_tree), runner=runner or subprocess_runner, make_copy=make_copy or enforce_copy)
     print("\n".join(lines))
     return rc
 
