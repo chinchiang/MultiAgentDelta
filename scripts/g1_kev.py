@@ -327,12 +327,7 @@ def selftest() -> list[str]:
     return fails
 
 
-def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
-    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
-    if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
-        fails = selftest()
-        print("\n".join(f"FAIL {x}" for x in fails) or "g1_kev selftest ok")
-        return 1 if fails else 0
+def parse_args(argv) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--grype", required=True)
     ap.add_argument("--kev-feed", required=True)
@@ -340,8 +335,11 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     ap.add_argument("--json", required=True)
     ap.add_argument("--merge-gate", help="併入既有的 G1 gate-result（就地更新）；檔案不存在則略過")
     ap.add_argument("--kev-source", help="scripts/fetch_kev.py 的來源紀錄（--meta）；附進摘要，看得出用了官網、鏡像或舊快取")
-    a = ap.parse_args(argv)
+    return ap.parse_args(argv)
 
+
+def check_run(a: argparse.Namespace) -> gate_result.CheckRun:
+    """KEV 的檢查執行（#245）；輸入都是檔案，沒有要注入的外部依賴（#246：四個 producer 同一個接縫）。"""
     def with_source(summary):   # 附上 fetch_kev.py 的來源紀錄（政策讀不到時也附，看得出用了哪份 feed）
         if a.kev_source:
             try:
@@ -358,7 +356,18 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
         to_sarif=lambda summary, found, policy: to_sarif(summary.get("hits") or [], summary.get("vulnerable") or [], policy),
         unreadable=lambda problem: with_source({"rule_id": RULE, "status": "incomplete", "status_reason": problem}),
         report=report, notes=notes,
-    ).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json, merge_gate=a.merge_gate)
+    )
+
+
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
+    if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
+        fails = selftest()
+        print("\n".join(f"FAIL {x}" for x in fails) or "g1_kev selftest ok")
+        return 1 if fails else 0
+    a = parse_args(argv)
+    return check_run(a).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json, merge_gate=a.merge_gate)
+
 
 if __name__ == "__main__":
     sys.exit(main())

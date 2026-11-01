@@ -21,7 +21,7 @@
                                       政策讀不到：controls 全部 untested（原因＝problem）、deferred 維持 pending、
                                       只有閘門自己的一列 tool（error）；不使用已累積的內容
   CheckRun(*, label, tool_name, version, check, findings, to_sarif, merge_into=None,
-           unreadable=None, report=None, notes=None)
+           unreadable=None, report=None, notes=None, incomplete_report=None)
       一次檢查執行（GLOSSARY.md「檢查執行」）；producer 提供的函式見 class docstring。
       .execute(*, policy_root, sarif_path, json_path, merge_gate=None) -> int
                                       讀政策（讀不到 → incomplete）、寫摘要 JSON、SARIF 寫出或刪掉舊檔（incomplete）、
@@ -269,11 +269,12 @@ class CheckRun:
                                               否則建構時就 ValueError（不必等到有 --merge-gate 檔案）
       unreadable(未完成原因) -> 摘要             選用：政策讀不到時的摘要（也可在這裡清掉過期的輸出）
       report(摘要, 發現, policy)               選用：判定完成時印出的說明（stdout）
+      incomplete_report(摘要)                  選用：incomplete 時、印出未完成的 ::error:: 之前的說明（stdout）
       notes(摘要, 發現) -> [str]               選用：併入時額外的 note
     """
 
     def __init__(self, *, label, tool_name, version, check, findings, to_sarif, merge_into=None,
-                 unreadable=None, report=None, notes=None):
+                 unreadable=None, report=None, notes=None, incomplete_report=None):
         self.label, self.tool_name, self.version = _text("label", label), _text("tool_name", tool_name), version
         self._check, self._findings, self._to_sarif = check, findings, to_sarif
         if merge_into is not None:
@@ -283,7 +284,7 @@ class CheckRun:
                 raise ValueError(f"{label}：控制 {control!r} 不在 {gate} 的必要控制（gate_verdict.REQUIRED_CONTROLS）")
         self.merge_into = merge_into
         self._unreadable = unreadable or (lambda problem: {"status": "incomplete", "status_reason": problem})
-        self._report, self._notes = report, notes
+        self._report, self._notes, self._incomplete_report = report, notes, incomplete_report
 
     def execute(self, *, policy_root, sarif_path, json_path, merge_gate=None) -> int:
         """執行一次：寫出摘要 JSON、寫出 SARIF 或刪掉舊檔、選用的併入，回傳退出碼（incomplete 2、有 blocking 發現 1、其他 0）。"""
@@ -315,7 +316,10 @@ class CheckRun:
                 gate = self.merge_into[0]
                 print(f"::warning::{gp} 不存在，{self.label} 結果未併入 {gate} gate（summary 會顯示 {gate} untested）")
         if incomplete:
-            print(f"::error::{self.label} 檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
+            if self._incomplete_report:
+                self._incomplete_report(summary)
+            sep = " " if self.label[-1].isascii() else ""   # 中英之間空格：「SBOM 檢查」「維護狀態檢查」
+            print(f"::error::{self.label}{sep}檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
             return 2
         if self._report:
             self._report(summary, found, policy)
@@ -989,7 +993,7 @@ def selftest() -> list[str]:
         if g["status"] != "incomplete" or cov(g) != [("untested", reason)] or g["findings_count"] != {"blocking": 0, "advisory": 0} \
                 or g["tools"] != [tool("fake-check", "error", version="1.0.0")] or f"假檢查：{reason}" not in (g["status_reason"] or ""):
             return f"政策讀不到 → 併入後 G1 incomplete、控制 untested、tool 列 error、未完成原因帶 label（得到 {g}）"
-        if f"::error::假檢查 檢查未完成（incomplete ≠ pass）：{reason}" not in out:
+        if f"::error::假檢查檢查未完成（incomplete ≠ pass）：{reason}" not in out:
             return f"政策讀不到 → ::error:: 說明未完成（得到 {out!r}）"
     check("CheckRun：政策讀不到", t_cr_unreadable)
 
@@ -1078,6 +1082,21 @@ def selftest() -> list[str]:
         if rc != 2 or s.get("extra") != 1:
             return f"政策讀不到 → 摘要用 unreadable() 的結果（得到 {rc}、{s}）"
     check("CheckRun：report／notes／unreadable", t_cr_hooks)
+
+    def t_cr_incomplete_report():   # #246：incomplete 時先印 producer 的說明，再印未完成的 ::error::；中英之間才空格
+        cr = check_run({"status": "incomplete", "status_reason": "查不到"}, label="維護狀態",
+                       incomplete_report=lambda s: print(f"說明：{s['status_reason']}"))
+        out = execute(cr)[4].splitlines()
+        if out != ["說明：查不到", "::error::維護狀態檢查未完成（incomplete ≠ pass）：查不到"]:
+            return f"incomplete → 先 incomplete_report 再 ::error::，中文 label 不加空格（得到 {out}）"
+        calls = []
+        execute(check_run({"status": "pass", "status_reason": None}, incomplete_report=lambda s: calls.append(s)))
+        if calls:
+            return f"判定完成 → 不呼叫 incomplete_report（得到 {calls}）"
+        out = execute(check_run({"status": "incomplete", "status_reason": "x"}, label="SBOM"))[4]
+        if "::error::SBOM 檢查未完成（incomplete ≠ pass）：x" not in out:
+            return f"英數字結尾的 label 後面空一格（得到 {out!r}）"
+    check("CheckRun：incomplete_report 與未完成訊息", t_cr_incomplete_report)
     return fails
 
 

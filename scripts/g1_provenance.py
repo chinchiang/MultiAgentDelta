@@ -18,7 +18,7 @@ nightly 以 actions/attest-build-provenance 為 reports/sbom.cdx.json 簽發來�
 退出碼：0 已完成（有無命中皆是）；2 incomplete。
 """
 from __future__ import annotations
-import argparse, datetime, json, os, pathlib, re, shlex, shutil, subprocess, sys
+import argparse, datetime, json, pathlib, re, shutil, subprocess, sys
 
 RULE = "vibesec.g1.sbom-missing-provenance"
 TOOL_NAME, TOOL_VERSION = "vibesec-g1-provenance", "1.0.0"
@@ -124,65 +124,68 @@ def selftest() -> list[str]:
         if argv[1:3] != ["attestation", "verify"] or pair("--signer-workflow") != "o/r/.github/workflows/nightly-full.yml" \
                 or pair("--repo") != "o/r":
             fails.append(f"gh_verify 應以 attestation verify --repo o/r --signer-workflow <workflow> 呼叫 gh（得到 {argv}）")
-    # 政策檔讀不到 → 進入點就停：摘要 incomplete 並寫明未完成原因、不寫 SARIF（舊檔刪除；上傳步驟以 hashFiles 略過）、退出碼 2
-    # （不再以例外結束；也不執行檢查，因為無法決定發現的 tier）
-    import contextlib, io, tempfile
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
-    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        js, sf = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
-        sf.write_text("上一次的結果", encoding="utf-8")
-        rc = main(["--sbom", str(pathlib.Path(d, "none.json")), "--repo", "o/r", "--signer-workflow", "o/r/w.yml",
-                       "--sarif", str(sf), "--json", str(js)], policy_root=pr)
-        s, stale = json.loads(js.read_text(encoding="utf-8")), sf.exists()
-    if rc != 2 or s.get("status") != "incomplete" or not str(s.get("status_reason")).startswith(POLICY_UNREADABLE + "（") or stale:
-        fails.append(f"來源證明：政策檔讀不到 → 退出碼 2、incomplete 並寫明原因、不留 SARIF（得到 {rc}、{s}、SARIF 存在：{stale}）")
-    # 一般 incomplete（缺 SBOM、gh 缺席、gh 失敗且無法判定原因）：沒有驗證任何東西 → 刪掉舊 SARIF、不寫新檔（#192）。
-    # 以前寫一份只有 rule、沒有 result 的 SARIF，Code Scanning 會當成「驗證過、沒有發現」而關閉既有 alert。
-    # 從 main() 實測：以 PATH 控制 gh（空目錄 → 缺 gh；假 gh 腳本 → 指定的退出碼與訊息），不新增命令列參數。
-    def fake_gh(bindir, code, text):
-        g = pathlib.Path(bindir, "gh")
-        g.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(text)} >&2\nexit {code}\n", encoding="utf-8")
-        g.chmod(0o755)
-    path0 = os.environ.get("PATH")
-    with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        tmp = pathlib.Path(d)
-        sb = tmp / "sbom.json"; sb.write_text("{}", encoding="utf-8")
-        empty, bindir = tmp / "empty", tmp / "bin"
-        empty.mkdir(); bindir.mkdir()
-        with_fake = f"{bindir}{os.pathsep}{path0 or ''}"
-        def run_main(label, sbom, path):
-            js, sf = tmp / f"{label}.json", tmp / f"{label}.sarif"
-            sf.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF（合法 JSON：留著時斷言回報失敗，不是解析崩潰）
-            os.environ["PATH"] = path
-            try:
-                rc = main(["--sbom", str(sbom), "--repo", "o/r", "--signer-workflow", "o/r/w.yml", "--sarif", str(sf), "--json", str(js)])
-            finally:   # 還原 PATH：原本沒設定 → 移除，不留下空字串
-                if path0 is None:
-                    os.environ.pop("PATH", None)
-                else:
-                    os.environ["PATH"] = path0
-            sarif = json.loads(sf.read_text(encoding="utf-8")) if sf.exists() else None
-            return rc, json.loads(js.read_text(encoding="utf-8")), sarif, sf.exists()
-        def results_of(sarif):
-            runs = sarif.get("runs") if isinstance(sarif, dict) else None
-            return runs[0].get("results") if isinstance(runs, list) and runs and isinstance(runs[0], dict) else None
-        # (label, SBOM, PATH, 假 gh 的 (退出碼, 訊息) 或 None)
-        for label, sbom, path, gh in (("缺 SBOM", tmp / "none.json", path0 or "", None),
-                                      ("gh 缺席", sb, str(empty), None),
-                                      ("gh 失敗且無法判定", sb, with_fake, (1, "HTTP 403: Resource not accessible by integration"))):
-            if gh:
-                fake_gh(bindir, *gh)
-            rc, sm, _, exists = run_main(label, sbom, path)
-            if rc != 2 or sm.get("status") != "incomplete" or exists:
-                fails.append(f"來源證明：{label} → 退出碼 2、incomplete、舊 SARIF 刪掉且不寫新檔（得到 {rc}、{sm.get('status')}、SARIF 存在：{exists}）")
-        # 正常路徑照常寫出 SARIF：驗證成功 → 有 rule、沒有 result；找不到證明 → 1 筆 advisory
-        for label, code, text, n in (("驗證成功", 0, "[]", 0), ("找不到證明", 1, "Error: no attestations found", 1)):
-            fake_gh(bindir, code, text)
-            rc, sm, sarif, _ = run_main(label, sb, with_fake)
-            res = results_of(sarif)
-            if rc != 0 or sm.get("status") != "pass" or res is None or len(res) != n:
-                fails.append(f"來源證明：{label} → 退出碼 0、pass、SARIF 照常寫出且有 {n} 筆結果（得到 {rc}、{sm.get('status')}、{res}）")
+    # 接線（#246）：生命週期（SARIF 寫出或刪掉舊檔、退出碼）在 gate_result 測；這裡確認來源證明經過檢查執行、
+    # 驗證經由工廠注入（gh 怎麼被呼叫見上方 gh_verify 的測試），以及來源證明自己的輸出
+    import contextlib, io
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, temp_policy_root
+    for label, broken, verify, want_rc, want_results, want_out in [
+        ("政策讀不到", True, None, 2, None, "::error::SBOM 來源證明檢查未完成（incomplete ≠ pass）：" + POLICY_UNREADABLE),
+        ("驗證成功", False, lambda *a: (0, "ok"), 0, 0, "SBOM 來源證明：已驗證"),
+        ("找不到證明", False, lambda *a: (1, "no attestations found"), 0, 1, f"SBOM 來源證明：缺少或無效（{RULE}，advisory）"),
+        # 退出碼依政策 tier（#242 Q5）：政策把規則升為 blocking 時退出 1 並說明原因（現行政策是 advisory）
+        ("規則升為 blocking、找不到證明", "promote", lambda *a: (1, "no attestations found"), 1, 1, f"::error::SBOM 缺少可驗證的來源證明（{RULE}，blocking）"),
+    ]:
+        out = io.StringIO()
+        with (broken_policy_root() if broken is True else temp_policy_root()) as pr, tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stdout(out):
+            if broken == "promote":   # 每個風險層級都升級：不依賴 repo 目前的 risk_tier
+                import yaml
+                from vibesec_policy import write_policy_key
+                pol = yaml.safe_load((pr / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
+                write_policy_key(pr, "tier_overrides", {k: {**ov, "promote_to_blocking": [*(ov.get("promote_to_blocking") or []), RULE]}
+                                                        for k, ov in (pol.get("tier_overrides") or {}).items()})
+            sb, js, sf = pathlib.Path(d, "sbom.json"), pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif")
+            sb.write_text("{}")
+            a = parse_args(["--sbom", str(sb), "--repo", "o/r", "--signer-workflow", "o/r/w.yml", "--sarif", str(sf), "--json", str(js)])
+            cr = check_run(a, verify=verify) if verify else check_run(a)
+            rc = cr.execute(policy_root=pr, sarif_path=a.sarif, json_path=a.json)
+            res = len(json.loads(sf.read_text(encoding="utf-8"))["runs"][0]["results"]) if sf.exists() else None
+        if (rc, res) != (want_rc, want_results) or want_out not in out.getvalue():
+            fails.append(f"來源證明接線「{label}」：應為退出碼 {want_rc}、SARIF 結果 {want_results}、輸出含 {want_out!r}"
+                         f"（得到 {rc}、{res}、{out.getvalue()!r}）")
     return fails
+
+
+def parse_args(argv) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--sbom", required=True)
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--signer-workflow", required=True)
+    ap.add_argument("--sarif", required=True)
+    ap.add_argument("--json", required=True)
+    return ap.parse_args(argv)
+
+
+def check_run(a: argparse.Namespace, *, verify=gh_verify) -> gate_result.CheckRun:
+    """SBOM 來源證明的檢查執行（nightly，不併入閘門結果）；verify 是 gh attestation verify，只給 selftest 注入（#246）。"""
+    def findings(summary, policy):   # 找不到證明（verified 為 False）才是發現；驗證成功或無法判定都不是
+        return [{"rule_id": RULE, "policy_tier": policy.tier(RULE)}] if summary.get("verified") is False else []
+
+    def report(summary, found, policy):
+        tier = policy.tier(RULE)
+        print("SBOM 來源證明：" + ("已驗證" if summary.get("verified") else f"缺少或無效（{RULE}，{tier}）"))
+        if found and tier == "blocking":   # 政策升為 blocking 時說明為何退出 1（現行政策是 advisory）
+            print(f"::error::SBOM 缺少可驗證的來源證明（{RULE}，blocking）")
+
+    # 生命週期（政策讀不到、摘要、SARIF 寫出或刪掉舊檔、依政策 tier 的退出碼）由檢查執行負責（#246）。
+    # 一般 incomplete（缺 SBOM、gh 缺席或失敗且無法判定）不寫 SARIF：沒有 result 的 SARIF 會被當成「驗證過、沒有發現」（#192）
+    return gate_result.CheckRun(
+        label="SBOM 來源證明", tool_name=TOOL_NAME, version=TOOL_VERSION,
+        check=lambda policy: run(pathlib.Path(a.sbom), a.repo, a.signer_workflow, verify)[0],
+        findings=findings, to_sarif=lambda summary, found, policy: to_sarif(summary, bool(found), policy),
+        unreadable=lambda problem: {"rule_id": RULE, "status": "incomplete", "status_reason": problem},
+        report=report,
+    )
 
 
 def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
@@ -191,34 +194,8 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
         fails = selftest()
         print("\n".join(f"FAIL {x}" for x in fails) or "g1_provenance selftest ok")
         return 1 if fails else 0
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--sbom", required=True)
-    ap.add_argument("--repo", required=True)
-    ap.add_argument("--signer-workflow", required=True)
-    ap.add_argument("--sarif", required=True)
-    ap.add_argument("--json", required=True)
-    a = ap.parse_args(argv)
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from vibesec_policy import load_policy
-    policy, problem = load_policy(policy_root)   # 進入點只建立一次；讀不到 → incomplete，不執行檢查
-    if problem:
-        summary, hit = {"rule_id": RULE, "status": "incomplete", "status_reason": problem}, False
-    else:
-        summary, hit = run(pathlib.Path(a.sbom), a.repo, a.signer_workflow)
-    for out in (a.sarif, a.json):
-        pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
-    pathlib.Path(a.json).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    if summary["status"] == "incomplete":
-        # 沒有驗證任何東西（政策讀不到、缺 SBOM、gh 缺席或失敗且無法判定）：不寫 SARIF（上傳步驟以 hashFiles 略過），
-        # 也不讓上一次的結果被當成這次的。以前一般 incomplete 會寫一份沒有 result 的 SARIF，看起來像「驗證過、沒有發現」（#192）
-        gate_result.remove_stale(a.sarif)
-    else:
-        pathlib.Path(a.sarif).write_text(json.dumps(to_sarif(summary, hit, policy), ensure_ascii=False, indent=2), encoding="utf-8")
-    if summary["status"] == "incomplete":
-        print(f"::error::SBOM 來源證明檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
-        return 2
-    print("SBOM 來源證明：" + ("已驗證" if summary.get("verified") else f"缺少或無效（{RULE}，advisory）"))
-    return 0
+    a = parse_args(argv)
+    return check_run(a).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json)
 
 
 if __name__ == "__main__":

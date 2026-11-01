@@ -88,7 +88,7 @@ gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$
 - **Checkov 卡住**：Checkov 的 check run 偶爾會卡在 `in_progress`，但 SARIF 其實已經收到。重跑 G3 IaC 那個 job 就會恢復。
 - **mode**：規則見 ADR 0002。workflow 步驟讀 mode 會被 `ci_invariants.step_mode_decisions` 擋下（#209）；action 輸出 mode 會被 `ci_invariants.action_mode_reader_problems` 擋下（#220）。
 - **verdict 的 pending**：verdict 只把 `untested` 當成未完成；`pending` 是「待併入」，要到 `finalize` 才會被視同未實測（#213）。
-- **測試注入**：用 `vibesec_policy` 的 `temp_policy_root`、`broken_policy_root`、`modeless_policy_root`、`mode_policy_root(line)`、`tree_copy(line)`、`set_mode_line`、`write_policy_key`，或 `sarif_gate.main_with_policy`。閘門的命令列參數維持不變。
+- **測試注入**：用 `vibesec_policy` 的 `temp_policy_root`、`broken_policy_root`、`modeless_policy_root`、`mode_policy_root(line)`、`tree_copy(line)`、`set_mode_line`、`write_policy_key`，或 `sarif_gate.main_with_policy`。G1 的 SBOM、KEV、維護狀態、來源證明的外部依賴（syft、deps.dev、`gh`）經由各自的 `check_run(args, **deps)` 工廠注入，再 `.execute(policy_root=…)`（#246）。閘門的命令列參數維持不變。
 - **`python3 -I`**：g4_static 和 action 都以 `-I` 執行，import 一定要放在 `sys.path.insert` 之後。
 - **ID 掃描**：`validate.py` 會掃 scripts 裡的 `vibesec.gN.*`、`VS-G*-*`，測試資料也一樣，所以要用目錄裡存在的 ID。
 - **不變式會掃到註解**：`step_mode_decisions` 會略過 bash 的註解行，其他不變式不一定。註解裡改寫說法，避開被禁止的字樣。
@@ -187,7 +187,7 @@ gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$
 - **Stuck Checkov**: the Checkov check run sometimes stays `in_progress` even though the SARIF has been received. Rerunning the G3 IaC job clears it.
 - **mode**: the rules are in ADR 0002. A workflow step that reads mode is caught by `ci_invariants.step_mode_decisions` (#209); an action that outputs mode is caught by `ci_invariants.action_mode_reader_problems` (#220).
 - **pending in the verdict**: the verdict treats only `untested` as unfinished; `pending` means "awaiting merge" and counts as untested only at `finalize` (#213).
-- **Test injection**: use `vibesec_policy`'s `temp_policy_root`, `broken_policy_root`, `modeless_policy_root`, `mode_policy_root(line)`, `tree_copy(line)`, `set_mode_line`, and `write_policy_key`, or `sarif_gate.main_with_policy`. Gate command-line parameters stay unchanged.
+- **Test injection**: use `vibesec_policy`'s `temp_policy_root`, `broken_policy_root`, `modeless_policy_root`, `mode_policy_root(line)`, `tree_copy(line)`, `set_mode_line`, and `write_policy_key`, or `sarif_gate.main_with_policy`. For G1's SBOM, KEV, maintenance, and provenance checks, inject external dependencies (syft, deps.dev, `gh`) through each script's `check_run(args, **deps)` factory, then call `.execute(policy_root=…)` (#246). Gate command-line parameters stay unchanged.
 - **`python3 -I`**: g4_static and the action run with `-I`, so imports must come after `sys.path.insert`.
 - **ID scan**: `validate.py` scans scripts for `vibesec.gN.*` and `VS-G*-*`, test data included, so use IDs that exist in the catalogs.
 - **Invariants scan comments**: `step_mode_decisions` skips bash comment lines; other invariants may not. Reword comments to avoid the forbidden strings.

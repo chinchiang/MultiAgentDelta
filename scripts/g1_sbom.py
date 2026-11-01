@@ -400,13 +400,7 @@ def selftest() -> list[str]:
     return fails
 
 
-def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
-    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
-    argv = argv if argv is not None else sys.argv[1:]
-    if argv[:1] == ["selftest"]:
-        fails = selftest()
-        print("\n".join(f"FAIL {x}" for x in fails) or "g1_sbom selftest ok")
-        return 1 if fails else 0
+def parse_args(argv) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--target", default=".", help="受測專案的 git repo 根目錄")
     ap.add_argument("--commit", default="HEAD")
@@ -414,7 +408,11 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     ap.add_argument("--sarif", required=True)
     ap.add_argument("--json", required=True)
     ap.add_argument("--merge-gate", help="併入既有的 G1 gate-result（就地更新）；檔案不存在則略過")
-    a = ap.parse_args(argv)
+    return ap.parse_args(argv)
+
+
+def check_run(a: argparse.Namespace, *, syft=run_syft) -> gate_result.CheckRun:
+    """SBOM 的檢查執行（#245）；syft 是外部依賴，只給 selftest 注入（#246：四個 producer 同一個接縫）。"""
     sbom = pathlib.Path(a.sbom)
 
     def unreadable(problem):   # 政策讀不到：不產生 SBOM、不分類發現
@@ -430,10 +428,22 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
     # 生命週期（政策讀不到、摘要、SARIF 寫出或刪掉舊檔、併入 G1、退出碼）由檢查執行負責（#245）
     return gate_result.CheckRun(
         label="SBOM", tool_name=TOOL_NAME, version=VERSION, merge_into=("G1", CONTROL),
-        check=lambda policy: run(pathlib.Path(a.target), a.commit, sbom),
+        check=lambda policy: run(pathlib.Path(a.target), a.commit, sbom, syft),
         findings=findings, to_sarif=lambda summary, found, policy: to_sarif(found),
         unreadable=unreadable, report=report,
-    ).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json, merge_gate=a.merge_gate)
+    )
+
+
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
+    argv = argv if argv is not None else sys.argv[1:]
+    if argv[:1] == ["selftest"]:
+        fails = selftest()
+        print("\n".join(f"FAIL {x}" for x in fails) or "g1_sbom selftest ok")
+        return 1 if fails else 0
+    a = parse_args(argv)
+    return check_run(a).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json, merge_gate=a.merge_gate)
+
 
 if __name__ == "__main__":
     sys.exit(main())
