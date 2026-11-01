@@ -2,53 +2,77 @@
 """VibeSec：在本機重現 PR CI repo-validate 的三次 validate（#238）。
 
 PR CI 跑三次 validate：
-  1. PR 版本：               python3 scripts/validate.py
-  2. 受信任樹版本驗 PR head：VIBESEC_PROJECT_ROOT=<PR 的樹> python3 <受信任樹>/scripts/validate.py（抓版本錯開，#207、#235）
+  1. PR 版本：                 python3 scripts/validate.py
+  2. 受信任樹版本驗受驗樹：    VIBESEC_PROJECT_ROOT=<受驗樹> python3 <受信任樹>/scripts/validate.py（抓版本錯開，#207、#235）
   3. PR 版本、mode 改成 enforce 的副本（抓依賴 repo 目前 mode 的 selftest，#223）
 workflow 文件第 5 步要求三次都 0 錯誤；以前本機只跑第 1 種。
 
 用法：
   python3 -I scripts/ci_validate.py --trusted /tmp/wt-main     # --trusted：受信任樹，通常是 workflow 第 0 步的 main worktree
   python3 scripts/ci_validate.py selftest
-退出碼：0 三次都 0 錯誤；1 有錯誤；2 無法執行（--trusted 不對、validate 崩潰、找不到摘要行、副本建不起來；incomplete ≠ pass）。
+退出碼：0 三次都 0 錯誤；1 有錯誤；2 無法判定（--trusted 不對、validate 崩潰、找不到摘要行、副本建不起來、
+       受信任樹的 validate 不認 VIBESEC_PROJECT_ROOT；incomplete ≠ pass）。argparse 用法錯誤同樣是 2。
 """
 from __future__ import annotations
 import argparse, contextlib, os, pathlib, re, shutil, subprocess, sys, tempfile
+from typing import NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+PYTHON = sys.executable or "python3"
+TIMEOUT = 600   # 每次 validate 最多 10 分鐘（CI 的 repo-validate job 是 timeout-minutes: 10）
 # 三次 validate 都帶這個環境變數：validate 會跑所有 selftest，若任何地方意外又呼叫了本腳本的 main，就直接退出碼 2，不遞迴
 RUNNING = "VIBESEC_CI_VALIDATE_RUNNING"
 
 
-def parse(output: str):
-    """validate 輸出 → (通過數, 警告數, 錯誤數, ERR 行清單)；摘要行不是剛好一行 → None（不能當成 0 錯誤）。"""
+class Summary(NamedTuple):
+    passed: int
+    warnings: int
+    errors: int
+    err_lines: list
+
+
+def parse(output: str) -> Summary | None:
+    """validate 輸出 → Summary；摘要行不是剛好一行 → None（不能當成 0 錯誤）。"""
     found = re.findall(r"^通過 (\d+) 項；警告 (\d+)；錯誤 (\d+)$", output, re.M)
     if len(found) != 1:
         return None
     passed, warns, errs = (int(x) for x in found[0])
-    return passed, warns, errs, [ln for ln in output.splitlines() if ln.lstrip().startswith("ERR ")]
+    return Summary(passed, warns, errs, [ln for ln in output.splitlines() if ln.lstrip().startswith("ERR ")])
 
 
 class CopyProblem(Exception):
-    """建不起 enforce 副本（mode 行找不到、改不成功、複製失敗）：第 3 次記為無法執行。"""
+    """建不起 enforce 副本（不是 git 樹、複製失敗、mode 行找不到或改不成功）：第 3 次記為無法判定。"""
 
 
+# CI repo-validate「mode 改為 enforce 的副本」那一步的 inline Python；CI 改了這裡也要跟著改（CI 不能 import PR 樹的模組）
 SET_ENFORCE = ("import pathlib, sys; sys.path.insert(0, sys.argv[1] + '/scripts'); from vibesec_policy import set_mode_line; "
-               "set_mode_line(pathlib.Path(sys.argv[1]) / 'vibesec.yaml', 'mode: enforce')")   # 和 CI 的 repo-validate 相同
+               "set_mode_line(pathlib.Path(sys.argv[1]) / 'vibesec.yaml', 'mode: enforce')")
 
 
 @contextlib.contextmanager
 def enforce_copy(project: pathlib.Path):
-    """project 的完整副本（保留 .git：排除它會讓 g0 selftest 失敗），以副本自己的 vibesec_policy.set_mode_line
-    把最上層 mode 改成 enforce，確認剛好一行 `mode: enforce`；yield 副本根目錄，離開時刪除。失敗 → CopyProblem。"""
+    """project 的副本，內容對齊 CI checkout 出來的樹：git 追蹤的檔案（取工作目錄的內容，含尚未 commit 的修改）、
+    尚未 git add 的新檔，以及 .git（排除它會讓 g0 selftest 失敗）；.gitignore 排除的檔案與 _trusted/ 不複製。
+    以副本自己的 vibesec_policy.set_mode_line 改 mode，並確認以 mode: 開頭的行剛好一行 `mode: enforce`
+    （比 CI 的 grep -qx 嚴：重複的 mode 行也算失敗）。yield 副本根目錄，離開時刪除。失敗 → CopyProblem。"""
+    project = pathlib.Path(project)
     d = pathlib.Path(tempfile.mkdtemp(prefix="vibesec-enforce-"))
     try:
         copy = d / "tree"
         try:
-            shutil.copytree(project, copy, symlinks=True)
-        except (OSError, shutil.Error) as e:
-            raise CopyProblem(f"複製 {project} 失敗：{e}") from e
-        r = subprocess.run([sys.executable or "python3", "-I", "-c", SET_ENFORCE, str(copy)], capture_output=True, text=True)
+            ls = subprocess.run(["git", "-C", str(project), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                                capture_output=True, check=True)
+            files = [f for f in ls.stdout.decode("utf-8", "surrogateescape").split("\0") if f and not f.startswith("_trusted/")]
+            for rel in files:
+                src, dst = project / rel, copy / rel
+                if not os.path.lexists(src):   # 已刪除但還在索引裡的檔案：工作目錄沒有它，副本也不要有
+                    continue
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst, follow_symlinks=False)
+            shutil.copytree(project / ".git", copy / ".git", symlinks=True)
+        except (OSError, shutil.Error, subprocess.CalledProcessError) as e:
+            raise CopyProblem(f"複製 {project} 失敗（需要是 git 樹）：{e}") from e
+        r = subprocess.run([PYTHON, "-I", "-c", SET_ENFORCE, str(copy)], capture_output=True, text=True)
         lines = (copy / "vibesec.yaml").read_text(encoding="utf-8").splitlines() if (copy / "vibesec.yaml").is_file() else []
         if r.returncode != 0 or [ln for ln in lines if ln.startswith("mode:")] != ["mode: enforce"]:
             last = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["（沒有輸出）"]
@@ -58,39 +82,49 @@ def enforce_copy(project: pathlib.Path):
         shutil.rmtree(d, ignore_errors=True)
 
 
-def run_all(project: pathlib.Path, trusted: pathlib.Path, *, runner, make_copy) -> tuple[int, list[str]]:
+def run_all(project: pathlib.Path, trusted: pathlib.Path, *, runner, make_copy, environ=None) -> tuple[int, list[str]]:
     """依序跑三次 validate，回傳 (退出碼, 輸出行)。runner(cmd, cwd=, env=) -> (退出碼, 輸出)；
-    make_copy(project) 是 context manager，yield mode 改成 enforce 的副本根目錄，建不起來 → CopyProblem。
-    任何一次無法執行（找不到唯一的摘要行、退出碼和摘要不一致、副本建不起來）→ 2，優先於有錯誤 → 1。"""
+    make_copy(project) 是 context manager，yield mode 改成 enforce 的副本根目錄，建不起來 → CopyProblem；
+    environ 預設 os.environ（selftest 注入）。任何一次無法判定（找不到唯一的摘要行、退出碼和摘要不一致、
+    副本建不起來、受信任樹的 validate 不認 VIBESEC_PROJECT_ROOT）→ 2，優先於有錯誤 → 1。"""
     project, trusted = pathlib.Path(project).resolve(), pathlib.Path(trusted).resolve()
-    if not (trusted / "scripts/validate.py").is_file():
+    if not trusted.is_dir():
+        return 2, [f"--trusted {trusted} 不存在（通常是 workflow 第 0 步建立的 main worktree）"]
+    trusted_validate = trusted / "scripts/validate.py"
+    if not trusted_validate.is_file():
         return 2, [f"--trusted {trusted} 沒有 scripts/validate.py：不是受信任樹（通常是 workflow 第 0 步的 main worktree）"]
-    py = sys.executable or "python3"
-    base = {**{k: v for k, v in os.environ.items() if k != "VIBESEC_PROJECT_ROOT"}, RUNNING: "1"}   # 第 1、3 次不得被呼叫端的設定誤導
+    environ = os.environ if environ is None else environ
+    # 第 1、3 次不得被呼叫端的 VIBESEC_PROJECT_ROOT 誤導；三次都帶 RUNNING，讓巢狀的 ci_validate 停下來
+    base = {**{k: v for k, v in environ.items() if k != "VIBESEC_PROJECT_ROOT"}, RUNNING: "1"}
     results, lines = [], []
 
-    def one(label, cmd, cwd, env):
+    def run_one(label, cmd, cwd, env):
         rc, out = runner(cmd, cwd=cwd, env=env)
         r = parse(out)
         lines.append(f"== {label}")
-        if r is None or rc != (1 if r[2] else 0):
+        if r is None or rc != (1 if r.errors else 0):
             tail = out.strip().splitlines()[-3:]
             lines.extend([f"  無法判定（退出碼 {rc}，找不到唯一的摘要行或和退出碼不一致）：", *(f"    {x}" for x in tail)])
             results.append((label, None))
             return
-        lines.append(f"  通過 {r[0]} 項；警告 {r[1]}；錯誤 {r[2]}")
-        lines.extend(r[3])
-        results.append((label, r[2]))
+        lines.append(f"  通過 {r.passed} 項；警告 {r.warnings}；錯誤 {r.errors}")
+        lines.extend(r.err_lines)
+        results.append((label, r.errors))
 
-    one("PR 版", [py, str(project / "scripts/validate.py")], project, base)
-    one("受信任樹版驗 PR head", [py, str(trusted / "scripts/validate.py")], project, {**base, "VIBESEC_PROJECT_ROOT": str(project)})
+    run_one("PR 版", [PYTHON, str(project / "scripts/validate.py")], project, base)
+    label = "受信任樹版驗受驗樹"
+    if "VIBESEC_PROJECT_ROOT" in trusted_validate.read_text(encoding="utf-8", errors="replace"):
+        run_one(label, [PYTHON, str(trusted_validate)], project, {**base, "VIBESEC_PROJECT_ROOT": str(project)})
+    else:   # CI 遇到這種舊樹會警告並略過；本機 fail closed：它會去驗受信任樹本身，結果不代表受驗樹
+        lines.extend([f"== {label}", "  無法判定：受信任樹的 validate.py 不認 VIBESEC_PROJECT_ROOT（會去驗受信任樹本身）"])
+        results.append((label, None))
     try:
         with make_copy(project) as copy:
-            one("enforce 副本", [py, str(pathlib.Path(copy) / "scripts/validate.py")], copy, base)
+            run_one("enforce 副本", [PYTHON, str(pathlib.Path(copy) / "scripts/validate.py")], copy, base)
     except CopyProblem as e:
         lines.extend(["== enforce 副本", f"  無法建立副本：{e}"])
         results.append(("enforce 副本", None))
-    lines.append("== 彙總：" + "、".join(f"{label} {'無法判定' if n is None else f'錯誤 {n}'}" for label, n in results))
+    lines.append("== 彙總：" + "、".join(f"{lb} {'無法判定' if n is None else f'錯誤 {n}'}" for lb, n in results))
     if any(n is None for _, n in results):
         return 2, lines + ["結論：無法判定（incomplete ≠ pass）"]
     if any(n for _, n in results):
@@ -140,26 +174,30 @@ def selftest() -> list[str]:
             yield pathlib.Path(project).parent / "COPY"
         return make_copy
 
-    def go(outputs, *, fail_copy=False, trusted_ok=True):
+    def run_scenario(outputs, *, fail_copy=False, trusted="ok", environ=None):
+        """trusted：ok＝受信任樹的 validate 認得 VIBESEC_PROJECT_ROOT；old＝不認得；none＝沒有 validate；missing＝路徑不存在。"""
         with tempfile.TemporaryDirectory() as d:
             proj, tr = pathlib.Path(d, "project"), pathlib.Path(d, "TRUSTED")
             (proj / "scripts").mkdir(parents=True)
-            if trusted_ok:
-                (tr / "scripts").mkdir(parents=True); (tr / "scripts/validate.py").write_text("")
+            if trusted != "missing":
+                (tr / "scripts").mkdir(parents=True)
+            if trusted in ("ok", "old"):
+                (tr / "scripts/validate.py").write_text("ROOT = 'VIBESEC_PROJECT_ROOT'\n" if trusted == "ok" else "ROOT = '.'\n")
             calls = []
-            rc, lines = run_all(proj, tr, runner=fake(outputs, calls), make_copy=copier(fail_copy))
+            rc, lines = run_all(proj, tr, runner=fake(outputs, calls), make_copy=copier(fail_copy),
+                                environ={"PATH": "/usr/bin"} if environ is None else environ)
             return rc, "\n".join(lines), calls, proj, tr
 
     def t_run_ok():
-        rc, out, calls, proj, tr = go({"pr": (0, OK), "trusted": (0, OK), "enforce": (0, OK)})
+        rc, out, calls, proj, tr = run_scenario({"pr": (0, OK), "trusted": (0, OK), "enforce": (0, OK)})
         if rc != 0 or [c[0] for c in calls] != ["pr", "trusted", "enforce"]:
             return f"三次都 0 錯誤 → 退出碼 0、依序跑三次（得到 {rc}、{calls}）"
         if [c[2] for c in calls] != [None, str(proj), None] or calls[1][1] != proj or calls[2][1] != proj.parent / "COPY":
-            return f"只有第 2 次帶 VIBESEC_PROJECT_ROOT＝PR 的樹；第 3 次在副本執行（得到 {calls}）"
+            return f"只有第 2 次帶 VIBESEC_PROJECT_ROOT＝受驗樹；第 3 次在副本執行（得到 {calls}）"
     check("run_all：三次都 0 錯誤", t_run_ok)
 
     def t_run_errors():
-        rc, out, calls, proj, tr = go({"pr": (0, OK), "trusted": (1, BAD), "enforce": (0, OK)})
+        rc, out, calls, proj, tr = run_scenario({"pr": (0, OK), "trusted": (1, BAD), "enforce": (0, OK)})
         if rc != 1 or "  ERR  docs/x.md：壞了" not in out or len(calls) != 3:
             return f"受信任樹版有錯誤 → 退出碼 1、列出 ERR 行、其他兩次照跑（得到 {rc}、{out!r}）"
     check("run_all：有錯誤 → 退出碼 1", t_run_errors)
@@ -172,20 +210,36 @@ def selftest() -> list[str]:
             ("副本建不起來", {"pr": (0, OK), "trusted": (0, OK), "enforce": (0, OK)}, {"fail_copy": True}),
             ("錯誤與無法執行同時出現", {"pr": (1, BAD), "trusted": (2, ""), "enforce": (0, OK)}, {}),
         ]:
-            rc, out, calls, proj, tr = go(outputs, **kw)
+            rc, out, calls, proj, tr = run_scenario(outputs, **kw)
             if rc != 2:
                 return f"{label} → 退出碼 2（incomplete ≠ pass，優先於錯誤）（得到 {rc}、{out!r}）"
-        rc, out, calls, proj, tr = go({"pr": (0, OK), "trusted": (0, OK), "enforce": (0, OK)}, trusted_ok=False)
-        if rc != 2 or calls or "--trusted" not in out:
-            return f"--trusted 沒有 scripts/validate.py → 退出碼 2、一次都不跑、訊息提到 --trusted（得到 {rc}、{calls}、{out!r}）"
+        for trusted, word in [("none", "沒有 scripts/validate.py"), ("missing", "不存在")]:
+            rc, out, calls, proj, tr = run_scenario({"pr": (0, OK), "trusted": (0, OK), "enforce": (0, OK)}, trusted=trusted)
+            if rc != 2 or calls or "--trusted" not in out or word not in out:
+                return f"--trusted {word} → 退出碼 2、一次都不跑、訊息寫明「{word}」（得到 {rc}、{calls}、{out!r}）"
+        rc, out, calls, proj, tr = run_scenario({"pr": (0, OK), "trusted": (0, OK), "enforce": (0, OK)}, trusted="old")
+        if rc != 2 or [c[0] for c in calls] != ["pr", "enforce"] or "VIBESEC_PROJECT_ROOT" not in out:
+            return (f"受信任樹的 validate 不認 VIBESEC_PROJECT_ROOT（會去驗受信任樹本身）→ 第 2 次記無法判定、不執行，"
+                    f"退出碼 2（CI 是警告並略過；本機 fail closed）（得到 {rc}、{calls}、{out!r}）")
+        rc, out, calls, proj, tr = run_scenario({"pr": (0, OK), "trusted": (0, OK), "enforce": (0, OK)},
+                                                environ={"PATH": "/usr/bin", "VIBESEC_PROJECT_ROOT": "/elsewhere"})
+        if [c[2] for c in calls] != [None, str(proj), None]:
+            return f"呼叫端設了 VIBESEC_PROJECT_ROOT → 第 1、3 次拿掉、第 2 次改成受驗樹（得到 {calls}）"
     check("run_all：無法執行 → 退出碼 2", t_run_incomplete)
 
     # ---- enforce_copy：在小型暫存樹上真的執行（副本自己的 vibesec_policy.set_mode_line，和 CI 相同）
     def small_tree(d, yaml_text):
+        """小型 git 樹：scripts/ 與 vibesec.yaml 已 commit；new.txt 未追蹤；ignored/ 與 _trusted/ 被 .gitignore 排除。"""
         src = pathlib.Path(d, "src")
         shutil.copytree(ROOT / "scripts", src / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
-        (src / ".git").mkdir(); (src / ".git/HEAD").write_text("ref: refs/heads/main\n")
         (src / "vibesec.yaml").write_text(yaml_text, encoding="utf-8")
+        (src / ".gitignore").write_text("ignored/\n__pycache__/\n", encoding="utf-8")
+        git = lambda *a: subprocess.run(["git", "-C", str(src), *a], capture_output=True, text=True, check=True)
+        git("init", "-q"); git("config", "user.email", "t@example.invalid"); git("config", "user.name", "t")
+        git("config", "commit.gpgsign", "false"); git("add", "-A"); git("commit", "-qm", "init")
+        (src / "new.txt").write_text("尚未 git add 的新檔\n", encoding="utf-8")
+        (src / "ignored").mkdir(); (src / "ignored/big.bin").write_text("x")
+        (src / "_trusted/scripts").mkdir(parents=True); (src / "_trusted/scripts/validate.py").write_text("")
         return src
 
     def t_copy_ok():
@@ -194,8 +248,11 @@ def selftest() -> list[str]:
             with enforce_copy(src) as copy:
                 copy = pathlib.Path(copy)
                 text = (copy / "vibesec.yaml").read_text(encoding="utf-8")
-                if copy == src or not (copy / ".git/HEAD").is_file() or not (copy / "scripts/validate.py").is_file():
-                    return f"副本是另一棵完整的樹、保留 .git（得到 {copy}）"
+                if copy == src or not (copy / ".git/HEAD").is_file() or not (copy / "scripts/validate.py").is_file() \
+                        or not (copy / "new.txt").is_file():
+                    return f"副本是另一棵樹：git 追蹤的檔案、未追蹤的新檔與 .git 都在（得到 {copy}）"
+                if (copy / "ignored").exists() or (copy / "_trusted").exists():
+                    return "副本不含 .gitignore 排除的檔案與 _trusted（和 CI checkout 出來的樹一致）"
                 if [ln for ln in text.splitlines() if ln.startswith("mode:")] != ["mode: enforce"] or "risk_tier: L3" not in text:
                     return f"副本的最上層 mode 改成 enforce，其餘不動（得到 {text!r}）"
             if copy.exists() or "mode: shadow" not in (src / "vibesec.yaml").read_text(encoding="utf-8"):
@@ -266,9 +323,9 @@ def main(argv=None, *, runner=None, make_copy=None, environ=None) -> int:
 
 
 def subprocess_runner(cmd, *, cwd, env) -> tuple[int, str]:
-    """實際執行 validate（每次最多 15 分鐘）；逾時或無法執行 → 回傳沒有摘要行的輸出，由 run_all 記為無法判定。"""
+    """實際執行 validate（每次最多 TIMEOUT 秒）；逾時或無法執行 → 回傳沒有摘要行的輸出，由 run_all 記為無法判定。"""
     try:
-        r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=900)
+        r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
         return 2, f"無法執行 validate：{type(e).__name__}: {e}"
     return r.returncode, (r.stdout or "") + (r.stderr or "")
