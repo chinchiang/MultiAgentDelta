@@ -67,10 +67,18 @@ gh run view "$id" --log | grep '| G' | sed 's/.*Z //' | sort -u     # 閘門表�
 
 | 閘門 | 狀態 | blocking／advisory | 由誰決定 |
 | --- | --- | --- | --- |
-| G1 | `pass` | 0／7 | 7 筆 advisory 是 #128（遞移相依被上游卡住）。PR 改到相依清單或規則檔（含 `*.md`）時，G1 才會掃描，這時會多出一句「忽略的 allowlist 條目：requests…已過期」，見 #210 |
+| G1 | `pass` | 0／當天 nightly 的筆數 | advisory 是 grype 的已知漏洞（非 KEV），其中包含 #128（遞移相依被上游卡住）；漏洞資料庫每天更新，筆數跟著變，所以以當天 main 的 nightly 為準（指令見表格下方），不和最近合併的 PR 比。PR 改到相依清單或規則檔（含 `*.md`）時，G1 才會掃描，這時會多出一句「忽略的 allowlist 條目：requests…已過期」，見 #210 |
 | G2 | `pass` | 0／0 | |
 | G3 | `pass` | 0／0 | |
 | G4 | `incomplete` | 0／0 | CI 不跑 LLM 審查；enforce 下也不擋，見 #215 |
+
+當天 nightly 的 G1 advisory 筆數：
+
+```bash
+nid=$(gh run list --workflow nightly-full.yml --branch main --limit 1 --json databaseId --jq '.[0].databaseId')
+jid=$(gh run view "$nid" --json jobs --jq '.jobs[] | select(.name | startswith("G1 全量供應鏈")) | .databaseId')
+gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$jid/logs" | grep '已知漏洞（非 KEV'
+```
 
 ## 容易踩的坑
 
@@ -158,10 +166,18 @@ Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 
 | Gate | Status | blocking/advisory | Decided by |
 | --- | --- | --- | --- |
-| G1 | `pass` | 0/7 | The 7 advisory findings come from #128 (a transitive dependency blocked upstream). G1 scans only when the PR touches dependency manifests or rule files (including `*.md`), and then adds the line "忽略的 allowlist 條目：requests…已過期"; see #210 |
+| G1 | `pass` | 0/the count in that day's nightly | The advisory findings are grype known vulnerabilities (not in KEV), including #128 (a transitive dependency blocked upstream). The vulnerability database updates daily and the count moves with it, so compare against that day's nightly on main (command below the table), not against the last merged PR. G1 scans only when the PR touches dependency manifests or rule files (including `*.md`), and then adds the line "忽略的 allowlist 條目：requests…已過期"; see #210 |
 | G2 | `pass` | 0/0 | |
 | G3 | `pass` | 0/0 | |
 | G4 | `incomplete` | 0/0 | CI does not run the LLM review; it does not block in enforce either, see #215 |
+
+G1 advisory count in that day's nightly:
+
+```bash
+nid=$(gh run list --workflow nightly-full.yml --branch main --limit 1 --json databaseId --jq '.[0].databaseId')
+jid=$(gh run view "$nid" --json jobs --jq '.jobs[] | select(.name | startswith("G1 全量供應鏈")) | .databaseId')
+gh api --allow-escape-sequences "repos/chinchiang/MultiAgentDelta/actions/jobs/$jid/logs" | grep '已知漏洞（非 KEV'
+```
 
 ## Gotchas
 
