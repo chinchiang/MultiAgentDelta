@@ -759,6 +759,14 @@ for _tr, _src in _bi.TRANSLATIONS.items():
             err(f"{_tr}（{_src} 的英文譯本）：{_p}（AGENTS.md 文件語言）")
 ok(f"雙語集合 {len(_bi_files)} 份文件與譯本 {len(_bi.TRANSLATIONS)} 份已檢查")
 
+# --- 規則引用（判定在 scripts/rule_refs.py，有 selftest；#239）：「AGENTS.md 規則 N」等引用要指向 AGENTS.md，且編號存在 ---
+import rule_refs as _rr
+_rr_problems = _rr.problems(ROOT)
+for _p in _rr_problems:
+    err(f"規則引用：{_p}")
+if not _rr_problems:
+    ok("規則引用都指向 AGENTS.md，編號都在「不可違反的規則」的範圍內")
+
 # --- CI 設定的不變式（判定在 scripts/ci_invariants.py，有 selftest）：防止已修過的弱點被改回去 ---
 import ci_invariants as _ci
 _wf = {pathlib.Path(_f).name: pathlib.Path(_f).read_text(encoding="utf-8") for _f in sorted(glob.glob(str(ROOT / ".github/workflows/*.yml")))}
