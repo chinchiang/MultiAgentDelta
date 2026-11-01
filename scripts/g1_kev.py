@@ -173,6 +173,31 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
 KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
 
 
+# 以下三個是檢查執行（gate_result.CheckRun）的 hook
+def findings(summary, policy):   # KEV 命中與已知漏洞各依政策 tier（#244）；複製，不改動摘要
+    kev_tier, vuln_tier = policy.tier(RULE), policy.tier(VULN_RULE)
+    return ([dict(h, rule_id=RULE, policy_tier=kev_tier) for h in summary.get("hits") or []]
+            + [dict(v, rule_id=VULN_RULE, policy_tier=vuln_tier) for v in summary.get("vulnerable") or []])
+
+
+def report(summary, found, policy):
+    hits, vulns = summary.get("hits") or [], summary.get("vulnerable") or []
+    kev_tier, vuln_tier = policy.tier(RULE), policy.tier(VULN_RULE)
+    print(f"已知漏洞（非 KEV，{vuln_tier}）：{len(vulns)} 筆")
+    print(f"KEV：檢查 {summary['matches_checked']} 筆 grype 結果，命中 {len(hits)} 筆"
+          + "".join(f"\n  {h['cve']} {h['package']}@{h['version']}（KEV {h['kev_date']}）" for h in hits))
+    # 每一類 blocking 發現都有 ::error:: 說明為何退出 1；kev-hit 的有效 tier 為 advisory 時只警告
+    if hits:
+        print(f"::{'error' if kev_tier == 'blocking' else 'warning'}::KEV 命中 {len(hits)} 筆（{RULE}，{kev_tier}）：需升級或移除受影響套件")
+    if vulns and vuln_tier == "blocking":
+        print(f"::error::已知漏洞 {len(vulns)} 筆（{VULN_RULE}，blocking）：需升級或移除受影響套件")
+
+
+def notes(summary, found):
+    hits = summary.get("hits") or []
+    return [f"KEV 命中 {len(hits)} 筆（{', '.join(sorted({h['cve'] for h in hits}))}）"] if hits else []
+
+
 def selftest() -> list[str]:
     import tempfile
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -252,27 +277,20 @@ def selftest() -> list[str]:
                 fails.append(f"KEV feed {label} → {want}（得到 {st['status']}：{st.get('status_reason')}）")
     base = {"gate": "G1", "status": "pass", "status_reason": None, "findings_count": {"blocking": 0, "advisory": 2},
             "tools": [], "coverage": []}
-    # 政策檔讀不到 → 進入點就停：摘要 incomplete 並寫明未完成原因、沒有任何發現、退出碼 2；
-    # 併入的 G1 為 incomplete、控制 untested（以前退回預設 tier 照樣判定，或以例外結束）
+    # 接線：政策讀不到時經過共用的檢查執行（生命週期本身在 gate_result 測，#245）；KEV 自己的特例是仍附上來源紀錄
     import contextlib, io
     from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
     with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
-        js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
+        js, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "G1.json")
         gp.write_text(json.dumps({**base, "coverage": [{"control_id": KEV_CONTROL, "state": "pending", "reason": None}]}), encoding="utf-8")
-        sf.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF
         src = pathlib.Path(d, "src.json"); src.write_text(json.dumps({"source": "official"}), encoding="utf-8")
         rc = main(["--grype", str(pathlib.Path(d, "g.json")), "--kev-feed", str(pathlib.Path(d, "k.json")),
-                       "--sarif", str(sf), "--json", str(js), "--merge-gate", str(gp), "--kev-source", str(src)], policy_root=pr)
+                   "--sarif", str(pathlib.Path(d, "out.sarif")), "--json", str(js), "--merge-gate", str(gp), "--kev-source", str(src)],
+                  policy_root=pr)
         sm, g = json.loads(js.read_text(encoding="utf-8")), json.loads(gp.read_text(encoding="utf-8"))
-        st = [c["state"] for c in g["coverage"] if c["control_id"] == KEV_CONTROL]
-        # 接線（#182）：併入的 tool 列是 gate_result.tool 的統一形狀（error、exit_code／output_ref null）；舊 SARIF 刪掉（以前留著）
-        if rc != 2 or sm.get("status") != "incomplete" or not str(sm.get("status_reason")).startswith(POLICY_UNREADABLE + "（") \
-                or sm.get("kev_source") != {"source": "official"} \
-                or g["status"] != "incomplete" or POLICY_UNREADABLE not in (g["status_reason"] or "") or st != ["untested"] \
-                or g["findings_count"] != base["findings_count"] \
-                or g["tools"][-1:] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] or sf.exists():
-            fails.append(f"KEV：政策檔讀不到 → 退出碼 2、incomplete、G1 incomplete 且控制 untested、tool 列 error、"
-                         f"舊 SARIF 刪掉（得到 {rc}、SARIF 存在={sf.exists()}、{sm}、{g}）")
+        if rc != 2 or not str(sm.get("status_reason")).startswith(POLICY_UNREADABLE + "（") or sm.get("kev_source") != {"source": "official"} \
+                or g["tools"][-1:] != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)]:
+            fails.append(f"KEV：政策讀不到 → 經過檢查執行（退出碼 2、KEV 的 tool 列 error）並附上來源紀錄（得到 {rc}、{sm}、{g['tools']}）")
     # 退出碼、訊息與併入的 tool 列依政策 tier（#244）。政策變更（AGENTS.md 規則 1）以 tier_overrides 模擬：kev-hit 降級後
     # 命中是 advisory → 退出碼 0、只警告；已知漏洞升級後是 blocking → 退出碼 1 並有 ::error::（Policy.tier 不套用路徑型的政策例外）
     from vibesec_policy import temp_policy_root, write_policy_key
@@ -332,30 +350,9 @@ def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
                 summary["kev_source"] = {"status": "unknown", "status_reason": f"來源紀錄無法讀取：{type(e).__name__}"}
         return summary
 
-    def findings(summary, policy):   # KEV 命中與已知漏洞各依政策 tier（#244）；複製，不改動摘要
-        kev_tier, vuln_tier = policy.tier(RULE), policy.tier(VULN_RULE)
-        return ([dict(h, rule_id=RULE, policy_tier=kev_tier) for h in summary.get("hits") or []]
-                + [dict(v, rule_id=VULN_RULE, policy_tier=vuln_tier) for v in summary.get("vulnerable") or []])
-
-    def report(summary, found, policy):
-        hits, vulns = summary.get("hits") or [], summary.get("vulnerable") or []
-        kev_tier, vuln_tier = policy.tier(RULE), policy.tier(VULN_RULE)
-        print(f"已知漏洞（非 KEV，{vuln_tier}）：{len(vulns)} 筆")
-        print(f"KEV：檢查 {summary['matches_checked']} 筆 grype 結果，命中 {len(hits)} 筆"
-              + "".join(f"\n  {h['cve']} {h['package']}@{h['version']}（KEV {h['kev_date']}）" for h in hits))
-        # 每一類 blocking 發現都有 ::error:: 說明為何退出 1；kev-hit 的有效 tier 為 advisory 時只警告
-        if hits:
-            print(f"::{'error' if kev_tier == 'blocking' else 'warning'}::KEV 命中 {len(hits)} 筆（{RULE}，{kev_tier}）：需升級或移除受影響套件")
-        if vulns and vuln_tier == "blocking":
-            print(f"::error::已知漏洞 {len(vulns)} 筆（{VULN_RULE}，blocking）：需升級或移除受影響套件")
-
-    def notes(summary, found):
-        hits = summary.get("hits") or []
-        return [f"KEV 命中 {len(hits)} 筆（{', '.join(sorted({h['cve'] for h in hits}))}）"] if hits else []
-
     # 生命週期（政策讀不到、摘要、SARIF 寫出或刪掉舊檔、併入 G1、依政策 tier 的退出碼）由檢查執行負責（#245）
     return gate_result.CheckRun(
-        label="KEV", tool_name=TOOL_NAME, version=TOOL_VERSION, gate="G1", control=KEV_CONTROL,
+        label="KEV", tool_name=TOOL_NAME, version=TOOL_VERSION, merge_into=("G1", KEV_CONTROL),
         check=lambda policy: with_source(run(pathlib.Path(a.grype), pathlib.Path(a.kev_feed))[0]),
         findings=findings,
         to_sarif=lambda summary, found, policy: to_sarif(summary.get("hits") or [], summary.get("vulnerable") or [], policy),

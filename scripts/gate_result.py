@@ -20,12 +20,12 @@
       .unreadable(problem, *, tool_name, version=None) -> dict
                                       政策讀不到：controls 全部 untested（原因＝problem）、deferred 維持 pending、
                                       只有閘門自己的一列 tool（error）；不使用已累積的內容
-  CheckRun(*, label, tool_name, version, check, findings, to_sarif, gate=None, control=None,
+  CheckRun(*, label, tool_name, version, check, findings, to_sarif, merge_into=None,
            unreadable=None, report=None, notes=None)
       一次檢查執行（GLOSSARY.md「檢查執行」）；producer 提供的函式見 class docstring。
       .execute(*, policy_root, sarif_path, json_path, merge_gate=None) -> int
                                       讀政策（讀不到 → incomplete）、寫摘要 JSON、SARIF 寫出或刪掉舊檔（incomplete）、
-                                      選用的併入（控制須列在 gate_verdict.REQUIRED_CONTROLS，否則 ValueError）、
+                                      選用的併入（沒有宣告 merge_into 卻要求併入 → ValueError，不寫出任何檔案）、
                                       回傳退出碼：incomplete 2、有 blocking 發現 1、其他 0
   tool(name, state, *, version=None, exit_code=None, output_ref=None, duration_seconds=None) -> dict
   sarif(driver, rules, results) -> dict      自產 SARIF 2.1.0 文件骨架；rules、results 照原樣放入
@@ -48,6 +48,8 @@ load_policy 本來就回報政策讀不到）。
 
 只回傳 dict，不寫閘門 JSON，也不在執行時跑 jsonschema（finding CLI 例外）（jsonschema 在部分環境可能缺席）；輸入不合法 → ValueError，
 那是閘門程式的 bug。schema 符合性由本檔的 selftest 以 jsonschema 驗證。
+CheckRun.execute 例外：它是一項檢查的進入點，會寫出摘要 JSON、寫出或刪掉 SARIF、就地更新 --merge-gate 的閘門結果並印出
+::error::／::warning::；讀政策需要 PyYAML，所以只在 execute 內 import vibesec_policy（本 module 其餘部分仍不依賴 PyYAML）。
 
   python3 scripts/gate_result.py selftest
   python3 scripts/gate_result.py finding < 部分欄位.json > 發現.json
@@ -256,30 +258,38 @@ RETEST_RESULTS = ("fixed", "still_present", "regressed", "not_retested")
 
 class CheckRun:
     """一次檢查執行（GLOSSARY.md「檢查執行」）：閘門內一項檢查的單次執行，產出摘要 JSON 與 SARIF；
-    併入閘門結果時就是子結果。生命週期只有這一份寫法（#242）。
+    併入閘門結果時就是子結果。生命週期只有這一份寫法（#245）。
 
     producer 提供：
       check(policy) -> 摘要                     執行檢查；摘要至少有 status（pass／fail／incomplete）與 status_reason
       findings(摘要, policy) -> [發現]          每筆帶 policy_tier；不得修改摘要（摘要原樣寫出）
       to_sarif(摘要, 發現, policy) -> dict       自產 SARIF（用 sarif() 骨架）
       label、tool_name、version                訊息、未完成原因與 tool 列用
-      gate、control                           要併入時：control 必須列在 gate_verdict.REQUIRED_CONTROLS[gate]
+      merge_into=(gate, control)              選用：要併入閘門結果時；control 必須列在 gate_verdict.REQUIRED_CONTROLS[gate]，
+                                              否則建構時就 ValueError（不必等到有 --merge-gate 檔案）
       unreadable(未完成原因) -> 摘要             選用：政策讀不到時的摘要（也可在這裡清掉過期的輸出）
       report(摘要, 發現, policy)               選用：判定完成時印出的說明（stdout）
       notes(摘要, 發現) -> [str]               選用：併入時額外的 note
     """
 
-    def __init__(self, *, label, tool_name, version, check, findings, to_sarif, gate=None, control=None,
+    def __init__(self, *, label, tool_name, version, check, findings, to_sarif, merge_into=None,
                  unreadable=None, report=None, notes=None):
         self.label, self.tool_name, self.version = _text("label", label), _text("tool_name", tool_name), version
         self._check, self._findings, self._to_sarif = check, findings, to_sarif
-        self.gate, self.control = gate, control
+        if merge_into is not None:
+            from gate_verdict import REQUIRED_CONTROLS
+            gate, control = merge_into
+            if control not in REQUIRED_CONTROLS.get(gate, ()):
+                raise ValueError(f"{label}：控制 {control!r} 不在 {gate} 的必要控制（gate_verdict.REQUIRED_CONTROLS）")
+        self.merge_into = merge_into
         self._unreadable = unreadable or (lambda problem: {"status": "incomplete", "status_reason": problem})
         self._report, self._notes = report, notes
 
     def execute(self, *, policy_root, sarif_path, json_path, merge_gate=None) -> int:
         """執行一次：寫出摘要 JSON、寫出 SARIF 或刪掉舊檔、選用的併入，回傳退出碼（incomplete 2、有 blocking 發現 1、其他 0）。"""
         import json
+        if merge_gate and self.merge_into is None:   # 呼叫端錯誤：在寫出任何檔案之前就停
+            raise ValueError(f"{self.label}：沒有宣告 merge_into，不能併入 {merge_gate}")
         from vibesec_policy import load_policy   # 需要 PyYAML：只在執行時 import，本 module 其餘部分不依賴它
         policy, problem = load_policy(policy_root)   # 讀不到 → incomplete，不執行檢查、不分類發現（無法決定 tier）
         summary = self._unreadable(problem) if problem else self._check(policy)
@@ -302,7 +312,8 @@ class CheckRun:
                                      sarif_ref, policy_unreadable=bool(problem))
                 gp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
             else:
-                print(f"::warning::{gp} 不存在，{self.label} 結果未併入 {self.gate} gate（summary 會顯示 {self.gate} untested）")
+                gate = self.merge_into[0]
+                print(f"::warning::{gp} 不存在，{self.label} 結果未併入 {gate} gate（summary 會顯示 {gate} untested）")
         if incomplete:
             print(f"::error::{self.label} 檢查未完成（incomplete ≠ pass）：{summary['status_reason']}")
             return 2
@@ -312,12 +323,11 @@ class CheckRun:
 
     def _merge(self, gate, summary, found, blocking, sarif_ref, *, policy_unreadable) -> dict:
         """併入閘門結果（子結果）：控制狀態 pass／fail／incomplete → pass／fail／untested，狀態由 gate_verdict.merge 決定。"""
-        from gate_verdict import REQUIRED_CONTROLS, merge
-        if self.control not in REQUIRED_CONTROLS.get(self.gate, ()):
-            raise ValueError(f"{self.label}：控制 {self.control!r} 不在 {self.gate} 的必要控制（gate_verdict.REQUIRED_CONTROLS）")
+        from gate_verdict import merge
+        control = self.merge_into[1]
         st, reason = summary["status"], summary.get("status_reason")
         return merge(gate, blocking=blocking, advisory=len(found) - blocking,
-                     coverage=[{"control_id": self.control, "state": {"pass": "pass", "fail": "fail", "incomplete": "untested"}[st],
+                     coverage=[{"control_id": control, "state": {"pass": "pass", "fail": "fail", "incomplete": "untested"}[st],
                                 "reason": reason}],
                      problems=[f"{self.label}：{reason}"] if st == "incomplete" and reason else [],
                      notes=([f"{self.label}：{reason}"] if st != "incomplete" and reason else [])
@@ -945,7 +955,7 @@ def selftest() -> list[str]:
         doc = sarif({"name": "fake", "version": "1"}, [], [{"ruleId": f.get("rule_id")} for f in found])
         return CheckRun(**{"label": "假檢查", "tool_name": "fake-check", "version": "1.0.0",
                            "check": lambda policy: dict(summary), "findings": lambda s, policy: [dict(f) for f in found],
-                           "to_sarif": lambda s, fs, policy: doc, "gate": "G1", "control": "VS-G1-SBOM", **kw})
+                           "to_sarif": lambda s, fs, policy: doc, "merge_into": ("G1", "VS-G1-SBOM"), **kw})
 
     def g1_gate(**kw):   # slopcheck 先寫出的 G1 閘門結果：VS-G1-SBOM 待併入
         return {"gate": "G1", "status": "pass", "status_reason": None, "mode": "shadow", "risk_tier": "L3", "scope": "full",
@@ -1014,11 +1024,17 @@ def selftest() -> list[str]:
                 return f"--merge-gate 檔案不存在 → 略過併入、不建立檔案、警告（得到 {rc}、{gp.exists()}、{o.getvalue()!r}）"
     check("CheckRun：--merge-gate 檔案不存在時略過", t_cr_no_gate_file)
 
-    def t_cr_undeclared_control():
-        if not raises(lambda: execute(check_run({"status": "pass", "status_reason": None}, control="VS-G1-COOLDOWN"), gate=g1_gate())):
-            return "宣告的 control 不在 REQUIRED_CONTROLS[G1] → ValueError"
-        if not raises(lambda: execute(check_run({"status": "pass", "status_reason": None}, gate="G3"), gate=g1_gate())):
-            return "閘門沒有必要控制（G3）→ ValueError"
+    def t_cr_undeclared_control():   # 建構時就核對：不必等到有 --merge-gate 檔案，也不會先寫出摘要與 SARIF
+        if not raises(lambda: check_run({"status": "pass", "status_reason": None}, merge_into=("G1", "VS-G1-COOLDOWN"))):
+            return "宣告的 control 不在 REQUIRED_CONTROLS[G1] → 建構時 ValueError"
+        if not raises(lambda: check_run({"status": "pass", "status_reason": None}, merge_into=("G3", "VS-G1-SBOM"))):
+            return "閘門沒有必要控制（G3）→ 建構時 ValueError"
+        cr = check_run({"status": "pass", "status_reason": None}, merge_into=None)
+        with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            gp = pathlib.Path(d, "G1.json"); gp.write_text(json.dumps(g1_gate()), encoding="utf-8")
+            if not raises(lambda: cr.execute(policy_root=pr, sarif_path=pathlib.Path(d, "o.sarif"),
+                                             json_path=pathlib.Path(d, "o.json"), merge_gate=gp)) or pathlib.Path(d, "o.json").exists():
+                return "沒有宣告 merge_into 卻要求併入 → ValueError，且不寫出任何檔案"
     check("CheckRun：併入時核對必要控制", t_cr_undeclared_control)
 
     def t_cr_upgrade_only():   # 預期值沿用 #245 之前 g1_sbom／g1_kev 的 merge_gate 測試
