@@ -39,6 +39,12 @@
       "mcp__github__update_pull_request",
       "Bash(gh pr edit *)",
       "Bash(gh -R * pr edit*)"
+    ],
+    "allow": [
+      "Bash(claude plugin validate *)",
+      "Bash(gh run watch *)",
+      "Bash(gh label list *)",
+      "Bash(claude plugin list)"
     ]
   }
 }
