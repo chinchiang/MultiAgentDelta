@@ -31,6 +31,7 @@ harness agent **不做**的事：不寫修補程式碼、不改任何設定讓�
 | 目標允許清單 | `config/targets.yaml`，由 `scripts/target_guard.py check <url>` 比對（只收 http/https；拒絕帶帳密的 URL 與雲端 metadata；deny 優先；預設只允許本機靶場） | 目標不在清單或清單無法讀取 → 不送任何 G5／G6 請求，兩個閘門 `incomplete`，`status_reason` 寫明檢查結果 |
 | 雙帳號 Token | `VIBESEC_TOKEN_A`、`VIBESEC_TOKEN_B` | G5 的 `bola_idor` 控制 `untested`，G5 整體 `incomplete`（`two_account_test: required`） |
 | 模型金鑰 | `config/providers.yaml` 各 provider 的 `api_key_env` | 該 provider 不可用；若導致高風險控制不足兩個 family → 相關發現 `pending`、閘門 `incomplete` |
+| 審查包指紋金鑰 | 環境變數 `VIBESEC_FINGERPRINT_KEY`（至少 32 bytes）；沒有就用 `~/.config/vibesec/fingerprint-key`（`scripts/review_packet.py` 第一次執行時自動建立，權限 0600，不放進 repo） | 讀不到也建不出來、太短，或金鑰檔權限比 0600 寬 → 不產生含程式碼的審查包，外部 provider 無法審查；高風險控制不足兩個 family → 相關發現 `pending`、閘門 `incomplete`（#230） |
 
 ## 3. 狀態機
 

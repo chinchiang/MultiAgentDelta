@@ -17,16 +17,16 @@ Claude Code 的 reviewer sub-agent 能自己讀 repo，scripts/review_provider.p
   - 送出前以 gitleaks（本 repo 的 config/gitleaks-packet.toml：與 config/gitleaks.toml 同一套規則，但沒有任何 allowlist）
     掃描要附上的內容，命中的字串一律換成遮罩加 HMAC-SHA256 指紋 [masked hmac-sha256:<12 hex>]
     （至少遮住 8 個字元：16 字元以上留前 4 後 4，較短的少留或全遮）；附上的檔名也一併遮罩。
-    指紋的鑰匙不在審查包內，收到審查包的模型無法由指紋反推原文（以前是未加鹽的 sha256，短祕密可以暴力反推；#230）。
-    鑰匙依序取自環境變數 VIBESEC_FINGERPRINT_KEY、~/.config/vibesec/fingerprint-key（沒有就在第一次執行時建立，權限 0600，
-    不放進 repo）；兩者都拿不到 → 不產生審查包（exit 2）。
+    指紋的金鑰不在審查包內，收到審查包的模型無法由指紋反推原文（以前是未加鹽的 sha256，短祕密可以暴力反推；#230）。
+    金鑰依序取自環境變數 VIBESEC_FINGERPRINT_KEY、~/.config/vibesec/fingerprint-key（沒有就在第一次執行時建立，權限 0600，
+    不放進 repo）；兩者都拿不到、短於 32 bytes，或金鑰檔的權限比 0600 寬 → 不產生審查包（exit 2）。
     遮罩後、序列化前，逐一檢查審查包的每個字串（含 dict 的鍵）不得殘留命中的原文，否則不產生（以前在 json.dumps 之後比對，
     含 " 或 \\ 的祕密被跳脫就比對不到）。
     被測程式碼的 `gitleaks:allow` 註解不採信
     （--ignore-gitleaks-allow）：那是被測專案自己寫的，不能決定祕密要不要送出去。
     gitleaks 缺席或失敗 → 無法確認祕密已遮罩，不產生審查包（exit 2）。審查包的資料分級沿用 --base（必須宣告，否則不產生），不在這裡判定；--base 內容一併掃描遮罩。
   - 超過 --max-bytes → 不產生（exit 2），不默默截斷：截斷後的審查包會讓模型以為看到了全部。
-離開碼：0 產生；2 無法產生（缺指紋鑰匙、缺 gitleaks、掃描失敗、遮罩後仍有殘留、超過上限、找不到 commit 或威脅模型）；
+離開碼：0 產生；2 無法產生（缺指紋金鑰、缺 gitleaks、掃描失敗、遮罩後仍有殘留、超過上限、找不到 commit 或威脅模型）；
        4 參數錯誤。
 """
 from __future__ import annotations
@@ -42,8 +42,9 @@ BASE_SCAN_NAME = ".vibesec-packet-base.json"   # 掃描用的暫存檔名（不�
 MASK_CONFIG = ROOT / "config/gitleaks-packet.toml"
 G2_CONFIG = ROOT / "config/gitleaks.toml"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
-KEY_ENV = "VIBESEC_FINGERPRINT_KEY"
-KEY_FILE = pathlib.PurePosixPath(".config/vibesec/fingerprint-key")   # 相對於家目錄
+PEPPER_ENV = "VIBESEC_FINGERPRINT_KEY"
+PEPPER_FILE = pathlib.PurePosixPath(".config/vibesec/fingerprint-key")   # 相對於家目錄
+PEPPER_MIN = 32   # bytes：太短的金鑰可以連同短祕密一起暴力反推，HMAC 就失去意義
 
 
 class PacketError(RuntimeError):
@@ -68,7 +69,10 @@ def _names(target: pathlib.Path, *args: str) -> list[str]:
 
 def _show(target: pathlib.Path, commit: str, path: str) -> str | None:
     """commit 中檔案的文字內容；不是 UTF-8 文字（二進位檔）→ None，由呼叫端列入略過清單，不讓整個審查包失敗。"""
-    data = _git_bytes(target, "show", f"{commit}:{path}")
+    try:
+        data = _git_bytes(target, "show", f"{commit}:{path}")
+    except PacketError:   # 不附 git 的 stderr：路徑可能含祕密，此時還沒掃描、無法遮罩（規則 7）
+        raise PacketError("git show 取不到 commit 中的檔案內容") from None
     if b"\0" in data[:8192]:
         return None
     try:
@@ -151,19 +155,21 @@ def gitleaks_scan(texts: dict[str, str], config: pathlib.Path = MASK_CONFIG) -> 
         return sorted({h["Secret"] for h in json.loads(report.read_text() or "[]") if h.get("Secret")})
 
 
-def fingerprint(secret: str, key: bytes) -> str:
-    """祕密的指紋：HMAC-SHA256 的前 12 hex。鑰匙不在審查包內，收到審查包的一方無法由指紋暴力反推短祕密。"""
-    return hmac.new(key, secret.encode(), hashlib.sha256).hexdigest()[:12]
+def fingerprint(secret: str, pepper: bytes) -> str:
+    """祕密的指紋：HMAC-SHA256 的前 12 hex。金鑰不在審查包內，收到審查包的一方無法由指紋暴力反推短祕密。"""
+    return hmac.new(pepper, secret.encode(), hashlib.sha256).hexdigest()[:12]
 
 
-def fingerprint_key(environ=None, home: pathlib.Path | None = None) -> bytes:
-    """指紋的鑰匙：環境變數 VIBESEC_FINGERPRINT_KEY（空字串視同沒有）；否則 ~/.config/vibesec/fingerprint-key，
+def fingerprint_pepper(environ=None, home: pathlib.Path | None = None) -> bytes:
+    """指紋的金鑰：環境變數 VIBESEC_FINGERPRINT_KEY（空字串視同沒有）；否則 ~/.config/vibesec/fingerprint-key，
     沒有就建立（隨機 32 bytes 的 hex，權限 0600）。讀不到、建不出來或檔案是空的 → PacketError（不產生審查包）。
-    environ、home 只給 selftest 注入。錯誤訊息不含鑰匙。"""
+    environ、home 只給 selftest 注入。錯誤訊息不含金鑰。"""
     env = os.environ if environ is None else environ
-    if env.get(KEY_ENV):
-        return env[KEY_ENV].encode()
-    path = (pathlib.Path.home() if home is None else pathlib.Path(home)) / KEY_FILE
+    if env.get(PEPPER_ENV):
+        if len(env[PEPPER_ENV].encode()) < PEPPER_MIN:
+            raise PacketError(f"{PEPPER_ENV} 太短（至少 {PEPPER_MIN} bytes）：不產生審查包")
+        return env[PEPPER_ENV].encode()
+    path = (pathlib.Path.home() if home is None else pathlib.Path(home)) / PEPPER_FILE
     try:
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -175,11 +181,13 @@ def fingerprint_key(environ=None, home: pathlib.Path | None = None) -> bytes:
                 os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "w") as f:
                     f.write(secrets.token_hex(32))
+        if os.name == "posix" and path.stat().st_mode & 0o077:   # 只在建立時給 0600 不夠：既有檔被放寬就拒絕
+            raise PacketError(f"指紋金鑰檔 ~/{PEPPER_FILE} 的權限太寬（群組或其他人可存取）：chmod 600 後再執行；不產生審查包")
         data = path.read_bytes().strip()
     except OSError as e:
-        raise PacketError(f"指紋鑰匙讀不到也建不出來（{KEY_ENV} 未設定；~/{KEY_FILE}：{type(e).__name__}）：不產生審查包") from None
-    if not data:
-        raise PacketError(f"指紋鑰匙檔 ~/{KEY_FILE} 是空的：不產生審查包")
+        raise PacketError(f"指紋金鑰讀不到也建不出來（{PEPPER_ENV} 未設定；~/{PEPPER_FILE}：{type(e).__name__}）：不產生審查包") from None
+    if len(data) < PEPPER_MIN:
+        raise PacketError(f"指紋金鑰檔 ~/{PEPPER_FILE} 太短或是空的（至少 {PEPPER_MIN} bytes）：不產生審查包")
     return data
 
 
@@ -195,39 +203,39 @@ def residual_hits(value, hits: list[str]) -> list[str]:
             for k, x in v.items():
                 walk(k)
                 walk(x)
-        elif isinstance(v, (list, tuple)):
+        elif isinstance(v, list):
             for x in v:
                 walk(x)
     walk(value)
     return sorted(found)
 
 
-def mask(text: str, hits: list[str], key: bytes) -> str:
+def mask(text: str, hits: list[str], pepper: bytes) -> str:
     """命中字串換成遮罩加 HMAC-SHA256 指紋。至少遮住 8 個字元：以前一律留前 4 後 4，8 字元的密碼等於全文照抄。"""
     for s in sorted(hits, key=len, reverse=True):
         k = min(4, max(0, (len(s) - 8) // 2))
         shown = f"{s[:k]}…{s[-k:]}" if k else "…"
-        text = text.replace(s, f"{shown}[masked hmac-sha256:{fingerprint(s, key)}]")
+        text = text.replace(s, f"{shown}[masked hmac-sha256:{fingerprint(s, pepper)}]")
     return text
 
 
-def mask_obj(value, hits: list[str], key: bytes):
+def mask_obj(value, hits: list[str], pepper: bytes):
     """--base 的巢狀內容（發現摘要、證據摘錄）逐一遮罩字串。"""
     if isinstance(value, str):
-        return mask(value, hits, key)
+        return mask(value, hits, pepper)
     if isinstance(value, list):
-        return [mask_obj(v, hits, key) for v in value]
+        return [mask_obj(v, hits, pepper) for v in value]
     if isinstance(value, dict):
-        return {mask_obj(k, hits, key): mask_obj(v, hits, key) for k, v in value.items()}
+        return {mask_obj(k, hits, pepper): mask_obj(v, hits, pepper) for k, v in value.items()}
     return value
 
 
 def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str | None = None,
           threat_model: str = "docs/threat-model.yaml", max_bytes: int = 900_000, scan=gitleaks_scan,
-          key: bytes | None = None) -> dict:
-    """key 只給 selftest 注入；沒給就由 fingerprint_key 取得，拿不到就在掃描之前拒絕。"""
-    if key is None:
-        key = fingerprint_key()
+          pepper: bytes | None = None) -> dict:
+    """pepper 只給 selftest 注入；沒給就由 fingerprint_pepper 取得，拿不到就在掃描之前拒絕。"""
+    if pepper is None:
+        pepper = fingerprint_pepper()
     if base.get("data_class") not in DATA_CLASSES:   # review_provider 依此取較嚴格的分級；沒宣告就無法保證不外傳
         raise PacketError(f"--base 必須宣告 data_class（{'／'.join(DATA_CLASSES)}），目前是 {base.get('data_class')!r}")
     sha = _git(target, "rev-parse", f"{commit}^{{commit}}").strip()
@@ -251,18 +259,20 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
     # --base 也要掃：發現摘要與證據摘錄可能直接引用含祕密的程式行
     hits = scan({threat_model: tm, BASE_SCAN_NAME: json.dumps(base, ensure_ascii=False, indent=1), **raw})
     # 檔名也遮罩（#230 Q5）：祕密同時出現在內容與檔名時，鍵與略過清單不得留原文。只出現在檔名的祕密 gitleaks 掃不到（已知限制）
-    files = {mask(name, hits, key): numbered(mask(text, hits, key), ranges.get(name)) for name, text in raw.items()}
-    skipped = [mask(name, hits, key) for name in skipped]
-    pkt = mask_obj(dict(base), hits, key)
+    files = {mask(name, hits, pepper): numbered(mask(text, hits, pepper), ranges.get(name)) for name, text in raw.items()}
+    if len(files) != len(raw):   # 兩個檔名遮罩後相同：dict 會默默少一個檔案
+        raise PacketError("遮罩後有檔名相同：無法分辨檔案，不產生審查包")
+    skipped = [mask(name, hits, pepper) for name in skipped]
+    pkt = mask_obj(dict(base), hits, pepper)
     pkt["target"] = {**(base.get("target") or {}), "commit": sha, "scope": scope,
                      "note": "唯讀審查被測專案；只能依本審查包判斷。source_files 是 commit 的原文，每行前綴為行號，引用時用 path:line。"}
     if diff_base:
         pkt["target"]["diff_base"] = base_sha
-    pkt["threat_model_full"] = numbered(mask(tm, hits, key))
+    pkt["threat_model_full"] = numbered(mask(tm, hits, pepper))
     pkt["source_files"] = files
     pkt["source_files_note"] = (f"{note}（docs/09 §6）。只附上列檔案，不送整個 repo。"
                                 f"gitleaks 命中 {len(hits)} 個字串（含出現在檔名者），已遮罩並附 HMAC-SHA256 指紋："
-                                "鑰匙不在審查包內，無法由指紋反推原文；同一份審查包裡，同一個祕密的指紋相同。"
+                                "金鑰不在審查包內，無法由指紋反推原文；同一份審查包裡，同一個祕密的指紋相同。"
                                 + (f"略過 {len(skipped)} 個非文字檔（未附上，模型沒看到）：{'、'.join(skipped)}。" if skipped else ""))
     if residual_hits(pkt, hits):   # 遮罩後、序列化前：不得殘留原文（不印殘留的字串）
         raise PacketError("遮罩後仍殘留命中字串：不產生審查包")
@@ -278,7 +288,9 @@ def selftest() -> list[str]:
     git = lambda d, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d,
                                        capture_output=True, check=True, text=True)
     planted = "sk-" + "Z9" * 20
-    K = b"selftest-fingerprint-key"   # selftest 一律注入鑰匙：不讀環境變數、不碰真的 ~/.config
+    K = b"selftest-fingerprint-pepper-0123456789"   # selftest 一律注入金鑰：不讀環境變數、不碰真的 ~/.config
+    TRICKY = 'pa"ss\\word-' + "Q7" * 8   # 含 " 與 \：序列化會跳脫，json.dumps 後的比對抓不到
+    LONG = "x" * PEPPER_MIN
 
     def check(label, fn):   # 新增的測試：紅燈要是 FAIL，不是崩潰
         try:
@@ -290,55 +302,70 @@ def selftest() -> list[str]:
 
     # ---- 指紋：HMAC-SHA256（#230 Q4、Q8）。以前是未加鹽的 sha256，短祕密可以暴力反推
     def t_fingerprint():
-        import hmac as _hmac
         for s in ("hunter22", "sk-" + "Q7" * 20):
-            want = _hmac.new(K, s.encode(), hashlib.sha256).hexdigest()[:12]
+            want = hmac.new(K, s.encode(), hashlib.sha256).hexdigest()[:12]
             if fingerprint(s, K) != want:
                 return f"{len(s)} 字元的祕密：指紋要是 HMAC-SHA256 的前 12 hex"
-            if fingerprint(s, K) == fingerprint(s, b"other-key"):
-                return "不同鑰匙的指紋要不同"
+            if fingerprint(s, K) == fingerprint(s, b"another-pepper-0123456789abcdefgh"):
+                return "不同金鑰的指紋要不同"
             masked = mask(f"pw={s}", [s], K)
             if f"[masked hmac-sha256:{want}]" not in masked or hashlib.sha256(s.encode()).hexdigest()[:12] in masked:
                 return f"{len(s)} 字元的祕密：遮罩標記要是 [masked hmac-sha256:<12 hex>]，不得出現未加鹽的 sha256"
         return None
     check("指紋改用 HMAC-SHA256，短祕密也一樣", t_fingerprint)
 
-    # ---- 鑰匙：VIBESEC_FINGERPRINT_KEY → ~/.config/vibesec/fingerprint-key（0600）→ 都拿不到就不產生（#230 Q7）
+    # ---- 金鑰：VIBESEC_FINGERPRINT_KEY → ~/.config/vibesec/fingerprint-key（0600）→ 都拿不到就不產生（#230 Q7）
     def t_key():
         with tempfile.TemporaryDirectory() as h:
             H = pathlib.Path(h)
-            if fingerprint_key({"VIBESEC_FINGERPRINT_KEY": "from-env"}, H) != b"from-env":
+            if fingerprint_pepper({PEPPER_ENV: LONG}, H) != LONG.encode():
                 return "有 VIBESEC_FINGERPRINT_KEY 時用它"
+            try:
+                fingerprint_pepper({PEPPER_ENV: "short"}, H)
+                return f"VIBESEC_FINGERPRINT_KEY 短於 {PEPPER_MIN} bytes 要拒絕"
+            except PacketError:
+                pass
             if (H / ".config").exists():
-                return "有環境變數時不建立鑰匙檔"
-            k1 = fingerprint_key({}, H)
+                return "有環境變數時不建立金鑰檔"
+            k1 = fingerprint_pepper({}, H)
             f = H / ".config/vibesec/fingerprint-key"
             if not f.is_file() or f.stat().st_mode & 0o777 != 0o600 or len(k1) < 32:
-                return "沒有環境變數時建立 0600 的鑰匙檔（至少 32 bytes）"
-            if fingerprint_key({}, H) != k1 or fingerprint_key({"VIBESEC_FINGERPRINT_KEY": ""}, H) != k1:
-                return "第二次讀同一個鑰匙檔；空的環境變數視同沒有"
+                return "沒有環境變數時建立 0600 的金鑰檔（至少 32 bytes）"
+            if fingerprint_pepper({}, H) != k1 or fingerprint_pepper({PEPPER_ENV: ""}, H) != k1:
+                return "第二次讀同一個金鑰檔；空的環境變數視同沒有"
+            if os.name == "posix":
+                f.chmod(0o644)
+                try:
+                    fingerprint_pepper({}, H)
+                    return "既有的金鑰檔群組或其他人可讀時要拒絕"
+                except PacketError:
+                    pass
+                f.chmod(0o600)
             B = H / "blocked"
             B.mkdir()
-            (B / ".config").write_text("x")   # .config 是檔案 → 鑰匙檔讀不到也建不出來
+            (B / ".config").write_text("x")   # .config 是檔案 → 金鑰檔讀不到也建不出來
             try:
-                fingerprint_key({}, B)
-                return "鑰匙讀不到也建不出來時要拒絕（PacketError）"
+                fingerprint_pepper({}, B)
+                return "金鑰讀不到也建不出來時要拒絕（PacketError）"
             except PacketError:
                 pass
             E = H / "empty"
             (E / ".config/vibesec").mkdir(parents=True)
-            (E / ".config/vibesec/fingerprint-key").write_bytes(b"")
-            try:
-                fingerprint_key({}, E)
-                return "鑰匙檔是空的要拒絕"
-            except PacketError:
-                pass
+            short = E / ".config/vibesec/fingerprint-key"
+            for body in (b"", b"short"):
+                short.write_bytes(body)
+                short.chmod(0o600)
+                try:
+                    fingerprint_pepper({}, E)
+                    return f"金鑰檔是空的或短於 {PEPPER_MIN} bytes 要拒絕"
+                except PacketError:
+                    pass
         return None
-    check("鑰匙來源：環境變數、0600 鑰匙檔、都拿不到就拒絕", t_key)
+    check("金鑰來源：環境變數、0600 金鑰檔、都拿不到就拒絕", t_key)
 
     # ---- 殘留檢查：在序列化之前比對原文（#230 Q3）。以前在 json.dumps 之後比對，含 " 或 \ 的祕密被跳脫就比對不到
     def t_residual():
-        tricky = 'pa"ss\\word-' + "Q7" * 8
+        tricky = TRICKY
         if residual_hits({"a": [f"x{tricky}y"]}, [tricky]) != [tricky]:
             return "值裡含 \" 或 \\ 的原文要被找到"
         if residual_hits({f"k{tricky}": 1}, [tricky]) != [tricky]:
@@ -363,7 +390,7 @@ def selftest() -> list[str]:
         git(repo, "commit", "-qam", "change")
         fake = lambda texts: [planted] if any(planted in t for t in texts.values()) else []
         base = {"data_class": "internal", "target": {"repo": "x"}, "output": "…"}
-        pkt = build(base, repo, scan=fake, key=K)
+        pkt = build(base, repo, scan=fake, pepper=K)
         if "app/my notes.py" not in _names(repo, "ls-tree", "-r", "--name-only", "HEAD"):
             fails.append("含空白的檔名要原樣列出（以前 .split() 會拆成兩個不存在的路徑）")
         if "app/logo.png" in pkt["source_files"] or "app/logo.png" not in pkt["source_files_note"]:
@@ -376,31 +403,31 @@ def selftest() -> list[str]:
             fails.append("full：附行號全文")
         if pkt["data_class"] != "internal" or pkt["output"] != "…":
             fails.append("其餘欄位沿用 --base")
-        pkt = build(base, repo, diff_base=first, scan=fake, key=K)
+        pkt = build(base, repo, diff_base=first, scan=fake, pepper=K)
         api = pkt["source_files"].get("app/api.py", "")
         if set(pkt["source_files"]) != {"app/api.py"} or "  100| changed100" not in api or "   60| line60" not in api \
                 or "   59| line59" in api or "（略過）" not in api or pkt["target"]["scope"] != "diff":
             fails.append(f"diff：只附變更 hunk 前後 {CONTEXT} 行")
         try:
-            build(base, repo, max_bytes=100, scan=fake, key=K); fails.append("超過上限必須拒絕，不截斷")
+            build(base, repo, max_bytes=100, scan=fake, pepper=K); fails.append("超過上限必須拒絕，不截斷")
         except PacketError:
             pass
         leaky = {**base, "finding": {"evidence": f"app/util.py:1 KEY = '{planted}'"}}   # 發現摘錄直接引用祕密
-        pkt = build(leaky, repo, scan=fake, key=K)
+        pkt = build(leaky, repo, scan=fake, pepper=K)
         if planted in json.dumps(pkt) or "[masked hmac-sha256:" not in pkt["finding"]["evidence"]:
             fails.append("--base 內容（發現與證據摘錄）也必須掃描遮罩")
         for bad_class in (None, "secret"):
             try:
-                build({**base, "data_class": bad_class}, repo, scan=fake, key=K); fails.append(f"--base data_class={bad_class!r} 必須拒絕")
+                build({**base, "data_class": bad_class}, repo, scan=fake, pepper=K); fails.append(f"--base data_class={bad_class!r} 必須拒絕")
             except PacketError:
                 pass
         def broken(texts): raise PacketError("gitleaks 掃描失敗")
         try:
-            build(base, repo, scan=broken, key=K); fails.append("掃描失敗必須拒絕產生")
+            build(base, repo, scan=broken, pepper=K); fails.append("掃描失敗必須拒絕產生")
         except PacketError:
             pass
         try:
-            build(base, repo, threat_model="docs/missing.yaml", scan=fake, key=K); fails.append("缺威脅模型必須拒絕")
+            build(base, repo, threat_model="docs/missing.yaml", scan=fake, pepper=K); fails.append("缺威脅模型必須拒絕")
         except PacketError:
             pass
         # 檔名也要遮罩（#230 Q5）：祕密同時出現在內容與檔名時，source_files 的鍵與略過清單不得留原文
@@ -411,7 +438,7 @@ def selftest() -> list[str]:
             (repo / "docs/threat-model.yaml").read_text() + f"  - ref: {named}:1\n  - ref: app/{planted}.png:1\n")
         git(repo, "add", "-A"); git(repo, "commit", "-qm", "secret-in-name")
         try:
-            pkt = build(base, repo, scan=fake, key=K)
+            pkt = build(base, repo, scan=fake, pepper=K)
             if planted in json.dumps(pkt) or residual_hits(pkt, [planted]) or len(pkt["source_files"]) != 3:
                 fails.append("祕密出現在檔名時，source_files 的鍵與 source_files_note 的略過清單也要遮罩")
         except Exception as e:   # 不印訊息：可能含祕密
@@ -419,16 +446,43 @@ def selftest() -> list[str]:
         # build 在序列化前做殘留檢查：遮罩失效時（這裡把 mask 換成原樣回傳）必須拒絕產生，而不是靠 json.dumps 後的比對
         g = globals()
         real_mask = g["mask"]
-        g["mask"] = lambda text, hits, key=b"": text
-        tricky = 'pa"ss\\word-' + "Q7" * 8   # 含 " 與 \：序列化會跳脫，json.dumps 後的比對抓不到
+        g["mask"] = lambda text, hits, pepper: text
         try:
-            build({**base, "finding": {"evidence": f"PW = {tricky}"}}, repo, scan=lambda texts: [tricky], key=K)
+            build({**base, "finding": {"evidence": f"PW = {TRICKY}"}}, repo, scan=lambda texts: [TRICKY], pepper=K)
             fails.append("遮罩失效時，序列化前的殘留檢查必須拒絕產生審查包")
         except PacketError:
             pass
         finally:
             g["mask"] = real_mask
-        # 拿不到鑰匙 → CLI 不產生審查包、exit 2（incomplete ≠ pass），stdout／stderr 不含祕密
+        # 正向的端到端：真的 mask 處理含 " 與 \ 的祕密，寫出的審查包（同 main 的序列化）不含原文，也不含跳脫後的原文
+        pkt = build({**base, "finding": {"evidence": f"PW = {TRICKY}"}}, repo, scan=lambda texts: [TRICKY], pepper=K)
+        dumped = json.dumps(pkt, ensure_ascii=False, indent=1)
+        if TRICKY in dumped or json.dumps(TRICKY)[1:-1] in dumped or "[masked hmac-sha256:" not in pkt["finding"]["evidence"]:
+            fails.append("含 \" 與 \\ 的祕密：審查包必須遮罩，寫出的 JSON 不含原文或跳脫後的原文")
+        # 兩個檔名遮罩後相同 → 拒絕（不能讓 dict 默默少一個檔案）
+        twin = "sk-" + "W4" * 20
+        for n in ("a", "b"):
+            (repo / f"app/{n}{twin}.py").write_text(f"T = '{twin}'\n")
+        (repo / "docs/threat-model.yaml").write_text(
+            (repo / "docs/threat-model.yaml").read_text() + f"  - ref: app/a{twin}.py:1\n  - ref: app/b{twin}.py:1\n")
+        git(repo, "add", "-A"); git(repo, "commit", "-qm", "twins")
+        # 真實情況是 HMAC 前 12 hex 碰撞；這裡讓替身把兩個檔名的前綴換成一樣來重現「遮罩後相同」
+        g["mask"] = lambda text, hits, pepper: real_mask(text, hits, pepper).replace("app/a", "app/x").replace("app/b", "app/x")
+        try:
+            build(base, repo, scan=lambda texts: [twin], pepper=K)
+            fails.append("遮罩後檔名相同時要拒絕，不能默默少一個檔案")
+        except PacketError:
+            pass
+        finally:
+            g["mask"] = real_mask
+        # git show 失敗：錯誤訊息不帶 git 的 stderr（路徑可能含祕密，此時還沒遮罩）
+        try:
+            _show(repo, "HEAD", f"app/{planted}-missing.py")
+            fails.append("git show 取不到檔案要拒絕")
+        except PacketError as e:
+            if planted in str(e):
+                fails.append("git show 失敗的錯誤訊息不得帶出路徑裡的祕密")
+        # 拿不到金鑰 → CLI 不產生審查包、exit 2（incomplete ≠ pass），stdout／stderr 不含祕密
         import contextlib, io
         out_f = pathlib.Path(d) / "out.json"
         base_f = pathlib.Path(d) / "base.json"
@@ -448,8 +502,8 @@ def selftest() -> list[str]:
                 os.environ.pop(k, None)
                 if v is not None:
                     os.environ[k] = v
-        if rc != 2 or out_f.exists() or planted in buf.getvalue() or "鑰匙" not in buf.getvalue():
-            fails.append(f"鑰匙讀不到也建不出來 → 不產生審查包、exit 2（得到 exit {rc}）")
+        if rc != 2 or out_f.exists() or planted in buf.getvalue() or "金鑰" not in buf.getvalue():
+            fails.append(f"金鑰讀不到也建不出來 → 不產生審查包、exit 2（得到 exit {rc}）")
         # 遮罩至少遮住 8 個字元：以前一律留前 4 後 4，8 字元的祕密原樣保留、9–11 字元只遮 1–3 個
         # 失敗訊息只報字元數，不印遮罩結果：遮罩失敗時其中就含祕密（規則 7；CodeQL py/clear-text-logging-sensitive-data）
         for sample in ("hunter22", "abcdefghi", "abcdefghijk1", "sk-" + "Q7" * 20):
@@ -475,7 +529,7 @@ def selftest() -> list[str]:
         old = os.environ.get("VIBESEC_GITLEAKS")
         os.environ["VIBESEC_GITLEAKS"] = str(fake_bin)
         try:
-            pkt = build(base, repo, key=K)
+            pkt = build(base, repo, pepper=K)
             if allowed in json.dumps(pkt) or "[masked hmac-sha256:" not in pkt["source_files"].get("app/util.py", ""):
                 fails.append("被測程式碼的 gitleaks:allow 註解不得讓祕密免遮罩（gitleaks 須帶 --ignore-gitleaks-allow）")
         finally:
