@@ -228,9 +228,20 @@ def redact_key(value, key):
     return value
 
 
+NO_ENV_VAR_SETTING = "providers.yaml 沒有設定 api_key_env"   # 以前 note 會寫成「None 未設定」
+
+
+def _setting(p: dict, name: str) -> str:
+    """provider 設定裡某個鍵的字串值（沒有則空字串）。
+    note 要寫出「哪個環境變數沒設定」：以前直接用 p.get("api_key_env") 組字串，CodeQL 依字面上的 api_key
+    把它判成 password（#230 PR C）。值只是環境變數的名稱，不是金鑰；改由本函式取出、存進中性名稱的變數，
+    config/providers.yaml 的設定鍵不變。"""
+    return str(p.get(name) or "")
+
+
 def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
     p = load_provider(provider, root)
-    names = [p.get("api_key_env") or ""]
+    names = [_setting(p, "api_key_env")]
     if p.get("kind") == "bedrock":
         names += ["AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
     result = _call(provider, role, data_class, packet, root, env)
@@ -257,18 +268,21 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
     if data_class in SENSITIVE_CLASSES and provider not in load_sensitive_providers(root):
         return {**out, "state": "refused",
                 "note": f"data_class={data_class} 只能送 rotation.sensitive_data_providers；{provider} 不在清單（未送出任何內容，AGENTS.md 規則 7）"}
-    key = env.get(p.get("api_key_env") or "", "")
+    env_var_name = _setting(p, "api_key_env")   # 環境變數的名稱，不是金鑰值
+    key = env.get(env_var_name, "")
     profile = ""
     if p.get("kind") == "bedrock":
         # 明確金鑰（access key＋secret）優先；否則改用 aws_profile_env 指名的 profile；兩者皆無 → missing
         if not (key and env.get("AWS_SECRET_ACCESS_KEY")):
-            profile = env.get(p.get("aws_profile_env") or "", "")
+            profile_env_name = _setting(p, "aws_profile_env")
+            profile = env.get(profile_env_name, "")
             if not profile:
-                need = f"{p.get('api_key_env')}＋AWS_SECRET_ACCESS_KEY" + (f" 或 {p['aws_profile_env']}" if p.get("aws_profile_env") else "")
+                need = (f"{env_var_name}＋AWS_SECRET_ACCESS_KEY" if env_var_name
+                        else f"AWS_SECRET_ACCESS_KEY（{NO_ENV_VAR_SETTING}）") + (f" 或 {profile_env_name}" if profile_env_name else "")
                 return {**out, "state": "missing", "note": f"{need} 未設定 / not configured"}
             key = ""
     elif not key:
-        return {**out, "state": "missing", "note": f"{p.get('api_key_env')} 未設定"}
+        return {**out, "state": "missing", "note": f"{env_var_name} 未設定" if env_var_name else NO_ENV_VAR_SETTING}
     user = ("以下是審查包（JSON）。依你的角色說明審查，只回傳角色說明定義的 JSON。\n\n"
             + json.dumps(packet, ensure_ascii=False, indent=2))
     fn = {"openai_compatible": _openai, "anthropic": _anthropic}.get(p.get("kind"))
@@ -381,6 +395,11 @@ def selftest() -> list[str]:
             "leaky": mk("m", allowed_data_classes=["public", "internal", "confidential", "pii"]),
             # onprem：允許敏感分級且在 sensitive_data_providers 內 → 放行
             "onprem": mk("m", allowed_data_classes=["public", "internal", "confidential", "pii"]),
+            # bed：bedrock，金鑰沒給齊時 note 只列環境變數名稱（#230 PR C）
+            "bed": mk("m", kind="bedrock", api_key_env="AK", aws_profile_env="AWS_PROFILE_X"),
+            "bed2": mk("m", kind="bedrock", api_key_env="AK"),   # 沒有 aws_profile_env
+            "noenv": mk("m", api_key_env=None),                  # 設定漏了 api_key_env
+            "bednoenv": mk("m", kind="bedrock", api_key_env=None, aws_profile_env="AWS_PROFILE_X"),
             "flip": mk("flip"), "needhint": mk("needhint"), "bad": mk("bad"), "nojson": mk("nojson"), "noopinions": mk("noopinions"), "badconcern": mk("badconcern"), "badverdict": mk("badverdict"), "norationale": mk("norationale"), "noev": mk("noev"), "http500": mk("http500")},
             "rotation": {"sensitive_data_providers": ["onprem"]}}))
         env = {"K": "sk-secret-123"}
@@ -405,6 +424,32 @@ def selftest() -> list[str]:
         if r["state"] != "refused" or len(seen) != n: fails.append("confidential + 不在 sensitive 清單 → refused")
         r = call("ok", "architecture", "internal", pk, root, {})
         if r["state"] != "missing" or len(seen) != n: fails.append("缺金鑰 → missing 且不得送出")
+        # note 只含環境變數的名稱、不含金鑰值（#230 PR C；CodeQL 曾把這條 note 判成 password）
+        if r["note"] != "K 未設定": fails.append("缺金鑰 → note 寫出環境變數名稱 K")
+        r = call("bed", "architecture", "internal", pk, root, {"AK": "AKIA-only-value-987"})
+        if r["state"] != "missing" or len(seen) != n or "AKIA-only-value-987" in json.dumps(r) \
+                or r["note"] != "AK＋AWS_SECRET_ACCESS_KEY 或 AWS_PROFILE_X 未設定 / not configured":
+            fails.append("bedrock 金鑰沒給齊 → missing，note 只列環境變數名稱、不含金鑰值，且不得送出")
+        r = call("bed2", "architecture", "internal", pk, root, {"AK": "AKIA-only-value-987"})
+        if r["note"] != "AK＋AWS_SECRET_ACCESS_KEY 未設定 / not configured":
+            fails.append("bedrock 沒有 aws_profile_env → note 不列 profile")
+        r = call("noenv", "architecture", "internal", pk, root, env)
+        if r["state"] != "missing" or r["note"] != "providers.yaml 沒有設定 api_key_env":
+            fails.append("設定漏了 api_key_env → missing，note 說明是設定缺漏（不是「None 未設定」）")
+        r = call("bednoenv", "architecture", "internal", pk, root, env)
+        if r["state"] != "missing" or r["note"] != \
+                "AWS_SECRET_ACCESS_KEY（providers.yaml 沒有設定 api_key_env） 或 AWS_PROFILE_X 未設定 / not configured":
+            fails.append("bedrock 設定漏了 api_key_env → missing，note 說明是設定缺漏（不是「None＋…」）")
+        # call() 最後一道防線：_call 的結果不論哪個欄位帶出金鑰值，都要再遮一次（api_key_env 與 bedrock 的 AWS 金鑰）
+        g = globals(); real_call = g["_call"]
+        g["_call"] = lambda *a, **kw: {"note": "x sk-secret-123 y", "opinion": {"k": ["AWS-S3CRET-v", "tok-SESS-1"]}}
+        try:
+            r = call("bed", "architecture", "internal", pk, root,
+                     {"AK": "sk-secret-123", "AWS_SECRET_ACCESS_KEY": "AWS-S3CRET-v", "AWS_SESSION_TOKEN": "tok-SESS-1"})
+            if any(v in json.dumps(r) for v in ("sk-secret-123", "AWS-S3CRET-v", "tok-SESS-1")):
+                fails.append("call() 要把結果裡的金鑰值（api_key_env、AWS secret、session token）再遮一次")
+        finally:
+            g["_call"] = real_call
         # 在 sensitive_data_providers 內且 allowed_data_classes 含 pii → 放行（確認第二道防線不會誤擋合法路徑）
         r = call("onprem", "architecture", "pii", pk, root, env)
         if r["state"] != "ran": fails.append(f"pii + 在 sensitive_data_providers 且允許 → ran：{r}")
@@ -459,7 +504,10 @@ def selftest() -> list[str]:
 
 def main(argv: list[str]) -> int:
     if argv[1:2] == ["selftest"]:
-        fails = selftest()
+        try:
+            fails = selftest()
+        except Exception as e:   # 紅燈要是 FAIL、不是崩潰：前面的呼叫失敗時，後面的檢查可能取不到資料；只印例外型別（訊息可能含金鑰）
+            fails = [f"selftest 中途拋出 {type(e).__name__}，後面的檢查沒有跑完"]
         for f in fails: print(f"FAIL {f}")
         print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
         return 1 if fails else 0
