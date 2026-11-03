@@ -44,7 +44,23 @@
       "Bash(claude plugin validate *)",
       "Bash(gh run watch *)",
       "Bash(gh label list *)",
-      "Bash(claude plugin list)"
+      "Bash(claude plugin list)",
+      "Bash(python3 scripts/validate.py)",
+      "Bash(python3 scripts/ci_invariants.py selftest)",
+      "Bash(python3 scripts/vibesec_policy.py selftest)",
+      "Bash(python3 scripts/g1_slopcheck.py selftest)",
+      "Bash(python3 -I scripts/ci_validate.py --trusted /tmp/wt-main)",
+      "Bash(python3 scripts/compare_evals.py *)",
+      "Bash(python3 scripts/gate_result.py selftest)",
+      "Bash(python3 scripts/g4_access.py selftest)",
+      "Bash(python3 scripts/g4_review.py selftest)",
+      "Bash(python3 scripts/bilingual.py selftest)",
+      "Bash(python3 scripts/gate_verdict.py selftest)",
+      "Bash(python3 -I scripts/compare_ci.py *)",
+      "Bash(python3 scripts/g0_threat_model.py selftest)",
+      "Bash(python3 scripts/g1_kev.py selftest)",
+      "Bash(python3 scripts/g1_provenance.py selftest)",
+      "Bash(python3 scripts/g1_maintenance.py selftest)"
     ]
   }
 }
