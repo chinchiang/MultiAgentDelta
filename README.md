@@ -195,6 +195,7 @@ MultiAgentDelta/
 │   ├── g1_slopcheck.py            # G1：四層 Slopsquatting 防禦
 │   ├── g1_manifests.py            # G1：清單與鎖定檔的分類與解析（快篩與 SBOM 共用）
 │   ├── https_only.py              # G1：只走 HTTPS 的 GET JSON、暫時性錯誤重試（傳輸層）
+│   ├── g1_registry.py             # G1：套件登錄庫接縫（npm／PyPI 查詢，三態結果，生產與替身轉接器）
 │   ├── g1_sbom.py                 # G1：CycloneDX SBOM 產生、可重現性與完整性
 │   ├── fetch_kev.py               # G1：取得 CISA KEV feed（官網 → cisagov 鏡像 → 快取）
 │   ├── g1_kev.py                  # G1：Grype 結果 × CISA KEV
@@ -215,7 +216,7 @@ MultiAgentDelta/
 │   ├── ruling.py                  # 人工裁決：request / check / apply
 │   ├── run_evals.py               # 評測：召回率 / 精確率，對照 baseline
 │   └── validate.py                # 本 repo 自我驗證
-├── tests/                         # unittest（validate.py 會執行），目前涵蓋 Bedrock provider、G1 清單解析、HTTPS 傳輸層
+├── tests/                         # unittest（validate.py 會執行），目前涵蓋 Bedrock provider、G1 清單解析、HTTPS 傳輸層、套件登錄庫與套件判定
 ├── schemas/                       # finding、gate-result、threat-model、g4-review、human-ruling
 ├── docs/
 │   ├── 00-overview.md … 13-roadmap-governance-compliance.md

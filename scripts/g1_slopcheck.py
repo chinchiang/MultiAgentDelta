@@ -16,7 +16,7 @@
   blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用（fail closed）。
 """
 from __future__ import annotations
-import sys, os, json, re, difflib, itertools, urllib.parse, urllib.error, subprocess
+import sys, os, json, re, difflib, itertools, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -25,11 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent      # VibeSec 本身：設定、�
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份寫法（#181）；不依賴 PyYAML
 from g1_manifests import REQUIREMENTS_RE, classify, parse_manifest, pep508  # noqa: E402  清單與鎖定檔解析，與 g1_sbom 共用（#262）
-import https_only  # noqa: E402  HTTPS 傳輸層：只走 HTTPS、暫時性錯誤重試（#263）
+from g1_registry import HttpRegistry, NotFound, Unavailable, Unknown, canon, valid_name  # noqa: E402  套件登錄庫接縫與各 registry 的名稱規則（#264）
 CFG_DIR = ROOT / "config" / "slopsquat"
-TIMEOUT = 8
 WORKERS = 8                                        # registry 並行查詢數
-RETRIES, BACKOFF = 2, 1.0                          # 暫時性網路錯誤重試次數與退避秒數（404 不重試）
 TARGET = ROOT                                      # 被掃描的專案根目錄；--target 改寫
 
 def external_target():
@@ -100,12 +98,6 @@ def load_popular(name):
         return set()
     return {l.strip().lower() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")}
 
-def canon(eco, name):
-    """比對用的套件名稱。PyPI 依 PEP 503 正規化：大小寫不分，連續的 -、_、. 視為同一個 -
-    （typing_extensions 與 typing-extensions 是同一個專案，不能另外註冊）；npm 只轉小寫（_ 與 - 是不同套件）。"""
-    name = str(name).lower()
-    return re.sub(r"[-_.]+", "-", name) if eco == "pypi" else name
-
 # 同形字（homoglyph）折疊：把同一個 confusable 群組的字元收斂到單一代表字（Unicode skeleton 作法），
 # 兩邊都折疊後比較，才能同時抓到 1 代表 i（m1cr0s0ft↔microsoft）與 1 代表 l（paypa1↔paypal）。
 # 群組：{0,o}、{1,i,l}、{3,e}、{5,s}、{7,t}。只用於與熱門套件的加強比對，不併進 canon()（見 _defang）。
@@ -143,128 +135,78 @@ def lookup(entries, eco, pkg):
                 return it
     return None
 
-# 套件名稱來自 PR 內的 manifest（不可信）：先依 registry 命名規則驗證，再 percent-encode 組 URL。
-# 不合法的名稱不送出查詢，記為 incomplete（incomplete ≠ pass）。
-NPM_NAME = re.compile(r"^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$", re.I)
-PYPI_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+# 套件登錄庫接縫（#264）：登錄庫給事實，判定留在這裡。REGISTRY 是測試與評測注入替身的地方（S5 起改由 screen 的 Env 注入）；
+# 沒有指定就用生產的 HttpRegistry。npm_check／pypi_check／pypi_requires 是 S5 之前保留的注入點：快篩 selftest 的 CLI 情境靠覆寫它們。
+REGISTRY = None
 
-def valid_name(eco, pkg):
-    if not pkg or len(pkg) > 214:
-        return False
-    return bool((NPM_NAME if eco == "npm" else PYPI_NAME).match(pkg))
+def _registry():
+    return REGISTRY if REGISTRY is not None else HttpRegistry()
 
-def http_json(url):
-    """GET JSON：交給 https_only.get_json（暫時性錯誤重試 RETRIES 次，其餘 HTTP 錯誤如 404 立即拋出）。
-    重試仍失敗就拋出，由呼叫端記 incomplete。數值與使用者代理都是 G1 自己的。"""
-    return https_only.get_json(url, timeout=TIMEOUT, retries=RETRIES, backoff=BACKOFF,
-                               transport=https_only.UrllibHttpsOnly(user_agent="vibesec-g1/0.1"))
+def check_package(registry, eco, pkg, ver, c):
+    """回傳 (findings, incomplete_reason|None)。查無此套件是正常發現（疑似幻覺／搶註）；查不到、缺資料都是未完成原因，
+    不得當成通過（AGENTS.md 規則 2）。"""
+    label = "npm" if eco == "npm" else "PyPI"
+    if not valid_name(eco, pkg):
+        return [], f"{label} 套件名稱不合法，未查詢 registry：{pkg!r}"
+    r = registry.facts(eco, pkg, ver)
+    who = "npm registry" if eco == "npm" else "PyPI"
+    if isinstance(r, NotFound):
+        return [fnd("vibesec.g1.hallucinated-package", pkg, eco, ver,
+                    f"{who} 查無此套件（疑似幻覺/搶註）", "blocking", "registry_health")], None
+    if isinstance(r, Unavailable):
+        return [], f"{who} 查詢失敗（{pkg}）：{r.reason}"
+    return (_judge_npm if eco == "npm" else _judge_pypi)(pkg, r.facts, c)
 
-def npm_check(pkg, ver, c):
-    """回傳 (findings, incomplete_reason|None)。"""
-    findings = []
-    if not valid_name("npm", pkg):
-        return [], f"npm 套件名稱不合法，未查詢 registry：{pkg!r}"
-    q = urllib.parse.quote(pkg, safe="@/")
-    try:
-        meta = http_json(f"https://registry.npmjs.org/{q}")
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return [fnd("vibesec.g1.hallucinated-package", pkg, "npm", ver,
-                        "npm registry 查無此套件（疑似幻覺/搶註）", "blocking", "registry_health")], None
-        return [], f"npm registry 查詢失敗（{pkg}）：HTTP {e.code}"
-    except Exception as e:
-        return [], f"npm registry 查詢失敗（{pkg}）：{e}"
+def _judge_npm(pkg, f, c):
+    findings, gaps = [], []
     # 冷卻期與安裝 hook：鎖定版本不在發布紀錄、發布時間不明 → 這兩項沒查到，記 incomplete（以前靜默略過而 pass）
-    gaps = []
-    times = meta.get("time", {}) or {}
-    versions = meta.get("versions", {}) or {}
-    target_ver = ver or (meta.get("dist-tags", {}) or {}).get("latest")
-    target_ver = next((v for v in versions if target_ver and v == str(target_ver).lstrip("v")), target_ver)
-    age = age_days(times.get(target_ver)) if target_ver else None
+    age = age_days(f.published_at) if f.version and not isinstance(f.published_at, Unknown) else None
     if age is None:
         gaps.append("冷卻期")
     else:
-        f = cooldown_finding(pkg, "npm", target_ver, age, c)
-        if f:
-            findings.append(f)
-    vmeta = versions.get(target_ver or "")
-    if not isinstance(vmeta, dict):
+        found = cooldown_finding(pkg, "npm", f.version, age, c)
+        if found:
+            findings.append(found)
+    if f.install_scripts is None or isinstance(f.install_scripts, Unknown):
         gaps.append("安裝 hook")
     else:
-        f = install_hook_finding(pkg, "npm", target_ver, vmeta.get("scripts", {}) or {})
-        if f:
-            findings.append(f)
+        found = install_hook_finding(pkg, "npm", f.version, f.install_scripts)
+        if found:
+            findings.append(found)
     # 週下載：查不到就不知道信譽，記 incomplete（存在性已確認，其他發現照列）
-    try:
-        dl = http_json(f"https://api.npmjs.org/downloads/point/last-week/{q}").get("downloads")
-        if not isinstance(dl, int):
-            raise ValueError(f"downloads 欄位缺漏或格式不符（{dl!r}）")
-        if dl < c["min_weekly_downloads"]:
-            findings.append(fnd("vibesec.g1.low-download-package", pkg, "npm", target_ver,
-                                f"週下載量 {dl} < {c['min_weekly_downloads']}，信譽不足，需人工判斷", "advisory"))
-    except Exception as e:
-        gaps.append(f"週下載量（{type(e).__name__}）")
+    dl = f.weekly_downloads
+    if not isinstance(dl, int):
+        gaps.append(f"週下載量（{dl.why if isinstance(dl, Unknown) else type(dl).__name__}）")
+    elif dl < c["min_weekly_downloads"]:
+        findings.append(fnd("vibesec.g1.low-download-package", pkg, "npm", f.version,
+                            f"週下載量 {dl} < {c['min_weekly_downloads']}，信譽不足，需人工判斷", "advisory"))
     if gaps:
-        return findings, f"npm {pkg}@{target_ver or '?'}：{'、'.join(gaps)}未檢查（版本不在 registry 發布紀錄、發布時間不明或查詢失敗）"
+        return findings, f"npm {pkg}@{f.version or '?'}：{'、'.join(gaps)}未檢查（版本不在 registry 發布紀錄、發布時間不明或查詢失敗）"
     return findings, None
 
-def same_pep440(a, b):
-    """PEP 440 版本是否相等（2.32 == 2.32.0、1.0RC1 == 1.0rc1）。packaging 缺席時只補齊尾端的 .0 並轉小寫。"""
-    try:
-        from packaging.version import Version, InvalidVersion
-        try:
-            return Version(str(a)) == Version(str(b))
-        except InvalidVersion:
-            return str(a) == str(b)
-    except ImportError:
-        def k(v):
-            m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(.*)", str(v).strip().lower())
-            if not m:
-                return str(v)
-            rel = [int(x) for x in m.group(1).split(".")]
-            while len(rel) > 1 and rel[-1] == 0:
-                rel.pop()
-            return (tuple(rel), m.group(2))
-        return k(a) == k(b)
-
-def pypi_check(pkg, ver, c):
-    findings = []
-    if not valid_name("pypi", pkg):
-        return [], f"PyPI 套件名稱不合法，未查詢 registry：{pkg!r}"
-    try:
-        meta = http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg, safe='')}/json")
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return [fnd("vibesec.g1.hallucinated-package", pkg, "pypi", ver,
-                        "PyPI 查無此套件（疑似幻覺/搶註）", "blocking", "registry_health")], None
-        return [], f"PyPI 查詢失敗（{pkg}）：HTTP {e.code}"
-    except Exception as e:
-        return [], f"PyPI 查詢失敗（{pkg}）：{e}"
-    releases = meta.get("releases", {}) or {}
-    target_ver = ver or (meta.get("info", {}) or {}).get("version")
-    if target_ver and target_ver not in releases:     # ==2.32 與發布的 2.32.0 是同一版（PEP 440）
-        target_ver = next((v for v in releases if same_pep440(v, target_ver)), target_ver)
-    rel = releases.get(target_ver or "") or []
-    age = age_days((rel[0] or {}).get("upload_time_iso_8601") or "") if rel and isinstance(rel[0], dict) else None
+def _judge_pypi(pkg, f, c):
+    age = age_days(f.published_at) if not isinstance(f.published_at, Unknown) else None
     if age is None:
         # 版本不在發布紀錄、該版沒有檔案或上傳時間不明：冷卻期沒查到 ≠ 通過
-        return findings, f"PyPI {pkg}@{target_ver or '?'}：冷卻期未檢查（版本不在 PyPI 發布紀錄或發布時間不明）"
-    f = cooldown_finding(pkg, "pypi", target_ver, age, c)
-    if f:
-        findings.append(f)
-    return findings, None
+        return [], f"PyPI {pkg}@{f.version or '?'}：冷卻期未檢查（版本不在 PyPI 發布紀錄或發布時間不明）"
+    found = cooldown_finding(pkg, "pypi", f.version, age, c)
+    return ([found] if found else []), None
+
+def npm_check(pkg, ver, c):
+    return check_package(_registry(), "npm", pkg, ver, c)
+
+def pypi_check(pkg, ver, c):
+    return check_package(_registry(), "pypi", pkg, ver, c)
 
 def pypi_requires(pkg, ver):
-    """該版本在 PyPI 宣告的相依名稱（PEP 503 正規化；含 extra 與環境標記限定的相依）。查不到回空集合：
-    結果只用來把鎖定檔中的間接相依排除在名稱相似度之外，查不到就照直接相依檢查，不會少查。"""
-    if not ver or not valid_name("pypi", pkg):
-        return set()
+    return _registry().requires(pkg, ver)
+
+def _check_job(eco, name, ver, c):
+    """並行查詢的一筆。任何意外的錯誤都轉成這一筆的未完成原因，不讓整批查詢中斷（沒有證據不是通過，AGENTS.md 規則 2）。"""
     try:
-        info = http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg, safe='')}/"
-                         f"{urllib.parse.quote(ver, safe='')}/json").get("info") or {}
-    except Exception:
-        return set()
-    return {canon("pypi", x[0]) for x in map(pep508, info.get("requires_dist") or []) if x}
+        return (npm_check if eco == "npm" else pypi_check)(name, ver, c)
+    except Exception as e:
+        return [], f"{'npm' if eco == 'npm' else 'PyPI'} {name}@{ver or '?'}：檢查時發生未預期的錯誤（{type(e).__name__}：{e}）"
 
 def requirements_indirect(path, requires=None):
     """requirements*.txt 中由同檔其他套件宣告為相依的 (名稱小寫, 版本)，即間接相依，不做名稱相似度。
@@ -822,7 +764,7 @@ def selftest():
     """離線自我測試 --target：registry 查詢以替身取代，只驗證路徑、全量探索、鎖定檔與例外範圍。"""
     import contextlib, io, shutil, tempfile
     from jsonschema import Draft202012Validator
-    global TARGET, npm_check, pypi_check, pypi_requires, load_allowlist, _RULE_CFG, http_json, _POLICY
+    global TARGET, npm_check, pypi_check, pypi_requires, load_allowlist, _RULE_CFG, _POLICY
     global CFG_DIR, VIBESEC_FILE
     fails = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
@@ -1030,6 +972,28 @@ def selftest():
                 fails.append(f"registry 每個 (名稱, 版本) 只查一次、間接相依也要查（得到 {sorted(calls)}）")
             if out.get("status") != "fail" or "node_modules/gitdep" not in out.get("status_reason", ""):
                 fails.append("非 npm registry 來源的條目 → 列入未完成原因（替身有 blocking，記 fail）")
+            # 並行查詢中單一套件的檢查丟出意外的錯誤：只影響這一個套件（記未完成），其他套件照常判定，整批不中斷（#264）
+            (D / "boom").mkdir()
+            (D / "boom/package.json").write_text(json.dumps({"dependencies": {"fine-pkg": "1.0.0", "boom-pkg": "1.0.0", "other-pkg": "2.0.0"}}))
+            def maybe_boom(pkg, ver, c):
+                if pkg == "boom-pkg":
+                    calls.append((pkg, ver))
+                    raise RuntimeError("selftest 意外")
+                return stub(pkg, ver, c)          # stub 自己會記錄查詢
+            npm_check = maybe_boom
+            try:
+                calls.clear()
+                code, out = run("--target", str(D), "--manifest", "boom/package.json")
+            finally:
+                npm_check = stub
+            if sorted(calls) != [("boom-pkg", "1.0.0"), ("fine-pkg", "1.0.0"), ("other-pkg", "2.0.0")]:
+                fails.append(f"單一套件的檢查丟出意外錯誤時，其他套件仍要查（查詢 {sorted(calls)}）")
+            if {f["package"] for f in out.get("findings", [])} != {"fine-pkg", "other-pkg"}:
+                fails.append(f"單一套件失敗不得影響其他套件的發現（得到 {[f['package'] for f in out.get('findings', [])]}）")
+            if not any("boom-pkg" in x and "未預期" in x and "RuntimeError" in x for x in out.get("incomplete_checks") or []):
+                fails.append(f"失敗的那一個套件要記成未完成原因，不是崩潰也不是通過（得到 {out.get('incomplete_checks')}）")
+            if code not in (1, 2):
+                fails.append(f"單一套件失敗時整批仍要正常結束（exit 1 或 2，不是崩潰；得到 {code}）")
             allow[:] = [{"package": "fastapi", "ecosystem": "pypi", "spec": parse_version_spec("0.1.0"), "bypass": {"cooldown"},
                          "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest"}]
             calls.clear()
@@ -1240,45 +1204,6 @@ def selftest():
     if (c["similarity"], c["levenshtein_max"], c["min_name_length"]) != tuple(
             (cy.get("similarity") or {}).get(k) for k in ("difflib_ratio_min", "levenshtein_max", "min_name_length")):
         fails.append(f"cfg() 應讀 cooldown.yaml similarity.*（得到 {c}）")
-    # npm_check／pypi_check：鎖定版本不在發布紀錄、發布時間不明、週下載查不到 → incomplete；PEP 440 2.32 == 2.32.0
-    real_http = http_json
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    old = "2020-01-01T00:00:00Z"
-    reg = {"https://registry.npmjs.org/left-pad": {"time": {"1.3.0": old}, "versions": {"1.3.0": {}}, "dist-tags": {"latest": "1.3.0"}},
-           "https://pypi.org/pypi/requests/json": {"info": {"version": "2.32.0"},
-                                                   "releases": {"2.32.0": [{"upload_time_iso_8601": old}], "2.33.0": []}}}
-    def fake_http(url):
-        if url in reg:
-            return reg[url]
-        if url.startswith("https://api.npmjs.org/") and "dl-ok" in reg:
-            return {"downloads": 5000}
-        raise urllib.error.URLError("selftest 離線")
-    http_json = fake_http
-    try:
-        cc = {"cooldown_days": 14, "min_weekly_downloads": 1000}
-        fs, why = real[0]("left-pad", "1.3.0", cc)
-        if not why or "週下載量" not in why:
-            fails.append(f"npm 週下載量查不到 → incomplete，不是靜默略過（得到 {why}）")
-        reg["dl-ok"] = True
-        fs, why = real[0]("left-pad", "1.3.0", cc)
-        if why or fs:
-            fails.append(f"npm 版本、發布時間、下載量都查得到 → 不記 incomplete（得到 {why}, {fs}）")
-        fs, why = real[0]("left-pad", "9.9.9", cc)
-        if not why or "冷卻期" not in why or "安裝 hook" not in why:
-            fails.append(f"npm 鎖定版本不在 registry 發布紀錄 → 冷卻期與安裝 hook 未檢查，incomplete（得到 {why}）")
-        fs, why = real[1]("requests", "2.32", cc)
-        if why:
-            fails.append(f"PyPI ==2.32 與 2.32.0 是同一版（PEP 440），不記 incomplete（得到 {why}）")
-        for v in ("2.31.9", "2.33.0"):
-            fs, why = real[1]("requests", v, cc)
-            if not why or "冷卻期" not in why:
-                fails.append(f"PyPI {v} 不在發布紀錄或沒有上傳時間 → 冷卻期未檢查，incomplete（得到 {why}）")
-        reg["https://pypi.org/pypi/requests/json"]["releases"]["2.32.0"][0]["upload_time_iso_8601"] = now
-        fs, why = real[1]("requests", "2.32", cc)
-        if [f["rule_id"] for f in fs] != ["vibesec.g1.cooldown-violation"]:
-            fails.append(f"PyPI 正規化後的版本照常判冷卻期（得到 {fs}）")
-    finally:
-        http_json = real_http
     # --help／-h：印用法、exit 0，不執行掃描
     for flag in ("--help", "-h"):
         out = io.StringIO()
@@ -1549,7 +1474,7 @@ def main(argv, policy_root=ROOT):
     jobs = list(dict.fromkeys((e, n, v) for _, pk, _ in targets for e, n, v in pk))
     _policy()           # 先載入政策，避免執行緒競爭初始化
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        checked = dict(zip(jobs, ex.map(lambda j: (npm_check if j[0] == "npm" else pypi_check)(j[1], j[2], c), jobs)))
+        checked = dict(zip(jobs, ex.map(lambda j: _check_job(j[0], j[1], j[2], c), jobs)))
 
     for source, packages, from_rules in targets:
         source_rel = rel_path(source)
