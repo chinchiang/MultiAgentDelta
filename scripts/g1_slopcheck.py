@@ -16,7 +16,7 @@
   blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用（fail closed）。
 """
 from __future__ import annotations
-import sys, os, ssl, json, re, difflib, itertools, time, http.client, urllib.parse, urllib.request, urllib.error, subprocess
+import sys, os, json, re, difflib, itertools, urllib.parse, urllib.error, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent      # VibeSec 本身：設定、�
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份寫法（#181）；不依賴 PyYAML
 from g1_manifests import REQUIREMENTS_RE, classify, parse_manifest, pep508  # noqa: E402  清單與鎖定檔解析，與 g1_sbom 共用（#262）
+import https_only  # noqa: E402  HTTPS 傳輸層：只走 HTTPS、暫時性錯誤重試（#263）
 CFG_DIR = ROOT / "config" / "slopsquat"
 TIMEOUT = 8
 WORKERS = 8                                        # registry 並行查詢數
@@ -152,34 +153,11 @@ def valid_name(eco, pkg):
         return False
     return bool((NPM_NAME if eco == "npm" else PYPI_NAME).match(pkg))
 
-def _https_only_opener():
-    """只裝 HTTPS（驗證憑證與主機名）、https proxy 與 UnknownHandler：file://、http:// 等一律 URLError。"""
-    opener = urllib.request.OpenerDirector()
-    https_proxy = {k: v for k, v in urllib.request.getproxies().items() if k == "https"}
-    for h in (urllib.request.ProxyHandler(https_proxy),
-              urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)),
-              urllib.request.UnknownHandler(),
-              urllib.request.HTTPDefaultErrorHandler(), urllib.request.HTTPErrorProcessor()):
-        opener.add_handler(h)
-    return opener
-
 def http_json(url):
-    """GET JSON。暫時性錯誤（連線中斷、傳輸截斷、逾時、429、5xx）重試 RETRIES 次；其餘 HTTP 錯誤（如 404）立即拋出。
-    重試仍失敗就拋出，由呼叫端記 incomplete。"""
-    for attempt in range(RETRIES + 1):
-        # 每次重試都建新的 Request：ProxyHandler 會改寫傳入的 Request（set_proxy），重用同一個物件時，
-        # 經 http:// proxy 的第二、三次嘗試會變成 type=http 並以「unknown url type: http」失敗——暫時性錯誤其實沒被重試
-        req = urllib.request.Request(url, headers={"User-Agent": "vibesec-g1/0.1"})
-        try:
-            with _https_only_opener().open(req, timeout=TIMEOUT) as r:
-                return json.loads(r.read().decode())
-        except urllib.error.HTTPError as e:
-            if (e.code != 429 and e.code < 500) or attempt == RETRIES:
-                raise
-        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
-            if attempt == RETRIES:
-                raise
-        time.sleep(BACKOFF * (attempt + 1))
+    """GET JSON：交給 https_only.get_json（暫時性錯誤重試 RETRIES 次，其餘 HTTP 錯誤如 404 立即拋出）。
+    重試仍失敗就拋出，由呼叫端記 incomplete。數值與使用者代理都是 G1 自己的。"""
+    return https_only.get_json(url, timeout=TIMEOUT, retries=RETRIES, backoff=BACKOFF,
+                               transport=https_only.UrllibHttpsOnly(user_agent="vibesec-g1/0.1"))
 
 def npm_check(pkg, ver, c):
     """回傳 (findings, incomplete_reason|None)。"""
@@ -844,7 +822,7 @@ def selftest():
     """離線自我測試 --target：registry 查詢以替身取代，只驗證路徑、全量探索、鎖定檔與例外範圍。"""
     import contextlib, io, shutil, tempfile
     from jsonschema import Draft202012Validator
-    global TARGET, npm_check, pypi_check, pypi_requires, load_allowlist, _https_only_opener, BACKOFF, _RULE_CFG, http_json, _POLICY
+    global TARGET, npm_check, pypi_check, pypi_requires, load_allowlist, _RULE_CFG, http_json, _POLICY
     global CFG_DIR, VIBESEC_FILE
     fails = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
@@ -980,57 +958,6 @@ def selftest():
         f = apply_allowlist(fnd("vibesec.g1.hallucinated-package", "typing-ext", "pypi", None, "t", "blocking", "similarity"), ents, "1.0.0")
         if f["policy_tier"] != "advisory":
             fails.append("allowlist：名稱依 PEP 503 比對；發現沒有版本時以套件版本比對 version")
-        # http_json：截斷／連線錯誤重試後成功；404 不重試；一直失敗就拋出（呼叫端記 incomplete）
-        class _Resp:
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def read(self): return b'{"ok": 1}'
-        class _Flaky:
-            def __init__(self, errs): self.errs, self.n, self.reqs = list(errs), 0, []
-            def open(self, req, timeout=None):
-                self.n += 1
-                self.reqs.append(req)
-                if self.errs:
-                    raise self.errs.pop(0)
-                return _Resp()
-        real_net = (_https_only_opener, BACKOFF)
-        BACKOFF = 0
-        try:
-            not_found = lambda: urllib.error.HTTPError("https://x", 404, "nf", {}, None)
-            for errs, want_ok, want_n, why in [
-                ([http.client.IncompleteRead(b"x", 5), ConnectionResetError()], True, 3, "傳輸截斷、連線中斷 → 重試後成功"),
-                ([not_found()], False, 1, "404 不重試"),
-                ([TimeoutError()] * (RETRIES + 1), False, RETRIES + 1, "重試用完仍失敗 → 拋出"),
-            ]:
-                fl = _Flaky(errs)
-                _https_only_opener = lambda: fl
-                try:
-                    ok = http_json("https://example.invalid/x") == {"ok": 1}
-                except Exception:
-                    ok = False
-                if ok != want_ok or fl.n != want_n:
-                    fails.append(f"http_json：{why}（成功={ok}，呼叫 {fl.n} 次）")
-                if len({id(r) for r in fl.reqs}) != len(fl.reqs):
-                    fails.append(f"http_json：{why}——重試重用了同一個 Request（ProxyHandler 會改寫它）")
-        finally:
-            _https_only_opener, BACKOFF = real_net
-        # 真的經過 http:// proxy（本機已關閉的埠 → 連線被拒）：每次嘗試都必須是同一種錯誤，
-        # 不能在重試時變成「unknown url type: http」（Request 被 ProxyHandler 改寫後重用的症狀）
-        import socket
-        with socket.socket() as s_:
-            s_.bind(("127.0.0.1", 0)); dead = s_.getsockname()[1]
-        saved = {k: os.environ.pop(k) for k in list(os.environ) if k.lower() in ("https_proxy", "http_proxy", "all_proxy", "no_proxy")}
-        os.environ["https_proxy"] = f"http://127.0.0.1:{dead}"
-        BACKOFF = 0
-        try:
-            http_json("https://registry.npmjs.org/left-pad")
-            fails.append("http_json 經已關閉的 proxy 不應成功")
-        except Exception as e:
-            if "unknown url type" in str(e):
-                fails.append(f"http_json 經 http:// proxy 重試時 Request 被改寫：{e}")
-        finally:
-            os.environ.pop("https_proxy", None); os.environ.update(saved)
-            BACKOFF = real_net[1]
         with tempfile.TemporaryDirectory() as d:
             rf = Path(d) / "AGENTS.md"
             rf.write_text("pip install -r requirements.lock.txt\n`pip install -e git+https://example.com/x.git`\n"
