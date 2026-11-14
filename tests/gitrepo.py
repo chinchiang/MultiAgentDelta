@@ -1,4 +1,4 @@
-"""建暫存 git 庫的測試輔助。 / Temporary-git-repo helper for tests.
+"""建暫存 git 庫的測試輔助。
 
 固定使用者名稱與信箱、關閉簽章，並清掉 GIT_DIR、GIT_INDEX_FILE 等環境變數（在 git hook 裡跑測試時這些變數會指向外層的庫，
 讓暫存庫的指令打到錯的地方）。供 G1 的 Git 契約測試使用，其他閘門的 selftest 之後被動到時再遷移過來（#265）。
