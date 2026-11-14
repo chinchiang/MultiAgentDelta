@@ -7,11 +7,16 @@
 urllib／OSError 例外。生產轉接器是 UrllibHttpsOnly；測試用腳本化的替身放在 tests/。
 
 行為（從 g1_slopcheck.http_json 原樣搬來）：暫時性錯誤（連線中斷、傳輸截斷、逾時、429、5xx、本文不是完整的 JSON）
-重試 retries 次，每次失敗後等 backoff × 第幾次；其餘 HTTP 錯誤（如 404）立即拋出；重試用完仍失敗就拋出最後一個錯誤，
+重試 retries 次，每次失敗後等 backoff × 第幾次；其餘 HTTP 錯誤（如 404）與不合法的 URL（InvalidUrl）立即拋出；重試用完仍失敗就拋出最後一個錯誤，
 由呼叫端記未完成（AGENTS.md 規則 2：拿不到證據就是 incomplete，不是通過）。
 """
 from __future__ import annotations
 import http.client, json, os, ssl, time, urllib.error, urllib.request
+
+
+class InvalidUrl(ValueError):
+    """URL 本身不合法（確定的程式錯誤，重試也不會好）：get_json 立即拋出、不重試。
+    仍是 ValueError 的子類、訊息不變，呼叫端原本接得到的照舊接得到（重構前 Request 建在重試範圍之外）。"""
 
 
 def tls_context() -> ssl.SSLContext:
@@ -42,7 +47,10 @@ class UrllibHttpsOnly:
     def get(self, url: str, timeout: float) -> bytes:
         # 每次嘗試都建新的 Request：ProxyHandler 會改寫傳入的 Request（set_proxy），重用同一個物件時，
         # 經 http:// proxy 的第二、三次嘗試會變成 type=http 並以「unknown url type: http」失敗——暫時性錯誤其實沒被重試
-        req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
+        except ValueError as e:
+            raise InvalidUrl(*e.args) from e
         with self._opener_factory().open(req, timeout=timeout) as r:
             return r.read()
 
@@ -56,6 +64,8 @@ def get_json(url: str, *, timeout: float, retries: int, backoff: float, transpor
         except urllib.error.HTTPError as e:
             if (e.code != 429 and e.code < 500) or attempt == retries:
                 raise
+        except InvalidUrl:
+            raise
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
             if attempt == retries:
                 raise

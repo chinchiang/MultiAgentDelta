@@ -190,6 +190,24 @@ class UrllibAdapter(unittest.TestCase):
                 # 是「沒有這種協定的處理器」，不是連線或名稱解析失敗（那代表裝了不該裝的處理器）
                 self.assertIn("unknown url type", str(cm.exception))
 
+    def test_invalid_url_fails_fast_without_retrying(self):
+        # 從 g1_slopcheck.http_json 搬來的行為：Request 建在 try 之外，URL 本身不合法（確定的程式錯誤）立即拋出，
+        # 不重試、不睡覺；例外型別仍是 ValueError、訊息不變
+        calls, sleeps = [], []
+
+        class Counting:
+            def __init__(self):
+                self.inner = ho.UrllibHttpsOnly(user_agent="ua/1")
+
+            def get(self, url, timeout):
+                calls.append(url)
+                return self.inner.get(url, timeout)
+
+        with self.assertRaises(ValueError) as cm:
+            ho.get_json("foo", timeout=1, retries=2, backoff=1.0, transport=Counting(), sleep=sleeps.append)
+        self.assertIn("unknown url type", str(cm.exception))
+        self.assertEqual((len(calls), sleeps), (1, []))
+
     def test_tls_context_verifies_certificates_and_hostnames(self):
         ctx = ho.tls_context()
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
@@ -220,7 +238,9 @@ class UrllibAdapter(unittest.TestCase):
             with self.assertRaises(urllib.error.URLError) as cm:
                 ho.get_json("https://registry.npmjs.org/left-pad", timeout=2, retries=2, backoff=0, transport=Recording())
         self.assertNotIn("unknown url type", str(cm.exception))
-        self.assertEqual(reasons, ["ConnectionRefusedError"] * 3, "三次嘗試都是連線被拒")
+        # 要守的性質是「三次嘗試都是同一種錯誤」；不寫死是哪一種（沒有 loopback 的沙盒裡可能不是 ConnectionRefusedError）
+        self.assertEqual(len(reasons), 3, "三次嘗試都真的發出去")
+        self.assertEqual(len(set(reasons)), 1, f"每次嘗試的錯誤型別應相同：{reasons}")
 
 
 if __name__ == "__main__":
