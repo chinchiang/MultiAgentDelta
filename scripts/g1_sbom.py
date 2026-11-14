@@ -24,7 +24,7 @@ syft 路徑：$VIBESEC_SYFT，否則 PATH 上的 syft。
 退出碼：0 已完成（含 advisory 發現）；1 有 blocking 發現；2 incomplete。
 """
 from __future__ import annotations
-import argparse, importlib.util, io, json, os, pathlib, re, shutil, subprocess, sys, tarfile, tempfile
+import argparse, io, json, os, pathlib, re, shutil, subprocess, sys, tarfile, tempfile
 from urllib.parse import unquote
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -34,14 +34,8 @@ VERSION = "1.0.0"
 TOOL_NAME = "vibesec-g1-sbom"
 sys.path.insert(0, str(ROOT / "scripts"))
 import gate_result  # noqa: E402  併入的 tool 列與自產 SARIF 骨架只有一份寫法（#182）；不依賴 PyYAML
+import g1_manifests  # noqa: E402  清單與鎖定檔的分類與解析，與快篩共用（#262）；不依賴 PyYAML
 SPEC = re.compile(r"^1\.(\d+)$")
-# 與 g1_slopcheck.REQUIREMENTS_RE 一致：檔名含 requirements 的 .txt（locks/python-requirements.txt），
-# 或 requirements/ 目錄下的 .txt（requirements/base.txt）
-LOCKFILE = re.compile(r"(?:(?:^|/)(?:package-lock\.json|npm-shrinkwrap\.json|uv\.lock|poetry\.lock)"
-                      r"|[^/]*requirements[^/]*\.txt|(?:^|/)requirements/(?:[^/]+/)*[^/]+\.txt)$")
-# npm／PyPI 生態系中尚無解析器的鎖定檔：裡面釘選的套件無法逐一核對是否出現在 SBOM → incomplete（不是 pass）。
-# 以前只認 pnpm-lock.yaml、yarn.lock：npm-shrinkwrap.json、Pipfile.lock 等被當成「沒有鎖定檔」，核對直接通過。
-UNPARSED = re.compile(r"(?:^|/)(pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Pipfile\.lock|pdm\.lock|pylock(?:\.[^/]+)?\.toml)$")
 PURL = re.compile(r"^pkg:(npm|pypi)/([^@?#]+)@([^?#]+)")
 SYFT_ENV = {"SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES": "true", "SYFT_CHECK_FOR_APP_UPDATE": "false"}
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__"}
@@ -50,14 +44,6 @@ EXAMPLES = 10
 
 class SbomError(Exception):
     """無法產生或解讀 SBOM：一律 incomplete。"""
-
-
-def _slopcheck():
-    """沿用 g1_slopcheck 的鎖定檔解析器，兩支程式對「釘選了哪些套件」的認定才會一致。"""
-    spec = importlib.util.spec_from_file_location("g1_slopcheck", ROOT / "scripts" / "g1_slopcheck.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def norm(eco: str, name: str) -> str:
@@ -170,9 +156,10 @@ def lockfiles(tree: pathlib.Path) -> tuple[list[str], list[str]]:
         dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS)
         for n in sorted(names):
             rel = pathlib.Path(d, n).relative_to(tree).as_posix()
-            if LOCKFILE.search(rel):
+            kind = g1_manifests.classify(rel, view="sbom").kind
+            if kind == "parsed":
                 found.append(rel)
-            elif UNPARSED.search(rel):
+            elif kind == "unparsed":
                 unparsed.append(rel)
     return found, unparsed
 
@@ -183,13 +170,13 @@ def check(sbom: dict, tree: pathlib.Path) -> dict:
         have = component_keys(sbom)
     except SbomError as e:
         return {"status": "incomplete", "status_reason": f"SBOM 格式不符：{e}", "lockfiles": {}}
-    sc = _slopcheck()
     found, unparsed = lockfiles(tree)
     per = {}
     reasons = []
     for rel in found:
-        entries, bad = sc.parse_manifest([tree / rel])
-        pinned = sorted({(e, n, v) for e, n, v in entries if v})
+        parsed = g1_manifests.parse_manifest([tree / rel], root=(tree / rel).parent)   # 包含邊界：該檔所在目錄；匯出的樹在 repo 之外，與重構前相同（改傳專案根目錄是 #270）
+        bad = parsed.bad
+        pinned = sorted({(d.eco, d.name, d.version) for d in parsed.entries if d.version})
         missing = [f"{n}@{v}" for e, n, v in pinned if (e, norm(e, n), v) not in have]
         per[rel] = {"pinned": len(pinned), "missing": missing}
         if bad:
@@ -289,8 +276,6 @@ def selftest() -> list[str]:
             fails.append("requirements 只核對以 == 釘選者")
         if s["lockfiles"].get("locks/python-requirements.txt", {}).get("pinned") != 1:
             fails.append("檔名含 requirements 的 .txt（locks/python-requirements.txt）也要核對")
-        if not LOCKFILE.search("requirements/base.txt") or LOCKFILE.search("docs/notes.txt"):
-            fails.append("requirements/ 目錄下的 .txt 也要核對（與 g1_slopcheck.REQUIREMENTS_RE 一致），其他 .txt 不算")
         if "requirements-dev.txt" in s["lockfiles"] and s["lockfiles"]["requirements-dev.txt"]["pinned"]:
             fails.append("沒有釘選的 requirements 不應產生核對項目")
         nodev = bom("pkg:npm/left-pad@1.3.0", "pkg:pypi/typing-extensions@4.12.2", "pkg:pypi/idna@3.10")
@@ -330,13 +315,6 @@ def selftest() -> list[str]:
         s = run(repo, "HEAD", out, fake([full, full]))
         if s["status"] != "incomplete" or "yarn.lock" not in s["status_reason"]:
             fails.append(f"含無解析器的鎖定檔應為 incomplete：{s}")
-        for name in ("Pipfile.lock", "sub/bun.lock", "pdm.lock", "pylock.toml", "pylock.dev.toml"):
-            if not UNPARSED.search(name):
-                fails.append(f"{name} 是尚無解析器的鎖定檔，應讓 SBOM 核對 incomplete（以前被當成沒有鎖定檔）")
-        if UNPARSED.search("docs/pylock-notes.md") or UNPARSED.search("Pipfile.lock.bak"):
-            fails.append("非鎖定檔不應被當成無解析器的鎖定檔")
-        if not LOCKFILE.search("app/npm-shrinkwrap.json"):
-            fails.append("npm-shrinkwrap.json（格式同 package-lock.json）應核對 SBOM 是否完整")
         old = os.environ.get("VIBESEC_SYFT")
         try:
             os.environ["VIBESEC_SYFT"] = str(pathlib.Path(d) / "missing-syft")
