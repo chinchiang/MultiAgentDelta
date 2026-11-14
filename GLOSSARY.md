@@ -97,6 +97,36 @@ _避免_：staging 狀態
 對刻意有漏洞的靶場，G5、G6 必須判定 fail、有 blocking 發現，且必要工具都實際執行；否則代表偵測能力退步。
 _避免_：靶場測試、lab test
 
+## 供應鏈快篩
+
+**快篩（screen）**：
+G1 對受驗樹的清單與 agent 規則檔所做的四層檢查之單次執行：套件登錄庫存在性與週下載量、名稱相似度、安裝腳本、新套件冷卻期。產出發現、未完成原因與三個控制（`VS-G1-SLOPSQUAT`、`VS-G1-COOLDOWN`、`VS-G1-INSTALL-HOOK`）的覆蓋；SBOM 與 KEV 檢查由後續步驟併入同一份閘門結果。
+_避免_：把 `g1_slopcheck.py` 說成閘門（它只是命令列的檔名）
+
+**清單（manifest）**：
+宣告或鎖定相依套件的檔案，例如 `package.json`、`requirements*.txt`、`pyproject.toml`。
+_避免_：與 SBOM 混用（SBOM 是工具從專案產生的軟體物料清單，不是專案自己宣告的檔案）
+
+**鎖定檔（lockfile）**：
+清單中釘選到確切版本者，例如 `package-lock.json`、`uv.lock`、`poetry.lock`，以及固定版本的 `requirements*.txt`。
+_避免_：鎖檔
+
+**無解析器清單（unparsed manifest）**：
+被選為清單、但 repo 尚無解析器的檔案，例如 `pnpm-lock.yaml`、`yarn.lock`。其中的套件沒有被檢查，記為未完成原因，不是「沒有相依」。
+_避免_：與控制覆蓋的「未實測」混用（未實測是控制的狀態，這裡是檢查的未完成原因）
+
+**間接相依（indirect dependency）**：
+鎖定檔中只因其他套件宣告而出現的套件，不做名稱相似度檢查，其他檢查照做。是否為間接相依無法確定時，視同直接相依（較嚴的一側）。
+_避免_：把「無法確定」當成間接相依
+
+**套件查詢結果（registry lookup）**：
+向套件登錄庫（registry，npm 與 PyPI）查詢一個套件的結果，有三態：存在；不存在（正常發現 `vibesec.g1.hallucinated-package`）；無法查詢（逾時、5xx、連線失敗，記為未完成原因）。
+_避免_：把「不存在」當成錯誤（error 專指程式本身的錯誤）；把「無法查詢」當成「不存在」
+
+**允許清單（allowlist）**：
+`config/slopsquat/allowlist.yaml` 中經人類核准、附到期日、合規的條目：指定套件與版本的發現，其指定的檢查（套件登錄庫存在性、低下載量、冷卻期、黑名單、名稱相似度）由 blocking 降為 advisory，發現本身保留；安裝腳本與 KEV 檢查永不放行。缺欄位、bypass 不合法或已過期的條目一律忽略並列出（失敗即擋，只會更嚴）。
+_避免_：與政策例外（exception）混用（政策例外依規則與路徑降級，允許清單依套件與檢查降級）
+
 ## 政策與信任
 
 **政策 tier（policy tier）**：
@@ -221,6 +251,36 @@ _Avoid_: staging status
 **Lab acceptance**:
 For the deliberately vulnerable lab, G5 and G6 must be judged fail with blocking findings, and every required tool must actually have run; otherwise detection has regressed.
 _Avoid_: lab test
+
+## Supply-chain screening
+
+**Screen**:
+One run of G1's four-layer check over the project tree's manifests and agent rule files: registry existence and weekly downloads, name similarity, install scripts, and the new-package cooldown. It produces findings, problems, and coverage for three controls (`VS-G1-SLOPSQUAT`, `VS-G1-COOLDOWN`, `VS-G1-INSTALL-HOOK`); the SBOM and KEV checks are merged into the same gate result by later steps.
+_Avoid_: calling `g1_slopcheck.py` a gate (it is only the name of the command-line file)
+
+**Manifest**:
+A file that declares or pins dependency packages, such as `package.json`, `requirements*.txt`, or `pyproject.toml`.
+_Avoid_: confusing it with an SBOM (an SBOM is a software bill of materials a tool generates from the project, not a file the project declares itself)
+
+**Lockfile**:
+A manifest that pins exact versions, such as `package-lock.json`, `uv.lock`, `poetry.lock`, and a `requirements*.txt` with pinned versions.
+_Avoid_: lock file (two words)
+
+**Unparsed manifest**:
+A file selected as a manifest that this repo has no parser for yet, such as `pnpm-lock.yaml` or `yarn.lock`. The packages in it were not checked; this is recorded as a problem, not as "no dependencies".
+_Avoid_: confusing it with the coverage state "untested" (untested is the state of a control; this is a problem in the check)
+
+**Indirect dependency**:
+A package in a lockfile that appears only because another package declares it. It skips the name-similarity check; every other check still runs. When it cannot be determined whether a package is indirect, it is treated as direct (the stricter side).
+_Avoid_: treating "cannot be determined" as indirect
+
+**Registry lookup**:
+The result of asking a package registry (npm or PyPI) about one package, in one of three states: found; not found (a normal finding, `vibesec.g1.hallucinated-package`); or unavailable (timeout, 5xx, connection failure, recorded as a problem).
+_Avoid_: treating "not found" as an error (error means a bug in the program itself); treating "unavailable" as "not found"
+
+**Allowlist**:
+The human-approved, expiring, valid entries in `config/slopsquat/allowlist.yaml`: for the named package and version, the named checks (registry existence, low downloads, cooldown, blacklist, name similarity) are lowered from blocking to advisory and the findings themselves are kept; install-script and KEV checks are never waived. An entry with missing fields, an invalid bypass, or an expired date is ignored and listed (fail closed, so it can only be stricter).
+_Avoid_: confusing it with an exception (an exception lowers by rule and path, an allowlist entry lowers by package and check)
 
 ## Policy and trust
 
