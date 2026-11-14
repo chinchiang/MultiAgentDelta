@@ -37,7 +37,6 @@ class Classify(unittest.TestCase):
 
     def test_screen_manifests_and_unparsed(self):
         # 從 g1_slopcheck selftest 搬來：Pipfile／setup.py 是尚無解析器的 manifest；npm-shrinkwrap 是可解析的
-        self.assertNotEqual(gm.classify("Pipfile").kind, "other")
         self.assertEqual(gm.classify("setup.py").kind, "unparsed")
         self.assertEqual(gm.classify("npm-shrinkwrap.json").kind, "parsed")
         for name in ("pnpm-lock.yaml", "yarn.lock", "Pipfile", "Pipfile.lock", "setup.py", "setup.cfg", "sub/yarn.lock"):
@@ -74,7 +73,7 @@ class Classify(unittest.TestCase):
             self.assertFalse(gm.classify(name).is_lock, name)
 
     def test_two_views_stay_different_until_stricter_change(self):
-        # Q7：兩組「無解析器」樣式先逐字保留。快篩不認 bun.lock／pdm.lock／pylock（SBOM 認）；
+        # #260（S1）：兩組「無解析器」樣式先逐字保留。快篩不認 bun.lock／pdm.lock／pylock（SBOM 認）；
         # SBOM 不認 setup.py／setup.cfg／Pipfile（快篩認）。取聯集是獨立的變嚴 PR（#269），那時再改這個測試。
         self.assertEqual(gm.classify("bun.lock").kind, "other")
         self.assertEqual(gm.classify("pdm.lock").kind, "other")
@@ -227,7 +226,7 @@ class Requirements(TmpTree):
         self.assertEqual([d.direct for d in self.parse("requirements.txt").entries], [None])
 
     def test_include_boundary_is_the_explicit_root(self):
-        # Q3：-r 的包含邊界是 root 參數。專案根目錄下 requirements/dev.txt 往上引入 ../base.txt 是專案內的檔案
+        # #260（S1）：-r 的包含邊界是 root 參數。專案根目錄下 requirements/dev.txt 往上引入 ../base.txt 是專案內的檔案
         self.write("base.txt", "pytest==8.0.0\n")
         self.write("requirements/dev.txt", "requests==2.31.0\n-r ../base.txt\n")
         inside = self.parse("requirements/dev.txt", root=self.D)

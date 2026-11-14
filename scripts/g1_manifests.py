@@ -28,7 +28,7 @@ MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock
 UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$')
 
 # SBOM 核對看的是「鎖定檔」（與 REQUIREMENTS_RE 一致：檔名含 requirements 的 .txt（locks/python-requirements.txt），
-# 或 requirements/ 目錄下的 .txt（requirements/base.txt））；以下兩條原樣取自 g1_sbom.py
+# 或 requirements/ 目錄下的 .txt（requirements/base.txt））；LOCKFILE_RE 與 LOCK_UNPARSED_RE 兩條原樣取自 g1_sbom.py 重構前的 LOCKFILE 與 UNPARSED
 LOCKFILE_RE = re.compile(r"(?:(?:^|/)(?:package-lock\.json|npm-shrinkwrap\.json|uv\.lock|poetry\.lock)"
                          r"|[^/]*requirements[^/]*\.txt|(?:^|/)requirements/(?:[^/]+/)*[^/]+\.txt)$")
 # npm／PyPI 生態系中尚無解析器的鎖定檔：裡面釘選的套件無法逐一核對是否出現在 SBOM → incomplete（不是 pass）。

@@ -174,7 +174,7 @@ def check(sbom: dict, tree: pathlib.Path) -> dict:
     per = {}
     reasons = []
     for rel in found:
-        parsed = g1_manifests.parse_manifest([tree / rel], root=(tree / rel).parent)   # 包含邊界：該檔所在目錄（與重構前相同）
+        parsed = g1_manifests.parse_manifest([tree / rel], root=(tree / rel).parent)   # 包含邊界：該檔所在目錄；匯出的樹在 repo 之外，與重構前相同（改傳專案根目錄是 #270）
         bad = parsed.bad
         pinned = sorted({(d.eco, d.name, d.version) for d in parsed.entries if d.version})
         missing = [f"{n}@{v}" for e, n, v in pinned if (e, norm(e, n), v) not in have]
