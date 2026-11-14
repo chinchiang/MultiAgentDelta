@@ -6,7 +6,6 @@
 傳輸層的替身（依網址腳本化的回應）在 tests/fakes.py，不放生產程式。
 """
 import http.client
-import json
 import pathlib
 import sys
 import unittest

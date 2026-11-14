@@ -142,12 +142,14 @@ REGISTRY = None
 def _registry():
     return REGISTRY if REGISTRY is not None else HttpRegistry()
 
+def _eco_label(eco):
+    return "npm" if eco == "npm" else "PyPI"
+
 def check_package(registry, eco, pkg, ver, c):
     """回傳 (findings, incomplete_reason|None)。查無此套件是正常發現（疑似幻覺／搶註）；查不到、缺資料都是未完成原因，
     不得當成通過（AGENTS.md 規則 2）。"""
-    label = "npm" if eco == "npm" else "PyPI"
     if not valid_name(eco, pkg):
-        return [], f"{label} 套件名稱不合法，未查詢 registry：{pkg!r}"
+        return [], f"{_eco_label(eco)} 套件名稱不合法，未查詢 registry：{pkg!r}"
     r = registry.facts(eco, pkg, ver)
     who = "npm registry" if eco == "npm" else "PyPI"
     if isinstance(r, NotFound):
@@ -206,7 +208,7 @@ def _check_job(eco, name, ver, c):
     try:
         return (npm_check if eco == "npm" else pypi_check)(name, ver, c)
     except Exception as e:
-        return [], f"{'npm' if eco == 'npm' else 'PyPI'} {name}@{ver or '?'}：檢查時發生未預期的錯誤（{type(e).__name__}：{e}）"
+        return [], f"{_eco_label(eco)} {name}@{ver or '?'}：檢查時發生未預期的錯誤（{type(e).__name__}：{e}）"
 
 def requirements_indirect(path, requires=None):
     """requirements*.txt 中由同檔其他套件宣告為相依的 (名稱小寫, 版本)，即間接相依，不做名稱相似度。

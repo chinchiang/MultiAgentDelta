@@ -8,7 +8,6 @@ import pathlib
 import sys
 import tempfile
 import unittest
-import urllib.error
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -203,8 +202,15 @@ class InjectionPoints(unittest.TestCase):
             p.write_text("requests==2.31.0\nurllib3==2.0.0\nidna==3.4\nleft-alone==1.0\n")
             self.assertEqual(sc.requirements_indirect(p), {("urllib3", "2.0.0"), ("idna", "3.4")})
 
-    def test_unset_registry_defaults_to_the_http_one(self):
-        self.assertIsInstance(sc._registry(), gr.HttpRegistry)
+    def test_without_an_injected_registry_the_production_one_is_used(self):
+        built = []
+
+        def factory():
+            built.append(1)
+            return gr.FakeRegistry({("npm", "left-pad", "1.3.0"): npm_facts()})
+        with mock.patch.object(sc, "REGISTRY", None), mock.patch.object(sc, "HttpRegistry", factory):
+            self.assertEqual(sc.npm_check("left-pad", "1.3.0", C), ([], None))
+        self.assertEqual(built, [1], "沒有注入時，鉤子改用生產的 HttpRegistry")
 
 
 if __name__ == "__main__":
