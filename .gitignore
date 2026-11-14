@@ -35,3 +35,6 @@ node_modules/
 *.swp
 .idea/
 .vscode/
+
+# 本機暫存產出（架構報告、交接檔）
+scratch/
