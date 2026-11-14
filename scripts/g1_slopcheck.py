@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份寫法（#181）；不依賴 PyYAML
 from g1_manifests import REQUIREMENTS_RE, classify, parse_manifest, pep508  # noqa: E402  清單與鎖定檔解析，與 g1_sbom 共用（#262）
 from g1_registry import HttpRegistry, NotFound, Unavailable, Unknown, canon, valid_name  # noqa: E402  套件登錄庫接縫與各 registry 的名稱規則（#264）
+from g1_git import GitFailure, SubprocessGit, head_commit  # noqa: E402  Git 接縫：暫存區、追蹤檔、ref 上的內容（#265）
 CFG_DIR = ROOT / "config" / "slopsquat"
 WORKERS = 8                                        # registry 並行查詢數
 TARGET = ROOT                                      # 被掃描的專案根目錄；--target 改寫
@@ -497,28 +498,18 @@ def apply_allowlist(finding, entries, ver=None):
         break
     return finding
 
-def staged_files():
-    """暫存區中新增／修改／改名的檔（--diff-filter=d：刪除的檔沒有內容可查）。git 失敗（非 git 目錄、git 缺席）
-    → 回傳 (None, 原因)：不知道改了什麼 ≠ 沒有變更（以前回傳 [] 而 exit 0）。"""
-    try:
-        r = subprocess.run(["git", "diff", "--cached", "--name-only", "--relative", "--diff-filter=d"],
-                           capture_output=True, text=True, cwd=TARGET)
-    except Exception as e:
-        return None, f"git 無法執行（{type(e).__name__}）"
-    if r.returncode != 0:
-        return None, f"git diff --cached 失敗（exit {r.returncode}：{(r.stderr.strip().splitlines() or ['?'])[0][:120]}）"
-    return [l for l in r.stdout.splitlines() if l.strip()], None
+# Git 接縫（#265）：GIT 是測試注入替身的地方（S5 起改由 screen 的 Env 注入）；沒有指定就用生產的 SubprocessGit，工作目錄是被掃描的目標專案。
+GIT = None
+
+def _git():
+    return GIT if GIT is not None else SubprocessGit(TARGET)
 
 # 全量掃描（--target、非 git 目錄）時略過的目錄：安裝產物與快取，不是專案宣告的相依
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"}
 
-def discover(target):
+def discover(target, git):
     """列出目標專案的所有 manifest 與 agent 規則檔（相對目標根目錄）。git repo 取追蹤中的檔案，否則走訪目錄。"""
-    try:
-        r = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True, cwd=target)
-        files = [f for f in r.stdout.split("\0") if f] if r.returncode == 0 else None
-    except OSError:
-        files = None
+    files = git.tracked_files()
     if files is None:
         files = []
         for d, dirs, names in os.walk(target):
@@ -637,24 +628,16 @@ def _install_token_name(eco, tok):
         tok = re.split(r'[=<>!~\[]', tok, maxsplit=1)[0]
     return tok if NAME_RE[eco].match(tok) else None
 
-def git_show(ref, path):
-    """回傳 ref 版本的檔案內容；不存在（新檔）回傳 None。"""
-    try:
-        r = subprocess.run(["git", "show", f"{ref}:./{rel_path(path)}"], capture_output=True, text=True, cwd=TARGET)
-        return r.stdout if r.returncode == 0 else None
-    except Exception:
-        return None
-
 def _entries(path):
     """清單 → [(eco, name, version)]。無法驗證的條目與無解析器的檔由 main 另外用 parse_manifest 取得並回報，這裡只要套件。"""
     return [(d.eco, d.name, d.version) for d in parse_manifest([path], root=TARGET).entries]
 
-def added_packages(path, base):
+def added_packages(path, base, git):
     """diff-aware：只回傳相對 base 新增或改版的 (eco, name, version)。base 為 None 時回傳全部。"""
     head = _entries(path)
     if not base:
         return head
-    old_text = git_show(base, path)
+    old_text = git.show(base, rel_path(path))
     if old_text is None:
         return head
     import tempfile
@@ -723,26 +706,22 @@ def gate_status(findings, incomplete, coverage, notes=()):
     return verdict(blocking=sum(f["policy_tier"] == "blocking" for f in findings), coverage=coverage,
                    problems=list(dict.fromkeys(incomplete)), notes=list(notes))
 
-def gate_run(started, base, scope):
+def gate_run(started, base, scope, commit=None):
     """G1 的閘門執行（gate_result.GateRun）：SBOM 與 KEV 由 g1_sbom.py、g1_kev.py 併入（依 control_id 取代），
     宣告為 deferred（清單直接取自 gate_verdict.REQUIRED_CONTROLS，不另外維護）；沒併入就維持 pending，最終判定視同未實測。
     mode 取自政策（_POLICY.mode，#200）：mode 缺席或不合法時 load_policy 回報政策讀不到，main() 在執行任何檢查之前就以
     unreadable() 結束（政策不在 → mode None，unreadable() 記 enforce）。"""
     from gate_verdict import REQUIRED_CONTROLS
     vb = read_vibesec() or {}
-    try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=TARGET).stdout.strip() or None
-    except Exception:
-        commit = None
     return gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=_POLICY.mode if _POLICY is not None else None, scope=scope,
                    commit=commit, diff_base=base, risk_tier=vb.get("risk_tier", "L2"), started_at=started)
 
-def write_unreadable_gate(path, problem, started, base, scope):
+def write_unreadable_gate(path, problem, started, base, scope, commit=None):
     """政策檔讀不到：slopcheck 沒有執行 → 三個控制 untested（原因＝problem）、SBOM／KEV pending、tool 列只有一列 error。"""
-    _write_json(path, gate_run(started, base, scope).unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
+    _write_json(path, gate_run(started, base, scope, commit).unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
 
-def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0):
-    run = gate_run(started, base, scope)
+def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0, commit=None):
+    run = gate_run(started, base, scope, commit)
     run.tool(TOOL_NAME, "ran", version=TOOL_VERSION, output_ref=sarif_ref)
     for c in gate_coverage(findings, incomplete, pypi_checked):
         run.cover(c["control_id"], c["state"], c["reason"])
@@ -925,9 +904,6 @@ def selftest():
             (D / "node_modules/x").mkdir(parents=True)
             (D / "node_modules/x/package.json").write_text('{"dependencies": {"evil": "1.0.0"}}')
             git(D, "init", "-q"); git(D, "add", "examples", "deploy", "frontend", "README.md"); git(D, "commit", "-qm", "t")
-            files = discover(D)
-            if "node_modules/x/package.json" in files or "deploy/python-requirements.txt" not in files:
-                fails.append(f"git repo 的全量探索只取追蹤中的檔案（得到 {files}）")
             gate = D.parent / f"{D.name}-gate.json"
             code, out = run("--target", str(D), "--gate", str(gate))
             pkgs = {f["package"]: f for f in out.get("findings", [])}
@@ -1363,6 +1339,8 @@ def main(argv, policy_root=ROOT):
     base = (_opt(args, "--base") or [None])[-1]
     sarif_out = (_opt(args, "--sarif") or [None])[-1]
     gate_out = (_opt(args, "--gate") or [None])[-1]
+    git = _git()
+    commit = head_commit(TARGET) if gate_out else None      # 只用來填閘門結果；不在 Git 接縫內
     changed = []
     # --staged／--changed-files／--base 只看變更 → scope diff（以前只有給 --base 才記 diff）
     scope = "diff" if base or "--staged" in args or _opt(args, "--changed-files") else "full"
@@ -1375,14 +1353,14 @@ def main(argv, policy_root=ROOT):
             if sarif_out:
                 gate_result.remove_stale(sarif_out)   # 不讓上一次的 SARIF 被當成這一次的結果（#181）
             if gate_out:
-                write_unreadable_gate(gate_out, problem, started, base, scope)
+                write_unreadable_gate(gate_out, problem, started, base, scope, commit)
             return 2
     if "--staged" in args:
-        staged, why = staged_files()
-        if staged is None:
-            print(f"⚠️ G1 無法完成檢查：--staged 取不到暫存區變更（{why}）→ incomplete。", file=sys.stderr)
+        staged = git.staged()
+        if isinstance(staged, GitFailure):
+            print(f"⚠️ G1 無法完成檢查：--staged 取不到暫存區變更（{staged.reason}）→ incomplete。", file=sys.stderr)
             if gate_out:
-                write_gate(gate_out, [], [f"--staged 取不到暫存區變更：{why}"], started, base, scope, sarif_out)
+                write_gate(gate_out, [], [f"--staged 取不到暫存區變更：{staged.reason}"], started, base, scope, sarif_out, commit=commit)
             return 2
         changed += staged
     for lst in _opt(args, "--changed-files"):
@@ -1392,11 +1370,11 @@ def main(argv, policy_root=ROOT):
             # 清單讀不到 = 不知道改了什麼；以前靜默當成「沒有變更」而 pass（第四次審視 S-8）
             print(f"⚠️ G1 無法完成檢查：--changed-files {lst} 讀不到（{e}）→ incomplete。", file=sys.stderr)
             if gate_out:
-                write_gate(gate_out, [], [f"變更檔清單讀不到：{lst}"], started, base, scope, sarif_out)
+                write_gate(gate_out, [], [f"變更檔清單讀不到：{lst}"], started, base, scope, sarif_out, commit=commit)
             return 2
     selected = manifests or rule_files or changed or "--staged" in args or _opt(args, "--changed-files")
     if target and not selected:
-        changed = discover(TARGET)          # 只給 --target：全量掃描目標專案
+        changed = discover(TARGET, git)     # 只給 --target：全量掃描目標專案
     pre_incomplete, notes = [], []
     # 明確指定（--manifest／--rules-file）卻不存在 → 要掃的東西沒掃到，incomplete（以前靜默丟掉而 pass）
     missing = [p for p in dict.fromkeys(manifests + rule_files) if not resolve(p).exists()]
@@ -1411,7 +1389,7 @@ def main(argv, policy_root=ROOT):
         if not resolve(f).exists():
             # 變更清單中的檔不存在：在 base 有、HEAD 沒有 = 這次 diff 刪掉的檔，正常略過；
             # 給了 --base 卻在 base 也找不到 → 清單與 diff 對不上，incomplete
-            if base and git_show(base, f if Path(f).is_absolute() else TARGET / f) is None:
+            if base and git.show(base, rel_path(f if Path(f).is_absolute() else TARGET / f)) is None:
                 unknown.append(f)
             else:
                 gone.append(f)
@@ -1437,7 +1415,7 @@ def main(argv, policy_root=ROOT):
         if sarif_out:
             write_sarif(sarif_out, [])
         if gate_out:
-            write_gate(gate_out, [], pre_incomplete, started, base, scope, sarif_out, notes)
+            write_gate(gate_out, [], pre_incomplete, started, base, scope, sarif_out, notes, commit=commit)
         if pre_incomplete:
             print(f"⚠️ G1 無法完成檢查：{'；'.join(pre_incomplete)} → incomplete。", file=sys.stderr)
             return 2
@@ -1452,7 +1430,7 @@ def main(argv, policy_root=ROOT):
     if ignored_allowlist:
         notes.append("忽略的 allowlist 條目：" + "；".join(ignored_allowlist))
 
-    targets = [(m, added_packages(m, base), False) for m in manifests]
+    targets = [(m, added_packages(m, base, git), False) for m in manifests]
     targets += [(r, rule_file_mentions(r), True) for r in rule_files]
 
     findings, incomplete = [], list(pre_incomplete) + config_problems()
@@ -1531,7 +1509,7 @@ def main(argv, policy_root=ROOT):
     if sarif_out:
         write_sarif(sarif_out, findings)
     if gate_out:
-        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out, notes, pypi_checked=pypi_checked)
+        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out, notes, pypi_checked=pypi_checked, commit=commit)
 
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     if blocking:
