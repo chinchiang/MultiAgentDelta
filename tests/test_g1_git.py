@@ -73,6 +73,20 @@ class SubprocessGitContract(unittest.TestCase):
             r.git("add", "--", *names)
             self.assertEqual(sorted(gg.SubprocessGit(r.dir).staged()), sorted(names))
 
+    def test_staged_keeps_a_name_that_is_not_valid_utf8(self):
+        # -z 輸出是原始位元組：一個舊編碼的檔名不得讓整個 --staged 失敗（以前引號跳脫是純 ASCII，不會遇到解碼問題）
+        with TempRepo() as r:
+            r.write("keep.txt"); r.commit()
+            raw = os.fsencode(r.dir) + b"/dir/\xff\xfe.txt"
+            try:
+                os.makedirs(os.path.dirname(raw))
+                open(raw, "wb").close()
+            except OSError:
+                self.skipTest("檔案系統不接受非 UTF-8 的檔名")
+            r.git("add", "-A")
+            got = gg.SubprocessGit(r.dir).staged()
+            self.assertEqual([os.fsencode(n) for n in got], [b"dir/\xff\xfe.txt"])
+
     def test_staged_failure_outside_a_repository(self):
         with tempfile.TemporaryDirectory() as d:
             r = gg.SubprocessGit(pathlib.Path(d)).staged()
@@ -296,7 +310,7 @@ class StagedNonAsciiPathsAreScanned(unittest.TestCase):
             r.write("keep.txt"); r.commit()
             r.write(rel, "requests==2.0.0\n"); r.git("add", "--", rel)
             reg = gr.FakeRegistry({("pypi", "requests", "2.0.0"): PYPI_OK})
-            return run_screen(r.dir, "--staged", git=None, registry=reg)
+            return run_screen(r.dir, "--staged", registry=reg)
 
     def test_a_manifest_under_a_non_ascii_directory_is_scanned(self):
         code, g, reg = self.scan_staged("中文/requirements.txt")
@@ -305,10 +319,10 @@ class StagedNonAsciiPathsAreScanned(unittest.TestCase):
 
     def test_the_same_manifest_under_an_ascii_directory_is_scanned_the_same_way(self):
         # 對照：目錄名稱不同、內容相同，結果必須一致
-        _, g_ascii, reg_ascii = self.scan_staged("docs/requirements.txt")
-        _, g_cjk, reg_cjk = self.scan_staged("中文/requirements.txt")
+        code_ascii, g_ascii, reg_ascii = self.scan_staged("docs/requirements.txt")
+        code_cjk, g_cjk, reg_cjk = self.scan_staged("中文/requirements.txt")
         self.assertEqual(reg_cjk.calls, reg_ascii.calls)
-        self.assertEqual((g_cjk["status"], g_cjk["scope"]), (g_ascii["status"], g_ascii["scope"]))
+        self.assertEqual((code_cjk, g_cjk["status"], g_cjk["scope"]), (code_ascii, g_ascii["status"], g_ascii["scope"]))
 
 
 if __name__ == "__main__":
