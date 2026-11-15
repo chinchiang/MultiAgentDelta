@@ -9,8 +9,6 @@
                          替身驗證不了，只有真 git 看得出來。
   FailClosedPaths        用 FakeGit 驅動快篩的 main：git 取不到暫存區、base 找不到、非 git 目錄這些失敗路徑，不必真的建庫。
 """
-import contextlib
-import io
 import json
 import os
 import pathlib
@@ -24,7 +22,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import g1_git as gg  # noqa: E402
 import g1_registry as gr  # noqa: E402
 import g1_slopcheck as sc  # noqa: E402
-from fakes import FakeGit  # noqa: E402
+from fakes import FakeGit, run_screen  # noqa: E402
 from gitrepo import TempRepo, isolated_git_environment  # noqa: E402
 
 NO_GIT = {"PATH": "/nonexistent-dir-for-test"}      # 找不到 git 執行檔
@@ -181,23 +179,6 @@ class SubprocessGitContract(unittest.TestCase):
 OLD = "2020-01-01T00:00:00Z"
 PYPI_OK = gr.Found(gr.Facts("pypi", "requests", "2.0.0", OLD, None, None))
 NPM_OK = lambda name: gr.Found(gr.Facts("npm", name, "1.0.0", OLD, {}, 5000))  # noqa: E731
-
-
-def run_screen(D, *argv, git=None, registry=None):
-    """以假登錄庫跑快篩的 main，回傳（退出碼、閘門結果、登錄庫）；git=None 時用生產的 SubprocessGit。"""
-    gate = D.parent / f"{D.name}-gate.json"
-    reg = registry or gr.FakeRegistry()
-    out, err = io.StringIO(), io.StringIO()
-    with mock.patch.object(sc, "GIT", git), mock.patch.object(sc, "REGISTRY", reg), \
-            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        try:
-            code = sc.main(["g1_slopcheck.py", "--target", str(D), *argv, "--gate", str(gate)])
-        finally:
-            sc.TARGET = sc.ROOT
-    g = json.loads(gate.read_text(encoding="utf-8")) if gate.exists() else {}
-    if gate.exists():
-        gate.unlink()
-    return code, g, reg
 
 
 class FailClosedPaths(unittest.TestCase):

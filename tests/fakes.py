@@ -1,6 +1,7 @@
-"""測試共用的替身。 / Shared test doubles.
+"""測試共用的替身與輔助。 / Shared test doubles and helpers.
 
 傳輸層的替身放在 tests/，不放生產程式（#260 的決定）：生產側只有評測也會用到的 FakeRegistry（scripts/g1_registry.py）。
+run_screen 是驅動快篩 main 的輔助函式（不是替身），多個測試檔共用。
 """
 import json
 import urllib.error
@@ -46,3 +47,26 @@ class FakeGit:
     def show(self, ref, path):
         self.shown.append((ref, path))
         return self._files.get((ref, path))
+
+
+def run_screen(D, *argv, git=None, registry=None):
+    """以假登錄庫跑快篩的 main，回傳（退出碼、閘門結果、登錄庫）；git=None 時用生產的 SubprocessGit。"""
+    # 惰性匯入：這個檔也被不需要快篩的測試匯入（傳輸層測試），匯入時不能要求 scripts/ 已經在 sys.path 上
+    import contextlib
+    import io
+    from unittest import mock
+    import g1_registry as gr
+    import g1_slopcheck as sc
+    gate = D.parent / f"{D.name}-gate.json"
+    reg = registry or gr.FakeRegistry()
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.object(sc, "GIT", git), mock.patch.object(sc, "REGISTRY", reg), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            code = sc.main(["g1_slopcheck.py", "--target", str(D), *argv, "--gate", str(gate)])
+        finally:
+            sc.TARGET = sc.ROOT
+    g = json.loads(gate.read_text(encoding="utf-8")) if gate.exists() else {}
+    if gate.exists():
+        gate.unlink()
+    return code, g, reg
