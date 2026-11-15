@@ -276,6 +276,34 @@ class EnvFieldsAreHonoured(unittest.TestCase):
         self.assertEqual(peaks[1], 1, "workers=1：一次只查一個")
         self.assertGreater(peaks[4], 1, "workers=4：同時查多個")
 
+    def test_requirements_indirect_also_queries_with_the_env_workers(self):
+        import threading, time
+        import g1_slopcheck as sc
+
+        class Tracking(gr.FakeRegistry):
+            def __init__(self):
+                super().__init__()
+                self.lock, self.active, self.peak = threading.Lock(), 0, 0
+
+            def requires(self, name, ver):
+                with self.lock:
+                    self.active += 1
+                    self.peak = max(self.peak, self.active)
+                time.sleep(0.05)
+                with self.lock:
+                    self.active -= 1
+                return set()
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "requirements.txt"
+            p.write_text("a-one==1.0\nb-two==1.0\nc-three==1.0\nd-four==1.0\n", encoding="utf-8")
+            peaks = {}
+            for workers in (1, 4):
+                reg = Tracking()
+                sc.requirements_indirect(self.env(registry=reg, workers=workers), p)
+                peaks[workers] = reg.peak
+        self.assertEqual(peaks[1], 1)
+        self.assertGreater(peaks[4], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
