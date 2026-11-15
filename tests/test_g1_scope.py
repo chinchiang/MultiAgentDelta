@@ -215,5 +215,67 @@ class ResolveScope(unittest.TestCase):
         self.assertEqual(self.scope(req, git=git, this_repo=False).rule_files, (self.D / "config/slopsquat/notes.md",))
 
 
+class EnvFieldsAreHonoured(unittest.TestCase):
+    """Env 的欄位真的被用到：日期、設定根目錄、並行數都由 Env 決定，不是偷偷讀系統時鐘、本 repo 的設定或寫死的數字。"""
+
+    def env(self, **kw):
+        return gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=kw.pop("registry", gr.FakeRegistry()), **kw)
+
+    def test_allowlist_expiry_is_judged_against_the_env_date(self):
+        import g1_slopcheck as sc
+        with tempfile.TemporaryDirectory() as d:
+            al = pathlib.Path(d) / "allowlist.yaml"
+            al.write_text("entries:\n  - {package: p, ecosystem: npm, approved_by: a, expires: '2000-01-02', reason: r, bypass: [cooldown]}\n",
+                          encoding="utf-8")
+            before = sc.load_allowlist(self.env(today=datetime.date(2000, 1, 1)), al)
+            after = sc.load_allowlist(self.env(today=datetime.date(2000, 1, 3)), al)
+        self.assertEqual(([e["package"] for e in before[0]], before[1]), (["p"], []))
+        self.assertEqual(([e["package"] for e in after[0]], after[1]), ([], ["p：已於 2000-01-02 過期"]))
+
+    def test_thresholds_come_from_the_config_root_of_the_env(self):
+        import g1_slopcheck as sc
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / "config/slopsquat").mkdir(parents=True)
+            (root / "config/slopsquat/cooldown.yaml").write_text("thresholds: {cooldown_days: 99, min_weekly_downloads: 7}\n", encoding="utf-8")
+            (root / "vibesec.yaml").write_text("gates:\n  g1_supply_chain: {min_weekly_downloads: 5}\n", encoding="utf-8")
+            c = sc.cfg(self.env(config_root=root))
+        self.assertEqual((c["cooldown_days"], c["min_weekly_downloads"]), (99, 5), "cooldown.yaml 補細節、vibesec.yaml 優先")
+
+    def test_the_number_of_concurrent_registry_queries_is_the_env_workers(self):
+        import threading, time
+        import g1_slopcheck as sc
+
+        class Tracking:
+            def __init__(self):
+                self.lock, self.active, self.peak = threading.Lock(), 0, 0
+
+            def facts(self, eco, name, ver):
+                with self.lock:
+                    self.active += 1
+                    self.peak = max(self.peak, self.active)
+                time.sleep(0.05)
+                with self.lock:
+                    self.active -= 1
+                return gr.Found(gr.Facts(eco, name, ver, "2020-01-01T00:00:00Z", {}, 10 ** 6))
+
+            def requires(self, name, ver):
+                return set()
+        with tempfile.TemporaryDirectory() as d:
+            D = pathlib.Path(d)
+            (D / "package.json").write_text('{"dependencies": {"a-one": "1.0.0", "b-two": "1.0.0", "c-three": "1.0.0", "d-four": "1.0.0"}}',
+                                            encoding="utf-8")
+            peaks = {}
+            for workers in (1, 4):
+                reg = Tracking()
+                env = self.env(registry=reg, workers=workers)
+                import contextlib, io
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    sc.main(["g1_slopcheck.py", "--target", str(D), "--manifest", "package.json"], env_factory=lambda root: (env, None))
+                peaks[workers] = reg.peak
+        self.assertEqual(peaks[1], 1, "workers=1：一次只查一個")
+        self.assertGreater(peaks[4], 1, "workers=4：同時查多個")
+
+
 if __name__ == "__main__":
     unittest.main()
