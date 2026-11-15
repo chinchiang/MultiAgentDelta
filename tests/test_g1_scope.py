@@ -103,9 +103,10 @@ class ResolveScope(unittest.TestCase):
         self.assertEqual(sorted(s.manifests), [self.D / "requirements.txt", self.D / "sub/requirements.txt"])
 
     def test_without_a_target_nothing_is_discovered(self):
-        # 沒有 --target 也沒有選任何檔：不做全量探索（以前的行為），範圍是空的
-        s = self.scope(gs.Request(), git=FakeGit(tracked=["requirements.txt"]))
-        self.assertEqual((s.manifests, s.rule_files, s.problems, s.failure), ((), (), (), None))
+        # 沒有 --target 也沒有選任何檔：不做全量探索（以前的行為），範圍是空的。追蹤檔用本 repo 真的有的檔，
+        # 若有人去探索，它們會被當成清單與規則檔掃進來（只是備註裡多一句「已刪除」是不夠的：notes 也要是空的）
+        s = self.scope(gs.Request(), git=FakeGit(tracked=["README.md", "requirements-ci.in"]))
+        self.assertEqual((s.manifests, s.rule_files, s.problems, s.notes, s.failure), ((), (), (), (), None))
 
     # ---- 指定的清單與規則檔 ----
     def test_explicit_manifests_are_the_only_thing_scanned(self):
@@ -124,6 +125,22 @@ class ResolveScope(unittest.TestCase):
         self.write("a/requirements.txt"); self.write("b/requirements.txt")
         s = self.scope(gs.Request(target=self.D, manifests=("b/requirements.txt", "a/requirements.txt", "b/requirements.txt")))
         self.assertEqual(s.manifests, (self.D / "b/requirements.txt", self.D / "a/requirements.txt"))
+
+    def test_a_relative_path_is_looked_up_in_the_target_first_then_in_the_current_directory(self):
+        # 相容 --manifest 傳入工作目錄相對路徑：目標專案內找不到，才退回目前目錄；兩處都有時以目標專案為準
+        import os
+        self.write("in-target.txt"); self.write("both/requirements.txt")
+        with tempfile.TemporaryDirectory() as cwd_dir:
+            cwd = pathlib.Path(cwd_dir).resolve()
+            (cwd / "requirements.txt").write_text("x\n"); (cwd / "both").mkdir(); (cwd / "both/requirements.txt").write_text("x\n")
+            old_cwd = os.getcwd()
+            os.chdir(cwd)
+            try:
+                s = self.scope(gs.Request(target=self.D, manifests=("requirements.txt", "both/requirements.txt")))
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(s.problems, (), "目前目錄裡的檔不算「指定的檔案不存在」")
+        self.assertEqual(s.manifests, (pathlib.Path("requirements.txt"), self.D / "both/requirements.txt"))
 
     # ---- --staged ----
     def test_staged_files_are_classified_and_the_rest_ignored(self):
