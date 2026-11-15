@@ -45,7 +45,10 @@ class SubprocessGit:
 
     def tracked_files(self):
         try:
-            r = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True, cwd=self.cwd)
+            # 與 staged() 一致：-z 的輸出是原始位元組，嚴格解碼會讓一個舊編碼的檔名使整個全量掃描崩潰（UnicodeDecodeError，
+            # #283）；surrogateescape 把非 UTF-8 的位元組保留成代理字元，輸出邊界再轉義（g1_slopcheck.printable）
+            r = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True, encoding="utf-8",
+                               errors="surrogateescape", cwd=self.cwd)
         except OSError:
             return None
         return [f for f in r.stdout.split("\0") if f] if r.returncode == 0 else None

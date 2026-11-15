@@ -109,6 +109,22 @@ class SubprocessGitContract(unittest.TestCase):
             r.write("sub/b c.txt"); r.write("中文/requirements.txt"); r.commit()
             self.assertEqual(sorted(gg.SubprocessGit(r.dir).tracked_files()), ["sub/b c.txt", "中文/requirements.txt"])
 
+    def test_tracked_files_keeps_a_name_that_is_not_valid_utf8(self):
+        # 一個舊編碼的檔名不得讓整個全量掃描崩潰（text=True 的嚴格解碼會丟 UnicodeDecodeError，#283）
+        with TempRepo() as r:
+            raw = os.fsencode(r.dir) + b"/dir/\xff\xfe.txt"
+            try:
+                os.makedirs(os.path.dirname(raw))
+                open(raw, "wb").close()
+            except OSError:
+                self.skipTest("檔案系統不接受非 UTF-8 的檔名")
+            r.write("ok.txt"); r.git("add", "-A")
+            try:
+                got = gg.SubprocessGit(r.dir).tracked_files()
+            except UnicodeDecodeError as e:
+                self.fail(f"tracked_files() 因為非 UTF-8 的檔名崩潰：{e}")
+            self.assertEqual(sorted(os.fsencode(n) for n in got), [b"dir/\xff\xfe.txt", b"ok.txt"])
+
     def test_tracked_files_in_a_subdirectory_are_relative_to_it(self):
         with TempRepo() as r:
             r.write("sub/x.txt"); r.write("top.txt"); r.commit()

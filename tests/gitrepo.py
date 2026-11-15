@@ -58,3 +58,19 @@ def isolated_git_environment(testcase):
     patcher = mock.patch.dict(os.environ, clean_environ(), clear=True)
     patcher.start()
     testcase.addCleanup(patcher.stop)
+
+
+def open_pull_request(r, files):
+    """base 提交只有 keep.txt、origin/main 指向它（與 pull_request 事件的形狀相同）；第二個提交新增 files。
+    files 是 {路徑: 內容}；路徑是 bytes 時用位元組建立（檔名不是合法 UTF-8 只能這樣建）。"""
+    r.write("keep.txt")
+    base = r.commit()
+    r.git("update-ref", "refs/remotes/origin/main", base)
+    for name, text in files.items():
+        if isinstance(name, bytes):
+            raw = os.fsencode(r.dir) + b"/" + name
+            os.makedirs(os.path.dirname(raw), exist_ok=True)
+            pathlib.Path(os.fsdecode(raw)).write_text(text, encoding="utf-8", errors="surrogateescape")
+        else:
+            r.write(name, text)
+    return r.commit()

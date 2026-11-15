@@ -16,7 +16,7 @@
   blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用（fail closed）。
 """
 from __future__ import annotations
-import sys, os, json, re, difflib, itertools, subprocess
+import sys, os, json, re, difflib, itertools, subprocess, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -647,6 +647,39 @@ def added_packages(path, base, git):
         before = {(e, n.lower(), v) for e, n, v in _entries(old)}
     return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
 
+def printable(obj):
+    """輸出邊界：把物件裡含代理字元（非 UTF-8 的路徑以 surrogateescape 保留的位元組）的字串轉成可輸出的文字，
+    非 UTF-8 的位元組寫成 \\xHH。合法的 UTF-8 字串（含中文）原樣不動；字典的鍵與值、清單與元組逐層處理；不修改輸入（#283）。"""
+    if isinstance(obj, str):
+        if obj.isascii():
+            return obj
+        try:
+            return obj.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+        except UnicodeEncodeError:      # 不在 U+DC80–U+DCFF 的孤立代理字元：寫成 \\uXXXX
+            return obj.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(obj, dict):
+        return {printable(k): printable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [printable(v) for v in obj]
+    return obj
+
+def sarif_uri(path):
+    """SARIF 的 artifactLocation.uri 是 URI：反斜線不是合法字元，含非 UTF-8 位元組的路徑改用百分比編碼（目錄分隔字元保留）。
+    合法的 UTF-8 路徑原樣不動（與以前的輸出一致）。"""
+    try:
+        path.encode("utf-8")
+        return path
+    except UnicodeEncodeError:
+        pass
+    try:
+        return urllib.parse.quote(path.encode("utf-8", "surrogateescape"), safe="/")
+    except UnicodeEncodeError:
+        return printable(path)
+
+def _dumps(obj):
+    """所有 JSON 輸出（SARIF、閘門結果、標準輸出）共用：先轉義代理字元，再序列化。"""
+    return json.dumps(printable(obj), ensure_ascii=False, indent=2)
+
 LEVEL = {"blocking": "error", "advisory": "warning"}
 TOOL_NAME, TOOL_VERSION = "vibesec-slopcheck", "2.0.0"
 
@@ -660,7 +693,7 @@ def write_sarif(path, findings):
             "ruleId": f["rule_id"],
             "level": LEVEL.get(f["policy_tier"], "warning"),
             "message": {"text": f"[{f['ecosystem']}] {f['package']}@{f['version'] or '?'} — {f['reason']}"},
-            "locations": [{"physicalLocation": {"artifactLocation": {"uri": f.get("manifest") or "unknown"}}}],
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": sarif_uri(f.get("manifest") or "unknown")}}}],
             "partialFingerprints": {"vibesecPackage": f"{f['rule_id']}|{f['ecosystem']}|{f['package'].lower()}|{f.get('manifest')}"},
             "properties": {k: f.get(k) for k in ("package", "ecosystem", "version", "policy_tier", "manifest")}
                           | ({"exception": f["exception"]} if f.get("exception") else {})
@@ -668,7 +701,7 @@ def write_sarif(path, findings):
         })
     sarif = gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(rules.values()), results)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(path).write_text(_dumps(sarif), encoding="utf-8")
 
 CONTROLS = ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK")
 
@@ -735,7 +768,7 @@ def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, note
 
 def _write_json(path, gate):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(path).write_text(_dumps(gate), encoding="utf-8")
 
 def _opt(args, name):
     """收集重複出現的 `--name value` 參數。"""
@@ -1365,7 +1398,8 @@ def main(argv, policy_root=ROOT):
         changed += staged
     for lst in _opt(args, "--changed-files"):
         try:
-            changed += [l.strip() for l in Path(lst).read_text().splitlines() if l.strip()]
+            # surrogateescape：清單裡一個非 UTF-8 的路徑不得讓整份清單崩潰（嚴格解碼會丟 UnicodeDecodeError，#283）
+            changed += [l.strip() for l in Path(lst).read_text(encoding="utf-8", errors="surrogateescape").splitlines() if l.strip()]
         except OSError as e:
             # 清單讀不到 = 不知道改了什麼；以前靜默當成「沒有變更」而 pass（第四次審視 S-8）
             print(f"⚠️ G1 無法完成檢查：--changed-files {lst} 讀不到（{e}）→ incomplete。", file=sys.stderr)
@@ -1411,7 +1445,7 @@ def main(argv, policy_root=ROOT):
             out["target"] = str(TARGET)
         if pre_incomplete:
             out["status"], out["status_reason"] = "incomplete", "；".join(pre_incomplete)
-        print(json.dumps(out, ensure_ascii=False, indent=2))
+        print(_dumps(out))
         if sarif_out:
             write_sarif(sarif_out, [])
         if gate_out:
@@ -1505,7 +1539,7 @@ def main(argv, policy_root=ROOT):
         # 分開記：檢查本身失敗 vs. 有控制未實測（run_evals 據此判斷案例能否判定）
         out["incomplete_checks"] = incomplete
         out["untested_controls"] = [c["control_id"] for c in coverage if c["state"] == "untested"]
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    print(_dumps(out))
     if sarif_out:
         write_sarif(sarif_out, findings)
     if gate_out:
