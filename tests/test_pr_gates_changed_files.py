@@ -62,7 +62,12 @@ class ChangedFilesList(unittest.TestCase):
             base = r.commit()
             r.git("update-ref", "refs/remotes/origin/main", base)
             for n in names:
-                r.write(n)
+                if isinstance(n, bytes):      # 檔名不是合法 UTF-8：只能用位元組建立
+                    raw = os.fsencode(r.dir) + b"/" + n
+                    os.makedirs(os.path.dirname(raw), exist_ok=True)
+                    open(raw, "wb").close()
+                else:
+                    r.write(n)
             r.commit()
             return run_step(r.dir, base_ref)
 
@@ -103,6 +108,13 @@ class ChangedFilesList(unittest.TestCase):
             code, lines, _ = run_step(r.dir, "")
         self.assertNotEqual(code, 0)
         self.assertNotEqual(lines, [], "不能留下一份空的清單當成「沒有變更」")
+
+    def test_a_name_that_is_not_valid_utf8_stays_in_the_list(self):
+        # GNU grep 對含非法 UTF-8 的行會當成二進位、只在標準錯誤印 "binary file matches" 就丟掉那一行：沒有 -a 時，
+        # 這個路徑會悄悄從清單消失，G1 完全看不到（新的 fail-open）。清單裡必須原樣保留，其他路徑也不受影響。
+        code, lines, err = self.changed([b"\xff-dir/package.json", "requirements.txt"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(lines), sorted(["requirements.txt", os.fsdecode(b"\xff-dir/package.json")]))
 
     def test_a_name_with_a_newline_is_split_in_two_lines(self):
         # 已知限制（見 #282）：G1 的 --changed-files 是逐行讀取。多出來的那一行不是真的檔案，G1 會因找不到而記 incomplete
