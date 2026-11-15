@@ -1,7 +1,8 @@
 """測試共用的替身與輔助。 / Shared test doubles and helpers.
 
 傳輸層的替身放在 tests/，不放生產程式（#260 的決定）：生產側只有評測也會用到的 FakeRegistry（scripts/g1_registry.py）。
-run_screen 是驅動快篩 main 的輔助函式（不是替身），多個測試檔共用。
+run_cli 與 run_screen 是驅動快篩 main 的輔助函式（不是替身），多個測試檔共用：run_cli 取得 SARIF、閘門結果與以嚴格 UTF-8
+編碼的標準輸出（含無法編碼的字元會當場崩潰，與真的終端機一致）；run_screen 是只要（退出碼、閘門結果、登錄庫）的簡版。
 """
 import json
 import urllib.error
@@ -77,7 +78,7 @@ def run_cli(D, *argv, git=None, registry=None, sarif=False):
         error = None
         try:
             code = sc.main(["g1_slopcheck.py", "--target", str(D), *argv, "--gate", str(gate), *extra])
-        except Exception as e:      # noqa: BLE001  測試要看到的是例外本身
+        except Exception as e:      # noqa: BLE001  記下例外，讓崩潰在測試裡是可讀的失敗（assert run.error is None），不是 ERROR
             code, error = None, e
         finally:
             sc.TARGET = sc.ROOT

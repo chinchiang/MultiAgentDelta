@@ -647,16 +647,24 @@ def added_packages(path, base, git):
         before = {(e, n.lower(), v) for e, n, v in _entries(old)}
     return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
 
+def _escape_surrogate(ch):
+    o = ord(ch)
+    if 0xDC80 <= o <= 0xDCFF:           # surrogateescape 保留的原始位元組：b"\xff" → U+DCFF → \\xff
+        return f"\\x{o - 0xDC00:02x}"
+    if 0xD800 <= o <= 0xDFFF:           # 其他孤立的代理字元
+        return f"\\u{o:04x}"
+    return ch
+
 def printable(obj):
     """輸出邊界：把物件裡含代理字元（非 UTF-8 的路徑以 surrogateescape 保留的位元組）的字串轉成可輸出的文字，
-    非 UTF-8 的位元組寫成 \\xHH。合法的 UTF-8 字串（含中文）原樣不動；字典的鍵與值、清單與元組逐層處理；不修改輸入（#283）。"""
+    非 UTF-8 的位元組寫成 \\xHH。合法的 UTF-8 字串（含中文）原樣不動；字典的鍵與值、清單與元組逐層處理
+    （元組輸出成清單，JSON 結果相同）；不修改輸入（#283）。"""
     if isinstance(obj, str):
-        if obj.isascii():
-            return obj
         try:
-            return obj.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
-        except UnicodeEncodeError:      # 不在 U+DC80–U+DCFF 的孤立代理字元：寫成 \\uXXXX
-            return obj.encode("utf-8", "backslashreplace").decode("utf-8")
+            obj.encode("utf-8")
+            return obj
+        except UnicodeEncodeError:
+            return "".join(map(_escape_surrogate, obj))
     if isinstance(obj, dict):
         return {printable(k): printable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
