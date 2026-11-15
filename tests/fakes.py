@@ -26,3 +26,23 @@ class RoutedTransport:
 
 def http_error(code):
     return urllib.error.HTTPError("https://x.invalid/", code, "msg", {}, None)
+
+
+class FakeGit:
+    """記憶體內的 Git（#265）：staged 是檔名列表（或測試給的失敗物件）、tracked 是追蹤檔列表（None＝不是 git 工作樹）、
+    files 是 {(ref, 路徑): 內容}。沒有腳本的 show 回 None（與真的 git「檔案不存在」同形）。
+    shown 依序記錄每次 show 的 (ref, 路徑)，測試用來確認路徑是相對目標專案的。"""
+
+    def __init__(self, staged=(), tracked=None, files=None):
+        self._staged, self._tracked, self._files = staged, tracked, dict(files or {})
+        self.shown = []
+
+    def staged(self):
+        return self._staged if not isinstance(self._staged, (list, tuple)) else list(self._staged)
+
+    def tracked_files(self):
+        return None if self._tracked is None else list(self._tracked)
+
+    def show(self, ref, path):
+        self.shown.append((ref, path))
+        return self._files.get((ref, path))
