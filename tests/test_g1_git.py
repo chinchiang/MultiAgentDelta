@@ -272,18 +272,12 @@ class FailClosedPaths(unittest.TestCase):
         self.run_main(git=FakeGit(tracked=None), registry=reg)
         self.assertEqual(sorted(reg.calls), [("pypi", "flask", "3.0.0"), ("pypi", "requests", "2.0.0")])
 
-    def test_without_an_injected_git_the_production_one_runs_in_the_scanned_project(self):
-        seen = []
-
-        def factory(cwd):
-            seen.append(pathlib.Path(cwd).resolve())
-            return FakeGit(staged=["requirements.txt"])
-        self.write("requirements.txt", "requests==2.0.0\n")
-        reg = gr.FakeRegistry({("pypi", "requests", "2.0.0"): PYPI_OK})
-        with mock.patch.object(sc, "SubprocessGit", factory):
-            self.run_main("--staged", git=None, registry=reg)
-        self.assertEqual(seen, [self.D], "沒有注入時，用生產的 SubprocessGit，工作目錄是被掃描的目標專案")
-        self.assertEqual(reg.calls, [("pypi", "requests", "2.0.0")])
+    def test_the_default_env_uses_the_production_git_in_the_scanned_project(self):
+        # 沒有注入 Git 時（命令列）：生產的 SubprocessGit，工作目錄是被掃描的目標專案
+        env, problem = sc.default_env(self.D, sc.ROOT)
+        self.assertIsNone(problem)
+        self.assertIsInstance(env.git, gg.SubprocessGit)
+        self.assertEqual(pathlib.Path(env.git.cwd).resolve(), self.D)
 
 
 class StagedNonAsciiPathsAreScanned(unittest.TestCase):

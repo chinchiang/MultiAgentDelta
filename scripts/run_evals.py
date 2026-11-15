@@ -226,6 +226,9 @@ class G1FixtureRunner(Runner):
         spec = importlib.util.spec_from_file_location("g1_slopcheck", SLOPCHECK)
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
+        self.env, problem = self.mod.default_env(ROOT)       # 政策與設定取自本 repo；登錄庫與 Git 在這裡用不到
+        if problem:
+            raise RuntimeError(problem)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -244,10 +247,10 @@ class G1FixtureRunner(Runner):
         name = re.split(r"[=@<>!~ ]", added[0].lstrip("@"))[0] or "fixture-pkg"
         eco = inp.get("ecosystem") or "npm"
         if rule == "vibesec.g1.cooldown-violation":
-            f = self.mod.cooldown_finding(name, eco, None, int(inp["published_hours_ago"]) // 24, self.mod.cfg())
+            f = self.mod.cooldown_finding(self.env, name, eco, None, int(inp["published_hours_ago"]) // 24, self.mod.cfg(self.env))
         else:
             scripts = (inp.get("package_json") or {}).get("scripts") or {}
-            f = self.mod.install_hook_finding(name, eco, None, scripts)
+            f = self.mod.install_hook_finding(self.env, name, eco, None, scripts)
         return ({f["rule_id"]} if f else set()), None
 
 

