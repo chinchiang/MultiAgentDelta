@@ -6,6 +6,7 @@ Request 是命令列參數解析後的純值；Env 是外部依賴（Git、登�
 測試用 FakeGit 與暫存目錄驅動，不建 git 庫、不連網。
 """
 import dataclasses
+import datetime
 import pathlib
 import sys
 import tempfile
@@ -45,6 +46,19 @@ class RequestAndEnv(unittest.TestCase):
         self.assertEqual(env.workers, 8)
         globs, rx = env.rule_cfg
         self.assertIn("AGENTS.md", globs)
+
+    def test_build_env_takes_the_date_the_workers_and_the_config_root_as_given(self):
+        # 今天的日期與並行數由呼叫端決定（allowlist 的到期判斷、登錄庫查詢的並行度），不是偷偷讀系統時鐘或寫死
+        env = gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=gr.FakeRegistry(),
+                           today=datetime.date(2020, 1, 2), workers=3, config_root=ROOT)
+        self.assertEqual((env.today, env.workers), (datetime.date(2020, 1, 2), 3))
+        self.assertEqual(gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=gr.FakeRegistry()).today, datetime.date.today())
+
+    def test_the_rule_file_globs_are_read_from_the_config_root_once_per_env(self):
+        # 規則檔的 glob 取 vibesec.yaml scan_agent_rule_files 與 cooldown.yaml agent_rule_files 的聯集；兩者都缺席時用內建預設
+        with tempfile.TemporaryDirectory() as d:
+            env = gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=gr.FakeRegistry(), config_root=pathlib.Path(d))
+        self.assertEqual(env.rule_cfg, (list(gs.RULE_FILE_DEFAULTS), None))
 
     def test_an_env_is_a_frozen_value_and_can_be_replaced_field_by_field(self):
         env = gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=gr.FakeRegistry())
