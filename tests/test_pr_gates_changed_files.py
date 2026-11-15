@@ -5,8 +5,10 @@
 
 測試直接解析 .github/workflows/pr-gates.yml、取出 id 為 diff 的步驟的 run 腳本，在暫存 git 庫裡以 GitHub Actions 的 bash 預設
 （bash -eo pipefail）執行；不另寫一份模擬，workflow 改了這裡就跟著測。兩組測試：
-  ChangedFilesList  步驟產出的清單：路徑逐字、_trusted/ 被排除、BASE_REF 缺席或取不到的退路、git 失敗時步驟失敗（不是空清單）。
-  ListReachesG1     把清單交給 G1 的 --changed-files（假登錄庫、真 git）：中文目錄的清單必須被掃到。
+  ChangedFilesList  步驟產出的清單：路徑逐字、_trusted/ 被排除、BASE_REF 缺席或取不到的退路、git／tr／grep 出錯時步驟失敗
+                    （不是空清單：空清單會讓 G1 回報「無變更，略過」）。
+  ListReachesG1     把清單交給 G1 的 --changed-files（假登錄庫、真 git）：中文目錄的清單必須被掃到；G1 解不開的路徑
+                    （含換行、前後空白）要記 incomplete，不是通過。
 """
 import os
 import pathlib
@@ -33,14 +35,28 @@ def diff_step():
     return steps[0]
 
 
-def run_step(repo, base_ref):
-    """在 repo 裡執行 diff 步驟的 run 腳本；回傳（退出碼、清單的各行、標準錯誤）。清單檔不存在 → 行為 None。"""
+def fake_command(directory, name, exit_code):
+    """在 directory 放一個永遠以 exit_code 結束的假指令，讓步驟用到它（模擬 grep、tr 本身出錯）。"""
+    path = pathlib.Path(directory, name)
+    path.write_text(f"#!/bin/sh\nexit {exit_code}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def run_step(repo, base_ref, *, broken=None):
+    """在 repo 裡執行 diff 步驟的 run 腳本；回傳（退出碼、清單的各行、標準錯誤）。清單檔不存在 → 行為 None。
+    broken={"grep": 2}：讓步驟裡的 grep 以退出碼 2 結束。"""
     step = diff_step()
     assert step.get("shell") == "bash", "GitHub Actions 的 shell: bash 預設是 -eo pipefail，這裡的測試以此為前提"
     with tempfile.TemporaryDirectory() as tmp:
         output = pathlib.Path(tmp, "github-output")
         output.touch()
         env = {**os.environ, "BASE_REF": base_ref, "GITHUB_OUTPUT": str(output), "RUNNER_TEMP": tmp}
+        if broken:
+            fake_bin = pathlib.Path(tmp, "fake-bin")
+            fake_bin.mkdir()
+            for name, code in broken.items():
+                fake_command(fake_bin, name, code)
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
         r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
                            cwd=repo, env=env, capture_output=True)
     listing = pathlib.Path(repo, "reports", "_changed-files.txt")
@@ -51,25 +67,31 @@ def run_step(repo, base_ref):
     return r.returncode, lines, r.stderr.decode("utf-8", "replace")
 
 
+def open_pull_request(r, files):
+    """base 提交只有 keep.txt、origin/main 指向它（與 pull_request 事件的形狀相同）；第二個提交新增 files。
+    files 是 {路徑: 內容}；路徑是 bytes 時用位元組建立（檔名不是合法 UTF-8 只能這樣建）。"""
+    r.write("keep.txt")
+    base = r.commit()
+    r.git("update-ref", "refs/remotes/origin/main", base)
+    for name, text in files.items():
+        if isinstance(name, bytes):
+            raw = os.fsencode(r.dir) + b"/" + name
+            os.makedirs(os.path.dirname(raw), exist_ok=True)
+            pathlib.Path(os.fsdecode(raw)).write_text(text, encoding="utf-8", errors="surrogateescape")
+        else:
+            r.write(name, text)
+    return r.commit()
+
+
 class ChangedFilesList(unittest.TestCase):
     def setUp(self):
         isolated_git_environment(self)
 
-    def changed(self, names, *, base_ref="main"):
-        """base 提交只有 keep.txt；第二個提交新增 names。origin/main 指向 base，與 pull_request 事件的形狀相同。"""
+    def changed(self, names, *, base_ref="main", broken=None):
+        """第二個提交新增 names（內容不重要）。"""
         with TempRepo() as r:
-            r.write("keep.txt")
-            base = r.commit()
-            r.git("update-ref", "refs/remotes/origin/main", base)
-            for n in names:
-                if isinstance(n, bytes):      # 檔名不是合法 UTF-8：只能用位元組建立
-                    raw = os.fsencode(r.dir) + b"/" + n
-                    os.makedirs(os.path.dirname(raw), exist_ok=True)
-                    open(raw, "wb").close()
-                else:
-                    r.write(n)
-            r.commit()
-            return run_step(r.dir, base_ref)
+            open_pull_request(r, {n: "x\n" for n in names})
+            return run_step(r.dir, base_ref, broken=broken)
 
     def test_ascii_names_are_listed_one_per_line(self):
         code, lines, _ = self.changed(["requirements.txt", "docs/package.json"])
@@ -116,6 +138,21 @@ class ChangedFilesList(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(sorted(lines), sorted(["requirements.txt", os.fsdecode(b"\xff-dir/package.json")]))
 
+    def test_names_with_leading_or_trailing_spaces_are_verbatim(self):
+        names = [" lead/requirements.txt", "trail /requirements.txt", "requirements.txt "]
+        code, lines, err = self.changed(names)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(lines), sorted(names))
+
+    def test_the_step_fails_when_grep_itself_errors(self):
+        # grep 的退出碼 1（沒有任何行被選中）可以繼續；退出碼 2（出錯）不行，否則變成空清單，G1 回報「無變更，略過」
+        code, _, _ = self.changed(["requirements.txt"], broken={"grep": 2})
+        self.assertNotEqual(code, 0)
+
+    def test_the_step_fails_when_tr_itself_errors(self):
+        code, _, _ = self.changed(["requirements.txt"], broken={"tr": 1})
+        self.assertNotEqual(code, 0)
+
     def test_a_name_with_a_newline_is_split_in_two_lines(self):
         # 已知限制（見 #282）：G1 的 --changed-files 是逐行讀取。多出來的那一行不是真的檔案，G1 會因找不到而記 incomplete
         code, lines, _ = self.changed(["line\nbreak/requirements.txt"])
@@ -123,18 +160,14 @@ class ChangedFilesList(unittest.TestCase):
 
 
 class ListReachesG1(unittest.TestCase):
-    """步驟的產出直接交給 G1：暫存的清單在中文目錄下，也必須被掃到（假登錄庫、真 git）。"""
+    """步驟的產出直接交給 G1（假登錄庫、真 git）：中文目錄的清單必須被掃到；G1 解不開的路徑要記 incomplete。"""
 
     def setUp(self):
         isolated_git_environment(self)
 
     def scan(self, rel):
         with TempRepo() as r:
-            r.write("keep.txt")
-            base = r.commit()
-            r.git("update-ref", "refs/remotes/origin/main", base)
-            r.write(rel, "requests==2.0.0\n")
-            r.commit()
+            open_pull_request(r, {rel: "requests==2.0.0\n"})
             code, lines, err = run_step(r.dir, "main")
             self.assertEqual(code, 0, err)
             with tempfile.TemporaryDirectory() as tmp:
@@ -154,6 +187,13 @@ class ListReachesG1(unittest.TestCase):
         code_c, g_c, reg_c = self.scan("中文/requirements.txt")
         self.assertEqual(reg_c.calls, reg_a.calls)
         self.assertEqual((code_c, g_c["status"], g_c["scope"]), (code_a, g_a["status"], g_a["scope"]))
+
+    def test_names_that_g1_cannot_resolve_are_incomplete_not_pass(self):
+        # 含換行的檔名被切成兩行；含前後空白的檔名在 G1 讀清單時被 strip。兩者都對不到真的檔案，G1 記 incomplete（退出碼 2）
+        for rel in ("line\nbreak/requirements.txt", " lead/requirements.txt"):
+            with self.subTest(rel=rel):
+                code, g, reg = self.scan(rel)
+                self.assertEqual((code, g["status"], reg.calls), (2, "incomplete", []))
 
 
 if __name__ == "__main__":

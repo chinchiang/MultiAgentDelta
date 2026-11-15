@@ -63,12 +63,15 @@ jobs:
           [ -n "${BASE_REF}" ] && git fetch origin "${BASE_REF}" 2>/dev/null || true
           # -z：路徑逐字，不被 core.quotePath 加引號跳脫（非 ASCII、雙引號等的路徑加了引號，G1 認不得而略過，#282）。
           # 先寫到暫存檔、再轉成一行一檔給 G1 的 --changed-files：兩個 git diff 都失敗時步驟要失敗，不能被後面的 || true 吞掉
-          # 變成空清單（空清單會讓 G1 回報「無變更，略過」）；|| true 只留給 grep -v 沒有任何輸出的情況。
+          # 變成空清單（空清單會讓 G1 回報「無變更，略過」）；只有 grep -v 沒有任何輸出（退出碼 1）可以繼續。
           # grep -a：路徑不是合法 UTF-8 時，GNU grep 會把那一行當二進位、只在標準錯誤印 binary file matches 就丟掉，
           # 路徑從清單悄悄消失；-a 讓它原樣保留給 G1。
           git diff --name-only -z "${BASE}...HEAD" > "$RUNNER_TEMP/changed-files.z" 2>/dev/null \
             || git diff --name-only -z HEAD~1...HEAD > "$RUNNER_TEMP/changed-files.z"
-          tr '\0' '\n' < "$RUNNER_TEMP/changed-files.z" | grep -a -v '^_trusted/' > reports/_changed-files.txt || true
+          # tr 與 grep 分開跑：串成一條時 pipefail 讓任何一邊的失敗都長得像「grep 沒有輸出」。|| [ $? -eq 1 ] 只容許 grep
+          # 的退出碼 1（沒有任何行被選中，例如只動了 _trusted/）；退出碼 2（出錯）與 tr 的失敗都要讓步驟失敗，不能變成空清單。
+          tr '\0' '\n' < "$RUNNER_TEMP/changed-files.z" > "$RUNNER_TEMP/changed-files.txt"
+          grep -a -v '^_trusted/' "$RUNNER_TEMP/changed-files.txt" > reports/_changed-files.txt || [ $? -eq 1 ]
           echo "base=${BASE}" >> "$GITHUB_OUTPUT"
           echo "變更檔案："; cat reports/_changed-files.txt
 

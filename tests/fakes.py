@@ -1,6 +1,7 @@
-"""測試共用的替身。 / Shared test doubles.
+"""測試共用的替身與輔助。 / Shared test doubles and helpers.
 
 傳輸層的替身放在 tests/，不放生產程式（#260 的決定）：生產側只有評測也會用到的 FakeRegistry（scripts/g1_registry.py）。
+run_screen 是驅動快篩 main 的輔助函式（不是替身），多個測試檔共用。
 """
 import json
 import urllib.error
@@ -50,6 +51,7 @@ class FakeGit:
 
 def run_screen(D, *argv, git=None, registry=None):
     """以假登錄庫跑快篩的 main，回傳（退出碼、閘門結果、登錄庫）；git=None 時用生產的 SubprocessGit。"""
+    # 惰性匯入：這個檔也被不需要快篩的測試匯入（傳輸層測試），匯入時不能要求 scripts/ 已經在 sys.path 上
     import contextlib
     import io
     from unittest import mock
