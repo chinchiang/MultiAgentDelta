@@ -27,7 +27,7 @@ import gate_result  # noqa: E402  閘門結果與自產 SARIF 骨架只有一份
 from g1_manifests import REQUIREMENTS_RE, classify, parse_manifest, pep508  # noqa: E402  清單與鎖定檔解析，與 g1_sbom 共用（#262）
 from g1_registry import HttpRegistry, NotFound, Unavailable, Unknown, canon, valid_name  # noqa: E402  套件登錄庫接縫與各 registry 的名稱規則（#264）
 from g1_git import GitFailure, SubprocessGit, head_commit  # noqa: E402  Git 接縫：暫存區、追蹤檔、ref 上的內容（#265）
-from g1_screen import Env, Request, build_env, discover, external_target, is_rule_file, load_yaml, rel_path, resolve, resolve_scope  # noqa: E402  範圍解析與 Env（#266）：這個檔沒有模組層的可變狀態
+from g1_screen import Env, Request, RuleCfg, build_env, discover, external_target, is_rule_file, load_yaml, rel_path, resolve, resolve_scope  # noqa: E402  範圍解析與 Env（#266）：這個檔沒有模組層的可變狀態
 from g1_screen import mapping as _mapping  # noqa: E402
 
 def read_vibesec(env):
@@ -462,7 +462,6 @@ INSTALL_RE = {
     "pypi": re.compile(r'\b(?:(?:pip3?|pipx|uv\s+pip|python3?\s+-m\s+pip)\s+install|(?:uv|poetry|pdm|rye)\s+add)\s+'
                        r'((?:-{1,2}[A-Za-z-]+\s+)*)([A-Za-z0-9][A-Za-z0-9._-]*)'),
 }
-RULE_FILE_DEFAULTS = (".cursorrules", "AGENTS.md", "SKILL.md", "CLAUDE.md", ".cursor/rules/**/*.mdc", "**/*.md")
 
 def _install_names(eco, flags, tokens):
     """安裝指令的旗標與其後的參數 → 套件名清單。最後一個旗標需要值（-r、-e、--index-url…）→ 名稱位置是旗標的值，整段略過。"""
@@ -493,7 +492,7 @@ def rule_file_mentions(env, path):
             line_end = text.find("\n", m.end())
             rest = text[m.end():line_end if line_end >= 0 else len(text)]
             out += [(eco, n, None) for n in _install_names(eco, m.group(1).split(), [m.group(2)] + rest.split())]
-    rx = env.rule_cfg[1]
+    rx = env.rule_cfg.install_command
     # 設定的 regex：具名群組 pypi／npm 優先，否則依 cooldown.yaml 的寫法，第 1 群組是 Python、第 2 群組是 npm 的參數
     groups = [(g, eco) for g, eco in (("pypi", "pypi"), ("npm", "npm")) if rx is not None and g in rx.groupindex] \
         or [(i, eco) for i, eco in ((1, "pypi"), (2, "npm")) if rx is not None and rx.groups >= i]
@@ -1107,7 +1106,7 @@ def selftest():
         ment = {(e, n) for e, n, _ in rule_file_mentions(env, D / "AGENTS.md")}
         if ment != {("pypi", "fastapi-auth-helperz"), ("pypi", "reqursts"), ("npm", "axois"), ("pypi", "numpyy")}:
             fails.append(f"規則檔：uv add／poetry add／bun add／python -m pip 也要查（得到 {sorted(ment)}）")
-        env_rc = dataclasses.replace(env, rule_cfg=(["*.rules"], re.compile(r"\bmytool\s+fetch\s+(?P<pypi>[^\n#]+)")))
+        env_rc = dataclasses.replace(env, rule_cfg=RuleCfg(["*.rules"], re.compile(r"\bmytool\s+fetch\s+(?P<pypi>[^\n#]+)")))
         (D / "x.rules").write_text("mytool fetch --quiet evilpkg-x\n")
         if not is_rule_file(env_rc, D, "x.rules") or rule_file_mentions(env_rc, D / "x.rules") != [("pypi", "evilpkg-x", None)]:
             fails.append("規則檔 glob 與 install_command_regex 要讀設定，不是寫死")

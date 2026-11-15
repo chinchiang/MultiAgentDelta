@@ -18,12 +18,16 @@ import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent      # VibeSec 本身：設定、清單、政策
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from g1_git import GitFailure  # noqa: E402
 from g1_manifests import classify  # noqa: E402
 from g1_registry import HttpRegistry  # noqa: E402
+
+if TYPE_CHECKING:       # 只給型別標註：快篩不在匯入時就要求 PyYAML（政策在 default_env 才載入）
+    from vibesec_policy import Policy
 
 WORKERS = 8                                        # registry 並行查詢數的預設值
 RULE_FILE_DEFAULTS = (".cursorrules", "AGENTS.md", "SKILL.md", "CLAUDE.md", ".cursor/rules/**/*.mdc", "**/*.md")
@@ -46,7 +50,12 @@ def mapping(x):
     return x if isinstance(x, dict) else {}
 
 
-def _rule_cfg_of(config_root: Path):
+class RuleCfg(NamedTuple):
+    globs: list                     # 規則檔的 glob 清單
+    install_command: object         # 設定的安裝指令 regex（re.Pattern）或 None
+
+
+def _rule_cfg_of(config_root: Path) -> RuleCfg:
     """(規則檔 glob 清單, 設定的安裝指令 regex 或 None)。glob 取 vibesec.yaml scan_agent_rule_files 與 cooldown.yaml
     agent_rule_files 的聯集（只會多掃，不會少掃）；兩者都缺席時用 RULE_FILE_DEFAULTS。regex 無法編譯 → 只用內建樣式。"""
     c = mapping(load_yaml(config_root / "config" / "slopsquat" / "cooldown.yaml"))
@@ -56,7 +65,7 @@ def _rule_cfg_of(config_root: Path):
         rx = re.compile(c["install_command_regex"]) if c.get("install_command_regex") else None
     except (re.error, TypeError):
         rx = None
-    return list(dict.fromkeys(globs)) or list(RULE_FILE_DEFAULTS), rx
+    return RuleCfg(list(dict.fromkeys(globs)) or list(RULE_FILE_DEFAULTS), rx)
 
 
 # ---------------------------------------------------------------- Request、Env、Scope
@@ -85,13 +94,13 @@ class Request:
 @dataclass(frozen=True)
 class Env:
     """外部依賴與設定。每個欄位都有兩個實際的轉接器（生產與測試替身），沒有任何模組層的覆寫點。"""
-    policy: object                  # vibesec_policy.Policy（已載入；讀不到政策由呼叫端以未完成處理，不會有 Env）
+    policy: "Policy"                # 已載入的 vibesec_policy.Policy（讀不到政策由呼叫端以未完成處理，不會有 Env）
     git: object                     # Git 接縫：staged()、tracked_files()、show(ref, path)（SubprocessGit／FakeGit）
     registry: object                # 套件登錄庫接縫：facts()、requires()（HttpRegistry／FakeRegistry）
     config_root: Path               # 放 vibesec.yaml 與 config/slopsquat/ 的目錄
     today: date
     workers: int
-    rule_cfg: tuple                 # _rule_cfg_of(config_root)：每次執行讀一次，不是每個檔讀一次
+    rule_cfg: RuleCfg               # _rule_cfg_of(config_root)：每次執行讀一次，不是每個檔讀一次
 
     @property
     def config_dir(self) -> Path:
@@ -179,7 +188,7 @@ def _glob_re(pat):
 def is_rule_file(env, root: Path, path, globs=None):
     """不含 / 的樣式比對檔名（AGENTS.md 在任何目錄都算），含 / 的比對相對路徑（.cursor/rules/**/*.mdc）。"""
     p = rel_path(root, path) if Path(path).is_absolute() else Path(path).as_posix()
-    for pat in globs if globs is not None else env.rule_cfg[0]:
+    for pat in globs if globs is not None else env.rule_cfg.globs:
         if _glob_re(pat).match(p if "/" in pat else Path(p).name):
             return True
     return False
