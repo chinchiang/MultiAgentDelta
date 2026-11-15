@@ -63,6 +63,30 @@ class SubprocessGitContract(unittest.TestCase):
             r.write("sub/x.txt"); r.write("outside.txt"); r.git("add", "sub/x.txt", "outside.txt")
             self.assertEqual(gg.SubprocessGit(r.dir / "sub").staged(), ["x.txt"])
 
+    def test_staged_keeps_non_ascii_spaced_and_quoted_names_verbatim(self):
+        # -z：路徑逐字，不被 git 加引號跳脫（core.quotePath 預設會把非 ASCII 變成 "\\344\\270…"），也不被空白或換行切錯
+        names = ["中文/requirements.txt", "sub/b c.txt", " lead.txt", "trail.txt ", 'q"uote.txt', "tab\tname.txt", "line\nbreak.txt"]
+        with TempRepo() as r:
+            r.write("keep.txt"); r.commit()
+            for n in names:
+                r.write(n)
+            r.git("add", "--", *names)
+            self.assertEqual(sorted(gg.SubprocessGit(r.dir).staged()), sorted(names))
+
+    def test_staged_keeps_a_name_that_is_not_valid_utf8(self):
+        # -z 輸出是原始位元組：一個舊編碼的檔名不得讓整個 --staged 失敗（以前引號跳脫是純 ASCII，不會遇到解碼問題）
+        with TempRepo() as r:
+            r.write("keep.txt"); r.commit()
+            raw = os.fsencode(r.dir) + b"/dir/\xff\xfe.txt"
+            try:
+                os.makedirs(os.path.dirname(raw))
+                open(raw, "wb").close()
+            except OSError:
+                self.skipTest("檔案系統不接受非 UTF-8 的檔名")
+            r.git("add", "-A")
+            got = gg.SubprocessGit(r.dir).staged()
+            self.assertEqual([os.fsencode(n) for n in got], [b"dir/\xff\xfe.txt"])
+
     def test_staged_failure_outside_a_repository(self):
         with tempfile.TemporaryDirectory() as d:
             r = gg.SubprocessGit(pathlib.Path(d)).staged()
@@ -159,6 +183,23 @@ PYPI_OK = gr.Found(gr.Facts("pypi", "requests", "2.0.0", OLD, None, None))
 NPM_OK = lambda name: gr.Found(gr.Facts("npm", name, "1.0.0", OLD, {}, 5000))  # noqa: E731
 
 
+def run_screen(D, *argv, git=None, registry=None):
+    """以假登錄庫跑快篩的 main，回傳（退出碼、閘門結果、登錄庫）；git=None 時用生產的 SubprocessGit。"""
+    gate = D.parent / f"{D.name}-gate.json"
+    reg = registry or gr.FakeRegistry()
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.object(sc, "GIT", git), mock.patch.object(sc, "REGISTRY", reg), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            code = sc.main(["g1_slopcheck.py", "--target", str(D), *argv, "--gate", str(gate)])
+        finally:
+            sc.TARGET = sc.ROOT
+    g = json.loads(gate.read_text(encoding="utf-8")) if gate.exists() else {}
+    if gate.exists():
+        gate.unlink()
+    return code, g, reg
+
+
 class FailClosedPaths(unittest.TestCase):
     """用 FakeGit 與 FakeRegistry 驅動快篩的 main（不連網、不建 git 庫）。"""
 
@@ -173,19 +214,7 @@ class FailClosedPaths(unittest.TestCase):
         p.write_text(text, encoding="utf-8")
 
     def run_main(self, *argv, git=None, registry=None):
-        gate = self.D.parent / f"{self.D.name}-gate.json"
-        reg = registry or gr.FakeRegistry()
-        out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(sc, "GIT", git), mock.patch.object(sc, "REGISTRY", reg), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            try:
-                code = sc.main(["g1_slopcheck.py", "--target", str(self.D), *argv, "--gate", str(gate)])
-            finally:
-                sc.TARGET = sc.ROOT
-        g = json.loads(gate.read_text(encoding="utf-8")) if gate.exists() else {}
-        if gate.exists():
-            gate.unlink()
-        return code, g, reg
+        return run_screen(self.D, *argv, git=git, registry=registry)
 
     def test_staged_failure_is_incomplete_not_no_changes(self):
         # 不知道改了什麼 ≠ 沒有變更：取不到暫存區 → 未完成（exit 2），不查任何套件
@@ -268,6 +297,32 @@ class FailClosedPaths(unittest.TestCase):
             self.run_main("--staged", git=None, registry=reg)
         self.assertEqual(seen, [self.D], "沒有注入時，用生產的 SubprocessGit，工作目錄是被掃描的目標專案")
         self.assertEqual(reg.calls, [("pypi", "requests", "2.0.0")])
+
+
+class StagedNonAsciiPathsAreScanned(unittest.TestCase):
+    """#280：--staged 對非 ASCII 路徑的清單不得悄悄略過（真 git、假登錄庫）。"""
+
+    def setUp(self):
+        isolated_git_environment(self)
+
+    def scan_staged(self, rel):
+        with TempRepo() as r:
+            r.write("keep.txt"); r.commit()
+            r.write(rel, "requests==2.0.0\n"); r.git("add", "--", rel)
+            reg = gr.FakeRegistry({("pypi", "requests", "2.0.0"): PYPI_OK})
+            return run_screen(r.dir, "--staged", registry=reg)
+
+    def test_a_manifest_under_a_non_ascii_directory_is_scanned(self):
+        code, g, reg = self.scan_staged("中文/requirements.txt")
+        self.assertEqual(reg.calls, [("pypi", "requests", "2.0.0")], "暫存的清單必須被掃到，不是「無變更，略過」")
+        self.assertEqual(g["scope"], "diff")
+
+    def test_the_same_manifest_under_an_ascii_directory_is_scanned_the_same_way(self):
+        # 對照：目錄名稱不同、內容相同，結果必須一致
+        code_ascii, g_ascii, reg_ascii = self.scan_staged("docs/requirements.txt")
+        code_cjk, g_cjk, reg_cjk = self.scan_staged("中文/requirements.txt")
+        self.assertEqual(reg_cjk.calls, reg_ascii.calls)
+        self.assertEqual((code_cjk, g_cjk["status"], g_cjk["scope"]), (code_ascii, g_ascii["status"], g_ascii["scope"]))
 
 
 if __name__ == "__main__":

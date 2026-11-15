@@ -3,7 +3,7 @@
 
 介面（Git）有三個方法，工作目錄是建構時給的被掃描目標專案：
   staged()         -> list[str] | GitFailure   暫存區中新增／修改／改名的檔（--diff-filter=d：刪除的檔沒有內容可查），
-                                                路徑相對於工作目錄。git 取不到（非 git 目錄、git 缺席）→ GitFailure：
+                                                路徑相對於工作目錄、以 -z 取回而逐字保留（非 ASCII、空白、換行皆不跳脫）。git 取不到（非 git 目錄、git 缺席）→ GitFailure：
                                                 不知道改了什麼 ≠ 沒有變更，呼叫端必須記未完成（AGENTS.md 規則 2）
   tracked_files()  -> list[str] | None         git 追蹤中的檔（含已 git add 還沒提交的）。None＝git 說不出來（不是 git
                                                 工作樹、git 缺席）：呼叫端退回走訪目錄，掃得更多、不是更少
@@ -30,16 +30,18 @@ class SubprocessGit:
         self.cwd = cwd
 
     def staged(self):
-        # 沿用重構前的寫法：沒有用 -z，所以非 ASCII 的路徑會被 git 加引號跳脫（"\344\270\255…"），之後的分類認不得它而略過。
-        # 這是既有的限制，不是這個切片引入的；要修需要改成 -z，會讓檢查變嚴，屬於獨立的變嚴變更。
+        # -z：以 NUL 分隔、路徑逐字。沒有 -z 時 git 會把非 ASCII 路徑加引號跳脫（"\344\270\255…"），分類認不得而悄悄略過
+        # （fail-open，#280）；含換行、Tab、雙引號的檔名也會被切錯。不用 .strip()：前後有空白的檔名要保留。
+        # 明確用 UTF-8 解碼並以 surrogateescape 保留非 UTF-8 的位元組：-z 輸出是原始位元組，嚴格解碼會讓一個舊編碼的檔名
+        # 把整個 --staged 變成「git 無法執行（UnicodeDecodeError）」；以前（引號跳脫）不會有這個問題，不能因修 -z 而退步。
         try:
-            r = subprocess.run(["git", "diff", "--cached", "--name-only", "--relative", "--diff-filter=d"],
-                               capture_output=True, text=True, cwd=self.cwd)
+            r = subprocess.run(["git", "diff", "--cached", "--name-only", "--relative", "--diff-filter=d", "-z"],
+                               capture_output=True, text=True, encoding="utf-8", errors="surrogateescape", cwd=self.cwd)
         except Exception as e:
             return GitFailure(f"git 無法執行（{type(e).__name__}）")
         if r.returncode != 0:
             return GitFailure(f"git diff --cached 失敗（exit {r.returncode}：{(r.stderr.strip().splitlines() or ['?'])[0][:120]}）")
-        return [l for l in r.stdout.splitlines() if l.strip()]
+        return [f for f in r.stdout.split("\0") if f]
 
     def tracked_files(self):
         try:
