@@ -30,16 +30,16 @@ class SubprocessGit:
         self.cwd = cwd
 
     def staged(self):
-        # 沿用重構前的寫法：沒有用 -z，所以非 ASCII 的路徑會被 git 加引號跳脫（"\344\270\255…"），之後的分類認不得它而略過。
-        # 這是既有的限制，不是這個切片引入的；要修需要改成 -z，會讓檢查變嚴，屬於獨立的變嚴變更。
+        # -z：以 NUL 分隔、路徑逐字。沒有 -z 時 git 會把非 ASCII 路徑加引號跳脫（"\344\270\255…"），分類認不得而悄悄略過
+        # （fail-open，#280）；含換行、Tab、雙引號的檔名也會被切錯。不用 .strip()：前後有空白的檔名要保留。
         try:
-            r = subprocess.run(["git", "diff", "--cached", "--name-only", "--relative", "--diff-filter=d"],
+            r = subprocess.run(["git", "diff", "--cached", "--name-only", "--relative", "--diff-filter=d", "-z"],
                                capture_output=True, text=True, cwd=self.cwd)
         except Exception as e:
             return GitFailure(f"git 無法執行（{type(e).__name__}）")
         if r.returncode != 0:
             return GitFailure(f"git diff --cached 失敗（exit {r.returncode}：{(r.stderr.strip().splitlines() or ['?'])[0][:120]}）")
-        return [l for l in r.stdout.splitlines() if l.strip()]
+        return [f for f in r.stdout.split("\0") if f]
 
     def tracked_files(self):
         try:
