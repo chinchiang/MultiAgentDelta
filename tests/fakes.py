@@ -46,3 +46,25 @@ class FakeGit:
     def show(self, ref, path):
         self.shown.append((ref, path))
         return self._files.get((ref, path))
+
+
+def run_screen(D, *argv, git=None, registry=None):
+    """以假登錄庫跑快篩的 main，回傳（退出碼、閘門結果、登錄庫）；git=None 時用生產的 SubprocessGit。"""
+    import contextlib
+    import io
+    from unittest import mock
+    import g1_registry as gr
+    import g1_slopcheck as sc
+    gate = D.parent / f"{D.name}-gate.json"
+    reg = registry or gr.FakeRegistry()
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.object(sc, "GIT", git), mock.patch.object(sc, "REGISTRY", reg), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            code = sc.main(["g1_slopcheck.py", "--target", str(D), *argv, "--gate", str(gate)])
+        finally:
+            sc.TARGET = sc.ROOT
+    g = json.loads(gate.read_text(encoding="utf-8")) if gate.exists() else {}
+    if gate.exists():
+        gate.unlink()
+    return code, g, reg
