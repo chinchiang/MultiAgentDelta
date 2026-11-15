@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import g1_registry as gr  # noqa: E402
 from fakes import run_screen  # noqa: E402
-from gitrepo import TempRepo, isolated_git_environment  # noqa: E402
+from gitrepo import TempRepo, isolated_git_environment, open_pull_request  # noqa: E402
 
 WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pr-gates.yml"
 
@@ -65,22 +65,6 @@ def run_step(repo, base_ref, *, broken=None):
         text = listing.read_bytes().decode("utf-8", "surrogateescape")
         lines = text.split("\n")[:-1] if text.endswith("\n") else text.split("\n") if text else []
     return r.returncode, lines, r.stderr.decode("utf-8", "replace")
-
-
-def open_pull_request(r, files):
-    """base 提交只有 keep.txt、origin/main 指向它（與 pull_request 事件的形狀相同）；第二個提交新增 files。
-    files 是 {路徑: 內容}；路徑是 bytes 時用位元組建立（檔名不是合法 UTF-8 只能這樣建）。"""
-    r.write("keep.txt")
-    base = r.commit()
-    r.git("update-ref", "refs/remotes/origin/main", base)
-    for name, text in files.items():
-        if isinstance(name, bytes):
-            raw = os.fsencode(r.dir) + b"/" + name
-            os.makedirs(os.path.dirname(raw), exist_ok=True)
-            pathlib.Path(os.fsdecode(raw)).write_text(text, encoding="utf-8", errors="surrogateescape")
-        else:
-            r.write(name, text)
-    return r.commit()
 
 
 class ChangedFilesList(unittest.TestCase):

@@ -7,6 +7,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import unittest
 from unittest import mock
 
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
@@ -21,6 +22,17 @@ def git(cwd, *args, check=True):
     return subprocess.run([*GIT, *args], cwd=cwd, capture_output=True, text=True, check=check, env=clean_environ())
 
 
+def write_raw(directory, rel_bytes, data=b"x\n"):
+    """以位元組建立檔案（檔名不是合法 UTF-8 時只能這樣建），並關檔；檔案系統不接受這種檔名時略過整個測試。"""
+    raw = os.fsencode(directory) + b"/" + rel_bytes
+    try:
+        os.makedirs(os.path.dirname(raw), exist_ok=True)
+        with open(raw, "wb") as f:
+            f.write(data)
+    except OSError:
+        raise unittest.SkipTest("檔案系統不接受非 UTF-8 的檔名") from None
+
+
 class TempRepo:
     """context manager：一個 init 過的空 git 庫（在暫存目錄）。dir 是它的絕對路徑。"""
 
@@ -33,6 +45,9 @@ class TempRepo:
     def __exit__(self, *exc):
         self._tmp.cleanup()
         return False
+
+    def write_raw(self, rel_bytes, data=b"x\n"):
+        write_raw(self.dir, rel_bytes, data)
 
     def write(self, rel, text="x\n"):
         p = self.dir / rel
@@ -58,3 +73,17 @@ def isolated_git_environment(testcase):
     patcher = mock.patch.dict(os.environ, clean_environ(), clear=True)
     patcher.start()
     testcase.addCleanup(patcher.stop)
+
+
+def open_pull_request(r, files):
+    """base 提交只有 keep.txt、origin/main 指向它（與 pull_request 事件的形狀相同）；第二個提交新增 files。
+    files 是 {路徑: 內容}；路徑是 bytes 時用位元組建立（檔名不是合法 UTF-8 只能這樣建）。"""
+    r.write("keep.txt")
+    base = r.commit()
+    r.git("update-ref", "refs/remotes/origin/main", base)
+    for name, text in files.items():
+        if isinstance(name, bytes):
+            r.write_raw(name, text.encode("utf-8"))
+        else:
+            r.write(name, text)
+    return r.commit()
