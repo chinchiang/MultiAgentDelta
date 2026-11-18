@@ -245,6 +245,7 @@ class UrllibLoopbackContractTests(unittest.TestCase):
 
         self.canary_hits: list[tuple[str, str | None]] = []
         self.proxy_hits: list[str] = []
+        self.post_hits: list[tuple[str, bytes, str | None]] = []
         outer = self
 
         class CanaryHandler(http.server.BaseHTTPRequestHandler):
@@ -278,6 +279,11 @@ class UrllibLoopbackContractTests(unittest.TestCase):
         self.proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
         canary_port = self.canary.server_address[1]
 
+        redirect_codes = {"/redirect/301": 301, "/redirect/302": 302, "/redirect/307": 307, "/redirect/308": 308}
+        status_codes = {"/status/400": 400, "/status/401": 401, "/status/404": 404, "/status/422": 422, "/status/500": 500}
+        byte_sizes = {"/bytes/64": 64, "/bytes/100": 100}
+        tarpit_codes = {"/tarpit/200": 200, "/tarpit/422": 422}
+
         class TargetHandler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
@@ -292,23 +298,23 @@ class UrllibLoopbackContractTests(unittest.TestCase):
                 self.wfile.write(body)
 
             def do_GET(self):
-                if self.path.startswith("/redirect/"):
-                    code = int(self.path.rsplit("/", 1)[1])
+                if self.path in redirect_codes:
+                    code = redirect_codes[self.path]
                     self._reply(code, b'{"redirect":true}', {"Location": f"http://127.0.0.1:{canary_port}/leaked"})
                     return
-                if self.path.startswith("/status/"):
-                    code = int(self.path.rsplit("/", 1)[1])
+                if self.path in status_codes:
+                    code = status_codes[self.path]
                     self._reply(code, f'{{"code":{code},"detail":"err-{code}"}}'.encode(), {"X-VibeSec-Probe": f"S-{code}"})
                     return
-                if self.path.startswith("/bytes/"):
-                    size = int(self.path.rsplit("/", 1)[1])
+                if self.path in byte_sizes:
+                    size = byte_sizes[self.path]
                     self._reply(200, (b"0123456789abcdef" * ((size // 16) + 1))[:size])
                     return
                 if self.path == "/error-bytes/100":
                     self._reply(422, b"E" * 100, {"X-Error-Kind": "Oversize"})
                     return
-                if self.path.startswith("/tarpit/"):
-                    code = int(self.path.rsplit("/", 1)[1])
+                if self.path in tarpit_codes:
+                    code = tarpit_codes[self.path]
                     self.send_response(code)
                     self.send_header("Content-Type", "text/plain")
                     self.send_header("Content-Length", "1000000")
@@ -325,7 +331,8 @@ class UrllibLoopbackContractTests(unittest.TestCase):
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b""
-                self._reply(200, raw or b"{}", {"X-Echo-Auth": self.headers.get("Authorization") or ""})
+                outer.post_hits.append((self.path, raw, self.headers.get("Authorization")))
+                self._reply(200, b'{"posted":true}')
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
         for srv in (self.canary, self.proxy, self.server):
@@ -382,8 +389,8 @@ class UrllibLoopbackContractTests(unittest.TestCase):
                 self.assertFalse(resp.truncated)
         post_resp = target.request("/echo", method="POST", json_body={"hello": "world"}, bearer_token="tok-b")
         self.assertIsInstance(post_resp, tg.HttpResponse)
-        self.assertEqual(post_resp.json(), {"hello": "world"})
-        self.assertEqual(post_resp.header("x-echo-auth"), "Bearer tok-b")
+        self.assertEqual(post_resp.json(), {"posted": True})
+        self.assertEqual(self.post_hits, [("/echo", b'{"hello": "world"}', "Bearer tok-b")])
 
     def test_max_bytes_boundary_and_truncation_on_2xx_and_4xx(self):
         target = tg.authorize_target(self.base_url)
