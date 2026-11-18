@@ -30,6 +30,68 @@ def http_error(code):
     return urllib.error.HTTPError("https://x.invalid/", code, "msg", {}, None)
 
 
+class FakeTargetTransport:
+    """受測服務傳輸層的記憶體路由替身：記錄已送達的請求清單，未腳本化的路徑 fail-closed 回傳 TransportError。
+
+    routes 支援以 `(method, url_or_path)` 或 `url_or_path` 為索引；值可為 `(status, body)`、
+    `(status, body, headers)`（body 可為 bytes 或自動轉 JSON 的物件）、`HttpResponse` 或 `TransportError`。
+    """
+
+    def __init__(self, routes=None):
+        self.routes = dict(routes or {})
+        self.calls = []
+
+    @staticmethod
+    def _load_target_guard():
+        import pathlib
+        import sys
+        scripts_dir = str(pathlib.Path(__file__).resolve().parents[1] / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import target_guard
+        return target_guard
+
+    @staticmethod
+    def _candidates(req):
+        import urllib.parse
+        u = urllib.parse.urlsplit(req.url)
+        canonical = urllib.parse.urlunsplit((u.scheme.lower(), u.netloc.lower(), u.path, u.query, u.fragment))
+        rel = u.path or "/"
+        if u.query:
+            rel = f"{rel}?{u.query}"
+        return ((req.method, req.url), (req.method, canonical), (req.method, rel), req.url, canonical, rel)
+
+    @staticmethod
+    def _bound_response(tg, status, raw_body, headers, max_bytes, elapsed_ms=0):
+        truncated = len(raw_body) > max_bytes
+        return tg.HttpResponse(
+            status=status,
+            body=raw_body[:max_bytes],
+            headers=headers,
+            truncated=truncated,
+            elapsed_ms=elapsed_ms,
+        )
+
+    def send(self, req):
+        tg = self._load_target_guard()
+        self.calls.append(req)
+        for cand in self._candidates(req):
+            if cand in self.routes:
+                spec = self.routes[cand]
+                break
+        else:
+            return tg.TransportError(url=req.url, reason=f"未腳本化的測試路由：{req.method} {req.url}")
+        if isinstance(spec, tg.TransportError):
+            return spec
+        if isinstance(spec, tg.HttpResponse):
+            return self._bound_response(tg, spec.status, spec.body, spec.headers, req.max_bytes, spec.elapsed_ms)
+        if isinstance(spec, tuple) and len(spec) in (2, 3):
+            raw_body = spec[1] if isinstance(spec[1], bytes) else json.dumps(spec[1]).encode("utf-8")
+            hdrs = spec[2] if len(spec) == 3 else {}
+            return self._bound_response(tg, int(spec[0]), raw_body, hdrs, req.max_bytes)
+        raise TypeError(f"不支援的 FakeTargetTransport 路由規格：{spec!r}")
+
+
 class FakeGit:
     """記憶體內的 Git（#265）：staged 是檔名列表（或測試給的失敗物件）、tracked 是追蹤檔列表（None＝不是 git 工作樹）、
     files 是 {(ref, 路徑): 內容}。沒有腳本的 show 回 None（與真的 git「檔案不存在」同形）。
