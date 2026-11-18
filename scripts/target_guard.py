@@ -18,9 +18,189 @@ same_origin：check 只授權 base；目標回應裡的 URL（OIDC discovery 的
 帶帳密、非 http/https、空白／控制字元、非 ASCII 主機（IDN 同形字）、反斜線、主機含 % 一律拒絕。
 """
 from __future__ import annotations
-import ipaddress, pathlib, sys, urllib.parse
+import collections.abc, dataclasses, http.client, ipaddress, json, pathlib, re, ssl, sys, time, types, typing, urllib.error, urllib.parse, urllib.request
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import https_only  # noqa: E402
 
 DEFAULT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+DEFAULT_MAX_BYTES: typing.Final[int] = 1 << 20
+_SEAL: typing.Final = object()
+_SCHEME_RE: typing.Final = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+class Origin(typing.NamedTuple):
+    scheme: str
+    host: str
+    port: int
+
+
+@dataclasses.dataclass(frozen=True)
+class TargetDenied:
+    reason: str
+    config_error: bool = False
+
+
+class Headers(collections.abc.Mapping[str, str]):
+    """大小寫不敏感的唯讀 HTTP 回應標頭對照表。"""
+
+    __slots__ = ("_entries",)
+
+    def __init__(self, raw: typing.Mapping[str, str] | typing.Iterable[tuple[str, str]] | None = None) -> None:
+        entries: dict[str, tuple[str, str]] = {}
+        if raw is not None:
+            items = raw.items() if isinstance(raw, collections.abc.Mapping) else raw
+            for name, val in items:
+                s_name = str(name)
+                entries[s_name.lower()] = (s_name, str(val))
+        self._entries = entries
+
+    def __getitem__(self, name: str) -> str:
+        return self._entries[name.lower()][1]
+
+    def __iter__(self) -> typing.Iterator[str]:
+        for orig_name, _ in self._entries.values():
+            yield orig_name
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __contains__(self, name: object) -> bool:
+        return isinstance(name, str) and name.lower() in self._entries
+
+
+@dataclasses.dataclass(frozen=True)
+class HttpResponse:
+    status: int
+    body: bytes = b""
+    headers: Headers = dataclasses.field(default_factory=Headers)
+    truncated: bool = False
+    elapsed_ms: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.headers, Headers):
+            object.__setattr__(self, "headers", Headers(self.headers))
+
+    def header(self, name: str, default: str | None = None) -> str | None:
+        return self.headers.get(name, default)
+
+    @property
+    def text(self) -> str:
+        return self.body.decode("utf-8", "replace")
+
+    def json(self) -> object | None:
+        """解析完整回應本文為 JSON；若回應已截斷或非合法 JSON 則回傳 None。"""
+        if self.truncated:
+            return None
+        try:
+            return json.loads(self.body.decode("utf-8", "replace"))
+        except ValueError:
+            return None
+
+
+@dataclasses.dataclass(frozen=True)
+class OffOrigin:
+    url: str
+    reason: str
+
+
+@dataclasses.dataclass(frozen=True)
+class TransportError:
+    url: str
+    reason: str
+    error_type: str = "TransportError"
+    elapsed_ms: int = 0
+
+
+TargetOutcome: typing.TypeAlias = HttpResponse | OffOrigin | TransportError
+
+
+@dataclasses.dataclass(frozen=True)
+class TransportRequest:
+    method: str
+    url: str
+    headers: typing.Mapping[str, str]
+    body: bytes | None
+    timeout: float
+    max_bytes: int
+
+
+class TargetTransport(typing.Protocol):
+    def send(self, req: TransportRequest) -> HttpResponse | TransportError: ...
+
+
+def _target_opener() -> urllib.request.OpenerDirector:
+    """只裝空代理（忽略環境變數 proxy）與 HTTP／HTTPS（驗證 TLS），不裝 HTTPRedirectHandler 與本機檔案處理器。"""
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPSHandler(context=https_only.tls_context()),
+        urllib.request.UnknownHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
+class UrllibTransport:
+    """生產受測服務單跳 HTTP 轉接器：不走環境代理、不跟隨 3xx 重新導向、4xx／5xx 原樣轉為 HttpResponse、限長讀取。"""
+
+    def __init__(
+        self,
+        *,
+        opener_factory: typing.Callable[[], urllib.request.OpenerDirector] = _target_opener,
+    ) -> None:
+        self._opener_factory = opener_factory
+
+    def send(self, req: TransportRequest) -> HttpResponse | TransportError:
+        t0 = time.monotonic()
+        try:
+            u_req = urllib.request.Request(req.url, data=req.body, headers=dict(req.headers), method=req.method)
+        except ValueError as e:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return TransportError(url=req.url, reason=f"請求建構失敗（{e}）", error_type="ValueError", elapsed_ms=elapsed)
+        try:
+            with self._opener_factory().open(u_req, timeout=req.timeout) as resp:
+                raw = resp.read(req.max_bytes + 1)
+                status = resp.status
+                hdrs = Headers(resp.headers.items())
+        except urllib.error.HTTPError as e:
+            try:
+                raw = e.read(req.max_bytes + 1) if e.fp is not None else b""
+                hdrs = Headers(e.headers.items()) if e.headers is not None else Headers()
+                status = e.code
+            except (urllib.error.URLError, http.client.HTTPException, ssl.SSLError, TimeoutError, OSError) as read_err:
+                elapsed = int((time.monotonic() - t0) * 1000)
+                return TransportError(
+                    url=req.url,
+                    reason=f"請求失敗（{type(read_err).__name__}：{read_err}）",
+                    error_type=type(read_err).__name__,
+                    elapsed_ms=elapsed,
+                )
+            finally:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+        except (urllib.error.URLError, http.client.HTTPException, ssl.SSLError, TimeoutError, OSError) as e:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return TransportError(
+                url=req.url,
+                reason=f"請求失敗（{type(e).__name__}：{e}）",
+                error_type=type(e).__name__,
+                elapsed_ms=elapsed,
+            )
+        elapsed = int((time.monotonic() - t0) * 1000)
+        truncated = len(raw) > req.max_bytes
+        return HttpResponse(
+            status=status,
+            body=raw[: req.max_bytes],
+            headers=hdrs,
+            truncated=truncated,
+            elapsed_ms=elapsed,
+        )
 CONFIG = "config/targets.yaml"
 METADATA_HOSTS = {"metadata.google.internal", "metadata", "instance-data", "instance-data.ec2.internal"}
 METADATA_NETS = [ipaddress.ip_network("169.254.0.0/16"), ipaddress.ip_network("fd00:ec2::/32")]
@@ -121,6 +301,17 @@ def _origin(url: str) -> tuple[str, str, int]:
     return scheme, host.lower(), port or (443 if scheme == "https" else 80)
 
 
+def parse_origin(url: str | None) -> Origin | None:
+    """解析為不可變的 Origin(scheme, host, port)；任何非 http/https 或可疑寫法皆回傳 None。"""
+    if not isinstance(url, str):
+        return None
+    try:
+        scheme, host, port = _origin(url)
+    except ValueError:
+        return None
+    return Origin(scheme, host, port)
+
+
 def same_origin(url: str, base: str) -> tuple[bool, str]:
     """url 與 base 的 scheme、主機、埠完全相同才 True；不做 DNS 解析、不正規化尾點（嚴格比對）。"""
     try:
@@ -134,6 +325,129 @@ def same_origin(url: str, base: str) -> tuple[bool, str]:
     if got != want:
         return False, f"{got[0]}://{got[1]}:{got[2]} 與授權來源 {want[0]}://{want[1]}:{want[2]} 不同"
     return True, "同源"
+
+
+def _resolve_url(base_url: str, path: str) -> str:
+    if not isinstance(path, str):
+        return ""
+    if _SCHEME_RE.match(path):
+        return path
+    if path.startswith("/") and not path.startswith("//"):
+        return base_url + path
+    return path
+
+
+@typing.final
+class AuthorizedTarget:
+    """已通過 config/targets.yaml 與來源解析的受測服務傳輸能力；僅能由 authorize_target() 鑄造。"""
+
+    __slots__ = ("_seal", "_base_url", "_origin", "_transport", "_user_agent")
+
+    def __init__(
+        self,
+        _seal: object = None,
+        *,
+        base_url: str = "",
+        origin: Origin | None = None,
+        transport: TargetTransport | None = None,
+        user_agent: str = "vibesec-probe",
+    ) -> None:
+        if _seal is not _SEAL or origin is None:
+            raise TypeError("AuthorizedTarget 只能透過 authorize_target() 建立，不得直接實例化")
+        self._seal = _seal
+        self._base_url = base_url
+        self._origin = origin
+        self._transport = transport
+        self._user_agent = user_agent
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("AuthorizedTarget 為封緘類別，不得繼承")
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def origin(self) -> Origin:
+        return self._origin
+
+    def request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        body: bytes | None = None,
+        json_body: object = None,
+        headers: typing.Mapping[str, str] | None = None,
+        bearer_token: str | None = None,
+        timeout: float = 15.0,
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ) -> TargetOutcome:
+        if getattr(self, "_seal", None) is not _SEAL or self._transport is None:
+            raise TypeError("未經 authorize_target() 封緘的 AuthorizedTarget 實例不得發送請求")
+        if body is not None and json_body is not None:
+            raise ValueError("body 與 json_body 不可同時指定")
+        if max_bytes <= 0:
+            raise ValueError("max_bytes 必須為正整數")
+        url = _resolve_url(self._base_url, path)
+        same, why = same_origin(url, self._base_url)
+        if not same:
+            return OffOrigin(url=url, reason=why)
+        req_headers: dict[str, str] = {"User-Agent": self._user_agent}
+        if json_body is not None:
+            payload: bytes | None = json.dumps(json_body).encode("utf-8")
+            req_headers["Content-Type"] = "application/json"
+        else:
+            payload = body
+        if headers:
+            for h_name, h_val in headers.items():
+                req_headers[str(h_name)] = str(h_val)
+        if bearer_token:
+            req_headers["Authorization"] = f"Bearer {bearer_token}"
+        t_req = TransportRequest(
+            method=method.upper(),
+            url=url,
+            headers=types.MappingProxyType(req_headers),
+            body=payload,
+            timeout=timeout,
+            max_bytes=max_bytes,
+        )
+        t0 = time.monotonic()
+        outcome = self._transport.send(t_req)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        if outcome.elapsed_ms == 0 and elapsed_ms > 0:
+            return dataclasses.replace(outcome, elapsed_ms=elapsed_ms)
+        return outcome
+
+
+def authorize_target(
+    url: str | None,
+    *,
+    root: pathlib.Path | str | None = None,
+    transport: TargetTransport | None = None,
+    user_agent: str = "vibesec-probe",
+) -> AuthorizedTarget | TargetDenied:
+    """唯一鑄造 AuthorizedTarget 的授權入口；未授權、設定損壞或含 query／fragment 一律回傳 TargetDenied（零網路請求）。"""
+    base_url = (url if isinstance(url, str) else "").strip().rstrip("/")
+    try:
+        ok, why = check(base_url, root)
+    except GuardConfigError as e:
+        return TargetDenied(reason=f"目標允許清單無法讀取：{e}", config_error=True)
+    if not ok:
+        return TargetDenied(reason=why, config_error=False)
+    if "?" in base_url or "#" in base_url:
+        return TargetDenied(reason="基準 URL 不得包含 query 或 fragment", config_error=False)
+    try:
+        scheme, host, port = _origin(base_url)
+    except ValueError as e:
+        return TargetDenied(reason=f"授權目標 URL 無法解析（{e}）", config_error=False)
+    return AuthorizedTarget(
+        _SEAL,
+        base_url=base_url,
+        origin=Origin(scheme, host, port),
+        transport=transport if transport is not None else UrllibTransport(),
+        user_agent=user_agent,
+    )
 
 
 def _same_origin_selftest() -> list[str]:
