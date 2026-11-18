@@ -153,6 +153,10 @@ _避免_：allowlist（專指 G1 的套件允許清單）、抑制註解、suppr
 不是本 repo 的受驗樹，例如以 harness 掃描的其他專案；本 repo 的政策例外對它不套用。
 _避免_：外部目標、external target（target 專指 G5／G6 的受測服務）
 
+**受測服務（target）**：
+經目標允許清單授權、供黑箱閘門（G5、G6）由外而內送出探針的執行中服務（本機靶場或已授權測試環境）。
+_避免_：與受驗樹（project tree）混用；把未經授權的位址當成受測服務
+
 ---
 
 <a id="english"></a>
@@ -307,3 +311,7 @@ _Avoid_: allowlist (that means G1's package allowlist), suppression comment (sup
 **External project**:
 A project tree that is not this repo, such as another project scanned by the harness; this repo's exceptions do not apply to it.
 _Avoid_: external target (target means the service under test in G5/G6)
+
+**Target**:
+A running service authorized by the permitted target list against which the blackbox gates (G5, G6) send probes from the outside (either the local lab or an authorized test environment).
+_Avoid_: confusing it with the project tree; treating an unauthorized address as a target
