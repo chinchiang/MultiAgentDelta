@@ -33,19 +33,12 @@ def http_error(code):
 class FakeTargetTransport:
     """受測服務傳輸層的記憶體路由替身：記錄已送達的請求清單，未腳本化的路徑 fail-closed 回傳 TransportError。
 
-    routes 支援以 `(method, url_or_path)` 或 `url_or_path` 為索引；值可為：
-      - `(status, body)` 或 `(status, body, headers)`（body 可為 bytes、str 或自動轉 JSON 的物件）
-      - `HttpResponse`／`TransportError`
-      - `callable(req)`（動態或有狀態探針）
-      - `list`（同路由依序彈出多筆回應）
-      - `OSError`／`URLError`／`HTTPException` 例外實例（轉為 TransportError）
+    routes 支援以 `(method, url_or_path)` 或 `url_or_path` 為索引；值可為 `(status, body)`、
+    `(status, body, headers)`（body 可為 bytes 或自動轉 JSON 的物件）、`HttpResponse` 或 `TransportError`。
     """
 
     def __init__(self, routes=None):
-        self.routes = {
-            r_id: (list(spec) if isinstance(spec, list) else spec)
-            for r_id, spec in dict(routes or {}).items()
-        }
+        self.routes = dict(routes or {})
         self.calls = []
 
     @staticmethod
@@ -66,79 +59,36 @@ class FakeTargetTransport:
         rel = u.path or "/"
         if u.query:
             rel = f"{rel}?{u.query}"
-        return (
-            (req.method, req.url),
-            (req.method, canonical),
-            (req.method, rel),
-            req.url,
-            canonical,
-            rel,
+        return ((req.method, req.url), (req.method, canonical), (req.method, rel), req.url, canonical, rel)
+
+    @staticmethod
+    def _bound_response(tg, status, raw_body, headers, max_bytes, elapsed_ms=0):
+        truncated = len(raw_body) > max_bytes
+        return tg.HttpResponse(
+            status=status,
+            body=raw_body[:max_bytes],
+            headers=headers,
+            truncated=truncated,
+            elapsed_ms=elapsed_ms,
         )
 
     def send(self, req):
-        import http.client
         tg = self._load_target_guard()
         self.calls.append(req)
-        matched = False
-        spec = None
         for cand in self._candidates(req):
             if cand in self.routes:
-                matched = True
-                entry = self.routes[cand]
-                if isinstance(entry, list):
-                    if not entry:
-                        return tg.TransportError(
-                            url=req.url,
-                            reason=f"測試路由腳本已耗盡：{req.method} {req.url}",
-                            error_type="ExhaustedRoute",
-                        )
-                    spec = entry.pop(0)
-                else:
-                    spec = entry
+                spec = self.routes[cand]
                 break
-        if not matched:
-            return tg.TransportError(
-                url=req.url,
-                reason=f"未腳本化的測試路由：{req.method} {req.url}",
-                error_type="UnscriptedRoute",
-            )
-        if callable(spec):
-            spec = spec(req)
-        if isinstance(spec, (tg.HttpResponse, tg.TransportError)):
-            if isinstance(spec, tg.HttpResponse) and len(spec.body) > req.max_bytes:
-                return tg.HttpResponse(
-                    status=spec.status,
-                    body=spec.body[: req.max_bytes],
-                    headers=spec.headers,
-                    truncated=True,
-                    elapsed_ms=spec.elapsed_ms,
-                )
+        else:
+            return tg.TransportError(url=req.url, reason=f"未腳本化的測試路由：{req.method} {req.url}")
+        if isinstance(spec, tg.TransportError):
             return spec
-        if isinstance(spec, (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError)):
-            return tg.TransportError(
-                url=req.url,
-                reason=f"請求失敗（{type(spec).__name__}）",
-                error_type=type(spec).__name__,
-            )
-        if isinstance(spec, BaseException):
-            raise spec
+        if isinstance(spec, tg.HttpResponse):
+            return self._bound_response(tg, spec.status, spec.body, spec.headers, req.max_bytes, spec.elapsed_ms)
         if isinstance(spec, tuple) and len(spec) in (2, 3):
-            status = int(spec[0])
-            raw_body = spec[1]
+            raw_body = spec[1] if isinstance(spec[1], bytes) else json.dumps(spec[1]).encode("utf-8")
             hdrs = spec[2] if len(spec) == 3 else {}
-            if isinstance(raw_body, bytes):
-                encoded = raw_body
-            elif isinstance(raw_body, str):
-                encoded = raw_body.encode("utf-8")
-            else:
-                encoded = json.dumps(raw_body).encode("utf-8")
-            truncated = len(encoded) > req.max_bytes
-            return tg.HttpResponse(
-                status=status,
-                body=encoded[: req.max_bytes],
-                headers=hdrs,
-                truncated=truncated,
-            )
+            return self._bound_response(tg, int(spec[0]), raw_body, hdrs, req.max_bytes)
         raise TypeError(f"不支援的 FakeTargetTransport 路由規格：{spec!r}")
 
 

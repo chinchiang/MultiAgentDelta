@@ -24,9 +24,24 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import https_only  # noqa: E402
 
 DEFAULT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+CONFIG = "config/targets.yaml"
+METADATA_HOSTS = {"metadata.google.internal", "metadata", "instance-data", "instance-data.ec2.internal"}
+METADATA_NETS = [ipaddress.ip_network("169.254.0.0/16"), ipaddress.ip_network("fd00:ec2::/32")]
 DEFAULT_MAX_BYTES: typing.Final[int] = 1 << 20
 _SEAL: typing.Final = object()
 _SCHEME_RE: typing.Final = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_TRANSPORT_EXCEPTIONS = (
+    urllib.error.URLError,
+    http.client.HTTPException,
+    ssl.SSLError,
+    TimeoutError,
+    OSError,
+    ValueError,
+)
+
+
+class GuardConfigError(Exception):
+    pass
 
 
 class Origin(typing.NamedTuple):
@@ -38,7 +53,7 @@ class Origin(typing.NamedTuple):
 @dataclasses.dataclass(frozen=True)
 class TargetDenied:
     reason: str
-    config_error: bool = False
+    config_problem: bool = False
 
 
 class Headers(collections.abc.Mapping[str, str]):
@@ -93,7 +108,7 @@ class HttpResponse:
         if self.truncated:
             return None
         try:
-            return json.loads(self.body.decode("utf-8", "replace"))
+            return json.loads(self.text)
         except ValueError:
             return None
 
@@ -108,7 +123,6 @@ class OffOrigin:
 class TransportError:
     url: str
     reason: str
-    error_type: str = "TransportError"
     elapsed_ms: int = 0
 
 
@@ -144,25 +158,33 @@ def _target_opener() -> urllib.request.OpenerDirector:
     return opener
 
 
+def _validate_wire_request(req: TransportRequest) -> None:
+    if not req.method or not req.method.isascii() or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in req.method):
+        raise ValueError("HTTP 方法含非法字元")
+    if not req.url.isascii() or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in req.url):
+        raise ValueError("請求 URL 含非 ASCII 或控制字元")
+    for h_name, h_val in req.headers.items():
+        if not h_name or not h_name.isascii() or any(c.isspace() or c == ":" or ord(c) < 0x20 or ord(c) == 0x7f for c in h_name):
+            raise ValueError(f"標頭名稱不合法：{h_name!r}")
+        if "\r" in h_val or "\n" in h_val or "\x00" in h_val:
+            raise ValueError(f"標頭值含控制字元：{h_name}")
+        h_val.encode("latin-1")
+
+
+def _transport_failure(url: str, exc: BaseException, started: float) -> TransportError:
+    elapsed = int((time.monotonic() - started) * 1000)
+    return TransportError(url=url, reason=f"請求失敗（{type(exc).__name__}：{exc}）", elapsed_ms=elapsed)
+
+
 class UrllibTransport:
     """生產受測服務單跳 HTTP 轉接器：不走環境代理、不跟隨 3xx 重新導向、4xx／5xx 原樣轉為 HttpResponse、限長讀取。"""
-
-    def __init__(
-        self,
-        *,
-        opener_factory: typing.Callable[[], urllib.request.OpenerDirector] = _target_opener,
-    ) -> None:
-        self._opener_factory = opener_factory
 
     def send(self, req: TransportRequest) -> HttpResponse | TransportError:
         t0 = time.monotonic()
         try:
+            _validate_wire_request(req)
             u_req = urllib.request.Request(req.url, data=req.body, headers=dict(req.headers), method=req.method)
-        except ValueError as e:
-            elapsed = int((time.monotonic() - t0) * 1000)
-            return TransportError(url=req.url, reason=f"請求建構失敗（{e}）", error_type="ValueError", elapsed_ms=elapsed)
-        try:
-            with self._opener_factory().open(u_req, timeout=req.timeout) as resp:
+            with _target_opener().open(u_req, timeout=req.timeout) as resp:
                 raw = resp.read(req.max_bytes + 1)
                 status = resp.status
                 hdrs = Headers(resp.headers.items())
@@ -171,27 +193,15 @@ class UrllibTransport:
                 raw = e.read(req.max_bytes + 1) if e.fp is not None else b""
                 hdrs = Headers(e.headers.items()) if e.headers is not None else Headers()
                 status = e.code
-            except (urllib.error.URLError, http.client.HTTPException, ssl.SSLError, TimeoutError, OSError) as read_err:
-                elapsed = int((time.monotonic() - t0) * 1000)
-                return TransportError(
-                    url=req.url,
-                    reason=f"請求失敗（{type(read_err).__name__}：{read_err}）",
-                    error_type=type(read_err).__name__,
-                    elapsed_ms=elapsed,
-                )
+            except _TRANSPORT_EXCEPTIONS as read_err:
+                return _transport_failure(req.url, read_err, t0)
             finally:
                 try:
                     e.close()
                 except Exception:
                     pass
-        except (urllib.error.URLError, http.client.HTTPException, ssl.SSLError, TimeoutError, OSError) as e:
-            elapsed = int((time.monotonic() - t0) * 1000)
-            return TransportError(
-                url=req.url,
-                reason=f"請求失敗（{type(e).__name__}：{e}）",
-                error_type=type(e).__name__,
-                elapsed_ms=elapsed,
-            )
+        except _TRANSPORT_EXCEPTIONS as e:
+            return _transport_failure(req.url, e, t0)
         elapsed = int((time.monotonic() - t0) * 1000)
         truncated = len(raw) > req.max_bytes
         return HttpResponse(
@@ -201,13 +211,6 @@ class UrllibTransport:
             truncated=truncated,
             elapsed_ms=elapsed,
         )
-CONFIG = "config/targets.yaml"
-METADATA_HOSTS = {"metadata.google.internal", "metadata", "instance-data", "instance-data.ec2.internal"}
-METADATA_NETS = [ipaddress.ip_network("169.254.0.0/16"), ipaddress.ip_network("fd00:ec2::/32")]
-
-
-class GuardConfigError(Exception):
-    pass
 
 
 def _load(root: pathlib.Path) -> dict:
@@ -251,7 +254,9 @@ def check(url: str, root: pathlib.Path | str | None = None) -> tuple[bool, str]:
     try:
         u = urllib.parse.urlsplit((url or "").strip())
         host = u.hostname
-        _ = u.port  # 非法埠號會丟 ValueError
+        port = u.port  # 非法埠號會丟 ValueError
+        if port == 0:
+            raise ValueError("Port out of range 1-65535")
     except ValueError as e:
         return False, f"URL 無法解析（{e}）"
     if u.scheme not in ("http", "https"):
@@ -298,7 +303,9 @@ def _origin(url: str) -> tuple[str, str, int]:
     if not host:
         raise ValueError("URL 沒有主機名")
     port = u.port  # 非法埠號丟 ValueError
-    return scheme, host.lower(), port or (443 if scheme == "https" else 80)
+    if port == 0:
+        raise ValueError("非法埠號 0")
+    return scheme, host.lower(), (443 if scheme == "https" else 80) if port is None else port
 
 
 def parse_origin(url: str | None) -> Origin | None:
@@ -432,15 +439,15 @@ def authorize_target(
     try:
         ok, why = check(base_url, root)
     except GuardConfigError as e:
-        return TargetDenied(reason=f"目標允許清單無法讀取：{e}", config_error=True)
+        return TargetDenied(reason=f"目標允許清單無法讀取：{e}", config_problem=True)
     if not ok:
-        return TargetDenied(reason=why, config_error=False)
+        return TargetDenied(reason=why, config_problem=False)
     if "?" in base_url or "#" in base_url:
-        return TargetDenied(reason="基準 URL 不得包含 query 或 fragment", config_error=False)
+        return TargetDenied(reason="基準 URL 不得包含 query 或 fragment", config_problem=False)
     try:
         scheme, host, port = _origin(base_url)
     except ValueError as e:
-        return TargetDenied(reason=f"授權目標 URL 無法解析（{e}）", config_error=False)
+        return TargetDenied(reason=f"授權目標 URL 無法解析（{e}）", config_problem=False)
     return AuthorizedTarget(
         _SEAL,
         base_url=base_url,
@@ -475,6 +482,7 @@ def _same_origin_selftest() -> list[str]:
         ("http://127.0.0.1:8000\\@evil.example.com/", False, "反斜線"),
         ("http://ｅvil.example.com/", False, "IDN 全形字"),
         ("http://127.0.0.1%3a8000/", False, "主機百分比編碼"),
+        ("http://127.0.0.1:0/", False, "非法埠號 0"),
         ("http://127.0.0.1:99999/", False, "非法埠號"),
         ("", False, "空字串"),
     ]
@@ -523,6 +531,7 @@ def selftest() -> list[str]:
         expect(root, "127.0.0.1:8000", False, "缺 scheme")
         expect(root, "http://169.254.169.254/latest", False, "metadata IP")
         expect(root, "http://metadata.google.internal/", False, "metadata 主機名")
+        expect(root, "http://127.0.0.1:0/", False, "非法埠號 0")
         expect(root, "http://127.0.0.1:99999/", False, "非法埠號")
         expect(root, "", False, "空字串")
         (root / CONFIG).write_text("allowed_hosts: 127.0.0.1\n", encoding="utf-8")
