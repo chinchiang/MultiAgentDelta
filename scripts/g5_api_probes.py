@@ -24,6 +24,7 @@ from target_guard import (  # noqa: E402
     authorize_target,
 )
 from vibesec_policy import Policy, effective_mode, load_policy  # noqa: E402
+import yaml  # noqa: E402
 
 DEFAULT_ROOT: typing.Final[pathlib.Path] = pathlib.Path(__file__).resolve().parent.parent
 TOOL_NAME, TOOL_VERSION = "vibesec-g5-api-probes", "1.0.0"
@@ -194,20 +195,32 @@ def _graphql_shaped(body: str | None) -> bool:
     return isinstance(d, dict) and ("errors" in d or "data" in d)
 
 
-def _protected_paths(policy_root: pathlib.Path) -> list[str]:
+def _g5_config(policy_root: pathlib.Path) -> dict[str, typing.Any]:
     try:
-        txt = (policy_root / "vibesec.yaml").read_text(encoding="utf-8")
-    except OSError:
-        return []
-    m = re.search(r"^\s*protected_paths\s*:\s*\[([^\]]*)\]", txt, re.M)
-    return [x.strip().strip("'\"") for x in m.group(1).split(",") if x.strip()] if m else []
+        cfg = yaml.safe_load((policy_root / "vibesec.yaml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(cfg, dict):
+        return {}
+    gates = cfg.get("gates")
+    if not isinstance(gates, dict):
+        return {}
+    g5_cfg = gates.get("g5_dast_api")
+    return g5_cfg if isinstance(g5_cfg, dict) else {}
 
 
-def _cors_paths(policy_root: pathlib.Path) -> list[str]:
+def _protected_paths(policy_root: pathlib.Path) -> tuple[str, ...]:
+    raw_paths = _g5_config(policy_root).get("protected_paths")
+    if not isinstance(raw_paths, list) or any(not isinstance(item, str) for item in raw_paths):
+        return ()
+    return tuple(s for item in raw_paths if (s := item.strip()))
+
+
+def _cors_paths(protected: typing.Sequence[str]) -> list[str]:
     """CORS 探測的端點：受保護路徑與 JWT 探針端點（實際 API），最後才是 /openapi.json 與 /。"""
     seen: set[str] = set()
     out: list[str] = []
-    for p in [*_protected_paths(policy_root), *JWT_PROBE_PATHS, "/openapi.json", "/"]:
+    for p in [*protected, *JWT_PROBE_PATHS, "/openapi.json", "/"]:
         if p and p not in seen:
             seen.add(p)
             out.append(p)
@@ -231,6 +244,7 @@ class _ProbeSession:
         self.policy = policy
         self.base_url = base_url
         self.tokens = request.tokens
+        self.protected_paths: tuple[str, ...] = _protected_paths(request.policy_root)
         self.rules: dict[str, dict[str, typing.Any]] = {}
         self.results: list[dict[str, typing.Any]] = []
         self.coverage: dict[str, str] = {}
@@ -392,7 +406,7 @@ class _ProbeSession:
         reflected = None
         clean: list[str] = []
         tried: list[str] = []
-        for p in _cors_paths(self.request.policy_root):
+        for p in _cors_paths(self.protected_paths):
             outcome = auth.request(p, headers={"Origin": evil}, bearer_token=tok, timeout=15.0)
             if isinstance(outcome, OffOrigin):
                 continue
@@ -626,7 +640,7 @@ class _ProbeSession:
             )
 
     def check_session(self, auth: AuthorizedTarget) -> None:
-        protected = _protected_paths(self.request.policy_root)
+        protected = self.protected_paths
         if not protected:
             self.coverage["session_check"] = "untested"
             self.coverage_reasons["session_check"] = "vibesec.yaml 未設定 gates.g5_dast_api.protected_paths"
@@ -918,7 +932,6 @@ def main() -> int:
 def selftest() -> list[str]:
     """精簡離線自我測試：純編碼／DER SPKI 驗證、控制清單對齊與 CLI 刪舊 SARIF 煙霧測試（完整真值表見 tests/test_g5_probes.py）。"""
     import io, tempfile
-    import yaml
     from vibesec_policy import tree_copy
 
     fails: list[str] = []
@@ -959,9 +972,7 @@ def selftest() -> list[str]:
 
     if sorted(EXEC_ORDER) != sorted((*CHECKS, *ZAP_SCANS)) or len(set(EXEC_ORDER)) != len(EXEC_ORDER):
         fails.append(f"EXEC_ORDER 應與 CHECKS＋ZAP_SCANS 是同一組控制（得到 {EXEC_ORDER}）")
-    declared = ((yaml.safe_load((DEFAULT_ROOT / "vibesec.yaml").read_text(encoding="utf-8")) or {}).get("gates") or {}).get(
-        "g5_dast_api", {}
-    ).get("checks")
+    declared = _g5_config(DEFAULT_ROOT).get("checks")
     if list(CHECKS) != list(declared or []):
         fails.append(f"CHECKS 應與 vibesec.yaml gates.g5_dast_api.checks 相同（得到 {CHECKS}、{declared}）")
 
