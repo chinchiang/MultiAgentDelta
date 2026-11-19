@@ -127,27 +127,17 @@ class RunEvalsG5MigrationTests(unittest.TestCase):
             self.assertTrue(d_err)
             self.assertEqual(len(denied_tx.calls), 0)
 
-        with broken_policy_root() as bad_root:
-            bad_tx = make_transport(patched=False)
-            bad_runner = run_evals.VulnappRunner(
-                {"vulnapp": _StubVulnapp("", "http://127.0.0.1:8000")},
-                transport=bad_tx,
-                policy_root=bad_root,
-            )
-            b_hits, b_err = bad_runner.run(pos_case)
-            self.assertIsNone(b_hits)
-            self.assertTrue(b_err)
-
-        with tree_copy("") as modeless_root:
-            ml_tx = make_transport(patched=False)
-            ml_runner = run_evals.VulnappRunner(
-                {"vulnapp": _StubVulnapp("", "http://127.0.0.1:8000")},
-                transport=ml_tx,
-                policy_root=modeless_root,
-            )
-            m_hits, m_err = ml_runner.run(pos_case)
-            self.assertIsNone(m_hits)
-            self.assertTrue(m_err)
+        for label, root_ctx in (("broken_policy", broken_policy_root), ("modeless_policy", lambda: tree_copy(""))):
+            with self.subTest(case=label), root_ctx() as bad_root:
+                bad_tx = make_transport(patched=False)
+                bad_runner = run_evals.VulnappRunner(
+                    {"vulnapp": _StubVulnapp("", "http://127.0.0.1:8000")},
+                    transport=bad_tx,
+                    policy_root=bad_root,
+                )
+                b_hits, b_err = bad_runner.run(pos_case)
+                self.assertIsNone(b_hits)
+                self.assertTrue(b_err)
 
     def test_integration_runner_g5_scenarios_execute_in_process_without_workflow_step(self) -> None:
         case_405 = run_evals.load_yaml(ROOT / "evals/cases/g5/g5-ssrf-incomplete-01.yaml")

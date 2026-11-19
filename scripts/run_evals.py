@@ -739,6 +739,13 @@ def g5_negative_check(case: dict, hits, err, cov: dict):
     return hits, err
 
 
+def _run_g5_probes(url: str | None, policy_root: pathlib.Path, tokens: ProbeTokens, *, transport=None):
+    outcome = run_probes(G5Request(target_url=url, policy_root=policy_root, tokens=tokens), transport=transport)
+    if outcome.sarif is None:
+        return None, f"G5 api-probes 未產出結果：{outcome.gate.get('status_reason')}", outcome
+    return {f.rule_id for f in outcome.findings}, None, outcome
+
+
 class VulnappRunner(Runner):
     name = "vulnapp"
 
@@ -792,13 +799,10 @@ class VulnappRunner(Runner):
             token_a=self._login_bearer(auth, {"username": "alice", "password": "alice-pass"}),
             token_b=self._login_bearer(auth, {"username": "bob", "password": "bob-pass"}),
         )
-        outcome = run_probes(
-            G5Request(target_url=target.url, policy_root=self.policy_root, tokens=tokens),
-            transport=self.transport,
-        )
-        if outcome.sarif is None:
-            return None, f"G5 api-probes 未產出結果：{outcome.gate.get('status_reason')}", {}
-        return {f.rule_id for f in outcome.findings}, None, dict(outcome.coverage)
+        hits, err, outcome = _run_g5_probes(target.url, self.policy_root, tokens, transport=self.transport)
+        if err:
+            return None, err, {}
+        return hits, None, dict(outcome.coverage)
 
     def run(self, case):
         target = self.targets[case["input"]["target_app"]]
@@ -1040,16 +1044,14 @@ class IntegrationRunner(Runner):
         return srv, f"http://127.0.0.1:{srv.server_address[1]}"
 
     def _g5_probe(self, url: str, token_a: str = "eval-token-a"):
-        outcome = run_probes(
-            G5Request(
-                target_url=url,
-                policy_root=self.policy_root,
-                tokens=ProbeTokens(token_a=token_a, token_b="eval-token-b"),
-            )
+        hits, err, outcome = _run_g5_probes(
+            url,
+            self.policy_root,
+            ProbeTokens(token_a=token_a, token_b="eval-token-b"),
         )
-        if outcome.sarif is None:
-            return None, f"G5 api-probes 未產出結果：{outcome.gate.get('status_reason')}", None
-        return {f.rule_id for f in outcome.findings}, None, outcome.gate
+        if err:
+            return None, err, None
+        return hits, None, outcome.gate
 
     def _g5_405(self, case):
         srv, url = self._stub({"/openapi.json": {}})
