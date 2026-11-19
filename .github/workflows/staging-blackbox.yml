@@ -213,13 +213,11 @@ jobs:
           # 探針程式在 scripts/g5_api_probes.py（判定程式取自 default branch，與其他閘門相同）。
           # 不退回本分支的版本：workflow_dispatch 可在任何分支觸發，而這一步持有帳號 token，改跑本分支的程式
           # 等於讓分支決定探針怎麼送、結果怎麼判。缺檔 → 不寫 g5-gate.json，判定步驟記為缺閘門結果（incomplete ≠ pass）。
-          # VIBESEC_G5_PROBES 只供 scripts/run_evals.py 指定本機副本（評測的工作目錄沒有 _trusted/）。
-          S="${VIBESEC_G5_PROBES:-_trusted/scripts/g5_api_probes.py}"
-          if [ ! -f "$S" ]; then
-            echo "::error::$S 不存在：判定程式只採用 default branch（_trusted/）的版本，不改跑本分支 → G5 無結果"
+          if [ ! -f _trusted/scripts/g5_api_probes.py ]; then
+            echo "::error::_trusted/scripts/g5_api_probes.py 不存在：判定程式只採用 default branch（_trusted/）的版本，不改跑本分支 → G5 無結果"
             exit 1
           fi
-          python3 "$S"
+          python3 _trusted/scripts/g5_api_probes.py
 
       - name: Upload G5 api-probes SARIF
         if: always() && hashFiles('reports/g5-api-probes.sarif') != ''

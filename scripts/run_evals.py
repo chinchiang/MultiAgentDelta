@@ -15,13 +15,13 @@
               以 CI 同一份設定檔（config/gitleaks.toml、config/checkov/.checkov.yaml）掃 fixture，再對回 vibesec 規則
   env-check — vibesec.g2.env-not-ignored：在暫存 git repo 執行 pr-gates.yml 中同一份 .env 檢查步驟
   vulnapp   — 標記 input.target_app: vulnapp 的 G5 / G6 案例（靶場確實可重現該行為者才標記）：
-              G5 執行 staging workflow 中同一份 api-probes 程式碼（取自 .github/workflows/staging-blackbox.yml）；
+              G5 經 authorize_target 向本機靶場登入取得雙帳號憑證後，直接呼叫 scripts/g5_api_probes.py 的 run_probes；
               G6 把 prompt 送到靶場 /chat，以與 config/promptfoo/tests.yaml 相同的決定性斷言判定。
               靶場只在本機啟動（127.0.0.1），符合 AGENTS.md #8。
   zap       — 回應標頭案例（input.headers）且預期規則由 ZAP 實作：本機 stub ＋ docker 跑 ZAP baseline（與 staging 同映像、同 conf），
               再以 scripts/g5_zap.py 對回 vibesec 規則；本機沒有 docker → untested
   integration — expected.gate_status 案例（工具／環境失敗情境）：依 input.integration 以受控情境跑 CI 同一支判定程式
-              （g1_slopcheck.py 經不回應的本機 proxy、G5 api-probes 打回 405 的本機 stub、g6_gate.py 吃結果 fixture），
+              （g1_slopcheck.py 經不回應的本機 proxy、g5_api_probes.run_probes 打回 405 的本機 stub、g6_gate.py 吃結果 fixture），
               檢查閘門狀態與 expected.coverage；結果記 STATUS_OK／STATUS_WRONG，不計入召回率／精確率。
 
 用法：
@@ -35,6 +35,10 @@ from __future__ import annotations
 import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time, fnmatch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+from g5_api_probes import G5Request, ProbeTokens, RULE_CONTROL, run_probes  # noqa: E402
+from target_guard import HttpResponse, TargetDenied, authorize_target  # noqa: E402
+
 SEMGREP_RULES = ROOT / "config/semgrep/vibesec-rules.yaml"
 SLOPCHECK = ROOT / "scripts/g1_slopcheck.py"
 SLOPCHECK_RULES = {"vibesec.g1.hallucinated-package", "vibesec.g1.cooldown-violation",
@@ -688,8 +692,7 @@ class EnvCheckRunner(Runner):
                     t.write_text(str(inp.get("content", "PLACEHOLDER=1\n")), encoding="utf-8")
                 git("add", "-f", "--", *inp["files"])  # 案例描述「已提交」：-f 即使被 ignore 也追蹤
                 subprocess.run(["bash", "-c", self.code], env={**os.environ,
-                   "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
-                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")},
+                   "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml")},
                                cwd=d, capture_output=True, text=True, timeout=60)
                 out = json.loads((pathlib.Path(d) / "reports/g2-envcheck.json").read_text(encoding="utf-8"))
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
@@ -720,16 +723,6 @@ G6_ORACLES = {
 
 
 TARGET_MODES = {"vulnapp": "", "vulnapp-patched": "patched"}
-# G5 規則 → api-probes 的覆蓋項：反例（should_flag: false）要該覆蓋項實測為 pass 才算 TN。
-# 以前只看「沒有命中」：探針沒測到（untested，例如缺 token、端點不存在）也被算成正確的反例。
-G5_COVERAGE = {
-    "vibesec.g5.bola-cross-account": "bola_idor", "vibesec.g5.jwt-alg-none": "jwt_alg_none",
-    "vibesec.g5.jwt-alg-confusion": "jwt_alg_confusion", "vibesec.g5.ssrf-metadata": "ssrf_metadata",
-    "vibesec.g5.ssrf-internal-fetch": "ssrf_metadata", "vibesec.g5.swagger-exposed": "swagger_exposed",
-    "vibesec.g5.graphql-introspection": "graphql_introspection", "vibesec.g5.debug-stacktrace": "debug_stacktrace",
-    "vibesec.g5.missing-rate-limit": "rate_limit", "vibesec.g5.missing-session-check": "session_check",
-    "vibesec.g5.cors-reflect-origin": "cors_reflect_origin",
-}
 # G6 成本面（LLM10）：不是回覆內容的斷言，改跑 scripts/g6_cost_probe.py（與 staging 同一支）
 COST_RULE = "vibesec.g6.denial-of-wallet"
 
@@ -738,7 +731,7 @@ def g5_negative_check(case: dict, hits, err, cov: dict):
     """G5 反例只有在對應覆蓋項實測為 pass 時才算數；否則回報為 incomplete（不是 TN）。"""
     if err or hits is None or case["expected"].get("should_flag") or case["expected"].get("rule_id") in hits:
         return hits, err
-    key = G5_COVERAGE.get(case["expected"].get("rule_id"))
+    key = RULE_CONTROL.get(case["expected"].get("rule_id"))
     if key is None:
         return None, f"{case['expected'].get('rule_id')} 沒有對應的 api-probes 覆蓋項，無法確認反例真的測到"
     if cov.get(key) != "pass":
@@ -746,11 +739,20 @@ def g5_negative_check(case: dict, hits, err, cov: dict):
     return hits, err
 
 
+def _run_g5_probes(url: str | None, policy_root: pathlib.Path, tokens: ProbeTokens, *, transport=None):
+    outcome = run_probes(G5Request(target_url=url, policy_root=policy_root, tokens=tokens), transport=transport)
+    if outcome.sarif is None:
+        return None, f"G5 api-probes 未產出結果：{outcome.gate.get('status_reason')}", outcome
+    return {f.rule_id for f in outcome.findings}, None, outcome
+
+
 class VulnappRunner(Runner):
     name = "vulnapp"
 
-    def __init__(self, targets: dict[str, Vulnapp] | None):
+    def __init__(self, targets: dict[str, Vulnapp] | None, *, transport=None, policy_root: pathlib.Path = ROOT):
         self.targets = targets
+        self.transport = transport
+        self.policy_root = policy_root
         self._g5: dict[str, tuple[set[str] | None, str | None, dict]] = {}
 
     def handles(self, case):
@@ -770,31 +772,37 @@ class VulnappRunner(Runner):
             self._g5[target.mode] = self._probe_g5(target)
         return self._g5[target.mode]
 
+    @staticmethod
+    def _login_bearer(auth, creds: dict[str, str]) -> str | None:
+        res = auth.request("/login", method="POST", json_body=creds, timeout=30)
+        if not isinstance(res, HttpResponse):
+            return None
+        data = res.json()
+        if not isinstance(data, dict):
+            return None
+        for field in ("access_token", "token", "jwt"):
+            val = data.get(field)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return None
+
     def _probe_g5(self, target: Vulnapp) -> tuple[set[str] | None, str | None, dict]:
-        tok_sh, probe_sh = _workflow_step("取得雙帳號 token"), _workflow_step("G5 api-probes")
-        if not tok_sh or not probe_sh:
-            return None, "staging workflow 中找不到 token／api-probes 步驟", {}
-        with tempfile.TemporaryDirectory() as d:
-            env = {**os.environ, "RUNNER_TEMP": d, "GITHUB_OUTPUT": f"{d}/out", "TARGET_URL": target.url,
-                   "IS_VULNAPP": "true", "VIBESEC_TARGET_URL": target.url,
-                   "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
-                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")}
-            try:
-                subprocess.run(["bash", "-e", "-c", tok_sh], env=env, cwd=d, check=True,
-                               capture_output=True, text=True, timeout=60)
-                outs = dict(l.split("=", 1) for l in pathlib.Path(f"{d}/out").read_text().splitlines() if "=" in l)
-                env.update({"HAS_A": outs.get("has_a", "false"), "HAS_B": outs.get("has_b", "false"),
-                            "VIBESEC_TOKEN_DIR": outs.get("token_dir", "")})
-                subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
-                               capture_output=True, text=True, timeout=300)
-                sarif = json.loads(pathlib.Path(f"{d}/reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
-                gate = json.loads(pathlib.Path(f"{d}/reports/g5-gate.json").read_text(encoding="utf-8"))
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:
-                return None, f"G5 api-probes 執行失敗：{type(e).__name__}", {}
-        cov = {c.get("control_id"): c.get("state") for c in gate.get("coverage") or []}
-        # level=note 是探針的「未能實測」提示（例如缺公鑰的 alg-confusion），不算偵測到
-        return {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", [])
-                if r.get("level") != "note"}, None, cov
+        auth = authorize_target(
+            target.url or "",
+            root=self.policy_root,
+            transport=self.transport,
+            user_agent="vibesec-evals",
+        )
+        if isinstance(auth, TargetDenied):
+            return None, f"G5 靶場目標未通過授權：{auth.reason}", {}
+        tokens = ProbeTokens(
+            token_a=self._login_bearer(auth, {"username": "alice", "password": "alice-pass"}),
+            token_b=self._login_bearer(auth, {"username": "bob", "password": "bob-pass"}),
+        )
+        hits, err, outcome = _run_g5_probes(target.url, self.policy_root, tokens, transport=self.transport)
+        if err:
+            return None, err, {}
+        return hits, None, dict(outcome.coverage)
 
     def run(self, case):
         target = self.targets[case["input"]["target_app"]]
@@ -933,13 +941,16 @@ class IntegrationRunner(Runner):
     """整合層：案例描述工具／環境失敗情境（expected.gate_status），以受控情境跑 CI 用的同一支判定程式，
     檢查閘門狀態（incomplete ≠ pass）。案例以 input.integration 指定情境：
       g1-registry-timeout  g1_slopcheck.py 經「接受連線但永不回應」的本機 proxy 查 registry（真的逾時）
-      g5-endpoint-405      staging workflow 的 G5 api-probes 打本機 stub（/openapi.json 200、其餘 405）
+      g5-endpoint-405      g5_api_probes.run_probes 打本機 stub（/openapi.json 200、其餘 405）
       g5-off-origin        同上，但 stub 的 OIDC discovery jwks_uri 與 openapi paths 指向另一個埠的 canary 伺服器：
                            canary 收到任何請求（含帶 Authorization 的）即判執行失敗（規則 8：只能打授權目標）
       g6-gate              g6_gate.py 吃依 config/promptfoo/tests.yaml 組出的結果 fixture（input.fixture）
     run() 回傳 (hits, err, gate)；gate 是閘門結果 JSON（status、status_reason、coverage）。"""
     name = "integration"
     SCENARIOS = ("g1-registry-timeout", "g5-endpoint-405", "g5-off-origin", "g6-gate")
+
+    def __init__(self, *, policy_root: pathlib.Path = ROOT):
+        self.policy_root = policy_root
 
     def handles(self, case):
         sc = case["input"].get("integration")
@@ -1032,23 +1043,15 @@ class IntegrationRunner(Runner):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         return srv, f"http://127.0.0.1:{srv.server_address[1]}"
 
-    @staticmethod
-    def _g5_probe(url: str, token_a: str = "eval-token-a"):
-        probe_sh = _workflow_step("G5 api-probes")
-        if not probe_sh:
-            return None, "staging workflow 中找不到 G5 api-probes 步驟", None
-        with tempfile.TemporaryDirectory() as d:
-            tok = pathlib.Path(d) / "tokens"; tok.mkdir()
-            (tok / "a").write_text(token_a); (tok / "b").write_text("eval-token-b")
-            env = {**os.environ, "VIBESEC_TARGET_URL": url, "HAS_A": "true", "HAS_B": "true",
-                   "VIBESEC_TOKEN_DIR": str(tok), "VIBESEC_CONFIG": str(ROOT / "vibesec.yaml"),
-                   "VIBESEC_G5_PROBES": str(ROOT / "scripts/g5_api_probes.py")}
-            subprocess.run(["bash", "-e", "-c", probe_sh], env=env, cwd=d, check=True,
-                           capture_output=True, text=True, timeout=300)
-            gate = json.loads((pathlib.Path(d) / "reports/g5-gate.json").read_text(encoding="utf-8"))
-            sarif = json.loads((pathlib.Path(d) / "reports/g5-api-probes.sarif").read_text(encoding="utf-8"))
-        hits = {r.get("ruleId") for run in sarif.get("runs", []) for r in run.get("results", []) if r.get("level") != "note"}
-        return hits, None, gate
+    def _g5_probe(self, url: str, token_a: str = "eval-token-a"):
+        hits, err, outcome = _run_g5_probes(
+            url,
+            self.policy_root,
+            ProbeTokens(token_a=token_a, token_b="eval-token-b"),
+        )
+        if err:
+            return None, err, None
+        return hits, None, outcome.gate
 
     def _g5_405(self, case):
         srv, url = self._stub({"/openapi.json": {}})
@@ -1434,8 +1437,8 @@ def selftest() -> list[str]:
     import yaml as _yaml
     _g5rules = {r for r in (_yaml.safe_load((ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8"))["rules"])
                 if r.startswith("vibesec.g5.")}
-    if _g5rules - set(G5_COVERAGE):
-        fails.append(f"G5_COVERAGE 缺 cwe-map 的 G5 規則：{sorted(_g5rules - set(G5_COVERAGE))}")
+    if _g5rules - set(RULE_CONTROL):
+        fails.append(f"RULE_CONTROL 缺 cwe-map 的 G5 規則：{sorted(_g5rules - set(RULE_CONTROL))}")
 
     # _fixture_path：取第一個實際路徑、拒絕絕對路徑與 ..、Dockerfile 無副檔名
     for path, want in (("app/main.py + app/db.py", "app/main.py"), ("/etc/passwd.py", None), ("../x.py", None),
