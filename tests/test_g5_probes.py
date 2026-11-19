@@ -612,6 +612,83 @@ class AuthBolaSessionRateLimitProbeTests(_ProbeTestBase):
             self.assertEqual(empty_out.coverage["session_check"], "untested")
             self.assertIn("protected_paths", empty_out.control("session_check")["reason"])
 
+    def test_protected_paths_yaml_formats_and_invalid_types_fail_closed(self):
+        def replace_protected_block(root: pathlib.Path, block: str) -> None:
+            cfg_path = root / "vibesec.yaml"
+            src = cfg_path.read_text(encoding="utf-8")
+            target = '    protected_paths: ["/me", "/users", "/admin/users"]'
+            self.assertIn(target, src)
+            cfg_path.write_text(src.replace(target, block, 1), encoding="utf-8")
+
+        # 1. 多行 YAML 清單（含前後空白與空字串過濾）：session_check 與 cors_reflect_origin 皆實際採用
+        multiline_block = (
+            "    protected_paths:\n"
+            "      - /me\n"
+            '      - " /billing "\n'
+            '      - ""\n'
+            '      - "   "'
+        )
+        with tree_copy("mode: shadow") as root:
+            replace_protected_block(root, multiline_block)
+            pass_out, tx = self._probe({"/me": (401, {}), "/billing": (403, {})}, policy_root=root)
+            self.assertEqual(pass_out.coverage["session_check"], "pass")
+            probed_urls = {c.url for c in tx.calls}
+            self.assertIn("http://127.0.0.1:8000/billing", probed_urls)
+
+            fail_out, _ = self._probe({"/me": (401, {}), "/billing": (200, {"ok": True})}, policy_root=root)
+            self.assertEqual(fail_out.coverage["session_check"], "fail")
+            self.assertIn("vibesec.g5.missing-session-check", {f.rule_id for f in fail_out.findings})
+
+            cors_out, _ = self._probe(
+                {
+                    "/me": (404, {}),
+                    "/billing": lambda req: (
+                        200,
+                        {},
+                        {
+                            "Access-Control-Allow-Origin": req.headers.get("Origin", ""),
+                            "Access-Control-Allow-Credentials": "true",
+                        },
+                    ),
+                },
+                policy_root=root,
+            )
+            self.assertEqual(cors_out.coverage["cors_reflect_origin"], "fail")
+
+        # 2. 行內清單仍正常支援
+        with tree_copy("mode: shadow") as root:
+            replace_protected_block(root, "    protected_paths: ['/me', '/account']")
+            inline_out, _ = self._probe({"/me": (401, {}), "/account": (401, {})}, policy_root=root)
+            self.assertEqual(inline_out.coverage["session_check"], "pass")
+
+        # 3. 未設定、null、純空白清單，以及設定型別不符（字串、字典、整數、含非字串元素的清單、非 g5_dast_api 區段）
+        invalid_or_empty_blocks = [
+            ("omitted", ""),
+            ("null_value", "    protected_paths: null"),
+            ("whitespace_only", '    protected_paths: ["  ", ""]'),
+            ("bare_string", '    protected_paths: "/me"'),
+            ("mapping_value", "    protected_paths:\n      path: /me"),
+            ("int_value", "    protected_paths: 42"),
+            ("mixed_int_list", '    protected_paths: ["/me", 123]'),
+            ("mixed_null_list", "    protected_paths:\n      - /me\n      - null"),
+            ("other_gate_inline", "  other_section:\n    protected_paths: [\"/me\"]"),
+        ]
+        for label, block in invalid_or_empty_blocks:
+            with self.subTest(case=label), tree_copy("mode: shadow") as root:
+                replace_protected_block(root, block)
+                out, _ = self._probe({"/me": (401, {})}, policy_root=root)
+                self.assertEqual(out.coverage["session_check"], "untested")
+                self.assertIn("protected_paths", out.control("session_check")["reason"])
+
+        # g5_dast_api 整段為非 dict 時亦優雅退回 untested，不拋 AttributeError
+        with tree_copy("mode: shadow") as root:
+            cfg_path = root / "vibesec.yaml"
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            raw["gates"]["g5_dast_api"] = "not-a-dict"
+            cfg_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+            bad_sec_out, _ = self._probe({"/me": (401, {})}, policy_root=root)
+            self.assertEqual(bad_sec_out.coverage["session_check"], "untested")
+
     def test_rate_limit_truth_table(self):
         fail_out, _ = self._probe({("POST", "/login"): (401, {"detail": "bad credentials"})})
         self.assertEqual(fail_out.coverage["rate_limit"], "fail")
