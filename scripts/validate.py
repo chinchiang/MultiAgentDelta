@@ -805,6 +805,8 @@ if "staging-blackbox.yml" in _wf:
         err(f".github/workflows/staging-blackbox.yml:{_i}: 執行本分支的 scripts/（判定程式只能取自 _trusted/）"); _n_ci += 1
     for _i in _ci.sed_target_substitution(_wf["staging-blackbox.yml"]):
         err(f".github/workflows/staging-blackbox.yml:{_i}: 以 sed 代入 VIBESEC_TARGET_URL（URL 含 # 或 & 會壞；改用 scripts/garak_config.py）"); _n_ci += 1
+    for _m in _ci.g5_probes_wiring(yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
+        err(f".github/workflows/staging-blackbox.yml：{_m}（#292）"); _n_ci += 1
 if "pr-gates.yml" in _wf and "staging-blackbox.yml" in _wf:
     for _m in _ci.verdict_wiring(yaml.safe_load(_wf["pr-gates.yml"]) or {}, yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
         err(f"{_m}（判定規則只有 scripts/gate_verdict.py 一份，docs/08 §8）"); _n_ci += 1

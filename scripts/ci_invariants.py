@@ -11,6 +11,7 @@
   action_mode_reader_problems(action)      受信任設定 action 以受信任樹的 vibesec_mode 讀 mode，不內嵌自己的 regex（ADR 0002）；不輸出 mode（#220）
   gate_mode_channels(wf)                  workflow 不得以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）
   step_mode_decisions(wf)                 workflow 步驟不得讀 mode 自己判定；判定只在 gate_verdict（#209、GLOSSARY「阻擋判定」）
+  g5_probes_wiring(staging)               staging-blackbox.yml 的 G5 api-probes 步驟固定執行 _trusted/scripts/g5_api_probes.py、無路徑覆寫變數與 inline 判定（#292）
 
   python3 scripts/ci_invariants.py selftest
 """
@@ -124,6 +125,8 @@ def verdict_wiring(pr_gates: dict, staging: dict) -> list[str]:
 
 G4_STATIC_STEP = "G4 靜態檢查"
 G4_STATIC_CALL = "python3 -I _trusted/scripts/g4_static.py"
+G5_PROBES_STEP = "G5 api-probes"
+G5_PROBES_SCRIPT = "_trusted/scripts/g5_api_probes.py"
 
 
 def g4_static_wiring(pr_gates: dict) -> list[str]:
@@ -139,6 +142,38 @@ def g4_static_wiring(pr_gates: dict) -> list[str]:
         out.append(f"「{G4_STATIC_STEP}」步驟沒有以 `{G4_STATIC_CALL}` 執行")
     if "<<" in run or re.search(r"\bpython3?\s+(-\S+\s+)*-\s*(<|$)", run, re.M):
         out.append(f"「{G4_STATIC_STEP}」步驟含 inline 程式碼（heredoc／stdin），判定程式必須在受信任的腳本內")
+    return out
+
+
+def g5_probes_wiring(staging: dict) -> list[str]:
+    """staging-blackbox.yml 的 G5 api-probes 步驟持有雙帳號 token（#292）：固定直接執行受信任樹的
+    _trusted/scripts/g5_api_probes.py，不得包含 VIBESEC_G5_PROBES 路徑覆寫變數、間接變數執行或 inline 程式碼。"""
+    matches: list[tuple[dict, dict]] = [
+        (job or {}, st)
+        for job in (staging.get("jobs") or {}).values()
+        for st in ((job or {}).get("steps") or [])
+        if str(st.get("name", "")).startswith(G5_PROBES_STEP)
+    ]
+    if len(matches) != 1:
+        return [f"staging-blackbox.yml 應恰有一個「{G5_PROBES_STEP}」步驟（得到 {len(matches)} 個）"]
+    job, st = matches[0]
+    raw_run = str(st.get("run") or "")
+    code = "\n".join(ln for ln in raw_run.splitlines() if not ln.lstrip().startswith("#"))
+    out: list[str] = []
+    direct_call = re.compile(rf"^\s*python3(?:\s+-I)?\s+{re.escape(G5_PROBES_SCRIPT)}(?:\s|$)", re.M)
+    if not direct_call.search(code):
+        out.append(f"「{G5_PROBES_STEP}」步驟沒有直接以 `python3 {G5_PROBES_SCRIPT}` 執行")
+    has_override_env = (
+        "VIBESEC_G5_PROBES" in (staging.get("env") or {})
+        or "VIBESEC_G5_PROBES" in (job.get("env") or {})
+        or "VIBESEC_G5_PROBES" in (st.get("env") or {})
+    )
+    if has_override_env or "VIBESEC_G5_PROBES" in code:
+        out.append(f"「{G5_PROBES_STEP}」步驟含 VIBESEC_G5_PROBES 腳本路徑覆寫設定")
+    if "<<" in code or re.search(r"\bpython3?\b[^\n]*(?:\s-c\b|\s-\s*(?:<|$))", code, re.M):
+        out.append(f"「{G5_PROBES_STEP}」步驟含 inline 程式碼（heredoc／stdin／-c），判定程式必須在受信任的腳本內")
+    elif direct_call.search(code) and re.search(r"\bpython3?\s+(?:-\S+\s+)*[\"'$]", code):
+        out.append(f"「{G5_PROBES_STEP}」步驟含間接變數呼叫 python，只能直接執行 `{G5_PROBES_SCRIPT}`")
     return out
 
 
@@ -375,6 +410,45 @@ def selftest() -> list[str]:
             got = None, f"例外 {type(e).__name__}：{e}"
         if isinstance(got, tuple) or len(got) != want:
             fails.append(f"step_mode_decisions「{label}」應回報 {want} 項（得到 {got}）")
+    # staging 的 G5 api-probes 步驟持有雙帳號 token（#292）：固定執行 _trusted/scripts/g5_api_probes.py，
+    # 不得有 VIBESEC_G5_PROBES 覆寫分支、間接變數執行或 inline 程式碼
+    g5_ok_run = ("# 探針程式取自 default branch\n"
+                 "if [ ! -f _trusted/scripts/g5_api_probes.py ]; then\n"
+                 "  exit 1\n"
+                 "fi\n"
+                 "python3 _trusted/scripts/g5_api_probes.py\n")
+    g5_wf = lambda run, env=None, job_env=None, wf_env=None: {
+        **({"env": wf_env} if wf_env else {}),
+        "jobs": {"blackbox": {
+            **({"env": job_env} if job_env else {}),
+            "steps": [{"name": "G5 api-probes（雙帳號 BOLA / JWT / SSRF / 設定外溢 / rate-limit）",
+                       "run": run, **({"env": env} if env else {})}],
+        }},
+    }
+    for label, wf, want in [
+        ("固定執行受信任腳本", g5_wf(g5_ok_run), 0),
+        ("支援 python3 -I 呼叫", g5_wf("python3 -I _trusted/scripts/g5_api_probes.py\n"), 0),
+        ("舊版 VIBESEC_G5_PROBES 覆寫分支", g5_wf(
+            'S="${VIBESEC_G5_PROBES:-_trusted/scripts/g5_api_probes.py}"\npython3 "$S"\n'), 2),
+        ("步驟 env 含 VIBESEC_G5_PROBES", g5_wf(g5_ok_run, env={"VIBESEC_G5_PROBES": "x"}), 1),
+        ("job env 含 VIBESEC_G5_PROBES", g5_wf(g5_ok_run, job_env={"VIBESEC_G5_PROBES": "x"}), 1),
+        ("workflow env 含 VIBESEC_G5_PROBES", g5_wf(g5_ok_run, wf_env={"VIBESEC_G5_PROBES": "x"}), 1),
+        ("改跑 PR head 的 scripts/", g5_wf("python3 scripts/g5_api_probes.py\n"), 1),
+        ("間接變數執行 python3 \"$S\"", g5_wf('S=_trusted/scripts/g5_api_probes.py\npython3 "$S"\n'), 1),
+        ("直接呼叫外夾帶間接變數呼叫", g5_wf(g5_ok_run + 'python3 "$EXTRA"\n'), 1),
+        ("只有註解提到呼叫、實際未執行", g5_wf("# python3 _trusted/scripts/g5_api_probes.py\necho noop\n"), 1),
+        ("inline heredoc 判定", g5_wf(g5_ok_run + "python3 -I - <<'EOF'\nprint(1)\nEOF\n"), 1),
+        ("inline python -c 判定", g5_wf(g5_ok_run + "python3 -c 'print(1)'\n"), 1),
+        ("步驟缺席", {"jobs": {"blackbox": {"steps": [{"name": "其他步驟", "run": g5_ok_run}]}}}, 1),
+        ("步驟重複", {"jobs": {"a": g5_wf(g5_ok_run)["jobs"]["blackbox"],
+                              "b": g5_wf(g5_ok_run)["jobs"]["blackbox"]}}, 1),
+    ]:
+        try:
+            got = g5_probes_wiring(wf)
+        except Exception as e:
+            got = None, f"例外 {type(e).__name__}：{e}"
+        if isinstance(got, tuple) or len(got) != want:
+            fails.append(f"g5_probes_wiring「{label}」應回報 {want} 項（得到 {got}）")
     return fails
 
 
