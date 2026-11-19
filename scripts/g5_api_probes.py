@@ -76,6 +76,8 @@ RULE_CONTROL: typing.Final[typing.Mapping[str, str]] = types.MappingProxyType(
         "vibesec.g5.cors-reflect-origin": "cors_reflect_origin",
     }
 )
+_VALID_COV_STATES: typing.Final[frozenset[str]] = frozenset({"pass", "fail", "untested", "not_applicable"})
+_VALID_TIERS: typing.Final[frozenset[str]] = frozenset({"blocking", "advisory"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,13 +85,19 @@ class ProbeTokens:
     token_a: str | None = None
     token_b: str | None = None
 
+    def __post_init__(self) -> None:
+        norm_a = self.token_a.strip() if isinstance(self.token_a, str) else ""
+        norm_b = self.token_b.strip() if isinstance(self.token_b, str) else ""
+        object.__setattr__(self, "token_a", norm_a or None)
+        object.__setattr__(self, "token_b", norm_b or None)
+
     @property
     def has_a(self) -> bool:
-        return bool(self.token_a)
+        return self.token_a is not None
 
     @property
     def has_b(self) -> bool:
-        return bool(self.token_b)
+        return self.token_b is not None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -122,9 +130,6 @@ class G5Outcome:
     sarif: dict[str, typing.Any] | None
     findings: tuple[G5Finding, ...]
     coverage: typing.Mapping[str, str]
-    _recorded_coverage: typing.Mapping[str, str] = dataclasses.field(
-        default_factory=lambda: types.MappingProxyType({}), repr=False, compare=False
-    )
 
     def control(self, control_id: str) -> dict[str, typing.Any] | None:
         for item in self.gate.get("coverage") or ():
@@ -281,6 +286,29 @@ class _ProbeSession:
         assert isinstance(outcome, HttpResponse)
         return outcome.status, outcome.text
 
+    def probe_forged_jwt(self, auth: AuthorizedTarget, tok_a: str, forged: str) -> tuple[str | None, bool, list[str]]:
+        accepted: str | None = None
+        rejected = False
+        probed: list[str] = []
+        for p in JWT_PROBE_PATHS:
+            s_auth, _ = self.send(auth, p, token=tok_a)
+            if s_auth != 200:
+                continue
+            s_forged, _ = self.send(auth, p, token=forged)
+            probed.append(f"{p}→{s_forged}")
+            if s_forged == 200:
+                accepted = p
+                break
+            if s_forged in (401, 403):
+                rejected = True
+        return accepted, rejected, probed
+
+    @staticmethod
+    def _jwt_untested_reason(probed: list[str]) -> str:
+        if probed:
+            return f"偽造 token 未得到明確 401/403（{'、'.join(probed)}）"
+        return f"沒有端點對合法 token 回 200（試過 {'、'.join(JWT_PROBE_PATHS)}），找不到受保護端點可測"
+
     def fetch_pem(self, auth: AuthorizedTarget) -> bytes | None:
         tok_a = self.tokens.token_a or ""
         try:
@@ -401,7 +429,7 @@ class _ProbeSession:
         answered = s is not None
         if not leaked(body):
             try:
-                _, spec = self.send(auth, "/openapi.json", token=self.tokens.token_a or None)
+                _, spec = self.send(auth, "/openapi.json", token=self.tokens.token_a)
                 spec_obj = json.loads(spec or "{}")
                 paths_map = spec_obj.get("paths") if isinstance(spec_obj, dict) else None
                 posts = [
@@ -425,28 +453,15 @@ class _ProbeSession:
         else:
             self.coverage["debug_stacktrace"] = "pass"
 
-    def check_jwt_none(self, auth: AuthorizedTarget | None, reachable: bool) -> None:
+    def check_jwt_none(self, auth: AuthorizedTarget) -> None:
         tok_a = self.tokens.token_a or ""
-        if auth is not None and reachable and self.tokens.has_a and tok_a.count(".") == 2:
+        if self.tokens.has_a and tok_a.count(".") == 2:
             try:
                 _, payload_b64, _ = tok_a.split(".")
                 payload = json.loads(_b64u_dec(payload_b64))
                 header = {"alg": "none", "typ": "JWT"}
                 forged = f"{b64url(json.dumps(header).encode())}.{b64url(json.dumps(payload).encode())}."
-                accepted = None
-                rejected = False
-                probed: list[str] = []
-                for p in JWT_PROBE_PATHS:
-                    s_auth, _ = self.send(auth, p, token=tok_a)
-                    if s_auth != 200:
-                        continue
-                    s_forged, _ = self.send(auth, p, token=forged)
-                    probed.append(f"{p}→{s_forged}")
-                    if s_forged == 200:
-                        accepted = p
-                        break
-                    if s_forged in (401, 403):
-                        rejected = True
+                accepted, rejected, probed = self.probe_forged_jwt(auth, tok_a, forged)
                 if accepted:
                     self.add("vibesec.g5.jwt-alg-none", "error", f"受保護端點 {accepted} 接受 alg:none 偽造 JWT（授權繞過）")
                     self.coverage["jwt_alg_none"] = "fail"
@@ -454,115 +469,100 @@ class _ProbeSession:
                     self.coverage["jwt_alg_none"] = "pass"
                 else:
                     self.coverage["jwt_alg_none"] = "untested"
-                    self.coverage_reasons["jwt_alg_none"] = (
-                        f"偽造 token 未得到明確 401/403（{'、'.join(probed)}）"
-                        if probed
-                        else f"沒有端點對合法 token 回 200（試過 {'、'.join(JWT_PROBE_PATHS)}），找不到受保護端點可測"
-                    )
+                    self.coverage_reasons["jwt_alg_none"] = self._jwt_untested_reason(probed)
             except Exception:
                 self.coverage["jwt_alg_none"] = "untested"
         else:
             self.coverage["jwt_alg_none"] = "untested"
 
-    def check_jwt_confusion(self, auth: AuthorizedTarget | None, reachable: bool) -> None:
+    def check_jwt_confusion(self, auth: AuthorizedTarget) -> None:
         tok_a = self.tokens.token_a or ""
-        alg = _token_alg(tok_a) if (auth is not None and reachable and self.tokens.has_a and tok_a.count(".") == 2) else ""
-        if auth is None or not reachable or not self.tokens.has_a or tok_a.count(".") != 2:
+        if not self.tokens.has_a or tok_a.count(".") != 2:
             self.coverage["jwt_alg_confusion"] = "untested"
-        elif alg.startswith("HS"):
+            return
+        alg = _token_alg(tok_a)
+        if alg.startswith("HS"):
             self.coverage["jwt_alg_confusion"] = "not_applicable"
             self.coverage_reasons["jwt_alg_confusion"] = "token 使用對稱演算法（HS*），無公鑰可混淆"
-        else:
-            pem = self.fetch_pem(auth)
-            if not pem:
-                self.coverage["jwt_alg_confusion"] = "untested"
-                skip = "；".join(self.jwks_skipped)
-                if skip:
-                    self.coverage_reasons["jwt_alg_confusion"] = f"未能從同源 JWKS 取得 RSA 公鑰；{skip}"
+            return
+        pem = self.fetch_pem(auth)
+        if not pem:
+            self.coverage["jwt_alg_confusion"] = "untested"
+            skip = "；".join(self.jwks_skipped)
+            if skip:
+                self.coverage_reasons["jwt_alg_confusion"] = f"未能從同源 JWKS 取得 RSA 公鑰；{skip}"
+            self.add(
+                "vibesec.g5.jwt-alg-confusion",
+                "note",
+                "未能從 JWKS 取得 RSA 公鑰 → untested，建議人工/Burp 驗證" + (f"（{skip}）" if skip else ""),
+            )
+            return
+        try:
+            _, p_b64, _ = tok_a.split(".")
+            new_h = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+            sig = b64url(hmac.new(pem, f"{new_h}.{p_b64}".encode(), hashlib.sha256).digest())
+            forged = f"{new_h}.{p_b64}.{sig}"
+            accepted, rejected, probed = self.probe_forged_jwt(auth, tok_a, forged)
+            if accepted:
                 self.add(
                     "vibesec.g5.jwt-alg-confusion",
-                    "note",
-                    "未能從 JWKS 取得 RSA 公鑰 → untested，建議人工/Burp 驗證" + (f"（{skip}）" if skip else ""),
+                    "error",
+                    f"受保護端點 {accepted} 接受以公鑰 PEM 當 HMAC 金鑰的 HS256 偽造 JWT（RS256→HS256 混淆）",
                 )
+                self.coverage["jwt_alg_confusion"] = "fail"
+            elif rejected:
+                self.coverage["jwt_alg_confusion"] = "pass"
             else:
-                try:
-                    _, p_b64, _ = tok_a.split(".")
-                    header = {"alg": "HS256", "typ": "JWT"}
-                    new_h = b64url(json.dumps(header).encode())
-                    signing_input = f"{new_h}.{p_b64}".encode()
-                    sig = b64url(hmac.new(pem, signing_input, hashlib.sha256).digest())
-                    forged = f"{new_h}.{p_b64}.{sig}"
-                    accepted = None
-                    rejected = False
-                    for p in JWT_PROBE_PATHS:
-                        s_auth, _ = self.send(auth, p, token=tok_a)
-                        if s_auth != 200:
-                            continue
-                        s_forged, _ = self.send(auth, p, token=forged)
-                        if s_forged == 200:
-                            accepted = p
-                            break
-                        if s_forged in (401, 403):
-                            rejected = True
-                    if accepted:
-                        self.add(
-                            "vibesec.g5.jwt-alg-confusion",
-                            "error",
-                            f"受保護端點 {accepted} 接受以公鑰 PEM 當 HMAC 金鑰的 HS256 偽造 JWT（RS256→HS256 混淆）",
-                        )
-                        self.coverage["jwt_alg_confusion"] = "fail"
-                    elif rejected:
-                        self.coverage["jwt_alg_confusion"] = "pass"
-                    else:
-                        self.coverage["jwt_alg_confusion"] = "untested"
-                except Exception:
-                    self.coverage["jwt_alg_confusion"] = "untested"
+                self.coverage["jwt_alg_confusion"] = "untested"
+                self.coverage_reasons["jwt_alg_confusion"] = self._jwt_untested_reason(probed)
+        except Exception:
+            self.coverage["jwt_alg_confusion"] = "untested"
 
-    def check_bola(self, auth: AuthorizedTarget | None, reachable: bool) -> None:
+    def check_bola(self, auth: AuthorizedTarget) -> None:
         tok_a = self.tokens.token_a or ""
         tok_b = self.tokens.token_b or ""
-        if auth is not None and reachable and self.tokens.has_a and self.tokens.has_b:
-            discovered: list[tuple[str | None, str]] = []
-            for listp in ("/api/items", "/items", "/api/orders", "/orders", "/api/documents", "/documents"):
-                s, body = self.send(auth, listp, token=tok_a)
-                if s == 200 and body:
-                    ids = re.findall(r'"id"\s*:\s*"?([A-Za-z0-9\-]+)"?', body)
-                    for rid in ids[:3]:
-                        discovered.append((listp, rid))
-            for mep in ("/me", "/api/me"):
-                s, body = self.send(auth, mep, token=tok_a)
-                if s == 200 and body:
-                    m = re.search(r'"id"\s*:\s*"?([A-Za-z0-9\-]+)"?', body)
-                    if m:
-                        for tpl in ("/users/{}/notes", "/users/{}", "/api/users/{}"):
-                            discovered.append((None, tpl.format(m.group(1))))
-                        break
-            confirmed = False
-            checked = False
-            for base, rid in discovered:
-                resource = rid if base is None else f"{base}/{rid}"
-                s_a, _ = self.send(auth, resource, token=tok_a)
-                if s_a != 200:
-                    continue
-                s_b, _ = self.send(auth, resource, token=tok_b)
-                if s_b in (401, 403, 404):
-                    checked = True
-                if s_b == 200:
-                    self.add(
-                        "vibesec.g5.bola-cross-account",
-                        "error",
-                        f"雙帳號 BOLA 實證：帳號 B 可存取帳號 A 的資源 {resource}（HTTP 200）",
-                    )
-                    confirmed = True
-                    break
-            self.coverage["bola_idor"] = "fail" if confirmed else ("pass" if checked else "untested")
-        else:
+        if not (self.tokens.has_a and self.tokens.has_b):
             self.coverage["bola_idor"] = "untested"
+            return
+        discovered: list[tuple[str | None, str]] = []
+        for listp in ("/api/items", "/items", "/api/orders", "/orders", "/api/documents", "/documents"):
+            s, body = self.send(auth, listp, token=tok_a)
+            if s == 200 and body:
+                ids = re.findall(r'"id"\s*:\s*"?([A-Za-z0-9\-]+)"?', body)
+                for rid in ids[:3]:
+                    discovered.append((listp, rid))
+        for mep in ("/me", "/api/me"):
+            s, body = self.send(auth, mep, token=tok_a)
+            if s == 200 and body:
+                m = re.search(r'"id"\s*:\s*"?([A-Za-z0-9\-]+)"?', body)
+                if m:
+                    for tpl in ("/users/{}/notes", "/users/{}", "/api/users/{}"):
+                        discovered.append((None, tpl.format(m.group(1))))
+                    break
+        confirmed = False
+        checked = False
+        for base, rid in discovered:
+            resource = rid if base is None else f"{base}/{rid}"
+            s_a, _ = self.send(auth, resource, token=tok_a)
+            if s_a != 200:
+                continue
+            s_b, _ = self.send(auth, resource, token=tok_b)
+            if s_b in (401, 403, 404):
+                checked = True
+            if s_b == 200:
+                self.add(
+                    "vibesec.g5.bola-cross-account",
+                    "error",
+                    f"雙帳號 BOLA 實證：帳號 B 可存取帳號 A 的資源 {resource}（HTTP 200）",
+                )
+                confirmed = True
+                break
+        self.coverage["bola_idor"] = "fail" if confirmed else ("pass" if checked else "untested")
 
     def check_ssrf(self, auth: AuthorizedTarget) -> None:
         meta = "http://169.254.169.254/latest/meta-data/"
         canary = f"http://127.0.0.1:{auth.origin.port}/openapi.json"
-        tok_a = self.tokens.token_a or None
+        tok_a = self.tokens.token_a
 
         def ssrf_try(ep: str, param: str, dest: str) -> list[tuple[str, int | None, str]]:
             out = []
@@ -625,38 +625,36 @@ class _ProbeSession:
                 else "沒有端點針對 URL 參數明確拒絕內部位址（400／403 與無關參數的回應相同或沒有回應）"
             )
 
-    def check_session(self, auth: AuthorizedTarget | None, reachable: bool) -> None:
+    def check_session(self, auth: AuthorizedTarget) -> None:
         protected = _protected_paths(self.request.policy_root)
-        if auth is None or not reachable:
-            self.coverage["session_check"] = "untested"
-        elif not protected:
+        if not protected:
             self.coverage["session_check"] = "untested"
             self.coverage_reasons["session_check"] = "vibesec.yaml 未設定 gates.g5_dast_api.protected_paths"
-        else:
-            leaked: list[str] = []
-            unknown: list[str] = []
-            for pth in protected:
-                s_anon, _ = self.send(auth, pth)
-                s_bad, _ = self.send(auth, pth, token="vibesec.invalid.token")
-                open_codes = [c for c in (s_anon, s_bad) if c is not None and 200 <= c < 300]
-                if open_codes:
-                    leaked.append(f"{pth}（無 token→{s_anon}、無效 token→{s_bad}）")
-                elif s_anon in (401, 403) and s_bad in (401, 403):
-                    continue
-                else:
-                    unknown.append(f"{pth}（{s_anon}/{s_bad}）")
-            if leaked:
-                self.add(
-                    "vibesec.g5.missing-session-check",
-                    "error",
-                    "受保護端點未驗證 token 即回 2xx（前端防禦假象）：" + "；".join(leaked),
-                )
-                self.coverage["session_check"] = "fail"
-            elif unknown:
-                self.coverage["session_check"] = "untested"
-                self.coverage_reasons["session_check"] = "回應非 401/403，無法判定：" + "；".join(unknown)
+            return
+        leaked: list[str] = []
+        unknown: list[str] = []
+        for pth in protected:
+            s_anon, _ = self.send(auth, pth)
+            s_bad, _ = self.send(auth, pth, token="vibesec.invalid.token")
+            open_codes = [c for c in (s_anon, s_bad) if c is not None and 200 <= c < 300]
+            if open_codes:
+                leaked.append(f"{pth}（無 token→{s_anon}、無效 token→{s_bad}）")
+            elif s_anon in (401, 403) and s_bad in (401, 403):
+                continue
             else:
-                self.coverage["session_check"] = "pass"
+                unknown.append(f"{pth}（{s_anon}/{s_bad}）")
+        if leaked:
+            self.add(
+                "vibesec.g5.missing-session-check",
+                "error",
+                "受保護端點未驗證 token 即回 2xx（前端防禦假象）：" + "；".join(leaked),
+            )
+            self.coverage["session_check"] = "fail"
+        elif unknown:
+            self.coverage["session_check"] = "untested"
+            self.coverage_reasons["session_check"] = "回應非 401/403，無法判定：" + "；".join(unknown)
+        else:
+            self.coverage["session_check"] = "pass"
 
     def check_rate_limit(self, auth: AuthorizedTarget) -> None:
         codes = [self.send(auth, "/login", "POST", data={"username": "alice", "password": "wrong"})[0] for _ in range(25)]
@@ -686,23 +684,51 @@ class _ProbeSession:
                 self.coverage_reasons[scan_name] = zap.reason
             return
         try:
+            staged_cov: dict[str, str] = {}
+            staged_reasons: dict[str, str] = {}
             for cov_name, cov_item in zap["coverage"].items():
-                self.coverage[cov_name] = cov_item["state"]
+                if not isinstance(cov_item, dict) or cov_item.get("state") not in _VALID_COV_STATES:
+                    raise ValueError("zap coverage")
+                staged_cov[str(cov_name)] = str(cov_item["state"])
                 if cov_item.get("reason"):
-                    self.coverage_reasons[cov_name] = cov_item["reason"]
+                    staged_reasons[str(cov_name)] = str(cov_item["reason"])
+            staged_rules: dict[str, dict[str, typing.Any]] = {}
             for rid, rule_obj in zap["rules"].items():
-                self.rules.setdefault(rid, rule_obj)
-            self.results.extend(zap["results"])
-            self.zap_tools = list(zap.get("tools") or [])
+                if not isinstance(rid, str) or not rid or not isinstance(rule_obj, dict):
+                    raise ValueError("zap rules")
+                staged_rules[rid] = rule_obj
+            staged_results: list[dict[str, typing.Any]] = []
+            for item in zap["results"]:
+                if not isinstance(item, dict) or not isinstance(item.get("ruleId"), str) or not item["ruleId"]:
+                    raise ValueError("zap result")
+                props = item.get("properties")
+                if not isinstance(props, dict) or props.get("policy_tier") not in _VALID_TIERS:
+                    raise ValueError("zap policy_tier")
+                staged_results.append(item)
+            staged_tools: list[dict[str, typing.Any]] = []
+            for tool_item in zap.get("tools") or ():
+                if not isinstance(tool_item, dict) or not isinstance(tool_item.get("name"), str) or not isinstance(tool_item.get("state"), str):
+                    raise ValueError("zap tools")
+                staged_tools.append(tool_item)
         except Exception as e:
             for scan_name in ZAP_SCANS:
                 self.coverage[scan_name] = "untested"
                 self.coverage_reasons[scan_name] = f"沒有 ZAP 彙整結果（reports/g5-zap.json：{type(e).__name__}）"
+            return
 
-    def build_outcome(self, mode: str, started: datetime.datetime, incomplete_reason: str | None) -> G5Outcome:
+        self.coverage.update(staged_cov)
+        self.coverage_reasons.update(staged_reasons)
+        for rid, rule_obj in staged_rules.items():
+            self.rules.setdefault(rid, rule_obj)
+        self.results.extend(staged_results)
+        self.zap_tools = staged_tools
+
+    def build_outcome(
+        self, mode: str, started: datetime.datetime, incomplete_reason: str | None
+    ) -> tuple[G5Outcome, dict[str, str]]:
         sarif = gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(self.rules.values()), self.results)
-        blocking = sum(1 for r in self.results if (r.get("properties") or {}).get("policy_tier") == "blocking")
-        advisory = sum(1 for r in self.results if (r.get("properties") or {}).get("policy_tier") == "advisory")
+        blocking = sum(1 for r in self.results if r["properties"]["policy_tier"] == "blocking")
+        advisory = sum(1 for r in self.results if r["properties"]["policy_tier"] == "advisory")
 
         def cov_reason(cid: str, st: str) -> str | None:
             if cid in self.coverage_reasons:
@@ -733,27 +759,22 @@ class _ProbeSession:
 
         findings = tuple(
             G5Finding(
-                rule_id=str(r.get("ruleId") or ""),
-                policy_tier=str((r.get("properties") or {}).get("policy_tier") or "advisory"),
+                rule_id=str(r["ruleId"]),
+                policy_tier=str(r["properties"]["policy_tier"]),
                 level=str(r.get("level") or "warning"),
                 message=str((r.get("message") or {}).get("text") or ""),
-                source=str((r.get("properties") or {}).get("source") or TOOL_NAME),
+                source=str(r["properties"].get("source") or TOOL_NAME),
             )
             for r in self.results
             if r.get("level") != "note"
         )
         full_cov = types.MappingProxyType({c["control_id"]: c["state"] for c in gate["coverage"]})
-        return G5Outcome(
-            gate=gate,
-            sarif=sarif,
-            findings=findings,
-            coverage=full_cov,
-            _recorded_coverage=types.MappingProxyType(dict(self.coverage)),
-        )
+        return G5Outcome(gate=gate, sarif=sarif, findings=findings, coverage=full_cov), dict(self.coverage)
 
 
-def run_probes(request: G5Request, *, transport: TargetTransport | None = None) -> G5Outcome:
-    """執行 G5 黑箱探針並回傳純值 G5Outcome（無檔案與環境變數副作用）。"""
+def _execute_probes(
+    request: G5Request, *, transport: TargetTransport | None = None
+) -> tuple[G5Outcome, dict[str, str]]:
     started = request.started_at or datetime.datetime.now(datetime.timezone.utc)
     policy, problem = load_policy(request.policy_root)
     mode = effective_mode(policy)
@@ -763,12 +784,13 @@ def run_probes(request: G5Request, *, transport: TargetTransport | None = None) 
         run.tool(TOOL_NAME, "missing", version=TOOL_VERSION, exit_code=0, output_ref=request.sarif_ref)
         run.problem("VIBESEC_TARGET_URL 未設定；未送出任何探針")
         gate = run.result()
-        return G5Outcome(
+        out = G5Outcome(
             gate=gate,
             sarif=None,
             findings=(),
             coverage=types.MappingProxyType({c["control_id"]: c["state"] for c in gate["coverage"]}),
         )
+        return out, {}
 
     base_url = request.target_url.rstrip("/")
     if problem or policy is None:
@@ -779,12 +801,13 @@ def run_probes(request: G5Request, *, transport: TargetTransport | None = None) 
             run.cover(cid, "untested", reason)
         run.problem(f"{reason}；未送出任何探針")
         gate = run.result()
-        return G5Outcome(
+        out = G5Outcome(
             gate=gate,
             sarif=None,
             findings=(),
             coverage=types.MappingProxyType({c["control_id"]: c["state"] for c in gate["coverage"]}),
         )
+        return out, {}
 
     session = _ProbeSession(request, policy, base_url)
     auth_or_denied = authorize_target(
@@ -810,16 +833,22 @@ def run_probes(request: G5Request, *, transport: TargetTransport | None = None) 
         session.check_graphql(auth)
         session.check_cors(auth)
         session.check_stacktrace(auth)
-    session.check_jwt_none(auth, reachable)
-    session.check_jwt_confusion(auth, reachable)
-    session.check_bola(auth, reachable)
-    if reachable and auth is not None:
+        session.check_jwt_none(auth)
+        session.check_jwt_confusion(auth)
+        session.check_bola(auth)
         session.check_ssrf(auth)
-    session.check_session(auth, reachable)
-    if reachable and auth is not None:
+        session.check_session(auth)
         session.check_rate_limit(auth)
+    else:
+        for skipped_cid in ("jwt_alg_none", "jwt_alg_confusion", "bola_idor", "session_check"):
+            session.coverage[skipped_cid] = "untested"
     session.merge_zap()
     return session.build_outcome(mode, started, incomplete_reason)
+
+
+def run_probes(request: G5Request, *, transport: TargetTransport | None = None) -> G5Outcome:
+    """執行 G5 黑箱探針並回傳純值 G5Outcome（無檔案與環境變數副作用）。"""
+    return _execute_probes(request, transport=transport)[0]
 
 
 def _read_token_file(token_dir: str, name: str) -> str | None:
@@ -856,7 +885,7 @@ def main() -> int:
     )
     zap_arg = _load_zap_file(reports / "g5-zap.json") if target_url else None
 
-    outcome = run_probes(
+    outcome, recorded_cov = _execute_probes(
         G5Request(
             target_url=target_url,
             policy_root=policy_root,
@@ -882,7 +911,7 @@ def main() -> int:
     gate_path.write_text(json.dumps(outcome.gate, ensure_ascii=False, indent=2), encoding="utf-8")
     fc = outcome.gate["findings_count"]
     print(f"G5 api-probes: status={outcome.gate['status']} blocking={fc['blocking']} advisory={fc['advisory']}")
-    print(json.dumps(dict(outcome._recorded_coverage), ensure_ascii=False))
+    print(json.dumps(recorded_cov, ensure_ascii=False))
     return 0
 
 
@@ -890,6 +919,7 @@ def selftest() -> list[str]:
     """精簡離線自我測試：純編碼／DER SPKI 驗證、控制清單對齊與 CLI 刪舊 SARIF 煙霧測試（完整真值表見 tests/test_g5_probes.py）。"""
     import io, tempfile
     import yaml
+    from vibesec_policy import tree_copy
 
     fails: list[str] = []
     if b64url(b"\xff\xff") != "__8" or b64url(b"") != "":
@@ -935,17 +965,17 @@ def selftest() -> list[str]:
     if list(CHECKS) != list(declared or []):
         fails.append(f"CHECKS 應與 vibesec.yaml gates.g5_dast_api.checks 相同（得到 {CHECKS}、{declared}）")
 
-    # CLI 薄殼煙霧測試：缺 VIBESEC_TARGET_URL 時刪掉舊 SARIF 並寫出 incomplete g5-gate.json
+    # CLI 薄殼煙霧測試：固定 mode 副本，缺 VIBESEC_TARGET_URL 時刪掉舊 SARIF 並寫出 incomplete g5-gate.json
     cwd0 = os.getcwd()
     env0 = dict(os.environ)
     try:
-        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        with tree_copy("mode: shadow") as pinned_root, tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
             os.chdir(d)
             (pathlib.Path(d) / "reports").mkdir()
             stale = pathlib.Path(d) / "reports/g5-api-probes.sarif"
             stale.write_text('{"stale": true}', encoding="utf-8")
             os.environ.clear()
-            os.environ["VIBESEC_CONFIG"] = str(DEFAULT_ROOT / "vibesec.yaml")
+            os.environ["VIBESEC_CONFIG"] = str(pinned_root / "vibesec.yaml")
             rc = main()
             gate_file = pathlib.Path(d) / "reports/g5-gate.json"
             if rc != 0 or stale.exists() or not gate_file.is_file():

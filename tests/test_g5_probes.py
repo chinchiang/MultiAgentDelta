@@ -1,7 +1,6 @@
 """G5 黑箱 API 探針（scripts/g5_api_probes.py）純值介面與 10 項檢查真值表測試。"""
 from __future__ import annotations
 
-import base64
 import contextlib
 import hashlib
 import hmac
@@ -31,6 +30,40 @@ GATE_SCHEMA = Draft202012Validator(
 )
 AUTHORIZED_URL = "http://127.0.0.1:8000"
 
+_DEFAULT_PATHS = (
+    "/openapi.json",
+    "/docs",
+    "/redoc",
+    "/swagger",
+    "/swagger.json",
+    "/graphql",
+    "/me",
+    "/api/me",
+    "/profile",
+    "/users/me",
+    "/account",
+    "/users",
+    "/admin/users",
+    "/",
+    "/__vibesec_nonexistent__/%ff",
+    "/api/items",
+    "/items",
+    "/api/orders",
+    "/orders",
+    "/api/documents",
+    "/documents",
+    "/fetch",
+    "/api/fetch",
+    "/import",
+    "/api/import",
+    "/proxy",
+    "/url",
+    "/login",
+    "/.well-known/openid-configuration",
+    "/.well-known/jwks.json",
+    "/jwks.json",
+)
+
 
 def _make_jwt(header: dict, payload: dict, sig: str = "sig") -> str:
     h = g5.b64url(json.dumps(header).encode("utf-8"))
@@ -38,59 +71,17 @@ def _make_jwt(header: dict, payload: dict, sig: str = "sig") -> str:
     return f"{h}.{p}.{sig}"
 
 
-def _base_routes(overrides=None):
-    """預設回傳最小可連線受測服務（/openapi.json 回 404 仍代表可連線，避免無關探針干擾）。"""
-    extra = overrides or {}
-
-    def router(req: tg.TransportRequest):
-        u = urllib.parse.urlsplit(req.url)
-        path = u.path or "/"
-        full = f"{path}?{u.query}" if u.query else path
-        for cand in ((req.method, full), (req.method, path), full, path):
-            if cand in extra:
-                spec = extra[cand]
-                return spec(req) if callable(spec) else spec
-        if path == "/openapi.json":
-            return (404, {})
-        return (404, {})
-
-    return fakes.FakeTargetTransport(
-        {
-            path_or_method: router
-            for path_or_method in (
-                "/openapi.json",
-                "/docs",
-                "/redoc",
-                "/swagger",
-                "/swagger.json",
-                "/graphql",
-                "/me",
-                "/api/me",
-                "/profile",
-                "/users/me",
-                "/account",
-                "/",
-                "/__vibesec_nonexistent__/%ff",
-                "/api/items",
-                "/items",
-                "/api/orders",
-                "/orders",
-                "/api/documents",
-                "/documents",
-                "/fetch",
-                "/api/fetch",
-                "/import",
-                "/api/import",
-                "/proxy",
-                "/url",
-                "/login",
-                "/.well-known/openid-configuration",
-                "/.well-known/jwks.json",
-                "/jwks.json",
-            )
-        }
-        | (extra if isinstance(extra, dict) else {})
+def _ssrf_fetch_routes(handler) -> dict:
+    """為 FakeTargetTransport 展開 /fetch 的 GET query 與 POST 路由鍵。"""
+    targets = (
+        "http://169.254.169.254/latest/meta-data/",
+        f"{AUTHORIZED_URL}/openapi.json",
     )
+    routes: dict = {("POST", "/fetch"): handler, "/fetch?vibesec_unrelated=x": handler}
+    for param in ("url", "uri", "target", "endpoint"):
+        for dest in targets:
+            routes[f"/fetch?{urllib.parse.urlencode({param: dest})}"] = handler
+    return routes
 
 
 class PreProbeAndContractTests(unittest.TestCase):
@@ -112,14 +103,30 @@ class PreProbeAndContractTests(unittest.TestCase):
         )
         for name in legacy_globals:
             self.assertFalse(hasattr(g5, name), f"不應殘留模組層可變全域或私有 opener：{name}")
+        self.assertNotIn("_recorded_coverage", g5.G5Outcome.__dataclass_fields__, "G5Outcome 不應含私有內部欄位")
 
         cwe_map = yaml.safe_load((REPO_ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8")) or {}
         g5_rules = {rid for rid in (cwe_map.get("rules") or {}) if rid.startswith("vibesec.g5.")}
         self.assertEqual(set(g5.RULE_CONTROL.keys()), g5_rules)
         self.assertEqual(set(g5.RULE_CONTROL.values()), set(g5.CHECKS))
 
+    def test_whitespace_only_probe_tokens_are_normalized_to_absent(self):
+        toks = g5.ProbeTokens(token_a="  \n\t ", token_b="")
+        self.assertIsNone(toks.token_a)
+        self.assertIsNone(toks.token_b)
+        self.assertFalse(toks.has_a)
+        self.assertFalse(toks.has_b)
+
+        with tree_copy("mode: shadow") as root:
+            out = g5.run_probes(
+                g5.G5Request(target_url="http://unauthorized.example", policy_root=root, tokens=toks),
+                transport=fakes.FakeTargetTransport(),
+            )
+        self.assertIn("has_a=False, has_b=False", out.gate["status_reason"])
+
     def test_missing_target_url_and_unreadable_policy_fail_closed_with_zero_requests(self):
         transport = fakes.FakeTargetTransport({("GET", "/openapi.json"): (200, {})})
+        declared_order = [*g5.CHECKS, *g5.ZAP_SCANS]
 
         with tree_copy("mode: shadow") as shadow_tree, tree_copy("") as modeless_tree:
             missing = g5.run_probes(g5.G5Request(target_url=None, policy_root=shadow_tree), transport=transport)
@@ -130,7 +137,7 @@ class PreProbeAndContractTests(unittest.TestCase):
             self.assertIn("VIBESEC_TARGET_URL 未設定；未送出任何探針", missing.gate["status_reason"])
             self.assertEqual(
                 [(c["control_id"], c["state"]) for c in missing.gate["coverage"]],
-                [(k, "untested") for k in (*g5.CHECKS, *g5.ZAP_SCANS)],
+                [(k, "untested") for k in declared_order],
             )
             self.assertEqual(
                 missing.gate["tools"],
@@ -151,6 +158,7 @@ class PreProbeAndContractTests(unittest.TestCase):
             self.assertEqual(unreadable_mode.gate["mode"], "enforce")
             self.assertIn(POLICY_UNREADABLE, unreadable_mode.gate["status_reason"])
             self.assertIn("未送出任何探針", unreadable_mode.gate["status_reason"])
+            self.assertEqual([c["control_id"] for c in unreadable_mode.gate["coverage"]], declared_order)
             self.assertEqual(
                 unreadable_mode.gate["tools"],
                 [gate_result.tool(g5.TOOL_NAME, "error", version=g5.TOOL_VERSION)],
@@ -161,6 +169,7 @@ class PreProbeAndContractTests(unittest.TestCase):
             self.assertIsNone(broken.sarif)
             self.assertEqual(broken.gate["status"], "incomplete")
             self.assertEqual(broken.gate["findings_count"], {"blocking": 0, "advisory": 0})
+            self.assertEqual([c["control_id"] for c in broken.gate["coverage"]], declared_order)
             self.assertTrue(
                 all(
                     c["state"] == "untested" and (c["reason"] or "").startswith(POLICY_UNREADABLE + "（")
@@ -211,41 +220,92 @@ class PreProbeAndContractTests(unittest.TestCase):
             ],
             "tools": [{"name": "zap-api-scan", "state": "ran", "version": "2.16.1", "exit_code": 0}],
         }
-        dead_transport = fakes.FakeTargetTransport()
-        unreachable = g5.run_probes(
-            g5.G5Request(target_url=AUTHORIZED_URL, policy_root=REPO_ROOT, zap=zap_payload),
-            transport=dead_transport,
-        )
-        self.assertEqual(len(dead_transport.calls), 1)
-        self.assertEqual(unreachable.gate["status"], "incomplete")
-        self.assertIn(f"目標 {AUTHORIZED_URL} 無法連線", unreachable.gate["status_reason"])
-        self.assertEqual(unreachable.coverage["zap_api_scan"], "fail")
-        self.assertEqual(unreachable.coverage["zap_baseline"], "pass")
-        self.assertEqual(len(unreachable.findings), 1)
-        self.assertEqual(unreachable.findings[0].rule_id, "zap:40018")
-        self.assertEqual(unreachable.findings[0].source, "zap-api-scan")
-        self.assertEqual([t["name"] for t in unreachable.gate["tools"]], [g5.TOOL_NAME, "zap-api-scan"])
+        with tree_copy("mode: shadow") as shadow_root:
+            dead_transport = fakes.FakeTargetTransport()
+            unreachable = g5.run_probes(
+                g5.G5Request(target_url=AUTHORIZED_URL, policy_root=shadow_root, zap=zap_payload),
+                transport=dead_transport,
+            )
+            self.assertEqual(len(dead_transport.calls), 1)
+            self.assertEqual(unreachable.gate["status"], "incomplete")
+            self.assertIn(f"目標 {AUTHORIZED_URL} 無法連線", unreachable.gate["status_reason"])
+            self.assertEqual(unreachable.coverage["zap_api_scan"], "fail")
+            self.assertEqual(unreachable.coverage["zap_baseline"], "pass")
+            self.assertEqual(len(unreachable.findings), 1)
+            self.assertEqual(unreachable.findings[0].rule_id, "zap:40018")
+            self.assertEqual(unreachable.findings[0].source, "zap-api-scan")
+            self.assertEqual([t["name"] for t in unreachable.gate["tools"]], [g5.TOOL_NAME, "zap-api-scan"])
+            self.assertEqual(list(GATE_SCHEMA.iter_errors(unreachable.gate)), [])
 
-        zap_unavail = g5.run_probes(
-            g5.G5Request(target_url="http://unauthorized.example", policy_root=REPO_ROOT, zap=g5.ZapUnavailable("ZAP 缺席")),
-            transport=transport,
-        )
-        self.assertEqual(zap_unavail.control("zap_api_scan")["reason"], "ZAP 缺席")
-        self.assertEqual(list(GATE_SCHEMA.iter_errors(unreachable.gate)), [])
+            # ZAP 子結果缺 policy_tier 或格式損壞時，必須原子性回退並記為 untested（不得硬編預設 advisory 或殘留部分規則）
+            for bad_label, bad_zap in (
+                (
+                    "missing_policy_tier",
+                    {
+                        **zap_payload,
+                        "results": [{"ruleId": "zap:40018", "level": "warning", "message": {"text": "x"}, "properties": {}}],
+                    },
+                ),
+                (
+                    "non_dict_result_and_bad_tools",
+                    {
+                        **zap_payload,
+                        "results": ["not-a-dict"],
+                        "tools": 123,
+                    },
+                ),
+            ):
+                with self.subTest(bad_zap=bad_label):
+                    try:
+                        bad_out = g5.run_probes(
+                            g5.G5Request(target_url="http://unauthorized.example", policy_root=shadow_root, zap=bad_zap),
+                            transport=transport,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self.fail(f"損壞的 ZAP 子結果應 fail-closed 轉 untested，實際拋出 {type(exc).__name__}: {exc}")
+                    self.assertEqual(bad_out.coverage["zap_api_scan"], "untested")
+                    self.assertEqual(bad_out.coverage["zap_baseline"], "untested")
+                    self.assertEqual(bad_out.findings, ())
+                    self.assertEqual(bad_out.sarif["runs"][0]["results"], [])
+                    self.assertEqual(bad_out.sarif["runs"][0]["tool"]["driver"]["rules"], [])
+
+            zap_unavail = g5.run_probes(
+                g5.G5Request(target_url="http://unauthorized.example", policy_root=shadow_root, zap=g5.ZapUnavailable("ZAP 缺席")),
+                transport=transport,
+            )
+            self.assertEqual(zap_unavail.control("zap_api_scan")["reason"], "ZAP 缺席")
 
 
-class SurfaceAndSsrfProbeTests(unittest.TestCase):
-    def _probe(self, overrides=None, *, tokens=g5.ProbeTokens(), policy_root=REPO_ROOT):
-        transport = _base_routes(overrides)
+class _ProbeTestBase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._policy_cm = tree_copy("mode: shadow")
+        cls.policy_root = cls._policy_cm.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._policy_cm.__exit__(None, None, None)
+
+    def _probe(self, overrides=None, *, tokens=g5.ProbeTokens(), policy_root=None):
+        routes = {p: (404, {}) for p in _DEFAULT_PATHS}
+        if overrides:
+            routes.update(overrides)
+        transport = fakes.FakeTargetTransport(routes)
         out = g5.run_probes(
-            g5.G5Request(target_url=AUTHORIZED_URL, policy_root=policy_root, tokens=tokens),
+            g5.G5Request(
+                target_url=AUTHORIZED_URL,
+                policy_root=policy_root or self.policy_root,
+                tokens=tokens,
+            ),
             transport=transport,
         )
         self.assertEqual(list(GATE_SCHEMA.iter_errors(out.gate)), [])
         return out, transport
 
+
+class SurfaceAndSsrfProbeTests(_ProbeTestBase):
     def test_swagger_exposed_truth_table(self):
-        fail_out, _ = self._probe({"/docs": (200, "<html>Swagger UI</html>")})
+        fail_out, _ = self._probe({"/docs": (200, b"<html>Swagger UI</html>")})
         self.assertEqual(fail_out.coverage["swagger_exposed"], "fail")
         self.assertIn("vibesec.g5.swagger-exposed", {f.rule_id for f in fail_out.findings})
 
@@ -285,12 +345,11 @@ class SurfaceAndSsrfProbeTests(unittest.TestCase):
                 if want in ("untested", "not_applicable"):
                     self.assertTrue(out.control("graphql_introspection")["reason"])
 
-    def test_cors_reflect_origin_truth_table_and_blocking_fail_precedence(self):
+    def test_cors_reflect_origin_truth_table_blocking_precedence_and_off_origin_bearer_guard(self):
         reflect_hdrs = {
             "Access-Control-Allow-Origin": "https://vibesec-cors-probe.invalid",
             "Access-Control-Allow-Credentials": "true",
         }
-        # 無雙帳號憑證但命中 blocking CORS → gate 狀態必須是 fail（而非 incomplete），且理由列出未完成項目
         fail_out, _ = self._probe({"/me": (200, {}, reflect_hdrs)})
         self.assertEqual(fail_out.coverage["cors_reflect_origin"], "fail")
         self.assertEqual(fail_out.gate["status"], "fail")
@@ -303,6 +362,24 @@ class SurfaceAndSsrfProbeTests(unittest.TestCase):
         untested_out, _ = self._probe({"/": (404, {})})
         self.assertEqual(untested_out.coverage["cors_reflect_origin"], "untested")
         self.assertTrue(untested_out.control("cors_reflect_origin")["reason"])
+
+        # 當 protected_paths 含非同源路徑且提供 token_a 時，CORS 探針不得對非同源位址送出請求或外洩 Bearer 憑證
+        with tree_copy("mode: shadow") as custom_root:
+            cfg_path = custom_root / "vibesec.yaml"
+            cfg_path.write_text(
+                cfg_path.read_text(encoding="utf-8").replace(
+                    'protected_paths: ["/me", "/users", "/admin/users"]',
+                    'protected_paths: ["http://evil.example/api", "@evil.example/api", "//evil.example/api", "/me"]',
+                ),
+                encoding="utf-8",
+            )
+            cors_out, transport = self._probe(
+                {"/me": (401, {})},
+                tokens=g5.ProbeTokens(token_a="tok-cors-sensitive"),
+                policy_root=custom_root,
+            )
+        self.assertEqual(cors_out.coverage["cors_reflect_origin"], "pass")
+        self.assertTrue(all("evil.example" not in c.url for c in transport.calls))
 
     def test_debug_stacktrace_truth_table_and_openapi_off_origin_interception(self):
         direct_fail, _ = self._probe({"/__vibesec_nonexistent__/%ff": (500, b"Traceback (most recent call last):\n  boom")})
@@ -343,66 +420,52 @@ class SurfaceAndSsrfProbeTests(unittest.TestCase):
         self.assertEqual(drop_out.control("debug_stacktrace")["reason"], "錯誤誘發請求都沒有得到 HTTP 回應")
 
     def test_ssrf_metadata_and_loopback_canary_truth_table(self):
-        # 1. 雲端 metadata 命中（且排除僅回顯請求 URL 的假陽性）
         def meta_vuln(req: tg.TransportRequest):
-            raw = req.url + (req.body or b"").decode("utf-8", "replace")
+            raw = urllib.parse.unquote(req.url) + (req.body or b"").decode("utf-8", "replace")
             if "169.254.169.254" in raw:
-                return (200, "ami-id: ami-12345678")
+                return (200, b"ami-id: ami-12345678")
             return (404, {})
 
-        meta_out, _ = self._probe({"/fetch": meta_vuln})
+        meta_out, _ = self._probe(_ssrf_fetch_routes(meta_vuln))
         self.assertEqual(meta_out.coverage["ssrf_metadata"], "fail")
         self.assertIn("vibesec.g5.ssrf-metadata", {f.rule_id for f in meta_out.findings})
 
-        # 2. 只回顯送出的 URL、未含實際 metadata 內容 → untested（不誤判為 fail 或 pass）
         def echo_only(req: tg.TransportRequest):
-            raw = req.url + (req.body or b"").decode("utf-8", "replace")
+            raw = urllib.parse.unquote(req.url) + (req.body or b"").decode("utf-8", "replace")
             if "169.254.169.254" in raw:
                 return (200, {"requested": "http://169.254.169.254/latest/meta-data/"})
             return (404, {})
 
-        echo_out, _ = self._probe({"/fetch": echo_only})
+        echo_out, _ = self._probe(_ssrf_fetch_routes(echo_only))
         self.assertEqual(echo_out.coverage["ssrf_metadata"], "untested")
         self.assertIn("未見 metadata 內容", echo_out.control("ssrf_metadata")["reason"])
 
-        # 3. 擋下 169.254.169.254 但允許抓取 127.0.0.1 loopback canary → fail（ssrf-internal-fetch）
         def internal_vuln(req: tg.TransportRequest):
             raw = urllib.parse.unquote(req.url) + (req.body or b"").decode("utf-8", "replace")
             if "127.0.0.1:8000/openapi.json" in raw:
-                return (200, '{"openapi":"3.1.0"}')
+                return (200, b'{"openapi":"3.1.0"}')
             if "url=" in req.url or '"url"' in raw:
                 return (403, {"detail": "metadata blocked"})
             return (422, {"detail": "missing url"})
 
-        internal_out, _ = self._probe({"/fetch": internal_vuln})
+        internal_out, _ = self._probe(_ssrf_fetch_routes(internal_vuln))
         self.assertEqual(internal_out.coverage["ssrf_metadata"], "fail")
         self.assertIn("vibesec.g5.ssrf-internal-fetch", {f.rule_id for f in internal_out.findings})
 
-        # 4. 對任何參數皆回 400（無關參數亦回 400）→ untested
-        blind_400, _ = self._probe({"/fetch": (400, {"detail": "bad request"})})
+        blind_400, _ = self._probe(_ssrf_fetch_routes(lambda _req: (400, {"detail": "bad request"})))
         self.assertEqual(blind_400.coverage["ssrf_metadata"], "untested")
 
-        # 5. 針對 URL 參數明確回 400、無關參數回 422 → pass
         def targeted_block(req: tg.TransportRequest):
             body_txt = (req.body or b"").decode("utf-8", "replace")
             if "url=" in req.url or '"url"' in body_txt:
                 return (400, {"detail": "private IP disallowed"})
             return (422, {"detail": "missing url"})
 
-        pass_out, _ = self._probe({"/fetch": targeted_block})
+        pass_out, _ = self._probe(_ssrf_fetch_routes(targeted_block))
         self.assertEqual(pass_out.coverage["ssrf_metadata"], "pass")
 
 
-class AuthBolaSessionRateLimitProbeTests(unittest.TestCase):
-    def _probe(self, overrides=None, *, tokens=g5.ProbeTokens(), policy_root=REPO_ROOT):
-        transport = _base_routes(overrides)
-        out = g5.run_probes(
-            g5.G5Request(target_url=AUTHORIZED_URL, policy_root=policy_root, tokens=tokens),
-            transport=transport,
-        )
-        self.assertEqual(list(GATE_SCHEMA.iter_errors(out.gate)), [])
-        return out, transport
-
+class AuthBolaSessionRateLimitProbeTests(_ProbeTestBase):
     def test_jwt_alg_none_truth_table(self):
         legit = _make_jwt({"alg": "HS256", "typ": "JWT"}, {"sub": "alice"})
 
@@ -428,7 +491,7 @@ class AuthBolaSessionRateLimitProbeTests(unittest.TestCase):
                 if want == "fail":
                     self.assertIn("vibesec.g5.jwt-alg-none", {f.rule_id for f in out.findings})
 
-    def test_jwt_alg_confusion_truth_table_and_oidc_off_origin_interception(self):
+    def test_jwt_alg_confusion_truth_table_and_oidc_interception(self):
         hs_tok = _make_jwt({"alg": "HS256", "typ": "JWT"}, {"sub": "alice"})
         na_out, _ = self._probe(tokens=g5.ProbeTokens(token_a=hs_tok))
         self.assertEqual(na_out.coverage["jwt_alg_confusion"], "not_applicable")
@@ -453,21 +516,30 @@ class AuthBolaSessionRateLimitProbeTests(unittest.TestCase):
         expected_sig = g5.b64url(hmac.new(pem, f"{hs_hdr}.{p_b64}".encode("utf-8"), hashlib.sha256).digest())
         expected_forged = f"{hs_hdr}.{p_b64}.{expected_sig}"
 
-        for accept_forged, want in ((True, "fail"), (False, "pass")):
-            with self.subTest(accept_forged=accept_forged):
-                def me_rsa(req: tg.TransportRequest, accept=accept_forged):
+        # 透過同源 OIDC jwks_uri 取得公鑰後，涵蓋 fail、pass 與端點 500／無受保護端點的 untested
+        for mode, want in (("accepts", "fail"), ("rejects", "pass"), ("forged_500", "untested"), ("no_protected", "untested")):
+            with self.subTest(rsa_mode=mode):
+                def me_rsa(req: tg.TransportRequest, cur=mode):
+                    if cur == "no_protected":
+                        return (404, {})
                     auth = req.headers.get("Authorization") or ""
                     if auth == f"Bearer {rs_tok}":
                         return (200, {"sub": "alice"})
                     if auth == f"Bearer {expected_forged}":
-                        return (200, {"sub": "alice"}) if accept else (401, {})
+                        return (200, {"sub": "alice"}) if cur == "accepts" else ((500, {}) if cur == "forged_500" else (401, {}))
                     return (401, {})
 
                 out, _ = self._probe(
-                    {"/.well-known/jwks.json": (200, jwk), "/me": me_rsa},
+                    {
+                        "/.well-known/openid-configuration": (200, {"jwks_uri": f"{AUTHORIZED_URL}/custom-jwks"}),
+                        "/custom-jwks": (200, jwk),
+                        "/me": me_rsa,
+                    },
                     tokens=g5.ProbeTokens(token_a=rs_tok),
                 )
                 self.assertEqual(out.coverage["jwt_alg_confusion"], want)
+                if want == "untested":
+                    self.assertTrue(out.control("jwt_alg_confusion")["reason"])
                 if want == "fail":
                     self.assertIn("vibesec.g5.jwt-alg-confusion", {f.rule_id for f in out.findings})
 
@@ -516,7 +588,6 @@ class AuthBolaSessionRateLimitProbeTests(unittest.TestCase):
         self.assertEqual(single_tok.coverage["bola_idor"], "untested")
 
     def test_session_check_truth_table(self):
-        # vibesec.yaml 預設宣告 ["/me", "/users", "/admin/users"]
         fail_out, _ = self._probe({"/me": (401, {}), "/users": (401, {}), "/admin/users": (200, [])})
         self.assertEqual(fail_out.coverage["session_check"], "fail")
         self.assertIn("vibesec.g5.missing-session-check", {f.rule_id for f in fail_out.findings})
@@ -594,7 +665,6 @@ class AuthBolaSessionRateLimitProbeTests(unittest.TestCase):
                 self.assertEqual(gate["status"], "incomplete")
                 self.assertEqual(list(GATE_SCHEMA.iter_errors(gate)), [])
 
-            # HAS_A=true 但 token 檔為空字串時，ProbeTokens 以非空字串為準將 has_a 視為 False
             with tempfile.TemporaryDirectory() as d:
                 os.chdir(d)
                 (pathlib.Path(d) / "a").write_text("   \n", encoding="utf-8")
@@ -602,7 +672,7 @@ class AuthBolaSessionRateLimitProbeTests(unittest.TestCase):
                 os.environ.update(
                     {
                         "VIBESEC_TARGET_URL": "http://unauthorized.example",
-                        "VIBESEC_CONFIG": str(REPO_ROOT / "vibesec.yaml"),
+                        "VIBESEC_CONFIG": str( self.policy_root / "vibesec.yaml"),
                         "VIBESEC_TOKEN_DIR": d,
                         "HAS_A": "true",
                     }
