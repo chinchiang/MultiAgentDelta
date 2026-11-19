@@ -195,20 +195,22 @@ def _graphql_shaped(body: str | None) -> bool:
     return isinstance(d, dict) and ("errors" in d or "data" in d)
 
 
-def _protected_paths(policy_root: pathlib.Path) -> tuple[str, ...]:
+def _g5_config(policy_root: pathlib.Path) -> dict[str, typing.Any]:
     try:
         cfg = yaml.safe_load((policy_root / "vibesec.yaml").read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
-        return ()
+        return {}
     if not isinstance(cfg, dict):
-        return ()
+        return {}
     gates = cfg.get("gates")
     if not isinstance(gates, dict):
-        return ()
+        return {}
     g5_cfg = gates.get("g5_dast_api")
-    if not isinstance(g5_cfg, dict):
-        return ()
-    raw_paths = g5_cfg.get("protected_paths")
+    return g5_cfg if isinstance(g5_cfg, dict) else {}
+
+
+def _protected_paths(policy_root: pathlib.Path) -> tuple[str, ...]:
+    raw_paths = _g5_config(policy_root).get("protected_paths")
     if not isinstance(raw_paths, list) or any(not isinstance(item, str) for item in raw_paths):
         return ()
     return tuple(s for item in raw_paths if (s := item.strip()))
@@ -970,9 +972,7 @@ def selftest() -> list[str]:
 
     if sorted(EXEC_ORDER) != sorted((*CHECKS, *ZAP_SCANS)) or len(set(EXEC_ORDER)) != len(EXEC_ORDER):
         fails.append(f"EXEC_ORDER 應與 CHECKS＋ZAP_SCANS 是同一組控制（得到 {EXEC_ORDER}）")
-    declared = ((yaml.safe_load((DEFAULT_ROOT / "vibesec.yaml").read_text(encoding="utf-8")) or {}).get("gates") or {}).get(
-        "g5_dast_api", {}
-    ).get("checks")
+    declared = _g5_config(DEFAULT_ROOT).get("checks")
     if list(CHECKS) != list(declared or []):
         fails.append(f"CHECKS 應與 vibesec.yaml gates.g5_dast_api.checks 相同（得到 {CHECKS}、{declared}）")
 

@@ -302,6 +302,13 @@ class _ProbeTestBase(unittest.TestCase):
         self.assertEqual(list(GATE_SCHEMA.iter_errors(out.gate)), [])
         return out, transport
 
+    def _replace_protected_block(self, root: pathlib.Path, block: str) -> None:
+        cfg_path = root / "vibesec.yaml"
+        src = cfg_path.read_text(encoding="utf-8")
+        target = '    protected_paths: ["/me", "/users", "/admin/users"]'
+        self.assertIn(target, src)
+        cfg_path.write_text(src.replace(target, block, 1), encoding="utf-8")
+
 
 class SurfaceAndSsrfProbeTests(_ProbeTestBase):
     def test_swagger_exposed_truth_table(self):
@@ -365,13 +372,9 @@ class SurfaceAndSsrfProbeTests(_ProbeTestBase):
 
         # 當 protected_paths 含非同源路徑且提供 token_a 時，CORS 探針不得對非同源位址送出請求或外洩 Bearer 憑證
         with tree_copy("mode: shadow") as custom_root:
-            cfg_path = custom_root / "vibesec.yaml"
-            cfg_path.write_text(
-                cfg_path.read_text(encoding="utf-8").replace(
-                    'protected_paths: ["/me", "/users", "/admin/users"]',
-                    'protected_paths: ["http://evil.example/api", "@evil.example/api", "//evil.example/api", "/me"]',
-                ),
-                encoding="utf-8",
+            self._replace_protected_block(
+                custom_root,
+                '    protected_paths: ["http://evil.example/api", "@evil.example/api", "//evil.example/api", "/me"]',
             )
             cors_out, transport = self._probe(
                 {"/me": (401, {})},
@@ -600,26 +603,12 @@ class AuthBolaSessionRateLimitProbeTests(_ProbeTestBase):
         self.assertIn("回應非 401/403", untested_404.control("session_check")["reason"])
 
         with tree_copy("mode: shadow") as root:
-            cfg_path = root / "vibesec.yaml"
-            cfg_path.write_text(
-                cfg_path.read_text(encoding="utf-8").replace(
-                    'protected_paths: ["/me", "/users", "/admin/users"]',
-                    "protected_paths: []",
-                ),
-                encoding="utf-8",
-            )
+            self._replace_protected_block(root, "    protected_paths: []")
             empty_out, _ = self._probe(policy_root=root)
             self.assertEqual(empty_out.coverage["session_check"], "untested")
             self.assertIn("protected_paths", empty_out.control("session_check")["reason"])
 
     def test_protected_paths_yaml_formats_and_invalid_types_fail_closed(self):
-        def replace_protected_block(root: pathlib.Path, block: str) -> None:
-            cfg_path = root / "vibesec.yaml"
-            src = cfg_path.read_text(encoding="utf-8")
-            target = '    protected_paths: ["/me", "/users", "/admin/users"]'
-            self.assertIn(target, src)
-            cfg_path.write_text(src.replace(target, block, 1), encoding="utf-8")
-
         # 1. 多行 YAML 清單（含前後空白與空字串過濾）：session_check 與 cors_reflect_origin 皆實際採用
         multiline_block = (
             "    protected_paths:\n"
@@ -629,7 +618,7 @@ class AuthBolaSessionRateLimitProbeTests(_ProbeTestBase):
             '      - "   "'
         )
         with tree_copy("mode: shadow") as root:
-            replace_protected_block(root, multiline_block)
+            self._replace_protected_block(root, multiline_block)
             pass_out, tx = self._probe({"/me": (401, {}), "/billing": (403, {})}, policy_root=root)
             self.assertEqual(pass_out.coverage["session_check"], "pass")
             probed_urls = {c.url for c in tx.calls}
@@ -657,7 +646,7 @@ class AuthBolaSessionRateLimitProbeTests(_ProbeTestBase):
 
         # 2. 行內清單仍正常支援
         with tree_copy("mode: shadow") as root:
-            replace_protected_block(root, "    protected_paths: ['/me', '/account']")
+            self._replace_protected_block(root, "    protected_paths: ['/me', '/account']")
             inline_out, _ = self._probe({"/me": (401, {}), "/account": (401, {})}, policy_root=root)
             self.assertEqual(inline_out.coverage["session_check"], "pass")
 
@@ -675,7 +664,7 @@ class AuthBolaSessionRateLimitProbeTests(_ProbeTestBase):
         ]
         for label, block in invalid_or_empty_blocks:
             with self.subTest(case=label), tree_copy("mode: shadow") as root:
-                replace_protected_block(root, block)
+                self._replace_protected_block(root, block)
                 out, _ = self._probe({"/me": (401, {})}, policy_root=root)
                 self.assertEqual(out.coverage["session_check"], "untested")
                 self.assertIn("protected_paths", out.control("session_check")["reason"])
