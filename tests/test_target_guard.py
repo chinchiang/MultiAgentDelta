@@ -462,7 +462,32 @@ class UrllibLoopbackContractTests(unittest.TestCase):
                     )
                 )
                 self.assertIsInstance(res, tg.TransportError)
-                self.assertIn("unknown url type", res.reason)
+                self.assertEqual(res.reason, "請求失敗（URLError）")
+
+        # 伺服器回傳非 HTTP 狀態行（BadStatusLine）時，TransportError.reason 不得夾帶原始回應內容
+        raw_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw_srv.bind(("127.0.0.1", 0))
+        raw_srv.listen(1)
+        raw_port = raw_srv.getsockname()[1]
+
+        def serve_bad_status():
+            try:
+                conn, _ = raw_srv.accept()
+                with conn:
+                    conn.recv(1024)
+                    conn.sendall(b"SECRET-WIRE-BANNER-AAAA\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                raw_srv.close()
+
+        threading.Thread(target=serve_bad_status, daemon=True).start()
+        bad_line_target = tg.authorize_target(f"http://127.0.0.1:{raw_port}")
+        self.assertIsInstance(bad_line_target, tg.AuthorizedTarget)
+        bad_line_res = bad_line_target.request("/chat", timeout=2.0)
+        self.assertIsInstance(bad_line_res, tg.TransportError)
+        self.assertEqual(bad_line_res.reason, "請求失敗（BadStatusLine）")
+        self.assertNotIn("SECRET-WIRE-BANNER", bad_line_res.reason)
 
         # 透過公開介面驗證 HTTPS 與 SSL_CERT_FILE TLS 設定被採用（非 TLS 端點與不存在的 CA 憑證檔皆 fail-closed）
         https_url = f"https://127.0.0.1:{self.server.server_address[1]}"

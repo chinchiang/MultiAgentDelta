@@ -173,7 +173,7 @@ def _validate_wire_request(req: TransportRequest) -> None:
 
 def _transport_failure(url: str, exc: BaseException, started: float) -> TransportError:
     elapsed = int((time.monotonic() - started) * 1000)
-    return TransportError(url=url, reason=f"請求失敗（{type(exc).__name__}：{exc}）", elapsed_ms=elapsed)
+    return TransportError(url=url, reason=f"請求失敗（{type(exc).__name__}）", elapsed_ms=elapsed)
 
 
 class UrllibTransport:
@@ -378,6 +378,14 @@ class AuthorizedTarget:
     def origin(self) -> Origin:
         return self._origin
 
+    def check_origin(self, path: str) -> OffOrigin | None:
+        """預先解析站內路徑或絕對 URL 並驗證與授權基準同源；非同源時回傳 OffOrigin。"""
+        if getattr(self, "_seal", None) is not _SEAL or self._transport is None:
+            raise TypeError("未經 authorize_target() 封緘的 AuthorizedTarget 實例不得檢查或發送請求")
+        url = _resolve_url(self._base_url, path)
+        same, why = same_origin(url, self._base_url)
+        return None if same else OffOrigin(url=url, reason=why)
+
     def request(
         self,
         path: str,
@@ -396,10 +404,10 @@ class AuthorizedTarget:
             raise ValueError("body 與 json_body 不可同時指定")
         if max_bytes <= 0:
             raise ValueError("max_bytes 必須為正整數")
+        off = self.check_origin(path)
+        if off is not None:
+            return off
         url = _resolve_url(self._base_url, path)
-        same, why = same_origin(url, self._base_url)
-        if not same:
-            return OffOrigin(url=url, reason=why)
         req_headers: dict[str, str] = {"User-Agent": self._user_agent}
         if json_body is not None:
             payload: bytes | None = json.dumps(json_body).encode("utf-8")
