@@ -56,10 +56,18 @@ class FakeTargetTransport:
         import urllib.parse
         u = urllib.parse.urlsplit(req.url)
         canonical = urllib.parse.urlunsplit((u.scheme.lower(), u.netloc.lower(), u.path, u.query, u.fragment))
-        rel = u.path or "/"
-        if u.query:
-            rel = f"{rel}?{u.query}"
-        return ((req.method, req.url), (req.method, canonical), (req.method, rel), req.url, canonical, rel)
+        path = u.path or "/"
+        rel = f"{path}?{u.query}" if u.query else path
+        return (
+            (req.method, req.url),
+            (req.method, canonical),
+            (req.method, rel),
+            (req.method, path),
+            req.url,
+            canonical,
+            rel,
+            path,
+        )
 
     @staticmethod
     def _bound_response(tg, status, raw_body, headers, max_bytes, elapsed_ms=0, truncated=False):
