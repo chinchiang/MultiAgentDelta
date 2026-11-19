@@ -17,25 +17,30 @@
 退出碼：0 已寫出結果（不論 state）；2 無法寫出結果。
 """
 from __future__ import annotations
-import argparse, json, pathlib, sys, time, urllib.error, urllib.request
+import argparse, json, pathlib, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from target_guard import GuardConfigError, check as guard_check, same_origin  # noqa: E402
+from target_guard import (  # noqa: E402
+    HttpResponse,
+    OffOrigin,
+    TargetDenied,
+    TargetTransport,
+    TransportError,
+    authorize_target,
+)
 
 CHECK, CONTROL = "denial_of_wallet_cost", "LLM10:2025"
+USER_AGENT = "vibesec-g6-cost-probe"
 REJECT = {413, 429}            # 413 Payload Too Large、429 配額／速率限制：本身就是「有上限」
 VALIDATION = {400, 422}        # 一般驗證錯誤（FastAPI 的 body 形狀不符也是 422）：要看錯誤內容是不是在說「太長」
 _LENGTH_HINTS = ("too long", "too_long", "too large", "too_large", "max_length", "maxlength", "max length",
                  "at most", "exceed", "長度", "過長", "太長", "上限")
 
 
-def _validation_kind(body: bytes) -> tuple[bool, str]:
+def _validation_kind(resp: HttpResponse) -> tuple[bool, str]:
     """400／422 回應是不是「長度上限」：回傳 (是否長度相關, 不含回應內容的摘要)。
     pydantic／FastAPI：detail 是 [{type, loc, msg, input}]，input 會回顯請求內容，所以只取 type 與 loc 當摘要。"""
-    try:
-        d = json.loads(body.decode("utf-8", "replace"))
-    except Exception:
-        d = None
+    d = resp.json()
     det = d.get("detail") if isinstance(d, dict) else None
     if isinstance(det, list) and det and all(isinstance(x, dict) for x in det):
         texts = [f"{x.get('type') or ''} {x.get('msg') or ''}".lower() for x in det]
@@ -45,15 +50,12 @@ def _validation_kind(body: bytes) -> tuple[bool, str]:
     if isinstance(d, dict):
         txt = " ".join(str(d.get(k) or "") for k in ("detail", "error", "message", "msg", "code", "type"))
     else:
-        txt = body[:4000].decode("utf-8", "replace")
+        txt = resp.body[:4000].decode("utf-8", "replace")
     return any(h in txt.lower() for h in _LENGTH_HINTS), "錯誤內容非 pydantic 格式"
 
 
-def _usage_total(body: bytes) -> int | None:
-    try:
-        d = json.loads(body.decode("utf-8", "replace"))
-    except Exception:
-        return None
+def _usage_total(resp: HttpResponse) -> int | None:
+    d = resp.json()
     u = d.get("usage") if isinstance(d, dict) else None
     if not isinstance(u, dict):
         return None
@@ -65,58 +67,56 @@ def _usage_total(body: bytes) -> int | None:
     return sum(nums) if nums else None
 
 
-# 只送往 http/https：urlopen 也接受 file:/ftp:，目標已由 target_guard 檢查，這裡再限定一次處理器
-_OPENER = urllib.request.OpenerDirector()
-for _h in (urllib.request.HTTPHandler(), urllib.request.HTTPSHandler(), urllib.request.HTTPErrorProcessor(),
-           urllib.request.HTTPDefaultErrorHandler()):
-    _OPENER.add_handler(_h)
-
-
-def probe(target: str, path: str = "/chat", chars: int = 200000, max_tokens: int = 8192,
-          timeout: float = 60, root: pathlib.Path | None = None) -> dict:
-    url = target.rstrip("/") + path
-    res = {"check": CHECK, "control_id": CONTROL, "state": "untested", "reason": None, "target_url": target,
-           "evidence": {"path": path, "chars": chars, "max_tokens": max_tokens, "http_status": None,
-                        "elapsed_ms": None, "usage_total_tokens": None}}
-    try:
-        ok, why = guard_check(target, root)
-    except GuardConfigError as e:
-        res["reason"] = f"目標允許清單無法讀取：{e}"
+def probe(
+    target: str,
+    path: str = "/chat",
+    chars: int = 200000,
+    max_tokens: int = 8192,
+    timeout: float = 60,
+    root: pathlib.Path | None = None,
+    *,
+    transport: TargetTransport | None = None,
+) -> dict:
+    res: dict = {
+        "check": CHECK,
+        "control_id": CONTROL,
+        "state": "untested",
+        "reason": None,
+        "target_url": target,
+        "evidence": {
+            "path": path,
+            "chars": chars,
+            "max_tokens": max_tokens,
+            "http_status": None,
+            "elapsed_ms": None,
+            "usage_total_tokens": None,
+        },
+    }
+    auth = authorize_target(target, root=root, transport=transport, user_agent=USER_AGENT)
+    if isinstance(auth, TargetDenied):
+        res["reason"] = auth.reason if auth.config_problem else f"目標未通過授權檢查：{auth.reason}"
         return res
-    if not ok:
-        res["reason"] = f"目標未通過授權檢查：{why}"
+    outcome = auth.request(
+        path,
+        method="POST",
+        json_body={"message": "A" * chars, "context": "", "session_id": "vibesec-cost-probe"},
+        timeout=timeout,
+    )
+    if isinstance(outcome, OffOrigin):
+        res["reason"] = f"拒絕：非授權來源（{outcome.reason}），未送出請求"
         return res
-    if not url.lower().startswith(("http://", "https://")):
-        res["reason"] = "只允許 http/https"
+    if isinstance(outcome, TransportError):
+        res["evidence"]["elapsed_ms"] = outcome.elapsed_ms
+        res["reason"] = f"{outcome.reason}，無法判定成本控制"
         return res
-    # --path 接在 target 後面：「@evil/x」會變成帳密混淆、打到別的主機；最終 URL 必須與已授權目標同源
-    same, why = same_origin(url, target.rstrip("/"))
-    if not same:
-        res["reason"] = f"拒絕：非授權來源（{why}），未送出請求"
-        return res
-    body = json.dumps({"message": "A" * chars, "context": "", "session_id": "vibesec-cost-probe"}).encode()
-    req = urllib.request.Request(url, data=body, method="POST",
-                                 headers={"Content-Type": "application/json", "User-Agent": "vibesec-g6-cost-probe"})
-    t0 = time.monotonic()
-    try:
-        with _OPENER.open(req, timeout=timeout) as resp:
-            status, raw = resp.status, resp.read(1 << 20)
-    except urllib.error.HTTPError as e:
-        try:
-            raw = e.read(1 << 16) if e.code in VALIDATION else b""
-        except Exception:
-            raw = b""
-        status = e.code
-    except Exception as e:
-        res["evidence"]["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
-        res["reason"] = f"請求失敗（{type(e).__name__}），無法判定成本控制"
-        return res
+    assert isinstance(outcome, HttpResponse)
+    status = outcome.status
     ev = res["evidence"]
-    ev["http_status"], ev["elapsed_ms"] = status, int((time.monotonic() - t0) * 1000)
+    ev["http_status"], ev["elapsed_ms"] = status, outcome.elapsed_ms
     if status in REJECT:
         res["state"], res["reason"] = "pass", f"超長輸入（{chars} 字元）被拒絕：HTTP {status}"
     elif status in VALIDATION:
-        about_len, summary = _validation_kind(raw)
+        about_len, summary = _validation_kind(outcome)
         if about_len:
             res["state"], res["reason"] = "pass", f"超長輸入（{chars} 字元）被長度驗證拒絕：HTTP {status}（{summary}）"
         else:
@@ -124,7 +124,7 @@ def probe(target: str, path: str = "/chat", chars: int = 200000, max_tokens: int
             res["reason"] = (f"HTTP {status} 是與長度無關的驗證錯誤（{summary}），探針請求格式可能與端點不符，"
                              "無法判定成本控制")
     elif 200 <= status < 300:
-        total = _usage_total(raw)
+        total = _usage_total(outcome)
         ev["usage_total_tokens"] = total
         if total is not None and total <= max_tokens:
             res["state"], res["reason"] = "pass", f"回報的 token 用量 {total} ≤ 預算 {max_tokens}"
@@ -140,78 +140,19 @@ def probe(target: str, path: str = "/chat", chars: int = 200000, max_tokens: int
 
 
 def selftest() -> list[str]:
-    import http.server, tempfile, threading
+    """輕量離線煙霧測試（完整狀態真值表已移至 tests/test_g6_and_zap.py）。"""
+    import tempfile
     fails: list[str] = []
-    hits = {"n": 0}
-    behavior = {"mode": "reject"}
-
-    class H(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_POST(self):
-            hits["n"] += 1
-            n = int(self.headers.get("Content-Length") or 0)
-            try:
-                self.rfile.read(n)
-            except Exception:
-                pass
-            m = behavior["mode"]
-            code, payload = {"reject": (413, b'{"detail":"too long"}'),
-                             "accept": (200, b'{"reply":"ok"}'),
-                             "usage_ok": (200, b'{"reply":"ok","usage":{"input_tokens":4000,"output_tokens":100}}'),
-                             "usage_big": (200, b'{"reply":"ok","usage":{"total_tokens":60000}}'),
-                             "auth": (401, b"{}"), "error": (500, b"{}"),
-                             "pyd_len": (422, b'{"detail":[{"type":"string_too_long","loc":["body","message"],'
-                                              b'"msg":"String should have at most 4000 characters","input":"AAAAAAAA"}]}'),
-                             "pyd_missing": (422, b'{"detail":[{"type":"missing","loc":["body","prompt"],'
-                                                  b'"msg":"Field required","input":{"message":"AAAAAAAA"}}]}'),
-                             "bad_400": (400, b'{"detail":"invalid session_id"}'),
-                             "len_400": (400, b'{"error":"message too long"}')}[m]
-            try:
-                self.send_response(code); self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
-            except Exception:
-                pass
-
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{srv.server_address[1]}"
-    try:
-        for mode, want in (("reject", "pass"), ("accept", "fail"), ("usage_ok", "pass"), ("usage_big", "fail"),
-                           ("auth", "untested"), ("error", "untested"), ("pyd_len", "pass"),
-                           ("pyd_missing", "untested"), ("bad_400", "untested"), ("len_400", "pass")):
-            behavior["mode"] = mode
-            r = probe(base, chars=10000, timeout=10)
-            if r["state"] != want:
-                fails.append(f"{mode}：預期 {want}，實際 {r['state']}（{r['reason']}）")
-            if "AAAA" in json.dumps(r):
-                fails.append(f"{mode}：結果不得保存回應內容（pydantic 的 input 會回顯請求）")
-        before = hits["n"]
-        r = probe("http://example.com", chars=10, timeout=5)
-        if r["state"] != "untested" or "授權" not in (r["reason"] or ""):
-            fails.append(f"未授權目標應 untested：{r}")
-        if hits["n"] != before:
-            fails.append("未授權目標不得送出請求")
-        r = probe(base, path="@example.com/chat", chars=10, timeout=5)
-        if r["state"] != "untested" or "非授權來源" not in (r["reason"] or "") or hits["n"] != before:
-            fails.append(f"path 造成非同源（@host）應 untested 且不送請求：{r}")
-        with tempfile.TemporaryDirectory() as d:
-            r = probe(base, chars=10, timeout=5, root=pathlib.Path(d))
-            if r["state"] != "untested" or hits["n"] != before:
-                fails.append("允許清單缺席應 untested 且不送請求")
-        behavior["mode"] = "accept"
-        srv.shutdown(); srv.server_close()
-        r = probe(base, chars=10, timeout=3)
-        if r["state"] != "untested":
-            fails.append(f"連線失敗應 untested：{r['state']}")
-        if "AAAA" in json.dumps(r):
-            fails.append("結果不得保存請求或回應內容")
-    finally:
-        try:
-            srv.shutdown(); srv.server_close()
-        except Exception:
-            pass
+    r_unlisted = probe("http://example.com", chars=10, timeout=5)
+    if r_unlisted["state"] != "untested" or "授權" not in (r_unlisted["reason"] or "") or "AAAA" in json.dumps(r_unlisted):
+        fails.append(f"未授權目標應 untested 且不保存請求內容：{r_unlisted}")
+    r_off = probe("http://127.0.0.1:8000", path="@example.com/chat", chars=10, timeout=5)
+    if r_off["state"] != "untested" or "非授權來源" not in (r_off["reason"] or ""):
+        fails.append(f"path 造成非同源（@host）應 untested：{r_off}")
+    with tempfile.TemporaryDirectory() as d:
+        r_missing = probe("http://127.0.0.1:8000", chars=10, timeout=5, root=pathlib.Path(d))
+        if r_missing["state"] != "untested" or "目標允許清單無法讀取" not in (r_missing["reason"] or ""):
+            fails.append(f"允許清單缺席應 untested：{r_missing}")
     return fails
 
 

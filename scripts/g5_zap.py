@@ -18,10 +18,11 @@
 退出碼：0 已寫出結果；2 參數或寫檔錯誤。
 """
 from __future__ import annotations
-import argparse, json, pathlib, sys, urllib.parse
+import argparse, json, pathlib, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from target_guard import parse_origin, same_origin  # noqa: E402
 SARIF_URI = ".github/workflows/staging-blackbox.yml"
 SCANS = {"api": ("zap_api_scan", "zap-api-scan"), "baseline": ("zap_baseline", "zap-baseline")}
 SKIP_ACTIONS = {"IGNORE", "OUTOFSCOPE"}
@@ -47,22 +48,11 @@ def load_impl(root: pathlib.Path) -> dict[str, str]:
     return impl
 
 
-def _origin(url) -> tuple[str, str, int] | None:
-    """(scheme, host, port)，scheme 與 host 轉小寫、port 依 scheme 補預設值；無法解析 → None。"""
-    try:
-        u = urllib.parse.urlsplit(str(url or "").strip())
-        port = u.port or {"http": 80, "https": 443}.get(u.scheme.lower())
-    except ValueError:
-        return None
-    if not u.scheme or not u.hostname or not port:
-        return None
-    return u.scheme.lower(), u.hostname.lower(), port
-
-
 def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl: dict[str, str], policy,
             target: str | None = None) -> dict:
     coverage: dict[str, dict] = {}
-    want = _origin(target)
+    base_target = target.strip() if isinstance(target, str) else ""
+    want = parse_origin(base_target)
     tools: list[dict] = []
     rules: dict[str, dict] = {}
     by_plugin: dict[str, dict] = {}
@@ -97,7 +87,10 @@ def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl:
                                  "reason": f"ZAP {tool_name}：沒有可解析的授權目標（--target {target!r}），無法確認報告的 site 是受測目標"}
             continue
         seen = [str(x.get("@name")) for x in sites]
-        sites = [x for x in sites if _origin(x.get("@name")) == want]
+        sites = [
+            x for x in sites
+            if isinstance(x.get("@name"), str) and same_origin(x["@name"].strip(), base_target)[0]
+        ]
         if not sites:
             coverage[cov_key] = {"state": "untested",
                                  "reason": f"ZAP {tool_name} 報告沒有授權目標 {target} 的 site（實際為 {', '.join(seen[:5])}）"}

@@ -34,7 +34,7 @@ class FakeTargetTransport:
     """受測服務傳輸層的記憶體路由替身：記錄已送達的請求清單，未腳本化的路徑 fail-closed 回傳 TransportError。
 
     routes 支援以 `(method, url_or_path)` 或 `url_or_path` 為索引；值可為 `(status, body)`、
-    `(status, body, headers)`（body 可為 bytes 或自動轉 JSON 的物件）、`HttpResponse` 或 `TransportError`。
+    `(status, body, headers)`（body 可為 bytes 或自動轉 JSON 的物件）、`HttpResponse`、`TransportError` 或 `callable(req)`。
     """
 
     def __init__(self, routes=None):
@@ -62,13 +62,13 @@ class FakeTargetTransport:
         return ((req.method, req.url), (req.method, canonical), (req.method, rel), req.url, canonical, rel)
 
     @staticmethod
-    def _bound_response(tg, status, raw_body, headers, max_bytes, elapsed_ms=0):
-        truncated = len(raw_body) > max_bytes
+    def _bound_response(tg, status, raw_body, headers, max_bytes, elapsed_ms=0, truncated=False):
+        is_truncated = bool(truncated) or (len(raw_body) > max_bytes)
         return tg.HttpResponse(
             status=status,
             body=raw_body[:max_bytes],
             headers=headers,
-            truncated=truncated,
+            truncated=is_truncated,
             elapsed_ms=elapsed_ms,
         )
 
@@ -81,10 +81,12 @@ class FakeTargetTransport:
                 break
         else:
             return tg.TransportError(url=req.url, reason=f"未腳本化的測試路由：{req.method} {req.url}")
+        if callable(spec):
+            spec = spec(req)
         if isinstance(spec, tg.TransportError):
             return spec
         if isinstance(spec, tg.HttpResponse):
-            return self._bound_response(tg, spec.status, spec.body, spec.headers, req.max_bytes, spec.elapsed_ms)
+            return self._bound_response(tg, spec.status, spec.body, spec.headers, req.max_bytes, spec.elapsed_ms, spec.truncated)
         if isinstance(spec, tuple) and len(spec) in (2, 3):
             raw_body = spec[1] if isinstance(spec[1], bytes) else json.dumps(spec[1]).encode("utf-8")
             hdrs = spec[2] if len(spec) == 3 else {}
