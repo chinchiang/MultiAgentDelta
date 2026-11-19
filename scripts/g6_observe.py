@@ -73,6 +73,9 @@ def observe(
     auth = authorize_target(target, root=root, transport=transport, user_agent=USER_AGENT)
     if isinstance(auth, TargetDenied):
         return _denied_out(out, f"目標未通過授權檢查：{auth.reason}；未送出請求")
+    off = auth.check_origin(path)
+    if off is not None:
+        return _denied_out(out, f"目標未通過授權檢查：非授權來源（{off.reason}）；未送出請求")
     if probes is None:
         try:
             probes = load_probes(tests_path)
@@ -107,22 +110,14 @@ def observe(
 
 
 def selftest() -> list[str]:
-    """輕量離線煙霧測試（完整狀態真值表已移至 tests/test_g6_and_zap.py）。"""
-    import tempfile
+    """輕量離線煙霧測試（完整狀態真值表見 tests/test_g6_observe.py）。"""
     fails: list[str] = []
     probes = load_probes()
     if not any(p["tools"] for p in probes) or any(len(p["prompt"]) > 20000 for p in probes):
         fails.append("tests.yaml 應至少有一個提供工具的探針，且不送 20 萬字元的成本探針")
-    r_unlisted = observe("http://example.com", timeout=5)
-    if r_unlisted["result"]["state"] != "untested" or not r_unlisted["denied"]:
-        fails.append(f"未授權目標應 untested：{r_unlisted['denied']}")
-    r_off = observe("http://127.0.0.1:8000", path="@example.com/chat", timeout=5)
-    if r_off["result"]["state"] != "untested" or "非授權來源" not in (r_off["denied"] or ""):
-        fails.append(f"path 造成非同源（@host）應 untested：{r_off['denied']}")
-    with tempfile.TemporaryDirectory() as d:
-        r_missing = observe("http://127.0.0.1:8000", timeout=5, root=pathlib.Path(d))
-        if r_missing["result"]["state"] != "untested" or "目標允許清單無法讀取" not in (r_missing["denied"] or ""):
-            fails.append(f"允許清單缺席應 untested：{r_missing['denied']}")
+    rejected = observe("http://example.com", timeout=5)
+    if rejected["result"]["state"] != "untested" or not rejected["denied"]:
+        fails.append(f"未經授權的位址應 untested：{rejected['denied']}")
     return fails
 
 

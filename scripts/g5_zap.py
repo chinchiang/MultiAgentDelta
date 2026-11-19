@@ -51,8 +51,8 @@ def load_impl(root: pathlib.Path) -> dict[str, str]:
 def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl: dict[str, str], policy,
             target: str | None = None) -> dict:
     coverage: dict[str, dict] = {}
-    base_target = target.strip() if isinstance(target, str) else ""
-    want = parse_origin(base_target)
+    base_addr = target.strip() if isinstance(target, str) else ""
+    valid_base = parse_origin(base_addr) is not None
     tools: list[dict] = []
     rules: dict[str, dict] = {}
     by_plugin: dict[str, dict] = {}
@@ -82,14 +82,14 @@ def convert(reports: dict[str, pathlib.Path | None], conf: dict[str, str], impl:
             coverage[cov_key] = {"state": "untested",
                                  "reason": f"ZAP {tool_name} 報告沒有任何 site（未掃到目標：spider 無結果、目標不可達或 API 定義匯入失敗）"}
             continue
-        if want is None:
+        if not valid_base:
             coverage[cov_key] = {"state": "untested",
                                  "reason": f"ZAP {tool_name}：沒有可解析的授權目標（--target {target!r}），無法確認報告的 site 是受測目標"}
             continue
         seen = [str(x.get("@name")) for x in sites]
         sites = [
             x for x in sites
-            if isinstance(x.get("@name"), str) and same_origin(x["@name"].strip(), base_target)[0]
+            if isinstance(x.get("@name"), str) and same_origin(x["@name"].strip(), base_addr)[0]
         ]
         if not sites:
             coverage[cov_key] = {"state": "untested",

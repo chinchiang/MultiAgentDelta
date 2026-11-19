@@ -140,19 +140,11 @@ def probe(
 
 
 def selftest() -> list[str]:
-    """輕量離線煙霧測試（完整狀態真值表已移至 tests/test_g6_and_zap.py）。"""
-    import tempfile
+    """輕量離線煙霧測試（完整狀態真值表見 tests/test_g6_cost_probe.py）。"""
     fails: list[str] = []
-    r_unlisted = probe("http://example.com", chars=10, timeout=5)
-    if r_unlisted["state"] != "untested" or "授權" not in (r_unlisted["reason"] or "") or "AAAA" in json.dumps(r_unlisted):
-        fails.append(f"未授權目標應 untested 且不保存請求內容：{r_unlisted}")
-    r_off = probe("http://127.0.0.1:8000", path="@example.com/chat", chars=10, timeout=5)
-    if r_off["state"] != "untested" or "非授權來源" not in (r_off["reason"] or ""):
-        fails.append(f"path 造成非同源（@host）應 untested：{r_off}")
-    with tempfile.TemporaryDirectory() as d:
-        r_missing = probe("http://127.0.0.1:8000", chars=10, timeout=5, root=pathlib.Path(d))
-        if r_missing["state"] != "untested" or "目標允許清單無法讀取" not in (r_missing["reason"] or ""):
-            fails.append(f"允許清單缺席應 untested：{r_missing}")
+    rejected = probe("http://example.com", chars=10, timeout=5)
+    if rejected["state"] != "untested" or "授權" not in (rejected["reason"] or "") or "AAAA" in json.dumps(rejected):
+        fails.append(f"未經授權的位址應 untested 且不保存請求內容：{rejected}")
     return fails
 
 
