@@ -239,6 +239,7 @@ class RequestGateAndFakeTransportTests(unittest.TestCase):
 
 class UrllibLoopbackContractTests(unittest.TestCase):
     def setUp(self):
+        gc.collect()
         self._warnings_cm = warnings.catch_warnings(record=True)
         self._caught_warnings = self._warnings_cm.__enter__()
         warnings.simplefilter("always", ResourceWarning)
