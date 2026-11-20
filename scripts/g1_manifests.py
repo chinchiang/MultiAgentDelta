@@ -325,7 +325,7 @@ def _merge_direct(a, b):
 
 def parse_manifest(paths, *, root) -> Parsed:
     """清單檔 → Parsed。root：-r 引入的包含邊界（目標專案根目錄）。檔案在 root 之下時邊界是 root；
-    不在 root 之下（例如以匯出的暫存樹呼叫）時退回該檔所在目錄。
+    不在 root 之下（例如單獨傳入樹外的檔案）時退回該檔所在目錄。
 
     無法解析的檔、非 registry 來源的條目、沒有對應解析器的檔都回報，不靜默略過（incomplete ≠ pass，第四次審視 S-1／S-2）。
     不存在的檔案略過（指定的檔案不存在由呼叫端另外處理）。"""

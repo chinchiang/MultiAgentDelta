@@ -74,18 +74,19 @@ class SbomIncludeBoundaryTests(unittest.TestCase):
             self.assertEqual(s["lockfiles"]["requirements/dev.txt"], {"pinned": 2, "missing": []})
 
     def test_upward_include_within_project_root_with_complete_sbom(self):
-        # 對照基準（#270 改前）：邊界為 requirements/，-r ../base.in 被判為無法解析 → incomplete
+        # #270：邊界改為專案根目錄（匯出的樹）後，子目錄 requirements 往上 -r ../base.in 可解析且齊全 → pass
         with TempRepo() as r, tempfile.TemporaryDirectory() as out_dir:
             r.write("base.in", "pytest==8.0.0\n")
             r.write("requirements/dev.txt", "requests==2.31.0\n-r ../base.in\n")
             r.commit()
             sbom = _bom("pkg:pypi/requests@2.31.0", "pkg:pypi/pytest@8.0.0")
             s = g1_sbom.run(r.dir, "HEAD", pathlib.Path(out_dir, "sbom.cdx.json"), _fake_syft(sbom))
-            self.assertEqual(s["status"], "incomplete", s)
-            self.assertIn("requirements/dev.txt：1 筆無法解析或不是 registry 來源", s["status_reason"] or "")
+            self.assertEqual(s["status"], "pass", s)
+            self.assertIsNone(s["status_reason"])
+            self.assertEqual(s["lockfiles"]["requirements/dev.txt"], {"pinned": 2, "missing": []})
 
     def test_upward_include_within_project_root_missing_package_from_main_entrypoint(self):
-        # 對照基準（#270 改前）：../base.in 未被解析，缺漏的 pytest==8.0.0 不會觸發 fail，而是 incomplete（exit 2）
+        # #270：../base.in 納入核對後，其中釘選的 pytest==8.0.0 若不在 SBOM → fail 並發出 sbom-incomplete 發現
         with TempRepo() as r, tempfile.TemporaryDirectory() as d, temp_policy_root() as pr:
             r.write("base.in", "pytest==8.0.0\n")
             r.write("requirements/dev.txt", "requests==2.31.0\n-r ../base.in\n")
@@ -93,6 +94,7 @@ class SbomIncludeBoundaryTests(unittest.TestCase):
             syft = _write_syft_script(pathlib.Path(d, "syft"), _bom("pkg:pypi/requests@2.31.0"))
             js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
             gp.write_text(json.dumps(_base_gate()), encoding="utf-8")
+            tier = Policy(pr).tier(g1_sbom.RULE)
             with mock.patch.dict(os.environ, {"VIBESEC_SYFT": str(syft)}), contextlib.redirect_stdout(io.StringIO()):
                 rc = g1_sbom.main(
                     [
@@ -105,8 +107,32 @@ class SbomIncludeBoundaryTests(unittest.TestCase):
                     policy_root=pr,
                 )
             sm = json.loads(js.read_text(encoding="utf-8"))
-            self.assertEqual(rc, 2)
-            self.assertEqual(sm["status"], "incomplete")
+            gate = json.loads(gp.read_text(encoding="utf-8"))
+            want_fc = {"blocking": 1, "advisory": 0} if tier == "blocking" else {"blocking": 0, "advisory": 1}
+            self.assertEqual(rc, 1 if tier == "blocking" else 0, sm)
+            self.assertEqual(sm["status"], "fail", sm)
+            self.assertEqual(sm["lockfiles"]["requirements/dev.txt"], {"pinned": 2, "missing": ["pytest@8.0.0"]})
+            self.assertTrue(sf.is_file(), "fail 時應寫出 SARIF")
+            results = json.loads(sf.read_text(encoding="utf-8"))["runs"][0]["results"]
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["ruleId"], g1_sbom.RULE)
+            self.assertEqual(results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "requirements/dev.txt")
+            self.assertEqual(gate["findings_count"], want_fc)
+            self.assertEqual(gate["coverage"][0]["state"], "fail")
+
+    def test_upward_include_chaining_out_of_project_root_stays_incomplete(self):
+        # 往上包含到專案根目錄內的 base.in 後，若 base.in 再往上 -r ../outside.in 超出專案根目錄，仍須回 incomplete
+        with tempfile.TemporaryDirectory() as d:
+            pathlib.Path(d, "outside.in").write_text("idna==3.10\n", encoding="utf-8")
+            tree = pathlib.Path(d, "src")
+            (tree / "requirements").mkdir(parents=True)
+            (tree / "base.in").write_text("pytest==8.0.0\n-r ../outside.in\n", encoding="utf-8")
+            (tree / "requirements/dev.txt").write_text("requests==2.31.0\n-r ../base.in\n", encoding="utf-8")
+            sbom = _bom("pkg:pypi/requests@2.31.0", "pkg:pypi/pytest@8.0.0", "pkg:pypi/idna@3.10")
+            s = g1_sbom.check(sbom, tree)
+            self.assertEqual(s["status"], "incomplete", s)
+            self.assertEqual(s["lockfiles"]["requirements/dev.txt"], {"pinned": 2, "missing": []})
+            self.assertIn("requirements/dev.txt：1 筆無法解析或不是 registry 來源", s["status_reason"] or "")
 
     def test_include_escaping_project_root_is_incomplete_even_when_outside_file_exists(self):
         # 即使匯出樹父目錄與上層暫存目錄真有同名檔案、且套件已在 SBOM，超出專案根目錄的 -r 仍必須回 incomplete（exit 2）
