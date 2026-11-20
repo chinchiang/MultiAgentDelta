@@ -17,26 +17,9 @@ import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import https_only as ho  # noqa: E402
-
-
-class FakeTransport:
-    """腳本化的傳輸層：依序回傳本文（bytes）或丟出例外；記錄每次嘗試的 (url, timeout)。腳本用完還被呼叫 → IndexError（重試過頭）。"""
-
-    def __init__(self, script):
-        self.script = list(script)
-        self.calls = []
-
-    def get(self, url, timeout):
-        self.calls.append((url, timeout))
-        item = self.script.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
-
-
-def http_error(code):
-    return urllib.error.HTTPError("https://x.invalid/", code, "msg", {}, None)
+from fakes import FakeTransport, http_error  # noqa: E402
 
 
 OK = b'{"ok": 1}'

@@ -112,16 +112,15 @@ class FetchError(Exception):
     pass
 
 
-def fetch_deps_dev(system: str, name: str, *, timeout: float = TIMEOUT, retries: int = RETRIES,
-                   backoff: float = BACKOFF, transport=None, sleep=None) -> dict | None:
+def fetch_deps_dev(system: str, name: str, *, transport=None, sleep=None) -> dict | None:
     """回傳套件資料；404 → None（查無此套件）；其他錯誤重試後拋出 FetchError。
-    預設 30 秒逾時、重試 2 次（共嘗試 3 次，退避 1s、2s），經由共用的 https_only 傳輸層送出（#272）。"""
+    逾時 30 秒、重試 2 次（共嘗試 3 次，退避 1s、2s），經由共用的 https_only 傳輸層送出（#272）。"""
     url = API_BASE + API_PATH.format(system=urllib.parse.quote(system, safe=""),
                                      name=urllib.parse.quote(name, safe=""))
     tp = transport or https_only.UrllibHttpsOnly(user_agent=TOOL_NAME)
     sleep_fn = time.sleep if sleep is None else sleep
     try:
-        return https_only.get_json(url, timeout=timeout, retries=retries, backoff=backoff,
+        return https_only.get_json(url, timeout=TIMEOUT, retries=RETRIES, backoff=BACKOFF,
                                    transport=tp, sleep=sleep_fn)
     except urllib.error.HTTPError as e:
         e.close()
@@ -336,24 +335,6 @@ def selftest() -> list[str]:
         (pp / "package.json").write_text('{"name": "@acme/web"}')
         if first_party(pp) != {("pypi", "demo-app"), ("npm", "@acme/web")}:
             fails.append(f"first_party 應讀到 pyproject 與 package.json 名稱：{first_party(pp)}")
-        # 共用傳輸層接線（#272）：非 HTTPS 拒絕與 http:// proxy 重試由 tests/test_https_only.py 把關共用層；
-        # 這裡確認預設傳輸層是 UrllibHttpsOnly（拒絕非 HTTPS）且 fetch_deps_dev 可注入腳本化替身
-        for bad in ("file:///etc/passwd", "http://example.com/"):
-            try:
-                https_only.UrllibHttpsOnly(user_agent=TOOL_NAME).get(bad, 5)
-                fails.append(f"共用傳輸層不應開啟 {bad}")
-            except urllib.error.URLError:
-                pass
-        seen_tp: list[tuple[str, float]] = []
-        class _Tp:
-            def get(self, url, timeout):
-                seen_tp.append((url, timeout))
-                if len(seen_tp) == 1:
-                    raise TimeoutError("transient")
-                return json.dumps(DB[("pypi", "fresh")]).encode("utf-8")
-        if fetch_deps_dev("pypi", "fresh", transport=_Tp(), sleep=lambda _: None) != DB[("pypi", "fresh")] \
-                or seen_tp != [("https://api.deps.dev/v3/systems/pypi/packages/fresh", 30)] * 2:
-            fails.append(f"fetch_deps_dev 應經 transport 重試並傳入 30 秒逾時：{seen_tp}")
         if run(pathlib.Path(d, "none.json"), fetch=fake, now=now)[0]["status"] != "incomplete":
             fails.append("缺 SBOM 應為 incomplete")
         sp.write_text("{bad")
@@ -464,7 +445,6 @@ def parse_args(argv) -> argparse.Namespace:
 
 def check_run(a: argparse.Namespace, *, fetch=None, transport=None) -> gate_result.CheckRun:
     """維護狀態的檢查執行（nightly，不併入閘門結果）；fetch／transport 只給測試與 selftest 注入（#246、#272）。"""
-    runner_fetch = _fetcher(fetch, transport)
     def findings(summary, policy):   # 複製，不改動摘要
         tier = policy.tier(RULE)
         return [dict(h, rule_id=RULE, policy_tier=tier) for h in summary.get("hits") or []]
@@ -482,21 +462,21 @@ def check_run(a: argparse.Namespace, *, fetch=None, transport=None) -> gate_resu
     # 生命週期（政策讀不到、摘要、SARIF 寫出或刪掉舊檔、依政策 tier 的退出碼）由檢查執行負責（#246）
     return gate_result.CheckRun(
         label="維護狀態", tool_name=TOOL_NAME, version=TOOL_VERSION,
-        check=lambda policy: run(pathlib.Path(a.sbom), fetch=runner_fetch)[0],
+        check=lambda policy: run(pathlib.Path(a.sbom), fetch=fetch, transport=transport)[0],
         findings=findings, to_sarif=lambda summary, found, policy: to_sarif(summary.get("hits") or [], policy),
         unreadable=lambda problem: {"rule_id": RULE, "status": "incomplete", "status_reason": problem},
         report=report, incomplete_report=incomplete_report,
     )
 
 
-def main(argv=None, policy_root: pathlib.Path = ROOT, *, transport=None) -> int:
-    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）；transport：測試注入的傳輸層替身。"""
+def main(argv=None, policy_root: pathlib.Path = ROOT) -> int:
+    """policy_root：阻擋政策所在的 repo（selftest 指向壞政策檔）。"""
     if (argv if argv is not None else sys.argv[1:])[:1] == ["selftest"]:
         fails = selftest()
         print("\n".join(f"FAIL {x}" for x in fails) or "g1_maintenance selftest ok")
         return 1 if fails else 0
     a = parse_args(argv)
-    return check_run(a, transport=transport).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json)
+    return check_run(a).execute(policy_root=policy_root, sarif_path=a.sarif, json_path=a.json)
 
 
 if __name__ == "__main__":
