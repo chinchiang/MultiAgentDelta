@@ -475,12 +475,12 @@ _DECISION_TIER = {"block": "blocking", "blocking": "blocking", "advisory": "advi
 _NPM_HOOK_DEFAULT = ["preinstall", "install", "postinstall", "prepare"]
 
 
-def _install_hook_finding(env, pkg, eco, ver, scripts, patterns=None, npm_scripts=None, decision=None):
+def _install_hook_finding(env, pkg, eco, ver, scripts):
     """依 cooldown.yaml install_hooks 分類安裝階段 hook（docs/02 第 3 層）。"""
-    ih = _install_hooks_cfg(env) if (patterns is None or npm_scripts is None or decision is None) else {}
-    pats = patterns if patterns is not None else (ih.get("suspicious_patterns") or {})
-    hook_names = npm_scripts if npm_scripts is not None else (ih.get("npm_scripts") or _NPM_HOOK_DEFAULT)
-    dec = decision if decision is not None else (ih.get("decision") or {})
+    ih = _install_hooks_cfg(env)
+    pats = ih.get("suspicious_patterns") or {}
+    hook_names = ih.get("npm_scripts") or _NPM_HOOK_DEFAULT
+    dec = ih.get("decision") or {}
     hooks = {h: str(scripts[h]) for h in hook_names if h in scripts}
     if not hooks:
         return None

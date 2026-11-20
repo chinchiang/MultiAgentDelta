@@ -54,6 +54,15 @@ class RunEvalsG1MigrationTests(unittest.TestCase):
                 self.assertIsNone(err, f"{cid} 不應回報未完成：{err}")
                 self.assertEqual(hits, want, cid)
 
+            # npm 範圍前綴（^）與 PyPI extras（[socks]）皆與 parse_manifest 對齊，不會因鍵不一致而記 incomplete
+            base_cd = run_evals.load_yaml(ROOT / "evals/cases/g1/g1-cooldown-pos-01.yaml")
+            for eco, spec, hours, want in (
+                ("npm", "@acme/custom-sdk@^1.2.0", 2, {"vibesec.g1.cooldown-violation"}),
+                ("pypi", "requests[socks]==2.32.3", 2400, set()),
+            ):
+                syn = dict(base_cd, input={"kind": "manifest", "ecosystem": eco, "added": [spec], "published_hours_ago": hours})
+                self.assertEqual(runner.run(syn), (want, None), spec)
+
         sample = run_evals.load_yaml(ROOT / "evals/cases/g1/g1-cooldown-pos-01.yaml")
         for label, bad_ctx in (("broken_policy", broken_policy_root), ("modeless_policy", lambda: tree_copy(""))):
             with self.subTest(policy=label), bad_ctx() as bad_root:
@@ -103,11 +112,9 @@ class RunEvalsG1MigrationTests(unittest.TestCase):
             self.assertEqual(rf_runner.run(rf_pos), ({"vibesec.g1.rules-file-unknown-package"}, None))
             self.assertEqual(rf_runner.run(rf_neg), (set(), None))
 
-            # 範圍失敗（to_stdout() 為 None）時 _g1_screen_result 一樣 fail-closed 回報未完成
-            hits_scope, err_scope = run_evals._g1_screen_result(
+            # 範圍失敗（to_stdout() 為 None）時 _G1RunnerEnv.run 一樣 fail-closed 回報未完成
+            hits_scope, err_scope = slop_runner.g1.run(
                 gs.Request(target="/nonexistent/vibesec-target-dir"),
-                slop_runner.env,
-                None,
                 lowdl_neg,
             )
             self.assertIsNone(hits_scope)

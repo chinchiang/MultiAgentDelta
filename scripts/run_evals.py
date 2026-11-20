@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+from g1_manifests import parse_manifest  # noqa: E402
 from g1_registry import Facts, FakeRegistry, Found  # noqa: E402
 from g1_screen import Request as G1ScreenRequest, default_env as default_g1_env, screen as run_g1_screen  # noqa: E402
 from g5_api_probes import G5Request, ProbeTokens, RULE_CONTROL, run_probes  # noqa: E402
@@ -96,17 +97,25 @@ def _write_g1_manifest(dirpath: pathlib.Path, eco: str, specs: list[str]) -> pat
     return mf
 
 
-def _g1_screen_result(request: G1ScreenRequest, env, problem: str | None, case: dict) -> tuple[set[str] | None, str | None]:
-    if problem:
-        return None, problem
-    outcome = run_g1_screen(request, env)
-    out = outcome.to_stdout()
-    if out is None:
-        return None, f"slopcheck incomplete：{(outcome.status_reason or '')[:120]}"
-    why = slopcheck_incomplete(out, case)
-    if why:
-        return None, why
-    return {f.get("rule_id") for f in outcome.findings}, None
+class _G1RunnerEnv(collections.namedtuple("_G1RunnerEnv", "env problem")):
+    """G1 行程內執行器共用的 (env, problem) 封裝與結果轉譯（#267）。"""
+
+    @classmethod
+    def load(cls, policy_root: pathlib.Path, *, registry=None) -> "_G1RunnerEnv":
+        return cls(*default_g1_env(ROOT, policy_root, registry=registry))
+
+    def run(self, request: G1ScreenRequest, case: dict, *, registry=None) -> tuple[set[str] | None, str | None]:
+        if self.problem:
+            return None, self.problem
+        env = dataclasses.replace(self.env, registry=registry) if registry is not None else self.env
+        outcome = run_g1_screen(request, env)
+        out = outcome.to_stdout()
+        if out is None:
+            return None, f"slopcheck incomplete：{(outcome.status_reason or '')[:120]}"
+        why = slopcheck_incomplete(out, case)
+        if why:
+            return None, why
+        return {f.get("rule_id") for f in outcome.findings}, None
 
 
 def semgrep_rule_ids() -> set[str]:
@@ -207,7 +216,7 @@ class SlopcheckRunner(Runner):
 
     def __init__(self, network: bool, *, policy_root: pathlib.Path = ROOT, registry=None):
         self.network = network
-        self.env, self.problem = default_g1_env(ROOT, policy_root, registry=registry)
+        self.g1 = _G1RunnerEnv.load(policy_root, registry=registry)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -228,7 +237,7 @@ class SlopcheckRunner(Runner):
         inp = case["input"]
         with tempfile.TemporaryDirectory() as d:
             mf = _write_g1_manifest(pathlib.Path(d), inp["ecosystem"], inp.get("added") or [])
-            return _g1_screen_result(G1ScreenRequest(manifests=(str(mf),)), self.env, self.problem, case)
+            return self.g1.run(G1ScreenRequest(manifests=(str(mf),)), case)
 
 
 class G1FixtureRunner(Runner):
@@ -237,7 +246,7 @@ class G1FixtureRunner(Runner):
     RULES = {"vibesec.g1.cooldown-violation": "published_hours_ago", "vibesec.g1.postinstall-egress": "package_json"}
 
     def __init__(self, *, policy_root: pathlib.Path = ROOT):
-        self.env, self.problem = default_g1_env(ROOT, policy_root)
+        self.g1 = _G1RunnerEnv.load(policy_root)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -245,47 +254,32 @@ class G1FixtureRunner(Runner):
             return "非 G1 manifest"
         field = self.RULES.get(exp.get("rule_id"))
         if not field:
-            return f"{exp.get('rule_id')} 不由 G1 fixture 判定函式實作"
+            return f"{exp.get('rule_id')} 不由 G1 fixture 快篩實作"
         if field not in inp:
             return f"案例缺合成欄位 {field}"
         return None
 
-    @staticmethod
-    def _parse_fixture_spec(eco: str, raw: str) -> tuple[str, str]:
-        if eco == "npm":
-            if raw.count("@") > (1 if raw.startswith("@") else 0):
-                name, _, ver = raw.rpartition("@")
-                return (name or "fixture-pkg"), (ver or "1.0.0")
-            return (raw or "fixture-pkg"), "1.0.0"
-        if "==" in raw:
-            name, _, ver = raw.partition("==")
-            return (name.strip() or "fixture-pkg"), (ver.strip() or "1.0.0")
-        name = re.split(r"[=@<>!~ ]", raw, maxsplit=1)[0].strip() or "fixture-pkg"
-        return name, "1.0.0"
-
     def run(self, case):
-        if self.problem:
-            return None, self.problem
+        if self.g1.problem:
+            return None, self.g1.problem
         inp = case["input"]
         eco = inp.get("ecosystem") or "npm"
-        raw_spec = (inp.get("added") or ["fixture-pkg@1.0.0" if eco == "npm" else "fixture-pkg==1.0.0"])[0]
-        name, ver = self._parse_fixture_spec(eco, raw_spec)
+        raw_specs = inp.get("added") or ["fixture-pkg@1.0.0" if eco == "npm" else "fixture-pkg==1.0.0"]
         published_at = (
             (datetime.now(timezone.utc) - timedelta(hours=int(inp["published_hours_ago"]))).isoformat()
             if "published_hours_ago" in inp else "2020-01-01T00:00:00Z"
         )
         scripts = ((inp.get("package_json") or {}).get("scripts") or {}) if eco == "npm" else None
         downloads = 50_000 if eco == "npm" else None
-        fake_reg = FakeRegistry({(eco, name, ver): Found(Facts(eco, name, ver, published_at, scripts, downloads))})
-        manifest_spec = f"{name}@{ver}" if eco == "npm" else f"{name}=={ver}"
         with tempfile.TemporaryDirectory() as d:
-            mf = _write_g1_manifest(pathlib.Path(d), eco, [manifest_spec])
-            return _g1_screen_result(
-                G1ScreenRequest(manifests=(str(mf),)),
-                dataclasses.replace(self.env, registry=fake_reg),
-                None,
-                case,
-            )
+            mf = _write_g1_manifest(pathlib.Path(d), eco, raw_specs)
+            fake_reg = FakeRegistry({
+                (dep.eco, dep.name, dep.version): Found(
+                    Facts(dep.eco, dep.name, dep.version or "1.0.0", published_at, scripts, downloads)
+                )
+                for dep in parse_manifest([mf], root=pathlib.Path(d)).entries
+            })
+            return self.g1.run(G1ScreenRequest(manifests=(str(mf),)), case, registry=fake_reg)
 
 
 class G0TrifectaRunner(Runner):
@@ -358,7 +352,7 @@ class RulesFileRunner(Runner):
 
     def __init__(self, network: bool, *, policy_root: pathlib.Path = ROOT, registry=None):
         self.network = network
-        self.env, self.problem = default_g1_env(ROOT, policy_root, registry=registry)
+        self.g1 = _G1RunnerEnv.load(policy_root, registry=registry)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -376,7 +370,7 @@ class RulesFileRunner(Runner):
     def run(self, case):
         with tempfile.TemporaryDirectory() as d:
             target = _write_fixture(d, case["input"], ".cursorrules")
-            return _g1_screen_result(G1ScreenRequest(rule_files=(str(target),)), self.env, self.problem, case)
+            return self.g1.run(G1ScreenRequest(rule_files=(str(target),)), case)
 
 
 class KevRunner(Runner):
@@ -1498,7 +1492,7 @@ def selftest() -> list[str]:
         if bool(slopcheck_incomplete(out, case)) != want:
             fails.append(f"slopcheck_incomplete（{name}）應為 {'無法判定' if want else '可判定'}")
 
-    # 真實的進程內 G0／G1 runner：以 evals/cases 的案例實際呼叫閘門函式。以前閘門函式改了簽名、這裡沒有呼叫到，
+    # 真實的行程內 G0／G1 runner：以 evals/cases 的案例實際呼叫閘門函式。以前閘門函式改了簽名、這裡沒有呼叫到，
     # run_evals 整支以 TypeError 結束（#173 的 trifecta_findings）；判定是否正確由 baseline 比對負責，這裡只看呼叫得通
     for runner_cls, gate_dir in ((G0TrifectaRunner, "g0"), (G0CoverageRunner, "g0"), (G1FixtureRunner, "g1")):
         r, ran = runner_cls(), 0
