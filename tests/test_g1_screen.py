@@ -113,7 +113,9 @@ class ScreenHappyAndSkip(_ScreenCase):
         self.assertEqual(pkgs["fastapi"]["manifest"], "deploy/python-requirements.txt")
         self.assertEqual((out.status, out.exit_code), ("fail", 1))
         self.assertTrue(any("frontend/yarn.lock" in p for p in out.problems))
-        self.assertIn("frontend/yarn.lock", out.to_stdout()["status_reason"])
+        stdout_doc = out.to_stdout()
+        self.assertIn("frontend/yarn.lock", stdout_doc.get("status_reason") or "")
+        self.assertTrue(any("frontend/yarn.lock" in x for x in (stdout_doc.get("incomplete_checks") or ())))
 
 
 class ScreenDetectionsAndIndirect(_ScreenCase):
@@ -148,6 +150,9 @@ class ScreenDetectionsAndIndirect(_ScreenCase):
         ])
         self.assertEqual((out.status, out.exit_code), ("fail", 1), "blocking 優先於未完成原因")
         self.assertTrue(any("node_modules/gitdep" in p for p in out.problems))
+        stdout_lock = out.to_stdout()
+        self.assertIn("node_modules/gitdep", stdout_lock.get("status_reason") or "")
+        self.assertTrue(any("node_modules/gitdep" in x for x in (stdout_lock.get("incomplete_checks") or ())))
 
     def test_requirements_lock_skips_fuzzy_similarity_for_indirect_deps_but_falls_back_to_direct_when_unknown(self):
         self.write("py/requirements.lock.txt",
@@ -258,6 +263,7 @@ class ScreenFailClosedAndWaivers(_ScreenCase):
                 else:
                     self.assertEqual((out.status, out.exit_code), ("incomplete", 2))
                     self.assertTrue(any(broken in p for p in out.problems), (label, out.problems))
+                    self.assertTrue(any(broken in x for x in (out.to_stdout().get("incomplete_checks") or ())), (label, out.to_stdout()))
 
     def test_allowlist_and_policy_exceptions_lower_tier_with_proper_scope_and_pypi_hook_stays_untested(self):
         with temp_policy_root() as PR, tempfile.TemporaryDirectory() as cr_dir:
@@ -286,7 +292,19 @@ class ScreenFailClosedAndWaivers(_ScreenCase):
                 ("pypi", "fastapi", "0.1.0"): pypi_fresh("fastapi", "0.1.0"),
             })
 
-            # 本 repo（project_root=self.D）：例外套用、allowlist 套件仍查登錄庫、stdout 無 target、gate status_reason 只列 G1 忽略的例外
+            # 本機形狀（project_root=None，受驗樹等於 Policy.root，舊 #43）與 CI 形狀（project_root=self.D，舊 #47）皆視為本 repo
+            want_ex = {"path_glob": "examples/vulnapp/**", "reason": "selftest", "approved_by": "selftest",
+                       "expires": "2099-12-31", "agent_id": None}
+            pr_req = PR / "examples/vulnapp/requirements.txt"
+            pr_req.parent.mkdir(parents=True, exist_ok=True)
+            pr_req.write_text("requests==2.0.0\n", encoding="utf-8")
+            env_local = self.env(registry=reg, config_root=CR, policy=Policy(PR, project_root=None))
+            out_local = gs.screen(gs.Request(target=PR, manifests=("examples/vulnapp/requirements.txt",)), env_local)
+            self.assertEqual(out_local.findings[0].get("policy_tier"), "advisory")
+            self.assertEqual(out_local.findings[0].get("exception"), want_ex)
+            self.assertNotIn("target", out_local.to_stdout())
+
+            # CI 形狀（project_root=self.D）：例外套用、allowlist 套件仍查登錄庫、stdout 無 target、gate status_reason 只列 G1 忽略的例外
             env_self = self.env(registry=reg, config_root=CR, policy=Policy(PR, project_root=self.D))
             out_self = gs.screen(gs.Request(target=self.D, manifests=("examples/vulnapp/requirements.txt", "deploy/python-requirements.txt")), env_self)
             self.assertIn(("pypi", "fastapi", "0.1.0"), reg.calls)
@@ -295,26 +313,40 @@ class ScreenFailClosedAndWaivers(_ScreenCase):
             self.assertTrue(out_self.result_line().startswith("\n⚠️ G1 有控制未實測 → incomplete，絕不視為通過：VS-G1-INSTALL-HOOK"))
             stdout_self = out_self.to_stdout()
             self.assertNotIn("target", stdout_self)
-            self.assertEqual(len(stdout_self["ignored_exceptions"]), 2)
+            self.assertEqual(stdout_self.get("status"), "incomplete")
+            self.assertIn("VS-G1-INSTALL-HOOK", stdout_self.get("status_reason") or "")
+            self.assertEqual(stdout_self.get("ignored_exceptions"), [
+                "vibesec.g1.cooldown-violation @ nowhere/**：已於 2020-01-01 過期",
+                "vibesec.g2.hardcoded-secret @ nowhere/**：已於 2020-01-01 過期",
+            ])
             gate_self = out_self.to_gate_run("2026-11-19T00:00:00+00:00", "abcdef1")
-            self.assertIn("1 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）", gate_self["status_reason"])
-            self.assertIn("vibesec.g1.cooldown-violation @ nowhere/**", gate_self["status_reason"])
-            self.assertNotIn("hardcoded-secret", gate_self["status_reason"])
-            want_ex = {"path_glob": "examples/vulnapp/**", "reason": "selftest", "approved_by": "selftest",
-                       "expires": "2099-12-31", "agent_id": None}
+            self.assertEqual(list(GATE_SCHEMA.iter_errors(gate_self)), [])
+            self.assertEqual(gate_self.get("status"), "incomplete")
+            self.assertIn("VS-G1-INSTALL-HOOK", gate_self.get("status_reason") or "")
+            hook_cov = next(c for c in gate_self["coverage"] if c["control_id"] == "VS-G1-INSTALL-HOOK")
+            self.assertEqual(hook_cov["state"], "untested")
+            self.assertIn("1 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）", gate_self.get("status_reason") or "")
+            self.assertIn("vibesec.g1.cooldown-violation @ nowhere/**", gate_self.get("status_reason") or "")
+            self.assertNotIn("hardcoded-secret", gate_self.get("status_reason") or "")
+            self.assertEqual(out_self.findings[0].get("exception"), want_ex)
             sarif_results = out_self.to_sarif()["runs"][0]["results"]
-            self.assertEqual(sarif_results[0]["properties"]["exception"], want_ex)
-            self.assertEqual(sarif_results[1]["properties"]["allowlist"], {
+            self.assertEqual(sarif_results[0]["properties"].get("exception"), want_ex)
+            self.assertEqual(sarif_results[1]["properties"].get("allowlist"), {
                 "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest", "bypass": "cooldown",
             })
 
-            # 外部專案（project_root=None）：本 repo 例外不套用，requests 維持 blocking → fail（exit 1）
+            # 外部專案（project_root=None，受驗樹 self.D != Policy.root）：本 repo 例外不套用，requests 維持 blocking → fail（exit 1）
             env_ext = self.env(registry=reg, config_root=CR, policy=Policy(PR, project_root=None))
             out_ext = gs.screen(gs.Request(target=self.D, manifests=("examples/vulnapp/requirements.txt",)), env_ext)
             self.assertEqual((out_ext.status, out_ext.exit_code), ("fail", 1))
             self.assertEqual(out_ext.findings[0]["policy_tier"], "blocking")
             self.assertNotIn("exception", out_ext.findings[0])
-            self.assertIn("未套用", out_ext.status_reason)
+            self.assertIn("exceptions", out_ext.status_reason or "")
+            self.assertIn("未套用", out_ext.status_reason or "")
+            gate_ext = out_ext.to_gate_run("2026-11-19T00:00:00+00:00", "abcdef1")
+            self.assertEqual((gate_ext.get("status"), gate_ext.get("scope")), ("fail", "full"))
+            self.assertIn("exceptions", gate_ext.get("status_reason") or "")
+            self.assertIn("未套用", gate_ext.get("status_reason") or "")
 
 
 class MovedSelftestUnits(unittest.TestCase):
@@ -489,13 +521,18 @@ class OutputViewsContract(_ScreenCase):
         self.assertEqual(skip.to_stdout(), {"gate": "G1", "findings": []})
         self.assertEqual(skip.result_line(), "G1 slopcheck：無相依清單或規則檔變更，略過。")
 
-        # 2) 空範圍但有未完成原因（指定的檔案不存在）＋標準輸出形狀 1（帶 status／status_reason）
+        # 2) 空範圍但有未完成原因（指定的檔案不存在）＋標準輸出形狀 1（帶 status／status_reason）＋--changed-files 無 --base 亦記 scope diff
         miss = gs.screen(gs.Request(target=self.D, manifests=("ghost.txt",)), self.env())
+        self.assertEqual((miss.status, miss.exit_code), ("incomplete", 2))
         self.assertEqual(miss.to_stdout(), {
             "gate": "G1", "findings": [], "target": str(self.D),
             "status": "incomplete", "status_reason": "指定的檔案不存在，未檢查：ghost.txt",
         })
         self.assertEqual(miss.result_line(), "⚠️ G1 無法完成檢查：指定的檔案不存在，未檢查：ghost.txt → incomplete。")
+        self.assertIn("ghost.txt", miss.to_gate_run("2026-11-19T00:00:00+00:00", "deadbeef").get("status_reason") or "")
+        lst = self.write("changed.txt", "\n")
+        diff_no_base = gs.screen(gs.Request(target=self.D, changed_lists=(str(lst),)), self.env())
+        self.assertEqual(diff_no_base.to_gate_run("2026-11-19T00:00:00+00:00", "deadbeef")["scope"], "diff")
 
         # 3) 範圍失敗（無 stdout、無 SARIF）
         sf = gs.screen(gs.Request(target=self.D, staged=True),
@@ -518,7 +555,7 @@ class OutputViewsContract(_ScreenCase):
         blk_out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)),
                             self.env(registry=gr.FakeRegistry({("npm", "express", "4.21.2"): gr.NotFound()})))
         self.assertEqual(blk_out.result_line(), "\n⛔ G1 阻擋：1 筆 blocking 供應鏈發現。")
-        self.assertEqual(blk_out.to_stdout()["status"], "fail")
+        self.assertEqual(blk_out.to_stdout().get("status"), "fail")
 
         # 6) 有掃描：檢查未完成（registry 失敗）
         inc_out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)),
