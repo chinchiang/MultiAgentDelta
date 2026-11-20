@@ -21,17 +21,19 @@
         1 有 blocking 發現（政策把規則升為 blocking 時）；2 incomplete。
 """
 from __future__ import annotations
-import argparse, datetime, json, os, pathlib, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, http.client, json, pathlib, re, sys, time, urllib.error, urllib.parse
 
 RULE = "vibesec.g1.unmaintained-dependency"
 TOOL_NAME, TOOL_VERSION = "vibesec-g1-maintenance", "1.0.0"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import gate_result  # noqa: E402  自產 SARIF 骨架只有一份寫法（#182）；不依賴 PyYAML
+import https_only  # noqa: E402  共用 HTTPS 傳輸層（#272）
 API_BASE = "https://api.deps.dev"
 API_PATH = "/v3/systems/{system}/packages/{name}"
 SYSTEMS = {"pypi": "pypi", "npm": "npm", "golang": "go", "maven": "maven", "cargo": "cargo", "nuget": "nuget"}
 DEFAULT_DAYS = 730
+TIMEOUT, RETRIES, BACKOFF = 30, 2, 1.0   # 逾時 30 秒、重試 2 次（最多嘗試 3 次，退避 1s、2s）
 FALLBACK_URI = ".github/workflows/nightly-full.yml"
 PURL = re.compile(r"^pkg:(?P<type>[a-z]+)/(?P<path>[^@?#]+)@(?P<version>[^?#]+)")
 
@@ -110,40 +112,31 @@ class FetchError(Exception):
     pass
 
 
-def _https_only_opener() -> urllib.request.OpenerDirector:
-    """只裝 HTTPS（驗證憑證與主機名）與 proxy 的 opener：沒有 FileHandler／HTTPHandler／FTPHandler，
-    所以 file://、http://（含被重導到 http）等一律無法開啟——不只靠 URL 是常數字串來保證。"""
-    opener = urllib.request.OpenerDirector()
-    https_proxy = {k: v for k, v in urllib.request.getproxies().items() if k == "https"}   # 只讓 https 走 proxy
-    for h in (urllib.request.ProxyHandler(https_proxy),
-              urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)),
-              urllib.request.UnknownHandler(),   # 其他 scheme（file://、http://、ftp://）→ URLError
-              urllib.request.HTTPDefaultErrorHandler(), urllib.request.HTTPErrorProcessor()):
-        opener.add_handler(h)
-    return opener
+def fetch_deps_dev(system: str, name: str, *, transport=None, sleep=None) -> dict | None:
+    """回傳套件資料；404 → None（查無此套件）；其他錯誤重試後拋出 FetchError。
+    逾時 30 秒、重試 2 次（共嘗試 3 次，退避 1s、2s），經由共用的 https_only 傳輸層送出（#272）。"""
+    url = API_BASE + API_PATH.format(system=urllib.parse.quote(system, safe=""),
+                                     name=urllib.parse.quote(name, safe=""))
+    tp = transport or https_only.UrllibHttpsOnly(user_agent=TOOL_NAME)
+    sleep_fn = time.sleep if sleep is None else sleep
+    try:
+        return https_only.get_json(url, timeout=TIMEOUT, retries=RETRIES, backoff=BACKOFF,
+                                   transport=tp, sleep=sleep_fn)
+    except urllib.error.HTTPError as e:
+        e.close()
+        if e.code == 404:
+            return None
+        raise FetchError(f"HTTP {e.code}") from e
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        raise FetchError(f"{type(e).__name__}: {e}") from e
 
 
-def fetch_deps_dev(system: str, name: str, retries: int = 3) -> dict | None:
-    """回傳套件資料；404 → None（查無此套件）；其他錯誤重試後拋出 FetchError。"""
-    url = API_BASE + API_PATH.format(system=urllib.parse.quote(system, safe=""), name=urllib.parse.quote(name, safe=""))
-    opener = _https_only_opener()
-    for i in range(retries):
-        # 每次重試都建新的 Request：ProxyHandler 會改寫傳入的 Request，重用時經 http:// proxy 的重試會以
-        # 「unknown url type: http」失敗（同 g1_slopcheck.http_json）
-        req = urllib.request.Request(url, headers={"User-Agent": TOOL_NAME, "Accept": "application/json"})
-        try:
-            with opener.open(req, timeout=30) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return None
-            if e.code < 500 or i == retries - 1:
-                raise FetchError(f"HTTP {e.code}") from e
-        except (OSError, ValueError) as e:   # URLError 是 OSError 的子類別
-            if i == retries - 1:
-                raise FetchError(f"{type(e).__name__}: {e}") from e
-        time.sleep(2 ** i)
-    return None
+def _fetcher(fetch, transport):
+    if fetch is not None:
+        return fetch
+    if transport is not None:
+        return lambda system, name: fetch_deps_dev(system, name, transport=transport)
+    return fetch_deps_dev
 
 
 def _date(s: str | None) -> datetime.datetime | None:
@@ -215,8 +208,10 @@ def assess(pkg: dict, data: dict, days: int, now: datetime.datetime) -> dict | N
             **({"version_note": local_note} if local_note else {})}
 
 
-def run(sbom_path: pathlib.Path, fetch=fetch_deps_dev, days: int | None = None,
-        now: datetime.datetime | None = None, own: set[tuple[str, str]] | None = None) -> tuple[dict, list[dict]]:
+def run(sbom_path: pathlib.Path, fetch=None, days: int | None = None,
+        now: datetime.datetime | None = None, own: set[tuple[str, str]] | None = None, *,
+        transport=None) -> tuple[dict, list[dict]]:
+    fetch = _fetcher(fetch, transport)
     now = now or datetime.datetime.now(datetime.timezone.utc)
     days = days if days is not None else configured_days()
     base = {"rule_id": RULE, "checked_at": now.replace(microsecond=0).isoformat(), "unmaintained_days": days}
@@ -340,26 +335,6 @@ def selftest() -> list[str]:
         (pp / "package.json").write_text('{"name": "@acme/web"}')
         if first_party(pp) != {("pypi", "demo-app"), ("npm", "@acme/web")}:
             fails.append(f"first_party 應讀到 pyproject 與 package.json 名稱：{first_party(pp)}")
-        for bad in ("file:///etc/passwd", "http://example.com/"):
-            try:
-                _https_only_opener().open(bad, timeout=5)
-                fails.append(f"opener 不應開啟 {bad}")
-            except urllib.error.URLError:
-                pass
-        # 經 http:// proxy（已關閉的埠）重試：每次都應是連線錯誤，不能變成 Request 被改寫後的「unknown url type」
-        import socket
-        with socket.socket() as s_:
-            s_.bind(("127.0.0.1", 0)); dead = s_.getsockname()[1]
-        saved = {k: os.environ.pop(k) for k in list(os.environ) if k.lower() in ("https_proxy", "http_proxy", "all_proxy", "no_proxy")}
-        os.environ["https_proxy"] = f"http://127.0.0.1:{dead}"
-        try:
-            fetch_deps_dev("pypi", "requests", retries=3)   # 症狀在第三次嘗試才出現
-            fails.append("fetch_deps_dev 經已關閉的 proxy 不應成功")
-        except FetchError as e:
-            if "unknown url type" in str(e):
-                fails.append(f"fetch_deps_dev 經 http:// proxy 重試時 Request 被改寫：{e}")
-        finally:
-            os.environ.pop("https_proxy", None); os.environ.update(saved)
         if run(pathlib.Path(d, "none.json"), fetch=fake, now=now)[0]["status"] != "incomplete":
             fails.append("缺 SBOM 應為 incomplete")
         sp.write_text("{bad")
@@ -468,8 +443,8 @@ def parse_args(argv) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
-def check_run(a: argparse.Namespace, *, fetch=fetch_deps_dev) -> gate_result.CheckRun:
-    """維護狀態的檢查執行（nightly，不併入閘門結果）；fetch 是 deps.dev 查詢，只給 selftest 注入（#246）。"""
+def check_run(a: argparse.Namespace, *, fetch=None, transport=None) -> gate_result.CheckRun:
+    """維護狀態的檢查執行（nightly，不併入閘門結果）；fetch／transport 只給測試與 selftest 注入（#246、#272）。"""
     def findings(summary, policy):   # 複製，不改動摘要
         tier = policy.tier(RULE)
         return [dict(h, rule_id=RULE, policy_tier=tier) for h in summary.get("hits") or []]
@@ -487,7 +462,7 @@ def check_run(a: argparse.Namespace, *, fetch=fetch_deps_dev) -> gate_result.Che
     # 生命週期（政策讀不到、摘要、SARIF 寫出或刪掉舊檔、依政策 tier 的退出碼）由檢查執行負責（#246）
     return gate_result.CheckRun(
         label="維護狀態", tool_name=TOOL_NAME, version=TOOL_VERSION,
-        check=lambda policy: run(pathlib.Path(a.sbom), fetch=fetch)[0],
+        check=lambda policy: run(pathlib.Path(a.sbom), fetch=fetch, transport=transport)[0],
         findings=findings, to_sarif=lambda summary, found, policy: to_sarif(summary.get("hits") or [], policy),
         unreadable=lambda problem: {"rule_id": RULE, "status": "incomplete", "status_reason": problem},
         report=report, incomplete_report=incomplete_report,

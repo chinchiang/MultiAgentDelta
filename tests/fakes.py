@@ -8,6 +8,22 @@ import json
 import urllib.error
 
 
+class FakeTransport:
+    """依序腳本化的傳輸層：依序回傳本文（bytes 或自動轉 JSON 的物件）或丟出例外，記錄每次嘗試的 (url, timeout)。
+    腳本用完還被呼叫 → IndexError（重試過頭）。"""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+
+    def get(self, url, timeout):
+        self.calls.append((url, timeout))
+        item = self.script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item if isinstance(item, bytes) else json.dumps(item).encode("utf-8")
+
+
 class RoutedTransport:
     """依網址腳本化的傳輸層：值是 dict／list（轉成 JSON）、bytes（原樣）或例外（丟出）；沒有腳本的網址 → URLError。
     calls 依序記錄每次嘗試的網址（重試也各記一次）。"""
@@ -27,7 +43,9 @@ class RoutedTransport:
 
 
 def http_error(code):
-    return urllib.error.HTTPError("https://x.invalid/", code, "msg", {}, None)
+    err = urllib.error.HTTPError("https://x.invalid/", code, "msg", {}, None)
+    err.close()
+    return err
 
 
 class FakeTargetTransport:
