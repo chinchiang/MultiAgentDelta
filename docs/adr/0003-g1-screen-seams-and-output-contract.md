@@ -9,7 +9,7 @@
 
 ## 背景
 
-#260 之前，`scripts/g1_slopcheck.py` 是一支超過兩千行的單檔腳本，把套件登錄庫查詢、HTTPS 重試、Git 呼叫、清單與鎖定檔解析、四層判定、SARIF 與閘門結果輸出全部混在一起，並靠模組層全域變數傳遞目標路徑與政策。測試與評測為了離線執行，必須在執行期覆寫模組全域變數，或以 `importlib` 繞過命令列邊界直接抓取內部判定函式。
+#260 之前，`scripts/g1_slopcheck.py` 是一支超過兩千行的單檔腳本，把套件登錄庫查詢、HTTPS 重試、Git 呼叫、清單與鎖定檔解析、四層判定、SARIF 與閘門結果輸出全部混在一起，並靠模組層全域變數傳遞受驗樹路徑與政策。測試與評測為了離線執行，必須在執行期覆寫模組全域變數，或以 `importlib` 繞過命令列邊界直接抓取內部判定函式。
 
 深化為深模組 `scripts/g1_screen.py`（`screen(Request, Env) -> Outcome`）時，架構檢視曾評估多種邊界切法：是否在每個子概念都立抽象接縫、是否引入外掛註冊表（`Ecosystem`、`Check`、`ManifestParser`）以便擴充、是否替設定檔讀取建立儲存接縫，以及是否順便整理標準輸出 JSON 與標準錯誤訊息格式。
 
@@ -30,7 +30,7 @@
    - 標準輸出的兩種 JSON 形狀（無相依清單或規則檔變更時的精簡形狀，以及實際掃描時含 `findings`、`incomplete_checks`、`untested_controls` 等欄位的形狀）由 `scripts/run_evals.py` 與既有自動化腳本直接解析。
    - 標準錯誤的單行結果訊息（略過 1 種、有掃描 4 種，以及範圍失敗或政策讀不到的未完成訊息）由 `scripts/compare_ci.py` 用來核對 CI 執行紀錄，且必須剛好輸出一行。
    - 受信任樹 `_trusted/scripts/g1_slopcheck.py` 的命令列路徑、旗標與退出碼（`0` 無阻擋、`1` 有 blocking 發現、`2` 未完成）由 CI workflow 與 pre-commit 直接呼叫。
-   - `Outcome` 以四個純函式檢視（`to_stdout`、`to_sarif`、`to_gate_run`／`to_gate_result`、`result_line`）鎖住上述契約，內部重構不得改變逐字輸出；`scripts/g1_slopcheck.py` 的 `main` 只負責印輸出、寫檔、無 SARIF 檢視時刪除舊檔與回傳退出碼。
+   - `Outcome` 以四個純函式檢視（`to_stdout`、`to_sarif`、`to_gate_run`、`result_line`）鎖住上述契約，內部重構不得改變逐字輸出；`scripts/g1_slopcheck.py` 的 `main` 只負責印輸出、寫檔、無 SARIF 檢視時刪除舊檔與回傳退出碼。
 
 ## 後果
 
@@ -51,7 +51,7 @@ If the two language sections disagree, the Traditional Chinese section prevails.
 
 ## Context
 
-Before #260, `scripts/g1_slopcheck.py` was a single file of more than two thousand lines mixing package-registry lookups, HTTPS retries, Git subprocess calls, manifest and lockfile parsing, four-layer judgements, and SARIF and gate-result formatting, passing the scanned directory and policy through module-level globals. Offline tests and evals had to monkey-patch module globals at runtime or load internal helper functions via `importlib` across the command-line boundary.
+Before #260, `scripts/g1_slopcheck.py` was a single file of more than two thousand lines mixing package-registry lookups, HTTPS retries, Git subprocess calls, manifest and lockfile parsing, four-layer judgements, and SARIF and gate-result formatting, passing the project tree path and policy through module-level globals. Offline tests and evals had to monkey-patch module globals at runtime or load internal helper functions via `importlib` across the command-line boundary.
 
 While deepening screening into `scripts/g1_screen.py` (`screen(Request, Env) -> Outcome`), architecture review evaluated where seams belong: whether every sub-concept should get an abstract port, whether plugin registries (`Ecosystem`, `Check`, `ManifestParser`) should be introduced for extensibility, whether configuration loading should sit behind a storage seam, and whether stdout JSON and stderr summary lines could be reshaped along the way.
 
@@ -72,7 +72,7 @@ While deepening screening into `scripts/g1_screen.py` (`screen(Request, Env) -> 
    - Both JSON shapes on stdout (the compact shape when no manifests or rule files changed, and the full shape carrying `findings`, `incomplete_checks`, `untested_controls`, and waiver metadata when files are scanned) are consumed directly by `scripts/run_evals.py` and automation.
    - The single-line summary printed to stderr (one skip string, four scanned strings, plus the early incomplete line on scope failure or unreadable policy) is parsed by `scripts/compare_ci.py` to verify CI logs and must appear exactly once per run.
    - The command-line path `_trusted/scripts/g1_slopcheck.py`, its flags, and its exit codes (`0` non-blocking, `1` blocking findings, `2` incomplete) are invoked directly by CI workflows and pre-commit.
-   - `Outcome` exposes four pure view methods (`to_stdout`, `to_sarif`, `to_gate_run`/`to_gate_result`, and `result_line`) locking byte-for-byte compatibility, while `main` in `scripts/g1_slopcheck.py` performs only side effects (printing, writing files, removing stale SARIF when no SARIF view exists, and returning the exit code).
+   - `Outcome` exposes four pure view methods (`to_stdout`, `to_sarif`, `to_gate_run`, and `result_line`) locking byte-for-byte compatibility, while `main` in `scripts/g1_slopcheck.py` performs only side effects (printing, writing files, removing stale SARIF when no SARIF view exists, and returning the exit code).
 
 ## Consequences
 

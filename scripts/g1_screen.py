@@ -184,8 +184,8 @@ def resolve(root: Path, path):
     return root / p
 
 
-def external_target(env, root: Path) -> bool:
-    """目標不是本 repo：判斷交給 Policy.is_this_repo（與例外是否套用同一份條件；CI 以 VIBESEC_PROJECT_ROOT 指出受驗樹）。"""
+def is_external_project(env, root: Path) -> bool:
+    """受驗樹不是本 repo（外部專案）：判斷交給 Policy.is_this_repo（與政策例外是否套用同一份條件；CI 以 VIBESEC_PROJECT_ROOT 指出受驗樹）。"""
     return not env.policy.is_this_repo(root)
 
 
@@ -259,7 +259,7 @@ def resolve_scope(request, env):
     gone, unknown = [], []
     for f in dict.fromkeys(changed):
         is_m = classify(f).kind != "other"
-        is_r = not is_m and is_rule_file(env, root, f) and not (f.startswith("config/slopsquat/") and not external_target(env, root))
+        is_r = not is_m and is_rule_file(env, root, f) and not (f.startswith("config/slopsquat/") and not is_external_project(env, root))
         if not (is_m or is_r):
             continue
         if not resolve(root, f).exists():
@@ -844,9 +844,160 @@ def gate_status(findings, incomplete, coverage, notes=()):
 
 
 # ---------------------------------------------------------------- Outcome 與四個純函式檢視
+def _build_sarif_doc(findings) -> dict:
+    rules, results = {}, []
+    for f in findings:
+        rules.setdefault(f["rule_id"], {"id": f["rule_id"], "name": f["rule_id"],
+                                        "shortDescription": {"text": f["rule_id"]},
+                                        "properties": {"policy_tier": f["policy_tier"]}})
+        results.append({
+            "ruleId": f["rule_id"],
+            "level": LEVEL.get(f["policy_tier"], "warning"),
+            "message": {"text": f"[{f['ecosystem']}] {f['package']}@{f['version'] or '?'} — {f['reason']}"},
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": sarif_uri(f.get("manifest") or "unknown")}}}],
+            "partialFingerprints": {"vibesecPackage": f"{f['rule_id']}|{f['ecosystem']}|{f['package'].lower()}|{f.get('manifest')}"},
+            "properties": {k: f.get(k) for k in ("package", "ecosystem", "version", "policy_tier", "manifest")}
+                          | ({"exception": f["exception"]} if f.get("exception") else {})
+                          | ({"allowlist": f["allowlist"]} if f.get("allowlist") else {}),
+        })
+    return printable(gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(rules.values()), results))
+
+
+def _populate_gate_run(outcome: "Outcome", *, mode, risk_tier, base, started, commit, output_ref) -> dict:
+    run = gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=mode,
+                              scope=outcome.scope, commit=commit, diff_base=base, risk_tier=risk_tier,
+                              started_at=started)
+    run.tool(TOOL_NAME, "ran", version=TOOL_VERSION, output_ref=output_ref)
+    for c in outcome.coverage:
+        run.cover(c["control_id"], c["state"], c["reason"])
+    run.count(blocking=sum(f["policy_tier"] == "blocking" for f in outcome.findings),
+              advisory=sum(f["policy_tier"] == "advisory" for f in outcome.findings))
+    for p in outcome.problems:
+        run.problem(p)
+    for n in outcome.notes:
+        run.note(n)
+    return printable(run.result())
+
+
+@dataclass(frozen=True)
+class _UnreadableView:
+    base: str | None
+    risk_tier: object
+    message: str
+
+    def to_stdout(self, outcome: "Outcome") -> dict | None:
+        return None
+
+    def to_sarif(self, outcome: "Outcome") -> dict | None:
+        return None
+
+    def to_gate_run(self, outcome: "Outcome", started, commit, sarif_ref) -> dict:
+        run = gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=None,
+                                  scope=outcome.scope, commit=commit, diff_base=self.base, risk_tier=self.risk_tier,
+                                  started_at=started)
+        return printable(run.unreadable(outcome.problems[0], tool_name=TOOL_NAME, version=TOOL_VERSION))
+
+    def result_line(self, outcome: "Outcome") -> str:
+        return self.message
+
+
+@dataclass(frozen=True)
+class _ScopeFailureView:
+    mode: str
+    risk_tier: object
+    base: str | None
+    message: str
+
+    def to_stdout(self, outcome: "Outcome") -> dict | None:
+        return None
+
+    def to_sarif(self, outcome: "Outcome") -> dict | None:
+        return None
+
+    def to_gate_run(self, outcome: "Outcome", started, commit, sarif_ref) -> dict:
+        return _populate_gate_run(outcome, mode=self.mode, risk_tier=self.risk_tier, base=self.base,
+                                  started=started, commit=commit, output_ref=None)
+
+    def result_line(self, outcome: "Outcome") -> str:
+        return self.message
+
+
+@dataclass(frozen=True)
+class _EmptyScopeView:
+    mode: str
+    risk_tier: object
+    base: str | None
+    external_project_path: str | None
+
+    def to_stdout(self, outcome: "Outcome") -> dict | None:
+        out = {"gate": "G1", "findings": []}
+        if self.external_project_path is not None:
+            out["target"] = self.external_project_path
+        if outcome.problems:
+            out["status"], out["status_reason"] = "incomplete", "；".join(outcome.problems)
+        return printable(out)
+
+    def to_sarif(self, outcome: "Outcome") -> dict | None:
+        return _build_sarif_doc(())
+
+    def to_gate_run(self, outcome: "Outcome", started, commit, sarif_ref) -> dict:
+        return _populate_gate_run(outcome, mode=self.mode, risk_tier=self.risk_tier, base=self.base,
+                                  started=started, commit=commit, output_ref=sarif_ref)
+
+    def result_line(self, outcome: "Outcome") -> str:
+        if outcome.problems:
+            return f"⚠️ G1 無法完成檢查：{'；'.join(outcome.problems)} → incomplete。"
+        return "G1 slopcheck：無相依清單或規則檔變更，略過。"
+
+
+@dataclass(frozen=True)
+class _ScannedView:
+    mode: str = "shadow"
+    risk_tier: object = "L2"
+    base: str | None = None
+    external_project_path: str | None = None
+    ignored_exceptions: tuple = ()
+    ignored_allowlist: tuple = ()
+    stdout_reason: str | None = None
+
+    def to_stdout(self, outcome: "Outcome") -> dict | None:
+        out = {"gate": "G1", "findings": list(outcome.findings)}
+        if self.external_project_path is not None:
+            out["target"] = self.external_project_path
+            out["notes"] = list(outcome.notes)
+        if self.ignored_exceptions:
+            out["ignored_exceptions"] = list(self.ignored_exceptions)
+        if self.ignored_allowlist:
+            out["ignored_allowlist"] = list(self.ignored_allowlist)
+        if outcome.status != "pass":
+            out["status"] = outcome.status
+            out["status_reason"] = self.stdout_reason
+        if outcome.status == "incomplete" or outcome.problems:
+            out["incomplete_checks"] = list(outcome.problems)
+            out["untested_controls"] = [c["control_id"] for c in outcome.coverage if c["state"] == "untested"]
+        return printable(out)
+
+    def to_sarif(self, outcome: "Outcome") -> dict | None:
+        return _build_sarif_doc(outcome.findings)
+
+    def to_gate_run(self, outcome: "Outcome", started, commit, sarif_ref) -> dict:
+        return _populate_gate_run(outcome, mode=self.mode, risk_tier=self.risk_tier, base=self.base,
+                                  started=started, commit=commit, output_ref=sarif_ref)
+
+    def result_line(self, outcome: "Outcome") -> str:
+        blocking_n = sum(f["policy_tier"] == "blocking" for f in outcome.findings)
+        if blocking_n:
+            return f"\n⛔ G1 阻擋：{blocking_n} 筆 blocking 供應鏈發現。"
+        if outcome.problems:
+            return "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。"
+        if outcome.status == "incomplete":
+            return f"\n⚠️ G1 有控制未實測 → incomplete，絕不視為通過：{self.stdout_reason}"
+        return "\n✅ G1 快篩通過。"
+
+
 @dataclass(frozen=True)
 class Outcome:
-    """快篩單次執行的不可變純值結果，以及四個純函式檢視（標準輸出、SARIF、閘門執行／結果、標準錯誤結果行）。
+    """快篩單次執行的不可變純值結果，以及四個純函式檢視（to_stdout、to_sarif、to_gate_run、result_line）。
     退出碼只在這裡由閘門狀態唯一推導（EXIT_CODE_OF），不另立報告模組。"""
     findings: tuple = ()
     problems: tuple = ()
@@ -856,15 +1007,7 @@ class Outcome:
     status_reason: str | None = None
     scope: str = "full"
     exit_code: int = 0
-    _view_kind: str = "scanned"             # "unreadable" | "scope_failure" | "empty_scope" | "scanned"
-    _base: str | None = None
-    _mode: str | None = None
-    _risk_tier: object = "L2"
-    _target_str: str | None = None
-    _ignored_exceptions: tuple = ()
-    _ignored_allowlist: tuple = ()
-    _stdout_reason: str | None = None
-    _failure_message: str | None = None
+    _view: object = _ScannedView()
 
     @classmethod
     def unreadable(cls, problem: str, request: Request, *, config_root: Path = ROOT) -> "Outcome":
@@ -874,100 +1017,29 @@ class Outcome:
         return cls(
             findings=(), problems=(problem,), notes=(), coverage=cov,
             status="incomplete", status_reason=problem, scope=request.kind,
-            exit_code=EXIT_CODE_OF["incomplete"], _view_kind="unreadable",
-            _base=request.base, _mode=None, _risk_tier=vb.get("risk_tier", "L2"),
-            _failure_message=f"⚠️ G1 無法完成檢查：{problem} → incomplete。",
+            exit_code=EXIT_CODE_OF["incomplete"],
+            _view=_UnreadableView(
+                base=request.base,
+                risk_tier=vb.get("risk_tier", "L2"),
+                message=f"⚠️ G1 無法完成檢查：{problem} → incomplete。",
+            ),
         )
 
     def to_stdout(self) -> dict | None:
         """標準輸出的 JSON 物件（兩種形狀：無變更／有掃描）；政策讀不到或範圍失敗時無標準輸出（None）。"""
-        if self._view_kind in ("unreadable", "scope_failure"):
-            return None
-        if self._view_kind == "empty_scope":
-            out = {"gate": "G1", "findings": []}
-            if self._target_str is not None:
-                out["target"] = self._target_str
-            if self.problems:
-                out["status"], out["status_reason"] = "incomplete", "；".join(self.problems)
-            return printable(out)
-        out = {"gate": "G1", "findings": list(self.findings)}
-        if self._target_str is not None:
-            out["target"] = self._target_str
-            out["notes"] = list(self.notes)
-        if self._ignored_exceptions:
-            out["ignored_exceptions"] = list(self._ignored_exceptions)
-        if self._ignored_allowlist:
-            out["ignored_allowlist"] = list(self._ignored_allowlist)
-        if self.status != "pass":
-            out["status"] = self.status
-            out["status_reason"] = self._stdout_reason
-        if self.status == "incomplete" or self.problems:
-            out["incomplete_checks"] = list(self.problems)
-            out["untested_controls"] = [c["control_id"] for c in self.coverage if c["state"] == "untested"]
-        return printable(out)
+        return self._view.to_stdout(self)
 
     def to_sarif(self) -> dict | None:
         """SARIF 2.1.0 物件；政策讀不到或範圍失敗時回傳 None（由命令列入口刪除舊 SARIF）。"""
-        if self._view_kind in ("unreadable", "scope_failure"):
-            return None
-        rules, results = {}, []
-        for f in self.findings:
-            rules.setdefault(f["rule_id"], {"id": f["rule_id"], "name": f["rule_id"],
-                                            "shortDescription": {"text": f["rule_id"]},
-                                            "properties": {"policy_tier": f["policy_tier"]}})
-            results.append({
-                "ruleId": f["rule_id"],
-                "level": LEVEL.get(f["policy_tier"], "warning"),
-                "message": {"text": f"[{f['ecosystem']}] {f['package']}@{f['version'] or '?'} — {f['reason']}"},
-                "locations": [{"physicalLocation": {"artifactLocation": {"uri": sarif_uri(f.get("manifest") or "unknown")}}}],
-                "partialFingerprints": {"vibesecPackage": f"{f['rule_id']}|{f['ecosystem']}|{f['package'].lower()}|{f.get('manifest')}"},
-                "properties": {k: f.get(k) for k in ("package", "ecosystem", "version", "policy_tier", "manifest")}
-                              | ({"exception": f["exception"]} if f.get("exception") else {})
-                              | ({"allowlist": f["allowlist"]} if f.get("allowlist") else {}),
-            })
-        return printable(gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, list(rules.values()), results))
+        return self._view.to_sarif(self)
 
-    def to_gate_run(self, started=None, commit=None, *, sarif_ref=None) -> gate_result.GateRun:
-        """產出 G1 的 GateRun（宣告三個快篩控制，SBOM 與 KEV 預留為 deferred）。"""
-        run = gate_result.GateRun("G1", controls=CONTROLS, deferred=REQUIRED_CONTROLS["G1"], mode=self._mode,
-                                  scope=self.scope, commit=commit, diff_base=self._base, risk_tier=self._risk_tier,
-                                  started_at=started)
-        if self._view_kind == "unreadable":
-            return run
-        run.tool(TOOL_NAME, "ran", version=TOOL_VERSION, output_ref=sarif_ref)
-        for c in self.coverage:
-            run.cover(c["control_id"], c["state"], c["reason"])
-        run.count(blocking=sum(f["policy_tier"] == "blocking" for f in self.findings),
-                  advisory=sum(f["policy_tier"] == "advisory" for f in self.findings))
-        for p in self.problems:
-            run.problem(p)
-        for n in self.notes:
-            run.note(n)
-        return run
-
-    def to_gate_result(self, started=None, commit=None, *, sarif_ref=None) -> dict:
-        """產出可序列化的閘門結果 dict（含政策讀不到的 unreadable 路徑）。"""
-        run = self.to_gate_run(started, commit, sarif_ref=sarif_ref)
-        res = run.unreadable(self.problems[0], tool_name=TOOL_NAME, version=TOOL_VERSION) \
-            if self._view_kind == "unreadable" else run.result()
-        return printable(res)
+    def to_gate_run(self, started=None, commit=None, *, sarif_ref=None) -> dict:
+        """產出閘門執行結果 dict（含政策讀不到的 unreadable 路徑；無 SARIF 檢視時 output_ref 為 None）。"""
+        return self._view.to_gate_run(self, started, commit, sarif_ref)
 
     def result_line(self) -> str:
         """標準錯誤的單次結果行（字串與前導換行逐字維持既有契約）。"""
-        if self._view_kind in ("unreadable", "scope_failure"):
-            return self._failure_message or ""
-        if self._view_kind == "empty_scope":
-            if self.problems:
-                return f"⚠️ G1 無法完成檢查：{'；'.join(self.problems)} → incomplete。"
-            return "G1 slopcheck：無相依清單或規則檔變更，略過。"
-        blocking_n = sum(f["policy_tier"] == "blocking" for f in self.findings)
-        if blocking_n:
-            return f"\n⛔ G1 阻擋：{blocking_n} 筆 blocking 供應鏈發現。"
-        if self.problems:
-            return "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。"
-        if self.status == "incomplete":
-            return f"\n⚠️ G1 有控制未實測 → incomplete，絕不視為通過：{self._stdout_reason}"
-        return "\n✅ G1 快篩通過。"
+        return self._view.result_line(self)
 
 
 # ---------------------------------------------------------------- 快篩主流程
@@ -983,8 +1055,7 @@ def screen(request: Request, env: Env) -> Outcome:
         return Outcome(
             findings=(), problems=problems, notes=(), coverage=cov,
             status=status, status_reason=status_reason, scope=scope, exit_code=EXIT_CODE_OF[status],
-            _view_kind="scope_failure", _base=base, _mode=env.policy.mode, _risk_tier=risk_tier,
-            _failure_message=scoped.failure.message,
+            _view=_ScopeFailureView(mode=env.policy.mode, risk_tier=risk_tier, base=base, message=scoped.failure.message),
         )
 
     pre_incomplete, notes = list(scoped.problems), list(scoped.notes)
@@ -992,7 +1063,7 @@ def screen(request: Request, env: Env) -> Outcome:
     project = env.policy.for_project(root)
     if project.note:
         notes.append(project.note)
-    target_str = str(root) if external_target(env, root) else None
+    ext_path = str(root) if is_external_project(env, root) else None
 
     if not manifests and not rule_files:
         problems = tuple(dict.fromkeys(pre_incomplete))
@@ -1001,8 +1072,7 @@ def screen(request: Request, env: Env) -> Outcome:
         return Outcome(
             findings=(), problems=problems, notes=tuple(notes), coverage=cov,
             status=status, status_reason=status_reason, scope=scope, exit_code=EXIT_CODE_OF[status],
-            _view_kind="empty_scope", _base=base, _mode=env.policy.mode, _risk_tier=risk_tier,
-            _target_str=target_str,
+            _view=_EmptyScopeView(mode=env.policy.mode, risk_tier=risk_tier, base=base, external_project_path=ext_path),
         )
 
     c = cfg(env)
@@ -1072,7 +1142,9 @@ def screen(request: Request, env: Env) -> Outcome:
     return Outcome(
         findings=tuple(findings), problems=problems, notes=tuple(notes), coverage=cov,
         status=status, status_reason=gate_reason, scope=scope, exit_code=EXIT_CODE_OF[status],
-        _view_kind="scanned", _base=base, _mode=env.policy.mode, _risk_tier=risk_tier,
-        _target_str=target_str, _ignored_exceptions=tuple(project.ignored),
-        _ignored_allowlist=tuple(ignored_allowlist), _stdout_reason=stdout_reason,
+        _view=_ScannedView(
+            mode=env.policy.mode, risk_tier=risk_tier, base=base, external_project_path=ext_path,
+            ignored_exceptions=tuple(project.ignored), ignored_allowlist=tuple(ignored_allowlist),
+            stdout_reason=stdout_reason,
+        ),
     )

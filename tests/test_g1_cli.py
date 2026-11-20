@@ -71,6 +71,25 @@ class ThinCliContract(unittest.TestCase):
         self.assertFalse(sarif_p.exists(), "範圍失敗未執行掃描時應刪除上一次留下的舊 SARIF")
         gate_doc = json.loads(gate_p.read_text(encoding="utf-8"))
         self.assertEqual((gate_doc["status"], gate_doc["scope"]), ("incomplete", "diff"))
+        self.assertIsNone(gate_doc["tools"][0]["output_ref"])
+        self.assertEqual(reg.calls, [])
+
+    def test_non_directory_target_removes_stale_sarif_and_writes_incomplete_gate(self):
+        gate_p, sarif_p = self.D / "g1-gate.json", self.D / "g1.sarif"
+        sarif_p.write_text('{"stale": true}', encoding="utf-8")
+        reg = gr.FakeRegistry()
+        env = gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=reg)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = sc.main(["g1_slopcheck.py", "--target", str(self.D / "no-such-dir"),
+                            "--gate", str(gate_p), "--sarif", str(sarif_p)], env=env)
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("不是目錄", err.getvalue())
+        self.assertFalse(sarif_p.exists())
+        gate_doc = json.loads(gate_p.read_text(encoding="utf-8"))
+        self.assertEqual(gate_doc["status"], "incomplete")
+        self.assertIsNone(gate_doc["tools"][0]["output_ref"])
         self.assertEqual(reg.calls, [])
 
     def test_unreadable_policy_writes_unreadable_gate_removes_stale_sarif_and_never_queries_registry(self):

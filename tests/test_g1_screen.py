@@ -25,7 +25,7 @@ import g1_registry as gr  # noqa: E402
 import g1_screen as gs  # noqa: E402
 import gate_result  # noqa: E402
 from fakes import FakeGit  # noqa: E402
-from vibesec_policy import POLICY_UNREADABLE, Policy  # noqa: E402
+from vibesec_policy import POLICY_UNREADABLE, Policy, temp_policy_root  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GATE_SCHEMA = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
@@ -92,6 +92,28 @@ class ScreenHappyAndSkip(_ScreenCase):
         stdout = out.to_stdout()
         self.assertEqual(stdout, {"gate": "G1", "findings": []})
         self.assertEqual(out.result_line(), "\n✅ G1 快篩通過。")
+
+    def test_full_target_scan_discovers_manifests_skips_node_modules_and_prioritizes_blocking_over_unparsed(self):
+        self.write("examples/vulnapp/requirements.txt", "requests==2.0.0\n")
+        self.write("deploy/python-requirements.txt", "fastapi==0.1.0 \\\n    --hash=sha256:00\n")
+        self.write("frontend/yarn.lock", "# yarn lockfile v1\n")
+        self.write("README.md", "沒有安裝指令。\n")
+        self.write("node_modules/x/package.json", '{"dependencies": {"evil": "1.0.0"}}\n')
+        reg = gr.FakeRegistry({
+            ("pypi", "requests", "2.0.0"): pypi_fresh("requests", "2.0.0"),
+            ("pypi", "fastapi", "0.1.0"): pypi_fresh("fastapi", "0.1.0"),
+        })
+        git = FakeGit(tracked=[
+            "examples/vulnapp/requirements.txt", "deploy/python-requirements.txt",
+            "frontend/yarn.lock", "README.md",
+        ])
+        out = gs.screen(gs.Request(target=self.D), self.env(registry=reg, git=git, this_repo=False))
+        pkgs = {f["package"]: f for f in out.findings}
+        self.assertEqual(set(pkgs), {"requests", "fastapi"})
+        self.assertEqual(pkgs["fastapi"]["manifest"], "deploy/python-requirements.txt")
+        self.assertEqual((out.status, out.exit_code), ("fail", 1))
+        self.assertTrue(any("frontend/yarn.lock" in p for p in out.problems))
+        self.assertIn("frontend/yarn.lock", out.to_stdout()["status_reason"])
 
 
 class ScreenDetectionsAndIndirect(_ScreenCase):
@@ -238,10 +260,9 @@ class ScreenFailClosedAndWaivers(_ScreenCase):
                     self.assertTrue(any(broken in p for p in out.problems), (label, out.problems))
 
     def test_allowlist_and_policy_exceptions_lower_tier_with_proper_scope_and_pypi_hook_stays_untested(self):
-        with tempfile.TemporaryDirectory() as pr_dir, tempfile.TemporaryDirectory() as cr_dir:
-            PR, CR = pathlib.Path(pr_dir).resolve(), pathlib.Path(cr_dir).resolve()
-            (PR / "config/policy").mkdir(parents=True)
-            pol = yaml.safe_load((ROOT / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
+        with temp_policy_root() as PR, tempfile.TemporaryDirectory() as cr_dir:
+            CR = pathlib.Path(cr_dir).resolve()
+            pol = yaml.safe_load((PR / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
             pol["exceptions"] = [
                 {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "examples/vulnapp/**",
                  "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"},
@@ -251,7 +272,6 @@ class ScreenFailClosedAndWaivers(_ScreenCase):
                  "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"},
             ]
             (PR / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump(pol, allow_unicode=True), encoding="utf-8")
-            shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
             shutil.copytree(ROOT / "config/slopsquat", CR / "config/slopsquat")
             shutil.copy(ROOT / "vibesec.yaml", CR / "vibesec.yaml")
             (CR / "config/slopsquat/allowlist.yaml").write_text(yaml.safe_dump({"version": 1, "entries": [
@@ -266,20 +286,27 @@ class ScreenFailClosedAndWaivers(_ScreenCase):
                 ("pypi", "fastapi", "0.1.0"): pypi_fresh("fastapi", "0.1.0"),
             })
 
-            # 本 repo（project_root=self.D）：例外套用、stdout 無 target、gate status_reason 只列 G1 忽略的例外
+            # 本 repo（project_root=self.D）：例外套用、allowlist 套件仍查登錄庫、stdout 無 target、gate status_reason 只列 G1 忽略的例外
             env_self = self.env(registry=reg, config_root=CR, policy=Policy(PR, project_root=self.D))
             out_self = gs.screen(gs.Request(target=self.D, manifests=("examples/vulnapp/requirements.txt", "deploy/python-requirements.txt")), env_self)
+            self.assertIn(("pypi", "fastapi", "0.1.0"), reg.calls)
             self.assertTrue(all(f["policy_tier"] == "advisory" for f in out_self.findings))
             self.assertEqual((out_self.status, out_self.exit_code), ("incomplete", 2), "PyPI 安裝腳本未檢查 → incomplete")
             self.assertTrue(out_self.result_line().startswith("\n⚠️ G1 有控制未實測 → incomplete，絕不視為通過：VS-G1-INSTALL-HOOK"))
             stdout_self = out_self.to_stdout()
             self.assertNotIn("target", stdout_self)
             self.assertEqual(len(stdout_self["ignored_exceptions"]), 2)
-            gate_self = out_self.to_gate_result("2026-11-19T00:00:00+00:00", "abcdef1")
+            gate_self = out_self.to_gate_run("2026-11-19T00:00:00+00:00", "abcdef1")
+            self.assertIn("1 筆命中 blocking-policy 例外（blocking 降為 advisory，發現保留）", gate_self["status_reason"])
             self.assertIn("vibesec.g1.cooldown-violation @ nowhere/**", gate_self["status_reason"])
             self.assertNotIn("hardcoded-secret", gate_self["status_reason"])
-            sarif_props = out_self.to_sarif()["runs"][0]["results"][0]["properties"]
-            self.assertEqual(sarif_props["exception"]["approved_by"], "selftest")
+            want_ex = {"path_glob": "examples/vulnapp/**", "reason": "selftest", "approved_by": "selftest",
+                       "expires": "2099-12-31", "agent_id": None}
+            sarif_results = out_self.to_sarif()["runs"][0]["results"]
+            self.assertEqual(sarif_results[0]["properties"]["exception"], want_ex)
+            self.assertEqual(sarif_results[1]["properties"]["allowlist"], {
+                "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest", "bypass": "cooldown",
+            })
 
             # 外部專案（project_root=None）：本 repo 例外不套用，requests 維持 blocking → fail（exit 1）
             env_ext = self.env(registry=reg, config_root=CR, policy=Policy(PR, project_root=None))
@@ -498,15 +525,95 @@ class OutputViewsContract(_ScreenCase):
         )
 
     def test_sarif_and_gate_result_views_including_unreadable_policy_validate_against_schema(self):
+        # 1) 政策讀不到：to_gate_run 直接回傳完整的未完成閘門結果 dict（不拋例外）
         unr = gs.Outcome.unreadable(f"{POLICY_UNREADABLE}（測試）", gs.Request(staged=True, base="abc123"), config_root=ROOT)
         self.assertEqual((unr.exit_code, unr.status, unr.scope, unr.to_stdout(), unr.to_sarif()), (2, "incomplete", "diff", None, None))
         self.assertEqual(unr.result_line(), f"⚠️ G1 無法完成檢查：{POLICY_UNREADABLE}（測試） → incomplete。")
-        g_unr = unr.to_gate_result("2026-11-19T00:00:00+00:00", "deadbeef")
+        g_unr = unr.to_gate_run("2026-11-19T00:00:00+00:00", "deadbeef", sarif_ref="reports/g1.sarif")
         self.assertEqual(list(GATE_SCHEMA.iter_errors(g_unr)), [])
         self.assertEqual(g_unr["mode"], "enforce")
         self.assertEqual(g_unr["tools"], [gate_result.tool("vibesec-slopcheck", "error", version="2.0.0")])
         self.assertEqual([c["control_id"] for c in g_unr["coverage"] if c["state"] == "pending"], ["VS-G1-SBOM", "ASVS5-V15.2"])
 
+        # 2) 範圍失敗：無 SARIF 檢視，因此 to_gate_run 的 tool.output_ref 必須為 None（不指向不存在／已刪的檔案）
+        sf = gs.screen(gs.Request(target=self.D, staged=True),
+                       self.env(git=FakeGit(staged=gg.GitFailure("git 失敗"))))
+        g_sf = sf.to_gate_run("2026-11-19T00:00:00+00:00", "deadbeef", sarif_ref="reports/g1.sarif")
+        self.assertEqual(list(GATE_SCHEMA.iter_errors(g_sf)), [])
+        self.assertIsNone(g_sf["tools"][0]["output_ref"])
+
+        # 3) 完整 SARIF 與完整閘門結果逐欄對照（鎖住與重構前逐字相同）
+        self.write("sub/package.json", '{"dependencies": {"evil-pkg": "1.0.0", "lowdl-pkg": "2.0.0"}}\n')
+        out_full = gs.screen(
+            gs.Request(target=self.D, manifests=("sub/package.json",), base="cafebabe"),
+            self.env(
+                registry=gr.FakeRegistry({
+                    ("npm", "evil-pkg", "1.0.0"): gr.NotFound(),
+                    ("npm", "lowdl-pkg", "2.0.0"): npm_clean("lowdl-pkg", "2.0.0", downloads=5),
+                }),
+                git=FakeGit(files={("cafebabe", "sub/package.json"): '{"dependencies": {}}\n'}),
+                this_repo=True,
+            ),
+        )
+        want_sarif = gate_result.sarif(
+            {"name": "vibesec-slopcheck", "version": "2.0.0"},
+            [
+                {"id": "vibesec.g1.hallucinated-package", "name": "vibesec.g1.hallucinated-package",
+                 "shortDescription": {"text": "vibesec.g1.hallucinated-package"}, "properties": {"policy_tier": "blocking"}},
+                {"id": "vibesec.g1.low-download-package", "name": "vibesec.g1.low-download-package",
+                 "shortDescription": {"text": "vibesec.g1.low-download-package"}, "properties": {"policy_tier": "advisory"}},
+            ],
+            [
+                {
+                    "ruleId": "vibesec.g1.hallucinated-package",
+                    "level": "error",
+                    "message": {"text": "[npm] evil-pkg@1.0.0 — npm registry 查無此套件（疑似幻覺/搶註）"},
+                    "locations": [{"physicalLocation": {"artifactLocation": {"uri": "sub/package.json"}}}],
+                    "partialFingerprints": {"vibesecPackage": "vibesec.g1.hallucinated-package|npm|evil-pkg|sub/package.json"},
+                    "properties": {"package": "evil-pkg", "ecosystem": "npm", "version": "1.0.0",
+                                   "policy_tier": "blocking", "manifest": "sub/package.json"},
+                },
+                {
+                    "ruleId": "vibesec.g1.low-download-package",
+                    "level": "warning",
+                    "message": {"text": "[npm] lowdl-pkg@2.0.0 — 週下載量 5 < 1000，信譽不足，需人工判斷"},
+                    "locations": [{"physicalLocation": {"artifactLocation": {"uri": "sub/package.json"}}}],
+                    "partialFingerprints": {"vibesecPackage": "vibesec.g1.low-download-package|npm|lowdl-pkg|sub/package.json"},
+                    "properties": {"package": "lowdl-pkg", "ecosystem": "npm", "version": "2.0.0",
+                                   "policy_tier": "advisory", "manifest": "sub/package.json"},
+                },
+            ],
+        )
+        self.assertEqual(out_full.to_sarif(), want_sarif)
+
+        g_full = out_full.to_gate_run("2026-11-19T00:00:00+00:00", "deadbeef", sarif_ref="reports/g1.sarif")
+        self.assertEqual(list(GATE_SCHEMA.iter_errors(g_full)), [])
+        g_norm = dict(g_full, finished_at="2026-11-19T00:00:01+00:00")
+        pol = Policy(ROOT, project_root=self.D)
+        vb = gs.mapping(gs.load_yaml(ROOT / "vibesec.yaml"))
+        self.assertEqual(g_norm, {
+            "gate": "G1",
+            "status": "fail",
+            "status_reason": None,
+            "mode": pol.mode,
+            "scope": "diff",
+            "commit": "deadbeef",
+            "diff_base": "cafebabe",
+            "risk_tier": vb.get("risk_tier", "L2"),
+            "started_at": "2026-11-19T00:00:00+00:00",
+            "finished_at": "2026-11-19T00:00:01+00:00",
+            "tools": [gate_result.tool("vibesec-slopcheck", "ran", version="2.0.0", output_ref="reports/g1.sarif")],
+            "findings_count": {"blocking": 1, "advisory": 1},
+            "coverage": [
+                {"control_id": "VS-G1-SLOPSQUAT", "state": "fail", "reason": None},
+                {"control_id": "VS-G1-COOLDOWN", "state": "pass", "reason": None},
+                {"control_id": "VS-G1-INSTALL-HOOK", "state": "pass", "reason": None},
+                {"control_id": "VS-G1-SBOM", "state": "pending", "reason": None},
+                {"control_id": "ASVS5-V15.2", "state": "pending", "reason": None},
+            ],
+        })
+
+        # 4) 非 UTF-8 路徑在 SARIF URI 百分比編碼
         non_utf8 = os.fsdecode(b"\xff-dir")
         p = self.D / non_utf8
         try:
@@ -514,14 +621,10 @@ class OutputViewsContract(_ScreenCase):
             (p / "package.json").write_text('{"dependencies": {"evil-pkg": "1.0.0"}}\n', encoding="utf-8")
         except OSError:
             self.skipTest("檔案系統不接受非 UTF-8 檔名")
-        out = gs.screen(gs.Request(target=self.D, manifests=(f"{non_utf8}/package.json",)),
-                        self.env(registry=gr.FakeRegistry({("npm", "evil-pkg", "1.0.0"): gr.NotFound()})))
-        sarif = out.to_sarif()
-        self.assertEqual(sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        out_raw = gs.screen(gs.Request(target=self.D, manifests=(f"{non_utf8}/package.json",)),
+                            self.env(registry=gr.FakeRegistry({("npm", "evil-pkg", "1.0.0"): gr.NotFound()})))
+        self.assertEqual(out_raw.to_sarif()["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
                          "%FF-dir/package.json")
-        gate_doc = out.to_gate_result("2026-11-19T00:00:00+00:00", "deadbeef", sarif_ref="reports/g1.sarif")
-        self.assertEqual(list(GATE_SCHEMA.iter_errors(gate_doc)), [])
-        self.assertEqual(gate_doc["tools"][0]["output_ref"], "reports/g1.sarif")
 
 
 if __name__ == "__main__":
