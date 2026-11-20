@@ -229,6 +229,45 @@ class ScreenFailClosedAndWaivers(_ScreenCase):
         self.assertTrue(any("frontend/yarn.lock" in p for p in out.problems))
         self.assertEqual(out.result_line(), "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。")
 
+    def test_changed_bun_pdm_or_pylock_lockfiles_make_screen_incomplete_and_list_filename(self):
+        for rel in ("bun.lock", "sub/bun.lockb", "pdm.lock", "pylock.toml", "locks/pylock.dev.toml"):
+            with self.subTest(changed=rel):
+                self.write(rel, "# lock\n")
+                out = gs.screen(gs.Request(target=self.D, staged=True), self.env(git=FakeGit(staged=[rel])))
+                self.assertEqual((out.status, out.exit_code, out.scope), ("incomplete", 2, "diff"))
+                self.assertTrue(any(rel in p for p in out.problems), out.problems)
+                self.assertIn(rel, out.status_reason or "")
+                stdout_doc = out.to_stdout() or {}
+                self.assertTrue(any(rel in x for x in (stdout_doc.get("incomplete_checks") or ())), stdout_doc)
+                gate_doc = out.to_gate_run("2026-11-21T00:00:00+00:00", "abcdef1")
+                self.assertIn(rel, gate_doc.get("status_reason") or "")
+                self.assertEqual(out.result_line(), "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。")
+
+        for rel in ("not-bun.lock", "my-pdm.lock", "pylock-foo.toml", "src/main.py"):
+            with self.subTest(unchanged_other=rel):
+                self.write(rel, "# other\n")
+                out = gs.screen(gs.Request(target=self.D, staged=True), self.env(git=FakeGit(staged=[rel])))
+                self.assertEqual((out.status, out.exit_code, out.problems), ("pass", 0, ()))
+                self.assertEqual(out.result_line(), "G1 slopcheck：無相依清單或規則檔變更，略過。")
+
+        # 二進位 bun.lockb 搭配 --changed-files + --base：修改時回 incomplete（不因 surrogate 字元崩潰）；刪除時正常略過並註記
+        raw_lockb = b"bun-lockfile\x00\xff\xfe".decode("utf-8", "surrogateescape")
+        lst = self.write("changed.txt", "bun.lockb\n")
+        (self.D / "bun.lockb").write_bytes(b"bun-lockfile\x00\xff\x01")
+        try:
+            out_mod = gs.screen(gs.Request(target=self.D, changed_lists=(str(lst),), base="base123"),
+                                self.env(git=FakeGit(files={("base123", "bun.lockb"): raw_lockb})))
+        except UnicodeEncodeError as e:
+            self.fail(f"二進位 bun.lockb 搭配 --base 不得崩潰：{e}")
+        self.assertEqual((out_mod.status, out_mod.exit_code), ("incomplete", 2))
+        self.assertTrue(any("bun.lockb" in p for p in out_mod.problems))
+
+        (self.D / "bun.lockb").unlink()
+        out_del = gs.screen(gs.Request(target=self.D, changed_lists=(str(lst),), base="base123"),
+                            self.env(git=FakeGit(files={("base123", "bun.lockb"): raw_lockb})))
+        self.assertEqual((out_del.status, out_del.exit_code, out_del.problems), ("pass", 0, ()))
+        self.assertTrue(any("bun.lockb" in n for n in out_del.notes), out_del.notes)
+
     def test_broken_or_missing_slopsquat_configs_fail_closed(self):
         self.write("package.json", '{"dependencies": {"express": "4.21.2"}}\n')
         reg = gr.FakeRegistry({("npm", "express", "4.21.2"): npm_clean()})

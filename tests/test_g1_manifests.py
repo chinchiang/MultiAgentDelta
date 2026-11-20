@@ -72,15 +72,18 @@ class Classify(unittest.TestCase):
         for name in ("package.json", "pyproject.toml", "pnpm-lock.yaml", "docs/notes.txt"):
             self.assertFalse(gm.classify(name).is_lock, name)
 
-    def test_two_views_stay_different_until_stricter_change(self):
-        # #260（S1）：兩組「無解析器」樣式先逐字保留。快篩不認 bun.lock／pdm.lock／pylock（SBOM 認）；
-        # SBOM 不認 setup.py／setup.cfg／Pipfile（快篩認）。取聯集是獨立的變嚴 PR（#269），那時再改這個測試。
-        self.assertEqual(gm.classify("bun.lock").kind, "other")
-        self.assertEqual(gm.classify("pdm.lock").kind, "other")
-        self.assertEqual(gm.classify("pylock.toml").kind, "other")
-        self.assertEqual(gm.classify("bun.lock", view="sbom").kind, "unparsed")
-        self.assertEqual(gm.classify("setup.py", view="sbom").kind, "other")
-        self.assertEqual(gm.classify("Pipfile", view="sbom").kind, "other")
+    def test_screen_and_sbom_share_unparsed_lockfiles_while_only_screen_includes_non_locks(self):
+        # #269：快篩補認 bun.lock、bun.lockb、pdm.lock、pylock*.toml（PEP 751）為無解析器清單；
+        # 帶前綴或備份副檔名仍不算清單；SBOM 仍只看鎖定檔（不認 setup.py／setup.cfg／Pipfile）。
+        for name in ("bun.lock", "sub/bun.lock", "bun.lockb", "pdm.lock", "sub/pdm.lock",
+                     "pylock.toml", "pylock.dev.toml", "sub/pylock.prod.toml"):
+            self.assertEqual(gm.classify(name), gm.Classified("unparsed", False), name)
+            self.assertEqual(gm.classify(name, view="sbom"), gm.Classified("unparsed", False), name)
+        for name in ("not-bun.lock", "my-pdm.lock", "pylock-foo.toml", "docs/pylock-notes.md", "bun.lock.bak"):
+            self.assertEqual(gm.classify(name).kind, "other", name)
+        for name in ("setup.py", "setup.cfg", "Pipfile"):
+            self.assertEqual(gm.classify(name).kind, "unparsed", name)
+            self.assertEqual(gm.classify(name, view="sbom").kind, "other", name)
 
     def test_unknown_view_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -301,9 +304,13 @@ class UnparsedAndUnknown(TmpTree):
         # 這個切片新增：以前 parse_manifest 悄悄略過、main 再自己用 UNPARSED_RE 找出來補記
         a = self.write("a/pnpm-lock.yaml", "lockfileVersion: 9\n")
         b = self.write("b/setup.py", "from setuptools import setup\n")
+        d = self.write("c/bun.lock", "{}\n")
+        e = self.write("c/bun.lockb", "bin\n")
+        f = self.write("d/pdm.lock", "[metadata]\n")
+        g = self.write("d/pylock.dev.toml", 'lock-version = "1.0"\n')
         c = self.write("package.json", '{"dependencies": {"left-pad": "1.3.0"}}')
-        p = gm.parse_manifest([a, c, b], root=self.D)
-        self.assertEqual(p.unparsed, (str(a), str(b)), "依輸入順序、原樣回報輸入路徑")
+        p = gm.parse_manifest([a, d, e, c, f, g, b], root=self.D)
+        self.assertEqual(p.unparsed, (str(a), str(d), str(e), str(f), str(g), str(b)), "依輸入順序、原樣回報輸入路徑")
         self.assertEqual(self.names(p), ["left-pad"])
         self.assertEqual(p.bad, (), "無解析器不放進 bad：兩者在輸出中是不同的未完成原因")
 

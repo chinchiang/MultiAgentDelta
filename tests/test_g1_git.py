@@ -168,6 +168,15 @@ class SubprocessGitContract(unittest.TestCase):
             self.assertEqual(git.show("HEAD", "b c.txt"), "inner\n")
             self.assertIsNone(git.show("HEAD", "top.txt"))
 
+    def test_show_preserves_binary_blob_with_surrogateescape(self):
+        # 二進位鎖定檔（如 bun.lockb）在 base 存在時，show() 不得因嚴格 UTF-8 解碼丟 UnicodeDecodeError 而誤回 None
+        with TempRepo() as r:
+            r.write_raw(b"bun.lockb", b"bun-lockfile\x00\xff\xfe")
+            first = r.commit()
+            got = gg.SubprocessGit(r.dir).show(first, "bun.lockb")
+            self.assertIsNotNone(got)
+            self.assertEqual(got.encode("utf-8", "surrogateescape"), b"bun-lockfile\x00\xff\xfe")
+
     # ---- head_commit ----
     def test_head_commit(self):
         with TempRepo() as r:
