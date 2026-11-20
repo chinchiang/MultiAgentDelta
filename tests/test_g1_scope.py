@@ -222,29 +222,26 @@ class EnvFieldsAreHonoured(unittest.TestCase):
         return gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=kw.pop("registry", gr.FakeRegistry()), **kw)
 
     def test_allowlist_expiry_is_judged_against_the_env_date(self):
-        import g1_slopcheck as sc
         with tempfile.TemporaryDirectory() as d:
             al = pathlib.Path(d) / "allowlist.yaml"
             al.write_text("entries:\n  - {package: p, ecosystem: npm, approved_by: a, expires: '2000-01-02', reason: r, bypass: [cooldown]}\n",
                           encoding="utf-8")
-            before = sc.load_allowlist(self.env(today=datetime.date(2000, 1, 1)), al)
-            after = sc.load_allowlist(self.env(today=datetime.date(2000, 1, 3)), al)
+            before = gs.load_allowlist(self.env(today=datetime.date(2000, 1, 1)), al)
+            after = gs.load_allowlist(self.env(today=datetime.date(2000, 1, 3)), al)
         self.assertEqual(([e["package"] for e in before[0]], before[1]), (["p"], []))
         self.assertEqual(([e["package"] for e in after[0]], after[1]), ([], ["p：已於 2000-01-02 過期"]))
 
     def test_thresholds_come_from_the_config_root_of_the_env(self):
-        import g1_slopcheck as sc
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
             (root / "config/slopsquat").mkdir(parents=True)
             (root / "config/slopsquat/cooldown.yaml").write_text("thresholds: {cooldown_days: 99, min_weekly_downloads: 7}\n", encoding="utf-8")
             (root / "vibesec.yaml").write_text("gates:\n  g1_supply_chain: {min_weekly_downloads: 5}\n", encoding="utf-8")
-            c = sc.cfg(self.env(config_root=root))
+            c = gs.cfg(self.env(config_root=root))
         self.assertEqual((c["cooldown_days"], c["min_weekly_downloads"]), (99, 5), "cooldown.yaml 補細節、vibesec.yaml 優先")
 
     def test_the_number_of_concurrent_registry_queries_is_the_env_workers(self):
         import threading, time
-        import g1_slopcheck as sc
 
         class Tracking:
             def __init__(self):
@@ -269,16 +266,13 @@ class EnvFieldsAreHonoured(unittest.TestCase):
             for workers in (1, 4):
                 reg = Tracking()
                 env = self.env(registry=reg, workers=workers)
-                import contextlib, io
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    sc.main(["g1_slopcheck.py", "--target", str(D), "--manifest", "package.json"], env_factory=lambda root: (env, None))
+                gs.screen(gs.Request(target=D, manifests=("package.json",)), env)
                 peaks[workers] = reg.peak
         self.assertEqual(peaks[1], 1, "workers=1：一次只查一個")
         self.assertGreater(peaks[4], 1, "workers=4：同時查多個")
 
     def test_requirements_indirect_also_queries_with_the_env_workers(self):
         import threading, time
-        import g1_slopcheck as sc
 
         class Tracking(gr.FakeRegistry):
             def __init__(self):
@@ -299,7 +293,7 @@ class EnvFieldsAreHonoured(unittest.TestCase):
             peaks = {}
             for workers in (1, 4):
                 reg = Tracking()
-                sc.requirements_indirect(self.env(registry=reg, workers=workers), p)
+                gs.requirements_indirect(self.env(registry=reg, workers=workers), p)
                 peaks[workers] = reg.peak
         self.assertEqual(peaks[1], 1)
         self.assertGreater(peaks[4], 1)

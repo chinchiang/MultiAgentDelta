@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import g1_registry as gr  # noqa: E402
-import g1_slopcheck as sc  # noqa: E402
+import g1_screen as gs  # noqa: E402
 from fakes import FakeGit, run_cli  # noqa: E402
 from gitrepo import TempRepo, isolated_git_environment, open_pull_request, write_raw  # noqa: E402
 
@@ -40,41 +40,41 @@ def typosquat_registry():
 class OutputBoundary(unittest.TestCase):
     def test_valid_utf8_text_is_left_alone(self):
         for s in ("requirements.txt", "中文/requirements.txt", "a b/c\td.txt", 'q"uote', "😀/x", ""):
-            self.assertEqual(sc.printable(s), s)
+            self.assertEqual(gs.printable(s), s)
 
     def test_a_lone_surrogate_is_escaped_as_the_original_byte(self):
-        self.assertEqual(sc.printable(os.fsdecode(b"\xff-dir/x.txt")), r"\xff-dir/x.txt")
-        self.assertEqual(sc.printable(os.fsdecode("中".encode() + b"\xfe")), r"中\xfe")
+        self.assertEqual(gs.printable(os.fsdecode(b"\xff-dir/x.txt")), r"\xff-dir/x.txt")
+        self.assertEqual(gs.printable(os.fsdecode("中".encode() + b"\xfe")), r"中\xfe")
 
     def test_a_mixed_string_escapes_each_character_by_its_own_kind(self):
         # U+DC80–U+DCFF 是 surrogateescape 保留的原始位元組（寫成 \xHH）；範圍外的孤立代理字元寫成 \uXXXX；兩者可以並存
-        self.assertEqual(sc.printable("a\udc80b\ud800c中"), r"a\x80b\ud800c中")
+        self.assertEqual(gs.printable("a\udc80b\ud800c中"), r"a\x80b\ud800c中")
 
     def test_the_result_can_be_encoded_as_utf8(self):
         try:
-            sc.printable(os.fsdecode(b"\xff\xfe\x80")).encode("utf-8")
+            gs.printable(os.fsdecode(b"\xff\xfe\x80")).encode("utf-8")
         except UnicodeEncodeError as e:
             self.fail(f"轉義後仍含無法以 UTF-8 編碼的字元：{e}")
 
     def test_nested_structures_keys_and_non_strings_are_handled(self):
         raw = {NON_UTF8_DIR: [NON_UTF8_DIR, {"k": NON_UTF8_DIR}, ("t", NON_UTF8_DIR)], "n": None, "i": 3, "b": True, "f": 1.5}
-        got = sc.printable(raw)
+        got = gs.printable(raw)
         self.assertEqual(got, {r"\xff-dir": [r"\xff-dir", {"k": r"\xff-dir"}, ["t", r"\xff-dir"]],
                                "n": None, "i": 3, "b": True, "f": 1.5})
 
     def test_the_input_is_not_modified(self):
         raw = {"a": [NON_UTF8_DIR]}
-        sc.printable(raw)
+        gs.printable(raw)
         self.assertEqual(raw, {"a": [NON_UTF8_DIR]})
 
     def test_sarif_uri_of_a_valid_path_is_unchanged(self):
         for s in ("requirements.txt", "中文/a b.txt", "unknown"):
-            self.assertEqual(sc.sarif_uri(s), s)
+            self.assertEqual(gs.sarif_uri(s), s)
 
     def test_sarif_uri_of_a_non_utf8_path_is_percent_encoded(self):
         # artifactLocation.uri 是 URI：反斜線不是合法字元，要用百分比編碼；目錄分隔字元保留
-        self.assertEqual(sc.sarif_uri(os.fsdecode(b"\xff-dir/requirements.txt")), "%FF-dir/requirements.txt")
-        self.assertEqual(sc.sarif_uri(os.fsdecode("中/".encode() + b"\xfe.txt")), "%E4%B8%AD/%FE.txt")
+        self.assertEqual(gs.sarif_uri(os.fsdecode(b"\xff-dir/requirements.txt")), "%FF-dir/requirements.txt")
+        self.assertEqual(gs.sarif_uri(os.fsdecode("中/".encode() + b"\xfe.txt")), "%E4%B8%AD/%FE.txt")
 
 
 class NonUtf8Paths(unittest.TestCase):

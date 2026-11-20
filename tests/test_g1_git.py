@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import g1_git as gg  # noqa: E402
 import g1_registry as gr  # noqa: E402
-import g1_slopcheck as sc  # noqa: E402
+import g1_screen as gs  # noqa: E402
 from fakes import FakeGit, run_screen  # noqa: E402
 from gitrepo import TempRepo, isolated_git_environment  # noqa: E402
 
@@ -274,7 +274,7 @@ class FailClosedPaths(unittest.TestCase):
 
     def test_the_default_env_uses_the_production_git_in_the_scanned_project(self):
         # 沒有注入 Git 時（命令列）：生產的 SubprocessGit，工作目錄是被掃描的目標專案
-        env, problem = sc.default_env(self.D, sc.ROOT)
+        env, problem = gs.default_env(self.D, gs.ROOT)
         self.assertIsNone(problem)
         self.assertIsInstance(env.git, gg.SubprocessGit)
         self.assertEqual(pathlib.Path(env.git.cwd).resolve(), self.D)

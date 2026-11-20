@@ -130,6 +130,7 @@ def run_cli(D, *argv, git=None, registry=None, sarif=False):
     import dataclasses
     import io
     import g1_registry as gr
+    import g1_screen as gs
     import g1_slopcheck as sc
     gate = D.parent / f"{D.name}-gate.json"
     sarif_path = D.parent / f"{D.name}-out.sarif"
@@ -137,14 +138,15 @@ def run_cli(D, *argv, git=None, registry=None, sarif=False):
     raw = io.BytesIO()
     stdout = io.TextIOWrapper(raw, encoding="utf-8", errors="strict", write_through=True)
     extra = ["--sarif", str(sarif_path)] if sarif else []
-    def env_factory(root):
-        env, problem = sc.default_env(root, sc.ROOT, registry=reg)      # 政策、設定與生產一樣；登錄庫是替身
-        return (dataclasses.replace(env, git=git) if env is not None and git is not None else env), problem
+    env, problem = gs.default_env(D.resolve(), gs.ROOT, registry=reg)
+    if env is not None and git is not None:
+        env = dataclasses.replace(env, git=git)
 
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
         error = None
         try:
-            code = sc.main(["g1_slopcheck.py", "--target", str(D), *argv, "--gate", str(gate), *extra], env_factory=env_factory)
+            code = sc.main(["g1_slopcheck.py", "--target", str(D), *argv, "--gate", str(gate), *extra],
+                           env=env if problem is None else None)
         except Exception as e:      # noqa: BLE001  記下例外，讓崩潰在測試裡是可讀的失敗（assert run.error is None），不是 ERROR
             code, error = None, e
 
