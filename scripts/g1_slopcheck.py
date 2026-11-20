@@ -25,26 +25,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_result  # noqa: E402
 from g1_git import head_commit  # noqa: E402
 from g1_screen import (  # noqa: E402
-    CONTROL_OF,       # 相容匯出：供 scripts/run_evals.py 使用，#267（S6）遷移後移除
     Outcome,
     Request,
     TOOL_NAME,
     TOOL_VERSION,
-    cfg,              # 相容匯出：供 scripts/run_evals.py G1FixtureRunner 使用，#267（S6）遷移後移除
-    cooldown_finding,  # 相容匯出：供 scripts/run_evals.py G1FixtureRunner 使用，#267（S6）遷移後移除
-    default_env,      # 相容匯出：供 scripts/run_evals.py G1FixtureRunner 使用，#267（S6）遷移後移除
+    default_env,
     dumps_json,
-    install_hook_finding,  # 相容匯出：供 scripts/run_evals.py G1FixtureRunner 使用，#267（S6）遷移後移除
     screen,
 )
 
 __all__ = [
-    "CONTROL_OF",
     "ROOT",
-    "cfg",
-    "cooldown_finding",
-    "default_env",
-    "install_hook_finding",
     "main",
     "selftest",
 ]

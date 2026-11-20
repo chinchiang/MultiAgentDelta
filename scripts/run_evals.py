@@ -32,10 +32,13 @@
         1 指定 --baseline 且退步：任何 FP／FN／STATUS_WRONG，或 baseline 中應實測的案例變成 untested／incomplete（nightly 用）。
 """
 from __future__ import annotations
-import argparse, collections, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time, fnmatch
+import argparse, collections, dataclasses, glob, http.client, json, os, pathlib, re, shutil, socket, subprocess, sys, tempfile, time, fnmatch
+from datetime import datetime, timedelta, timezone
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+from g1_registry import Facts, FakeRegistry, Found  # noqa: E402
+from g1_screen import Request as G1ScreenRequest, default_env as default_g1_env, screen as run_g1_screen  # noqa: E402
 from g5_api_probes import G5Request, ProbeTokens, RULE_CONTROL, run_probes  # noqa: E402
 from target_guard import HttpResponse, TargetDenied, authorize_target  # noqa: E402
 
@@ -61,20 +64,49 @@ def load_yaml(p: pathlib.Path):
 
 
 def slopcheck_incomplete(out: dict, case: dict) -> str | None:
-    """slopcheck 的 stdout 是否讓本案例無法判定（回傳原因；可判定回 None）。
+    """快篩結果（to_stdout 形狀）是否讓本案例無法判定（回傳原因；可判定回 None）。
     檢查本身失敗（incomplete_checks：registry 失敗、鎖定檔未解析）→ 無法判定；只有與本案例規則無關的控制未實測
-    （untested_controls，例如 PyPI 安裝腳本尚無檢查的 VS-G1-INSTALL-HOOK）→ 照常判定，否則每個 PyPI 案例都變 incomplete。"""
+    （untested_controls，例如 PyPI 安裝腳本尚無檢查的 VS-G1-INSTALL-HOOK）→ 照常判定，否則每個 PyPI 案例都變 incomplete。
+    規則對應的控制取自 config/catalogs/cwe-map.yaml（AGENTS.md 規則 3）；查不到控制時 fail-closed 記無法判定。"""
     reason = f"slopcheck incomplete：{(out.get('status_reason') or '')[:120]}"
     if out.get("incomplete_checks"):
         # 有 blocking 時 G1 記 fail（gate_verdict：blocking 優先），但檢查本身仍沒跑完 → 案例照樣無法判定
         return reason
     if out.get("status") != "incomplete":
         return None
-    if "untested_controls" not in out:
+    untested = out.get("untested_controls")
+    if untested is None:
         return reason
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from g1_slopcheck import CONTROL_OF
-    return reason if CONTROL_OF.get((case.get("expected") or {}).get("rule_id")) in out["untested_controls"] else None
+    meta = _cwe_map_rules().get((case.get("expected") or {}).get("rule_id")) or {}
+    controls = meta.get("control_ids") or []
+    return reason if not controls or any(c in (untested or ()) for c in controls) else None
+
+
+def _write_g1_manifest(dirpath: pathlib.Path, eco: str, specs: list[str]) -> pathlib.Path:
+    if eco == "npm":
+        deps = {}
+        for spec in specs:
+            name, _, ver = spec.rpartition("@") if spec.count("@") > (1 if spec.startswith("@") else 0) else (spec, "", "latest")
+            deps[name or spec] = ver or "latest"
+        mf = dirpath / "package.json"
+        mf.write_text(json.dumps({"name": "eval", "dependencies": deps}), encoding="utf-8")
+        return mf
+    mf = dirpath / "requirements.txt"
+    mf.write_text("\n".join(specs) + "\n", encoding="utf-8")
+    return mf
+
+
+def _g1_screen_result(request: G1ScreenRequest, env, problem: str | None, case: dict) -> tuple[set[str] | None, str | None]:
+    if problem:
+        return None, problem
+    outcome = run_g1_screen(request, env)
+    out = outcome.to_stdout()
+    if out is None:
+        return None, f"slopcheck incomplete：{(outcome.status_reason or '')[:120]}"
+    why = slopcheck_incomplete(out, case)
+    if why:
+        return None, why
+    return {f.get("rule_id") for f in outcome.findings}, None
 
 
 def semgrep_rule_ids() -> set[str]:
@@ -173,8 +205,9 @@ class SemgrepRunner(Runner):
 class SlopcheckRunner(Runner):
     name = "slopcheck"
 
-    def __init__(self, network: bool):
+    def __init__(self, network: bool, *, policy_root: pathlib.Path = ROOT, registry=None):
         self.network = network
+        self.env, self.problem = default_g1_env(ROOT, policy_root, registry=registry)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -193,46 +226,18 @@ class SlopcheckRunner(Runner):
 
     def run(self, case):
         inp = case["input"]
-        eco, added = inp["ecosystem"], inp.get("added") or []
         with tempfile.TemporaryDirectory() as d:
-            if eco == "npm":
-                deps = {}
-                for spec in added:
-                    name, _, ver = spec.rpartition("@") if spec.count("@") > (1 if spec.startswith("@") else 0) else (spec, "", "latest")
-                    deps[name or spec] = ver or "latest"
-                mf = pathlib.Path(d) / "package.json"
-                mf.write_text(json.dumps({"name": "eval", "dependencies": deps}), encoding="utf-8")
-            else:
-                mf = pathlib.Path(d) / "requirements.txt"
-                mf.write_text("\n".join(added) + "\n", encoding="utf-8")
-            try:
-                p = subprocess.run([sys.executable, str(SLOPCHECK), "--manifest", str(mf)],
-                                   capture_output=True, text=True, timeout=120, cwd=ROOT)
-                if not p.stdout.strip():
-                    return None, f"slopcheck 無輸出（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}"
-                out = json.loads(p.stdout)
-            except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
-                return None, f"slopcheck 執行失敗：{type(e).__name__}"
-            why = slopcheck_incomplete(out, case)
-            if why:
-                return None, why
-            return {f.get("rule_id") for f in out.get("findings", [])}, None
+            mf = _write_g1_manifest(pathlib.Path(d), inp["ecosystem"], inp.get("added") or [])
+            return _g1_screen_result(G1ScreenRequest(manifests=(str(mf),)), self.env, self.problem, case)
 
 
 class G1FixtureRunner(Runner):
-    """以合成 registry 欄位直接呼叫 g1_slopcheck 的判定函式（cooldown_finding、install_hook_finding）。
-    驗證的是判定邏輯與 cooldown.yaml 樣式，不含 registry 查詢本身（那部分由 SlopcheckRunner 以 live registry 實測）。"""
+    """以 FakeRegistry 餵合成 Facts（發布時間、安裝腳本等），經由 g1_screen.screen 執行完整快篩流程（#267）。"""
     name = "g1-fixture"
     RULES = {"vibesec.g1.cooldown-violation": "published_hours_ago", "vibesec.g1.postinstall-egress": "package_json"}
 
-    def __init__(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("g1_slopcheck", SLOPCHECK)
-        self.mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.mod)
-        self.env, problem = self.mod.default_env(ROOT)       # 政策與設定取自本 repo；登錄庫與 Git 在這裡用不到
-        if problem:
-            raise RuntimeError(problem)
+    def __init__(self, *, policy_root: pathlib.Path = ROOT):
+        self.env, self.problem = default_g1_env(ROOT, policy_root)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -245,17 +250,42 @@ class G1FixtureRunner(Runner):
             return f"案例缺合成欄位 {field}"
         return None
 
+    @staticmethod
+    def _parse_fixture_spec(eco: str, raw: str) -> tuple[str, str]:
+        if eco == "npm":
+            if raw.count("@") > (1 if raw.startswith("@") else 0):
+                name, _, ver = raw.rpartition("@")
+                return (name or "fixture-pkg"), (ver or "1.0.0")
+            return (raw or "fixture-pkg"), "1.0.0"
+        if "==" in raw:
+            name, _, ver = raw.partition("==")
+            return (name.strip() or "fixture-pkg"), (ver.strip() or "1.0.0")
+        name = re.split(r"[=@<>!~ ]", raw, maxsplit=1)[0].strip() or "fixture-pkg"
+        return name, "1.0.0"
+
     def run(self, case):
-        inp, rule = case["input"], case["expected"]["rule_id"]
-        added = inp.get("added") or ["fixture-pkg"]
-        name = re.split(r"[=@<>!~ ]", added[0].lstrip("@"))[0] or "fixture-pkg"
+        if self.problem:
+            return None, self.problem
+        inp = case["input"]
         eco = inp.get("ecosystem") or "npm"
-        if rule == "vibesec.g1.cooldown-violation":
-            f = self.mod.cooldown_finding(self.env, name, eco, None, int(inp["published_hours_ago"]) // 24, self.mod.cfg(self.env))
-        else:
-            scripts = (inp.get("package_json") or {}).get("scripts") or {}
-            f = self.mod.install_hook_finding(self.env, name, eco, None, scripts)
-        return ({f["rule_id"]} if f else set()), None
+        raw_spec = (inp.get("added") or ["fixture-pkg@1.0.0" if eco == "npm" else "fixture-pkg==1.0.0"])[0]
+        name, ver = self._parse_fixture_spec(eco, raw_spec)
+        published_at = (
+            (datetime.now(timezone.utc) - timedelta(hours=int(inp["published_hours_ago"]))).isoformat()
+            if "published_hours_ago" in inp else "2020-01-01T00:00:00Z"
+        )
+        scripts = ((inp.get("package_json") or {}).get("scripts") or {}) if eco == "npm" else None
+        downloads = 50_000 if eco == "npm" else None
+        fake_reg = FakeRegistry({(eco, name, ver): Found(Facts(eco, name, ver, published_at, scripts, downloads))})
+        manifest_spec = f"{name}@{ver}" if eco == "npm" else f"{name}=={ver}"
+        with tempfile.TemporaryDirectory() as d:
+            mf = _write_g1_manifest(pathlib.Path(d), eco, [manifest_spec])
+            return _g1_screen_result(
+                G1ScreenRequest(manifests=(str(mf),)),
+                dataclasses.replace(self.env, registry=fake_reg),
+                None,
+                case,
+            )
 
 
 class G0TrifectaRunner(Runner):
@@ -322,12 +352,13 @@ class G0CoverageRunner(Runner):
 
 
 class RulesFileRunner(Runner):
-    """G1 規則檔案例：把 snippet 寫成 agent 規則檔，以 g1_slopcheck.py --rules-file 實測（查 live registry）。"""
+    """G1 規則檔案例：把 snippet 寫成 agent 規則檔，經由 g1_screen.screen 實測（預設查 live registry）。"""
     name = "slopcheck-rules-file"
     RULE = "vibesec.g1.rules-file-unknown-package"
 
-    def __init__(self, network: bool):
+    def __init__(self, network: bool, *, policy_root: pathlib.Path = ROOT, registry=None):
         self.network = network
+        self.env, self.problem = default_g1_env(ROOT, policy_root, registry=registry)
 
     def handles(self, case):
         inp, exp = case["input"], case["expected"]
@@ -345,18 +376,7 @@ class RulesFileRunner(Runner):
     def run(self, case):
         with tempfile.TemporaryDirectory() as d:
             target = _write_fixture(d, case["input"], ".cursorrules")
-            try:
-                p = subprocess.run([sys.executable, str(SLOPCHECK), "--rules-file", str(target)],
-                                   capture_output=True, text=True, timeout=120, cwd=ROOT)
-                if not p.stdout.strip():
-                    return None, f"slopcheck 無輸出（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}"
-                out = json.loads(p.stdout)
-            except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
-                return None, f"slopcheck 執行失敗：{type(e).__name__}"
-            why = slopcheck_incomplete(out, case)
-            if why:
-                return None, why
-            return {f.get("rule_id") for f in out.get("findings", [])}, None
+            return _g1_screen_result(G1ScreenRequest(rule_files=(str(target),)), self.env, self.problem, case)
 
 
 class KevRunner(Runner):
@@ -1191,16 +1211,25 @@ def untested_reason(case: dict, reasons: list[str]) -> str:
     return f"{rule} 沒有本機評測執行器{where}"
 
 
+_CWE_MAP_RULES: dict[str, dict] | None = None
 _IMPLEMENTERS: dict[str, list[str]] | None = None
+
+
+def _cwe_map_rules() -> dict[str, dict]:
+    """config/catalogs/cwe-map.yaml：vibesec 規則 ID → 規則定義（含 control_ids、implemented_by）。"""
+    global _CWE_MAP_RULES
+    if _CWE_MAP_RULES is None:
+        import yaml
+        raw = (yaml.safe_load((ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8")) or {}).get("rules") or {}
+        _CWE_MAP_RULES = {rid: (meta or {}) for rid, meta in raw.items()}
+    return _CWE_MAP_RULES
 
 
 def _rule_implementers() -> dict[str, list[str]]:
     """config/catalogs/cwe-map.yaml：vibesec 規則 ID → implemented_by 清單。"""
     global _IMPLEMENTERS
     if _IMPLEMENTERS is None:
-        import yaml
-        rules = (yaml.safe_load((ROOT / "config/catalogs/cwe-map.yaml").read_text(encoding="utf-8")) or {}).get("rules") or {}
-        _IMPLEMENTERS = {rid: [str(x) for x in (meta or {}).get("implemented_by") or []] for rid, meta in rules.items()}
+        _IMPLEMENTERS = {rid: [str(x) for x in meta.get("implemented_by") or []] for rid, meta in _cwe_map_rules().items()}
     return _IMPLEMENTERS
 
 
@@ -1463,15 +1492,17 @@ def selftest() -> list[str]:
         ("有 blocking 記 fail、沒有理由、檢查失敗", {"status": "fail", "status_reason": None, "incomplete_checks": ["npm 逾時"]}, slop, True),
         ("只有安裝腳本未實測", {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]}, slop, False),
         ("本案例的控制未實測", {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]}, hook, True),
+        ("目錄外的未知規則（fail-closed）", {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]},
+         {"expected": {"rule_id": "vibesec.g1." + "no-such-rule"}}, True),
     ]:
         if bool(slopcheck_incomplete(out, case)) != want:
             fails.append(f"slopcheck_incomplete（{name}）應為 {'無法判定' if want else '可判定'}")
 
-    # 真實的進程內 G0 runner：以 evals/cases/g0 的案例實際呼叫閘門函式。以前閘門函式改了簽名、這裡沒有呼叫到，
+    # 真實的進程內 G0／G1 runner：以 evals/cases 的案例實際呼叫閘門函式。以前閘門函式改了簽名、這裡沒有呼叫到，
     # run_evals 整支以 TypeError 結束（#173 的 trifecta_findings）；判定是否正確由 baseline 比對負責，這裡只看呼叫得通
-    for runner_cls in (G0TrifectaRunner, G0CoverageRunner):
+    for runner_cls, gate_dir in ((G0TrifectaRunner, "g0"), (G0CoverageRunner, "g0"), (G1FixtureRunner, "g1")):
         r, ran = runner_cls(), 0
-        for p in sorted((ROOT / "evals/cases/g0").glob("*.yaml")):
+        for p in sorted((ROOT / f"evals/cases/{gate_dir}").glob("*.yaml")):
             case = load_yaml(p)
             if r.handles(case) is not None:
                 continue
@@ -1482,7 +1513,7 @@ def selftest() -> list[str]:
                 break
             ran += 1
         if not ran:
-            fails.append(f"{r.name} 沒有處理任何 evals/cases/g0 案例")
+            fails.append(f"{r.name} 沒有處理任何 evals/cases/{gate_dir} 案例")
 
     return fails
 
