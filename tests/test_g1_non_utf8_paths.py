@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import g1_registry as gr  # noqa: E402
-import g1_slopcheck as sc  # noqa: E402
+import g1_screen as sc  # noqa: E402  printable／sarif_uri 已收進 g1_screen（#266）
 from fakes import FakeGit, run_cli  # noqa: E402
 from gitrepo import TempRepo, isolated_git_environment, open_pull_request, write_raw  # noqa: E402
 

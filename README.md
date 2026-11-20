@@ -192,12 +192,12 @@ MultiAgentDelta/
 │   ├── vibesec_policy.py          # tier 唯一計算來源
 │   ├── g0_threat_model.py         # G0：schema、致命三要素、risk_tier 推導
 │   ├── g0_trifecta.py
-│   ├── g1_slopcheck.py            # G1：四層 Slopsquatting 防禦
+│   ├── g1_slopcheck.py            # G1：四層快篩薄命令列入口（唯一有副作用之處）
 │   ├── g1_manifests.py            # G1：清單與鎖定檔的分類與解析（快篩與 SBOM 共用）
 │   ├── https_only.py              # G1：只走 HTTPS 的 GET JSON、暫時性錯誤重試（傳輸層）
 │   ├── g1_registry.py             # G1：套件登錄庫接縫（npm／PyPI 查詢，三態結果，生產與替身轉接器）
 │   ├── g1_git.py                  # G1：Git 接縫（暫存區、追蹤檔、ref 上的內容）與 HEAD 的 commit
-│   ├── g1_screen.py               # G1：快篩的範圍解析（Request、Env、resolve_scope）；沒有模組層的可變狀態
+│   ├── g1_screen.py               # G1：快篩深模組（Request、Env、resolve_scope、screen、Outcome 與四個純檢視）
 │   ├── g1_sbom.py                 # G1：CycloneDX SBOM 產生、可重現性與完整性
 │   ├── fetch_kev.py               # G1：取得 CISA KEV feed（官網 → cisagov 鏡像 → 快取）
 │   ├── g1_kev.py                  # G1：Grype 結果 × CISA KEV

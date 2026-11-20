@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import g1_git as gg  # noqa: E402
 import g1_registry as gr  # noqa: E402
-import g1_slopcheck as sc  # noqa: E402
+import g1_screen as sc  # noqa: E402  default_env 已收進 g1_screen（#266）
 from fakes import FakeGit, run_screen  # noqa: E402
 from gitrepo import TempRepo, isolated_git_environment  # noqa: E402
 
