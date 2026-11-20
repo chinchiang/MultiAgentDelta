@@ -43,7 +43,7 @@ SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".m
 LEVEL = {"blocking": "error", "advisory": "warning"}
 TOOL_NAME, TOOL_VERSION = "vibesec-slopcheck", "2.0.0"
 CONTROLS = ("VS-G1-SLOPSQUAT", "VS-G1-COOLDOWN", "VS-G1-INSTALL-HOOK")
-CONTROL_OF = {
+_CONTROL_OF = {
     "vibesec.g1.hallucinated-package": "VS-G1-SLOPSQUAT",
     "vibesec.g1.rules-file-unknown-package": "VS-G1-SLOPSQUAT",
     "vibesec.g1.low-download-package": "VS-G1-SLOPSQUAT",
@@ -409,13 +409,13 @@ def _judge_npm(env, pkg, f, c):
     if age is None:
         gaps.append("冷卻期")
     else:
-        found = cooldown_finding(env, pkg, "npm", f.version, age, c)
+        found = _cooldown_finding(env, pkg, "npm", f.version, age, c)
         if found:
             findings.append(found)
     if f.install_scripts is None or isinstance(f.install_scripts, Unknown):
         gaps.append("安裝 hook")
     else:
-        found = install_hook_finding(env, pkg, "npm", f.version, f.install_scripts)
+        found = _install_hook_finding(env, pkg, "npm", f.version, f.install_scripts)
         if found:
             findings.append(found)
     dl = f.weekly_downloads
@@ -433,7 +433,7 @@ def _judge_pypi(env, pkg, f, c):
     age = age_days(f.published_at) if not isinstance(f.published_at, Unknown) else None
     if age is None:
         return [], f"PyPI {pkg}@{f.version or '?'}：冷卻期未檢查（版本不在 PyPI 發布紀錄或發布時間不明）"
-    found = cooldown_finding(env, pkg, "pypi", f.version, age, c)
+    found = _cooldown_finding(env, pkg, "pypi", f.version, age, c)
     return ([found] if found else []), None
 
 
@@ -464,7 +464,7 @@ def requirements_indirect(env, path, requires=None):
     return {(n.lower(), v) for n, v in pins if required_by.get(canon("pypi", n))}
 
 
-def cooldown_finding(env, pkg, eco, ver, age, c):
+def _cooldown_finding(env, pkg, eco, ver, age, c):
     """發布天數未滿冷卻期 → blocking；天數未知（None）不判定。"""
     if age is None or age >= c["cooldown_days"]:
         return None
@@ -491,12 +491,12 @@ _DECISION_TIER = {"block": "blocking", "blocking": "blocking", "advisory": "advi
 _NPM_HOOK_DEFAULT = ["preinstall", "install", "postinstall", "prepare"]
 
 
-def install_hook_finding(env, pkg, eco, ver, scripts, patterns=None, npm_scripts=None, decision=None):
+def _install_hook_finding(env, pkg, eco, ver, scripts):
     """依 cooldown.yaml install_hooks 分類安裝階段 hook（docs/02 第 3 層）。"""
-    ih = _install_hooks_cfg(env) if (patterns is None or npm_scripts is None or decision is None) else {}
-    pats = patterns if patterns is not None else (ih.get("suspicious_patterns") or {})
-    hook_names = npm_scripts if npm_scripts is not None else (ih.get("npm_scripts") or _NPM_HOOK_DEFAULT)
-    dec = decision if decision is not None else (ih.get("decision") or {})
+    ih = _install_hooks_cfg(env)
+    pats = ih.get("suspicious_patterns") or {}
+    hook_names = ih.get("npm_scripts") or _NPM_HOOK_DEFAULT
+    dec = ih.get("decision") or {}
     hooks = {h: str(scripts[h]) for h in hook_names if h in scripts}
     if not hooks:
         return None
@@ -589,7 +589,7 @@ def self_install_hooks(env, path):
     scripts = j.get("scripts") if isinstance(j, dict) else None
     if not isinstance(scripts, dict) or not scripts:
         return None
-    return install_hook_finding(env, f"{j.get('name') or p.name}（本專案 scripts）", "npm", str(j.get("version") or ""), scripts)
+    return _install_hook_finding(env, f"{j.get('name') or p.name}（本專案 scripts）", "npm", str(j.get("version") or ""), scripts)
 
 
 def apply_exceptions(finding, project):
@@ -840,7 +840,7 @@ def gate_coverage(findings, incomplete, pypi_checked=0):
     """G1 快篩三個控制的 coverage（VS-G1-SBOM 與 ASVS5-V15.2 由後續步驟併入）。"""
     coverage = []
     for ctl in CONTROLS:
-        hit = [f for f in findings if CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
+        hit = [f for f in findings if _CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
         if incomplete:
             state, why = "untested", None
         elif hit:

@@ -95,7 +95,7 @@ def slopcheck_incomplete(out: dict, case: dict) -> str | None:
         return reason
     controls = _rule_controls().get((case.get("expected") or {}).get("rule_id"))
     if not controls:
-        return reason if untested else None
+        return reason
     return reason if controls & set(untested) else None
 
 
@@ -285,6 +285,8 @@ class G1FixtureRunner(Runner):
             dp = pathlib.Path(d)
             mf = _write_g1_manifest(dp, eco, added)
             parsed = parse_manifest([mf], root=dp)
+            if not parsed.entries:
+                return None, "案例清單未解析出任何套件條目，合成資料未實測"
             reg = FakeRegistry({
                 (dep.eco, dep.name, dep.version): Found(
                     Facts(dep.eco, dep.name, dep.version or "1.0.0", published, scripts, downloads)
@@ -1021,13 +1023,7 @@ class IntegrationRunner(Runner):
         proxy = f"https://127.0.0.1:{srv.getsockname()[1]}"
         try:
             with tempfile.TemporaryDirectory() as d:
-                mf = pathlib.Path(d) / ("package.json" if inp["ecosystem"] == "npm" else "requirements.txt")
-                if inp["ecosystem"] == "npm":
-                    deps = dict(x.rsplit("@", 1) if x.count("@") > (1 if x.startswith("@") else 0) else (x, "latest")
-                                for x in inp.get("added") or [])
-                    mf.write_text(json.dumps({"name": "eval", "dependencies": deps}), encoding="utf-8")
-                else:
-                    mf.write_text("\n".join(inp.get("added") or []) + "\n", encoding="utf-8")
+                mf = _write_g1_manifest(pathlib.Path(d), inp["ecosystem"], inp.get("added") or [])
                 env = {k: v for k, v in os.environ.items() if k.lower() not in ("no_proxy", "https_proxy", "http_proxy", "all_proxy")}
                 env.update({"HTTPS_PROXY": proxy, "https_proxy": proxy})
                 gp = pathlib.Path(d) / "g1-gate.json"   # 與 pr-gates.yml 相同的閘門結果檔
@@ -1496,7 +1492,7 @@ def selftest() -> list[str]:
         if bool(slopcheck_incomplete(out, case)) != want:
             fails.append(f"slopcheck_incomplete（{name}）應為 {'無法判定' if want else '可判定'}")
 
-    # 真實的進程內 G0／G1 runner：以 evals/cases 的案例實際呼叫閘門／快篩函式。以前閘門函式改了簽名、這裡沒有呼叫到，
+    # 真實的行程內 G0／G1 runner：以 evals/cases 的案例實際呼叫閘門／快篩函式。以前閘門函式改了簽名、這裡沒有呼叫到，
     # run_evals 整支以 TypeError 結束（#173 的 trifecta_findings）；判定是否正確由 baseline 比對負責，這裡只看呼叫得通
     from vibesec_policy import tree_copy as _tree_copy
     with _tree_copy("mode: shadow") as _pr:

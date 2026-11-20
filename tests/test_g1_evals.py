@@ -28,13 +28,15 @@ OLD = "2020-01-01T00:00:00Z"
 
 class G1ModuleBoundaryTests(unittest.TestCase):
     def test_screening_internals_are_not_exported_and_incomplete_check_uses_catalog(self) -> None:
-        hidden = ("CONTROL_OF", "cooldown_finding", "install_hook_finding", "cfg")
-        for sym in hidden:
+        private_syms = ("CONTROL_OF", "cooldown_finding", "install_hook_finding")
+        for sym in (*private_syms, "cfg"):
             self.assertFalse(hasattr(sc, sym), f"g1_slopcheck 不應再暴露相容匯出 {sym}")
         self.assertEqual(sc.__all__, ["ROOT", "main", "selftest"])
 
         self.assertTrue(hasattr(gs, "__all__"), "g1_screen 應明確定義公開介面 __all__")
-        for sym in hidden:
+        for sym in private_syms:
+            self.assertFalse(hasattr(gs, sym), f"g1_screen 不應再以公開屬性名稱保留內部符號 {sym}")
+        for sym in (*private_syms, "cfg"):
             self.assertNotIn(sym, getattr(gs, "__all__", ()), f"g1_screen.__all__ 不應包含內部符號 {sym}")
         for pub in ("Request", "Env", "Outcome", "build_env", "default_env", "resolve_scope", "screen"):
             self.assertIn(pub, getattr(gs, "__all__", ()))
@@ -60,13 +62,14 @@ class G1ModuleBoundaryTests(unittest.TestCase):
             "即使因其他套件有 blocking 而 status=fail，只要檢查本身有未完成原因就必須回報無法判定",
         )
         unknown_rule = "vibesec.g1." + "no-such-rule"
-        self.assertIsNotNone(
-            run_evals.slopcheck_incomplete(
-                {**inc, "incomplete_checks": [], "untested_controls": ["VS-G1-INSTALL-HOOK"]},
-                {"expected": {"rule_id": unknown_rule}},
-            ),
-            "目錄中查不到的規則遇到未實測控制時必須 fail-closed 回報無法判定",
-        )
+        for untested in (["VS-G1-INSTALL-HOOK"], []):
+            self.assertIsNotNone(
+                run_evals.slopcheck_incomplete(
+                    {**inc, "incomplete_checks": [], "untested_controls": untested},
+                    {"expected": {"rule_id": unknown_rule}},
+                ),
+                f"目錄中查不到的規則在 status=incomplete（untested={untested}）時必須 fail-closed 回報無法判定",
+            )
 
 
 class RunEvalsG1ScreenTests(unittest.TestCase):
@@ -98,6 +101,16 @@ class RunEvalsG1ScreenTests(unittest.TestCase):
                 hits, err = runner.run(cases[cid])
                 self.assertIsNone(err, msg=f"{cid} 不應回報錯誤：{err}")
                 self.assertEqual(hits, want, msg=f"{cid} 命中規則不符")
+
+            empty_entries_case = {
+                "id": "empty-manifest",
+                "gate": "G1",
+                "input": {"kind": "manifest", "ecosystem": "pypi", "added": ["# comment only"], "published_hours_ago": 2400},
+                "expected": {"rule_id": "vibesec.g1.cooldown-violation", "should_flag": False},
+            }
+            e_hits, e_err = runner.run(empty_entries_case)
+            self.assertIsNone(e_hits, "清單未解析出任何套件條目時，反例不得靜默通過為 TN")
+            self.assertTrue(e_err)
 
         pos_hook = cases["g1-postinstall-pos-01"]
         neg_hook = cases["g1-postinstall-neg-01"]
@@ -160,35 +173,27 @@ class RunEvalsG1ScreenTests(unittest.TestCase):
         with tree_copy("mode: shadow") as policy_root, mock.patch.object(
             run_evals.subprocess, "run", side_effect=AssertionError("G1 快篩執行器不應啟動子行程")
         ):
-            slop_runner = run_evals.SlopcheckRunner(network=True, registry=reg, policy_root=policy_root)
-            for cid, case in slop_cases.items():
-                self.assertIsNone(slop_runner.handles(case))
-                hits, err = slop_runner.run(case)
-                self.assertIsNone(err, msg=f"{cid} 不應回報錯誤：{err}")
-                want_flag = case["expected"]["should_flag"]
-                self.assertEqual(case["expected"]["rule_id"] in (hits or set()), want_flag, msg=cid)
-
-            rule_runner = run_evals.RulesFileRunner(network=True, registry=reg, policy_root=policy_root)
-            for cid, case in rule_cases.items():
-                self.assertIsNone(rule_runner.handles(case))
-                hits, err = rule_runner.run(case)
-                self.assertIsNone(err, msg=f"{cid} 不應回報錯誤：{err}")
-                want_flag = case["expected"]["should_flag"]
-                self.assertEqual(case["expected"]["rule_id"] in (hits or set()), want_flag, msg=cid)
+            for runner, suite in (
+                (run_evals.SlopcheckRunner(network=True, registry=reg, policy_root=policy_root), slop_cases),
+                (run_evals.RulesFileRunner(network=True, registry=reg, policy_root=policy_root), rule_cases),
+            ):
+                for cid, case in suite.items():
+                    self.assertIsNone(runner.handles(case))
+                    hits, err = runner.run(case)
+                    self.assertIsNone(err, msg=f"{cid} 不應回報錯誤：{err}")
+                    self.assertEqual(case["expected"]["rule_id"] in (hits or set()), case["expected"]["should_flag"], msg=cid)
 
             down_reg = gr.FakeRegistry({
                 ("npm", "axios", "1.7.2"): gr.Unavailable("HTTP 503"),
                 ("pypi", "requests", None): gr.Unavailable("逾時"),
             })
-            down_slop = run_evals.SlopcheckRunner(network=True, registry=down_reg, policy_root=policy_root)
-            s_hits, s_err = down_slop.run(slop_cases["g1-slopsquat-neg-01"])
-            self.assertIsNone(s_hits, "registry 查詢失敗時反例必須為 incomplete 而非 TN")
-            self.assertTrue(s_err)
-
-            down_rule = run_evals.RulesFileRunner(network=True, registry=down_reg, policy_root=policy_root)
-            r_hits, r_err = down_rule.run(rule_cases["g1-rulesfile-neg-01"])
-            self.assertIsNone(r_hits, "規則檔掃描遇 registry 失敗時反例必須為 incomplete 而非 TN")
-            self.assertTrue(r_err)
+            for down_runner, neg_case in (
+                (run_evals.SlopcheckRunner(network=True, registry=down_reg, policy_root=policy_root), slop_cases["g1-slopsquat-neg-01"]),
+                (run_evals.RulesFileRunner(network=True, registry=down_reg, policy_root=policy_root), rule_cases["g1-rulesfile-neg-01"]),
+            ):
+                d_hits, d_err = down_runner.run(neg_case)
+                self.assertIsNone(d_hits, f"{down_runner.name} 遇 registry 查詢失敗時反例必須為 incomplete 而非 TN")
+                self.assertTrue(d_err)
 
         with broken_policy_root() as bad_root:
             for runner, case in (
