@@ -52,6 +52,22 @@ CONTROL_OF = {
 }
 EXIT_CODE_OF = {"pass": 0, "fail": 1, "incomplete": 2}
 
+__all__ = [
+    "Env",
+    "Outcome",
+    "Request",
+    "RuleCfg",
+    "Scope",
+    "ScopeFailure",
+    "TOOL_NAME",
+    "TOOL_VERSION",
+    "build_env",
+    "default_env",
+    "dumps_json",
+    "resolve_scope",
+    "screen",
+]
+
 
 # ---------------------------------------------------------------- 設定讀取（以設定根目錄為準，沒有全域路徑）
 def load_yaml(p: Path):
