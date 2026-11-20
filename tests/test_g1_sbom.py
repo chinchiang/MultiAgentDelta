@@ -1,0 +1,151 @@
+"""G1 SBOM 核對（scripts/g1_sbom.py）：requirements 的 -r 包含邊界契約（#270）。"""
+import contextlib
+import io
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "tests"))
+import g1_sbom  # noqa: E402
+from gitrepo import TempRepo, isolated_git_environment  # noqa: E402
+from vibesec_policy import Policy, temp_policy_root  # noqa: E402
+
+
+def _bom(*purls: str, spec: str = "1.6") -> dict:
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": spec,
+        "components": [{"type": "library", "name": p, "version": "x", "purl": p} for p in purls],
+    }
+
+
+def _fake_syft(doc: dict):
+    return lambda tree, out, binary: json.loads(json.dumps(doc))
+
+
+def _write_syft_script(path: pathlib.Path, doc: dict) -> pathlib.Path:
+    payload = json.dumps(doc)
+    path.write_text(
+        "#!/bin/sh\n"
+        'for a; do case $a in cyclonedx-json=*) printf \'%s\' \'' + payload + '\' > "${a#cyclonedx-json=}";; esac; done\n',
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+def _base_gate() -> dict:
+    return {
+        "gate": "G1",
+        "status": "pass",
+        "status_reason": None,
+        "mode": "shadow",
+        "risk_tier": "L3",
+        "scope": "full",
+        "diff_base": None,
+        "commit": None,
+        "started_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:00:00Z",
+        "tools": [],
+        "findings_count": {"blocking": 0, "advisory": 0},
+        "coverage": [{"control_id": g1_sbom.CONTROL, "state": "pending", "reason": None}],
+    }
+
+
+class SbomIncludeBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        isolated_git_environment(self)
+
+    def test_same_directory_include_passes_when_all_pinned_packages_are_in_sbom(self):
+        with TempRepo() as r, tempfile.TemporaryDirectory() as out_dir:
+            r.write("requirements/sibling.in", "pytest==8.0.0\n")
+            r.write("requirements/dev.txt", "requests==2.31.0\n-r sibling.in\n")
+            r.commit()
+            sbom = _bom("pkg:pypi/requests@2.31.0", "pkg:pypi/pytest@8.0.0")
+            s = g1_sbom.run(r.dir, "HEAD", pathlib.Path(out_dir, "sbom.cdx.json"), _fake_syft(sbom))
+            self.assertEqual(s["status"], "pass", s)
+            self.assertIsNone(s["status_reason"])
+            self.assertEqual(s["lockfiles"]["requirements/dev.txt"], {"pinned": 2, "missing": []})
+
+    def test_upward_include_within_project_root_with_complete_sbom(self):
+        # 對照基準（#270 改前）：邊界為 requirements/，-r ../base.in 被判為無法解析 → incomplete
+        with TempRepo() as r, tempfile.TemporaryDirectory() as out_dir:
+            r.write("base.in", "pytest==8.0.0\n")
+            r.write("requirements/dev.txt", "requests==2.31.0\n-r ../base.in\n")
+            r.commit()
+            sbom = _bom("pkg:pypi/requests@2.31.0", "pkg:pypi/pytest@8.0.0")
+            s = g1_sbom.run(r.dir, "HEAD", pathlib.Path(out_dir, "sbom.cdx.json"), _fake_syft(sbom))
+            self.assertEqual(s["status"], "incomplete", s)
+            self.assertIn("requirements/dev.txt：1 筆無法解析或不是 registry 來源", s["status_reason"] or "")
+
+    def test_upward_include_within_project_root_missing_package_from_main_entrypoint(self):
+        # 對照基準（#270 改前）：../base.in 未被解析，缺漏的 pytest==8.0.0 不會觸發 fail，而是 incomplete（exit 2）
+        with TempRepo() as r, tempfile.TemporaryDirectory() as d, temp_policy_root() as pr:
+            r.write("base.in", "pytest==8.0.0\n")
+            r.write("requirements/dev.txt", "requests==2.31.0\n-r ../base.in\n")
+            r.commit()
+            syft = _write_syft_script(pathlib.Path(d, "syft"), _bom("pkg:pypi/requests@2.31.0"))
+            js, sf, gp = pathlib.Path(d, "out.json"), pathlib.Path(d, "out.sarif"), pathlib.Path(d, "G1.json")
+            gp.write_text(json.dumps(_base_gate()), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"VIBESEC_SYFT": str(syft)}), contextlib.redirect_stdout(io.StringIO()):
+                rc = g1_sbom.main(
+                    [
+                        "--target", str(r.dir),
+                        "--sbom", str(pathlib.Path(d, "s.cdx.json")),
+                        "--sarif", str(sf),
+                        "--json", str(js),
+                        "--merge-gate", str(gp),
+                    ],
+                    policy_root=pr,
+                )
+            sm = json.loads(js.read_text(encoding="utf-8"))
+            self.assertEqual(rc, 2)
+            self.assertEqual(sm["status"], "incomplete")
+
+    def test_include_escaping_project_root_is_incomplete_even_when_outside_file_exists(self):
+        # 即使匯出樹父目錄與上層暫存目錄真有同名檔案、且套件已在 SBOM，超出專案根目錄的 -r 仍必須回 incomplete（exit 2）
+        with TempRepo() as r, tempfile.TemporaryDirectory() as tmp, temp_policy_root() as pr:
+            pathlib.Path(tmp, "outside.in").write_text("idna==3.10\n", encoding="utf-8")
+            r.write("requirements/dev.txt", "requests==2.31.0\n-r ../../../outside.in\n")
+            r.commit()
+            sbom = _bom("pkg:pypi/requests@2.31.0", "pkg:pypi/idna@3.10")
+            syft = _write_syft_script(pathlib.Path(tmp, "syft"), sbom)
+            js, sf, gp = pathlib.Path(tmp, "out.json"), pathlib.Path(tmp, "out.sarif"), pathlib.Path(tmp, "G1.json")
+            gp.write_text(json.dumps(_base_gate()), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"VIBESEC_SYFT": str(syft), "TMPDIR": tmp}), \
+                    mock.patch("tempfile.tempdir", tmp), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = g1_sbom.main(
+                    [
+                        "--target", str(r.dir),
+                        "--sbom", str(pathlib.Path(tmp, "s.cdx.json")),
+                        "--sarif", str(sf),
+                        "--json", str(js),
+                        "--merge-gate", str(gp),
+                    ],
+                    policy_root=pr,
+                )
+            sm = json.loads(js.read_text(encoding="utf-8"))
+            self.assertEqual(rc, 2)
+            self.assertEqual(sm["status"], "incomplete", sm)
+            self.assertIn("requirements/dev.txt：1 筆無法解析或不是 registry 來源", sm["status_reason"] or "")
+
+        # 緊鄰匯出樹上一層（../outside.in）真有檔案時，check(sbom, tree) 也一樣擋下（防止 root 誤傳 tree.parent）
+        with tempfile.TemporaryDirectory() as d:
+            pathlib.Path(d, "outside.in").write_text("idna==3.10\n", encoding="utf-8")
+            tree = pathlib.Path(d, "src")
+            (tree / "requirements").mkdir(parents=True)
+            (tree / "requirements/dev.txt").write_text("requests==2.31.0\n-r ../../outside.in\n", encoding="utf-8")
+            s = g1_sbom.check(_bom("pkg:pypi/requests@2.31.0", "pkg:pypi/idna@3.10"), tree)
+            self.assertEqual(s["status"], "incomplete", s)
+            self.assertIn("requirements/dev.txt：1 筆無法解析或不是 registry 來源", s["status_reason"] or "")
+
+
+if __name__ == "__main__":
+    unittest.main()

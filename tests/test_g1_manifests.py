@@ -229,16 +229,34 @@ class Requirements(TmpTree):
         self.assertEqual([d.direct for d in self.parse("requirements.txt").entries], [None])
 
     def test_include_boundary_is_the_explicit_root(self):
-        # #260（S1）：-r 的包含邊界是 root 參數。專案根目錄下 requirements/dev.txt 往上引入 ../base.txt 是專案內的檔案
-        self.write("base.txt", "pytest==8.0.0\n")
-        self.write("requirements/dev.txt", "requests==2.31.0\n-r ../base.txt\n")
-        inside = self.parse("requirements/dev.txt", root=self.D)
+        # #260（S1）／#270：並排對照「root＝專案根目錄」與「root＝檔案所在目錄（#270 前 g1_sbom 舊邊界）」在三種 -r 情境的結果
+        proj = self.D / "proj"
+        self.write("outside.txt", "idna==3.10\n")
+        self.write("proj/base.txt", "pytest==8.0.0\n")
+        self.write("proj/requirements/sibling.txt", "pytest==8.0.0\n")
+        self.write("proj/requirements/same.txt", "requests==2.31.0\n-r sibling.txt\n")
+        self.write("proj/requirements/dev.txt", "requests==2.31.0\n-r ../base.txt\n")
+        self.write("proj/requirements/out.txt", "requests==2.31.0\n-r ../../outside.txt\n")
+
+        # 1. 同目錄包含：新舊邊界一致通過
+        for boundary in (proj, proj / "requirements"):
+            same = self.parse("proj/requirements/same.txt", root=boundary)
+            self.assertEqual(sorted(self.names(same)), ["pytest", "requests"])
+            self.assertEqual(same.bad, ())
+
+        # 2. 往上包含（仍在專案根目錄內）：專案根目錄通過；檔案所在目錄回報超出目標專案
+        inside = self.parse("proj/requirements/dev.txt", root=proj)
         self.assertEqual(sorted(self.names(inside)), ["pytest", "requests"])
         self.assertEqual(inside.bad, ())
-        # g1_sbom 目前傳「該檔所在目錄」：同一個檔案的 ../ 引入超出邊界，回報無法驗證（行為與重構前相同）
-        file_dir = self.parse("requirements/dev.txt", root=self.D / "requirements")
+        file_dir = self.parse("proj/requirements/dev.txt", root=proj / "requirements")
         self.assertEqual(self.names(file_dir), ["requests"])
         self.assertTrue(any("超出目標專案" in b for b in file_dir.bad), file_dir.bad)
+
+        # 3. 超出專案根目錄（即使樹外真有 outside.txt）：新舊邊界一致回報超出目標專案
+        for boundary in (proj, proj / "requirements"):
+            escaped = self.parse("proj/requirements/out.txt", root=boundary)
+            self.assertEqual(self.names(escaped), ["requests"])
+            self.assertTrue(any("超出目標專案" in b for b in escaped.bad), escaped.bad)
 
     def test_root_that_is_not_an_ancestor_falls_back_to_the_file_directory(self):
         # 重構前：被掃描目標不是檔案的祖先目錄時，邊界退回檔案所在目錄
