@@ -94,38 +94,26 @@ def main(argv, policy_root=ROOT, *, env=None, registry=None):
 
 
 def selftest():
-    """命令列契約自我測試：旗標、退出碼、--gate／--sarif 寫出與未完成時刪除舊 SARIF、標準輸出形狀、結果行、政策讀不到。
-    其餘領域案例已依對照表搬至 tests/test_g1_*.py。"""
+    """命令列契約自我測試（#268）：只驗全部旗標、退出碼、--gate 與未完成刪舊 --sarif、兩種標準輸出形狀、結果行、政策讀不到。
+    其餘 95 個舊案例已全數搬至 tests/test_g1_*.py 與 tests/test_https_only.py。"""
     import contextlib
     import io
-    import re
+    import os
     import subprocess
     import tempfile
     from jsonschema import Draft202012Validator
-    from g1_registry import Facts, Found, NotFound
-    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, set_mode_line, temp_policy_root
+    from g1_registry import Facts, FakeRegistry, Found, NotFound
+    from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, mode_policy_root
 
     fails = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
-
-    class CleanRegistry:
-        def __init__(self):
-            self.queried = []
-
-        def facts(self, eco, name, ver):
-            self.queried.append(name)
-            if name == "evil-pkg":
-                return NotFound()
-            npm = eco == "npm"
-            return Found(Facts(eco, name, ver or "1.0.0", "2020-01-01T00:00:00Z", {} if npm else None, 10 ** 6 if npm else None))
-
-        def requires(self, name, ver):
-            return set()
+    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
     def git(d, *a):
-        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, capture_output=True, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
+                       cwd=d, env=git_env, capture_output=True, check=True)
 
-    # 1. --help／-h：印用法、exit 0，不執行掃描
+    # 1. 旗標 --help／-h：印用法、exit 0，不輸出掃描 JSON
     for flag in ("--help", "-h"):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -133,9 +121,8 @@ def selftest():
         if code != 0 or "用法" not in out.getvalue() or '"findings"' in out.getvalue():
             fails.append(f"{flag} 應印用法並 exit 0（exit {code}）")
 
-    # 2. --target 不是目錄 → exit 2、寫出未完成閘門結果、刪除舊 SARIF、不印 stdout
-    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d:
-        set_mode_line(pr / "vibesec.yaml", "mode: shadow")
+    # 2. 範圍失敗（--target 非目錄）：exit 2、無 stdout、範圍失敗結果行、刪舊 SARIF、寫未完成閘門結果
+    with mode_policy_root("mode: shadow") as pr, tempfile.TemporaryDirectory() as d:
         gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
         sp.write_text('{"stale": true}', encoding="utf-8")
         out, err = io.StringIO(), io.StringIO()
@@ -144,141 +131,93 @@ def selftest():
                          "--gate", str(gp), "--sarif", str(sp)], policy_root=pr)
         g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
         if code != 2 or out.getvalue() or sp.exists() or g.get("status") != "incomplete" or "不是目錄" not in err.getvalue():
-            fails.append(f"--target 不是目錄 → exit 2、刪舊 SARIF、寫未完成 gate、無 stdout（得到 exit {code}、stale={sp.exists()}、{g}）")
+            fails.append(f"--target 非目錄 → exit 2、刪舊 SARIF、寫未完成 gate、無 stdout（得到 exit {code}、stale={sp.exists()}、{g}）")
 
-    # 3. 命令列 --staged 空範圍與有掃描兩種標準輸出形狀、結果行、--gate（含 HEAD commit）與 --sarif 寫出
-    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d:
-        set_mode_line(pr / "vibesec.yaml", "mode: shadow")
+    # 3. 全部掃描旗標、兩種標準輸出形狀、結果行、退出碼（0／1／2）、--gate（含受驗樹 HEAD）與 --sarif 寫出
+    with mode_policy_root("mode: shadow") as pr, tempfile.TemporaryDirectory() as d:
         D = Path(d, "proj")
         D.mkdir()
         (D / "package.json").write_text(json.dumps({"dependencies": {"express": "4.21.2"}}), encoding="utf-8")
         git(D, "init", "-q")
         git(D, "add", "package.json")
         git(D, "commit", "-qm", "init")
-        head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=D, check=True).stdout.strip()
+        head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=D, env=git_env, check=True).stdout.strip()
         gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
-        rec = CleanRegistry()
+        express_ok = Found(Facts("npm", "express", "4.21.2", "2020-01-01T00:00:00Z", {}, 10 ** 6))
+        rec = FakeRegistry({
+            ("npm", "express", "4.21.2"): express_ok,
+            ("npm", "evil-pkg", "1.0.0"): NotFound(),
+            ("pypi", "evil-pypi", None): NotFound(),
+        })
 
-        # 空暫存區 → 形狀 1、略過結果行、exit 0
+        # 空暫存區 → 標準輸出形狀 1、略過結果行、exit 0
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = main(["g1_slopcheck.py", "--target", str(D), "--staged", "--gate", str(gp), "--sarif", str(sp)],
                         policy_root=pr, registry=rec)
-        if code != 0 or json.loads(out.getvalue()).get("findings") != [] \
+        if code != 0 or json.loads(out.getvalue()) != {"gate": "G1", "findings": [], "target": str(D.resolve())} \
                 or err.getvalue().strip() != "G1 slopcheck：無相依清單或規則檔變更，略過。":
-            fails.append(f"--staged 空暫存區契約不符（exit {code}，err={err.getvalue()!r}）")
+            fails.append(f"--staged 空暫存區契約不符（exit {code}，out={out.getvalue()!r}，err={err.getvalue()!r}）")
 
-        # 全量掃描 → 形狀 2、通過結果行、commit 取目標專案 HEAD、SBOM／KEV 預留 pending
+        # 全量掃描通過 → 標準輸出形狀 2（外部專案含 notes）、通過結果行、commit 取受驗樹 HEAD、外部專案註明例外未套用、SBOM／KEV pending、exit 0
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = main(["g1_slopcheck.py", "--target", str(D), "--gate", str(gp), "--sarif", str(sp)],
                         policy_root=pr, registry=rec)
+        doc2 = json.loads(out.getvalue())
         g = json.loads(gp.read_text(encoding="utf-8"))
-        if code != 0 or g.get("commit") != head or g.get("scope") != "full" \
+        if code != 0 or doc2.get("findings") != [] or "notes" not in doc2 \
+                or g.get("commit") != head or g.get("scope") != "full" \
+                or "exceptions" not in (g.get("status_reason") or "") \
                 or [c["control_id"] for c in g["coverage"] if c["state"] == "pending"] != ["VS-G1-SBOM", "ASVS5-V15.2"] \
                 or not sp.is_file() or err.getvalue() != "\n✅ G1 快篩通過。\n" or list(schema.iter_errors(g)):
             fails.append(f"全量掃描命令列契約不符（exit {code}，err={err.getvalue()!r}，{g}）")
 
-        # blocking 發現 → exit 1、阻擋結果行
-        (D / "package.json").write_text(json.dumps({"dependencies": {"evil-pkg": "1.0.0"}}), encoding="utf-8")
+        # blocking 發現（串測 --rules-file、--changed-files、--base）→ exit 1、阻擋結果行、diff_base 寫入閘門結果
+        (D / "package.json").write_text(json.dumps({"dependencies": {"express": "4.21.2", "evil-pkg": "1.0.0"}}), encoding="utf-8")
+        (D / "AGENTS.md").write_text("Run `pip install evil-pypi`.\n", encoding="utf-8")
+        changed = Path(d, "changed.txt")
+        changed.write_text("package.json\n", encoding="utf-8")
+        rec_diff = FakeRegistry({("npm", "evil-pkg", "1.0.0"): NotFound(), ("pypi", "evil-pypi", None): NotFound()})
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(["g1_slopcheck.py", "--target", str(D), "--manifest", "package.json"],
-                        policy_root=pr, registry=rec)
-        if code != 1 or err.getvalue() != "\n⛔ G1 阻擋：1 筆 blocking 供應鏈發現。\n":
-            fails.append(f"blocking 發現命令列契約不符（exit {code}，err={err.getvalue()!r}）")
+            code = main(["g1_slopcheck.py", "--target", str(D), "--rules-file", "AGENTS.md",
+                         "--changed-files", str(changed), "--base", head, "--gate", str(gp)],
+                        policy_root=pr, registry=rec_diff)
+        g_diff = json.loads(gp.read_text(encoding="utf-8"))
+        if code != 1 or json.loads(out.getvalue()).get("status") != "fail" \
+                or (g_diff.get("scope"), g_diff.get("diff_base")) != ("diff", head) \
+                or sorted(rec_diff.calls) != [("npm", "evil-pkg", "1.0.0"), ("pypi", "evil-pypi", None)] \
+                or err.getvalue() != "\n⛔ G1 阻擋：2 筆 blocking 供應鏈發現。\n":
+            fails.append(f"blocking 與 diff 旗標命令列契約不符（exit {code}，calls={rec_diff.calls}，err={err.getvalue()!r}）")
 
-    # 4. 政策檔讀不到 → 進入點就停：G1 gate incomplete、沒有發現、刪舊 SARIF、退出碼 2（不查 registry）
-    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
-            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        # 無解析器鎖定檔（--manifest）→ exit 2、標準輸出形狀 2 含 incomplete_checks／untested_controls、無法完成結果行
+        (D / "yarn.lock").write_text("# yarn lockfile v1\n", encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["g1_slopcheck.py", "--target", str(D), "--manifest", "yarn.lock"],
+                        policy_root=pr, registry=rec)
+        inc_doc = json.loads(out.getvalue())
+        if code != 2 or not inc_doc.get("incomplete_checks") or not inc_doc.get("untested_controls") \
+                or err.getvalue() != "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。\n":
+            fails.append(f"檢查未完成命令列契約不符（exit {code}，out={inc_doc}，err={err.getvalue()!r}）")
+
+    # 4. 政策讀不到 → 進入點就停：exit 2、不查登錄庫、無 stdout、結果行寫明原因、刪舊 SARIF、寫未完成閘門結果
+    rec = FakeRegistry()
+    with broken_policy_root() as pr, tempfile.TemporaryDirectory() as d:
         gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
         sp.write_text('{"stale": true}', encoding="utf-8")
-        code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp),
-                     "--sarif", str(sp)], policy_root=pr)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp),
+                         "--sarif", str(sp)], policy_root=pr, registry=rec)
         g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
         stale = sp.exists()
-    cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g.get("coverage") or []]
-    iso = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
-    if code != 2 or g.get("status") != "incomplete" or POLICY_UNREADABLE not in (g.get("status_reason") or "") \
-            or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
+    if code != 2 or out.getvalue() or POLICY_UNREADABLE not in err.getvalue() or rec.calls \
+            or g.get("status") != "incomplete" or g.get("mode") != "enforce" \
             or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
-            or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
-                       ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False), ("ASVS5-V15.2", "pending", False)] \
-            or stale or list(schema.iter_errors(g)) \
-            or not (iso.match(g.get("started_at") or "") and iso.match(g.get("finished_at") or "")):
-        fails.append(f"政策檔讀不到 → 退出碼 2、G1 incomplete 並寫明原因、沒有發現、tool 只有一列 error、三個控制 untested"
-                     f"（原因＝政策讀不到）、SBOM／KEV pending、舊 SARIF 刪掉、時間戳 +00:00（得到 {code}、舊 SARIF 存在={stale}、{g}）")
-
-    # 5. risk_tier 打錯 → 省略 risk_tier 欄位，不拋例外
-    with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d, \
-            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        vbp = pr / "vibesec.yaml"
-        text, n = re.subn(r"(?m)^risk_tier:.*$", "risk_tier: l3", vbp.read_text(encoding="utf-8"), count=1)
-        if n != 1:
-            fails.append("selftest 前置：vibesec.yaml 找不到最上層的 risk_tier，無法製造打錯的情境")
-        vbp.write_text(text, encoding="utf-8")
-        gp = Path(d, "G1.json")
-        try:
-            code = main(["g1_slopcheck.py", "--manifest", str(ROOT / "requirements-ci.in"), "--gate", str(gp)], policy_root=pr)
-            g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
-            if code != 2 or g.get("status") != "incomplete" or "risk_tier" in g:
-                fails.append(f"risk_tier 打錯 → 退出碼 2、incomplete、沒有 risk_tier 欄位（得到 {code}、{g.get('status')}、{g.get('risk_tier')!r}）")
-        except Exception as e:
-            fails.append(f"risk_tier 打錯 → 不得拋例外（得到 {type(e).__name__}：{e}）")
-
-    # 6. mode 缺席或不合法 → 政策讀不到、mode 記 enforce、不查 registry、刪舊 SARIF、退出碼 2；合法 shadow／enforce 照常執行
-    rec = CleanRegistry()
-    queried = rec.queried
-    with tempfile.TemporaryDirectory() as d, temp_policy_root() as pr:
-        D = Path(d) / "proj"
-        D.mkdir()
-        (D / "package.json").write_text(json.dumps({"dependencies": {"express": "4.21.2"}}))
-        git(D, "init", "-q")
-        git(D, "add", "package.json")
-        git(D, "commit", "-qm", "t")
-        vbp = pr / "vibesec.yaml"
-        real_text = vbp.read_text(encoding="utf-8")
-        for label, line in [("缺席", ""), ("x", "mode: x"), ("Enforce", "mode: Enforce"), ("空字串", 'mode: ""'),
-                            ("shadow", "mode: shadow"), ("enforce", "mode: enforce"), ("整個檔缺席", None),
-                            ("整個檔語法錯誤", ("gates: [\n",)), ("整個檔不是 mapping", ("- a\n",))]:
-            gp, sp = Path(d, "G1.json"), Path(d, "G1.sarif")
-            if line is None:
-                vbp.unlink(missing_ok=True)
-            elif isinstance(line, tuple):
-                vbp.write_text(line[0], encoding="utf-8")
-            else:
-                vbp.write_text(real_text, encoding="utf-8")
-                set_mode_line(vbp, line)
-            gp.unlink(missing_ok=True)
-            sp.write_text('{"stale": true}', encoding="utf-8")
-            queried.clear()
-            try:
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    code = main(["g1_slopcheck.py", "--target", str(D), "--gate", str(gp), "--sarif", str(sp)],
-                                policy_root=pr, registry=rec)
-            except Exception as e:
-                fails.append(f"mode {label} → 不得拋例外（得到 {type(e).__name__}：{e}）")
-                continue
-            g = json.loads(gp.read_text(encoding="utf-8")) if gp.is_file() else {}
-            if label in ("shadow", "enforce"):
-                if code != 0 or g.get("status") != "pass" or g.get("mode") != label or queried != ["express"]:
-                    fails.append(f"mode {label} → 照常執行、閘門結果的 mode 取自政策（得到 exit {code}、{g.get('status')}、"
-                                 f"mode={g.get('mode')}、查詢 {queried}）")
-                continue
-            why = g.get("status_reason") or ""
-            about_mode = isinstance(line, str)
-            cov = [(c["control_id"], c["state"], (c["reason"] or "").startswith(POLICY_UNREADABLE)) for c in g.get("coverage") or []]
-            if code != 2 or g.get("status") != "incomplete" or not why.startswith(POLICY_UNREADABLE + "（") \
-                    or (about_mode and "mode" not in why) \
-                    or g.get("mode") != "enforce" or g.get("findings_count") != {"blocking": 0, "advisory": 0} \
-                    or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
-                    or cov != [("VS-G1-SLOPSQUAT", "untested", True), ("VS-G1-COOLDOWN", "untested", True),
-                               ("VS-G1-INSTALL-HOOK", "untested", True), ("VS-G1-SBOM", "pending", False),
-                               ("ASVS5-V15.2", "pending", False)] \
-                    or queried or sp.exists() or list(schema.iter_errors(g)):
-                fails.append(f"mode {label} → 退出碼 2、incomplete（政策讀不到）、mode 記 enforce、三個控制 untested、"
-                             f"SBOM／KEV pending、tool 列只有一列 error、不查 registry、舊 SARIF 刪掉（得到 exit {code}、"
-                             f"查詢 {queried}、舊 SARIF 存在={sp.exists()}、{g}）")
+            or stale or list(schema.iter_errors(g)):
+        fails.append(f"政策讀不到命令列契約不符（exit {code}、calls={rec.calls}、stale={stale}、err={err.getvalue()!r}、{g}）")
 
     return fails
 
