@@ -781,14 +781,14 @@ def _entries(root, path):
 def added_packages(root, path, base, git):
     """diff-aware：只回傳相對 base 新增或改版的 (eco, name, version)。base 為 None 時回傳全部。"""
     head = _entries(root, path)
-    if not base:
+    if not base or not head:
         return head
     old_text = git.show(base, rel_path(root, path))
     if old_text is None:
         return head
     with tempfile.TemporaryDirectory() as d:
         old = Path(d) / Path(path).name
-        old.write_text(old_text)
+        old.write_text(old_text, encoding="utf-8", errors="surrogateescape")
         before = {(e, n.lower(), v) for e, n, v in _entries(root, old)}
     return [(e, n, v) for e, n, v in head if (e, n.lower(), v) not in before]
 

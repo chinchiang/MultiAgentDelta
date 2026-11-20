@@ -8,8 +8,9 @@
   classify(path, *, view)        -> Classified  這個路徑算不算清單、有沒有解析器、是不是鎖定檔
   pep508(req)                                  PEP 508 需求字串 → (名稱, 鎖定版本)
 
-分類有兩組現有樣式（view="screen" 是快篩選檔，view="sbom" 是 SBOM 核對），逐字保留、不取聯集：它們認得的
-「無解析器」檔案不同。把兩組合併會讓某一邊的判定變嚴，那是獨立的變嚴 PR 的事（#269），不在這個模組的重構裡做。
+分類有兩個檢視：view="screen" 是快篩選檔（含未釘選清單如 package.json、pyproject.toml、Pipfile、setup.py／setup.cfg，以及全部鎖定檔），
+view="sbom" 是 SBOM 核對（只看鎖定檔，不看 setup.py／setup.cfg／Pipfile）。兩者對尚無解析器的鎖定檔（pnpm-lock.yaml、yarn.lock、
+bun.lock、bun.lockb、Pipfile.lock、pdm.lock、pylock*.toml）一致標為 unparsed（#269）。
 """
 from __future__ import annotations
 import json, re
@@ -22,18 +23,19 @@ from pathlib import Path
 # .txt（requirements/base.txt）。選檔與解析共用這一條：以前選檔對整段路徑比對、解析只看檔名，requirements/base.txt
 # 被選進來卻一個套件都沒查，G1 照樣 pass。
 REQUIREMENTS_RE = re.compile(r'(?:[^/]*requirements[^/]*|(?:^|/)requirements/(?:[^/]+/)*[^/]+)\.txt$')
-MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$'
-                         r'|' + REQUIREMENTS_RE.pattern)
-# 有 manifest 樣式但尚無解析器的檔：其中的套件無法逐一檢查 → incomplete（不是 pass；以前 Pipfile／setup.py 根本不被當 manifest）
-UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$')
-
 # SBOM 核對看的是「鎖定檔」（與 REQUIREMENTS_RE 一致：檔名含 requirements 的 .txt（locks/python-requirements.txt），
 # 或 requirements/ 目錄下的 .txt（requirements/base.txt））；LOCKFILE_RE 與 LOCK_UNPARSED_RE 兩條原樣取自 g1_sbom.py 重構前的 LOCKFILE 與 UNPARSED
 LOCKFILE_RE = re.compile(r"(?:(?:^|/)(?:package-lock\.json|npm-shrinkwrap\.json|uv\.lock|poetry\.lock)"
                          r"|[^/]*requirements[^/]*\.txt|(?:^|/)requirements/(?:[^/]+/)*[^/]+\.txt)$")
-# npm／PyPI 生態系中尚無解析器的鎖定檔：裡面釘選的套件無法逐一核對是否出現在 SBOM → incomplete（不是 pass）。
-# 以前只認 pnpm-lock.yaml、yarn.lock：npm-shrinkwrap.json、Pipfile.lock 等被當成「沒有鎖定檔」，核對直接通過。
-LOCK_UNPARSED_RE = re.compile(r"(?:^|/)(pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Pipfile\.lock|pdm\.lock|pylock(?:\.[^/]+)?\.toml)$")
+# npm／PyPI 生態系中尚無解析器的鎖定檔：裡面釘選的套件無法逐一核對是否出現在 SBOM，快篩亦無法逐一檢查套件 → incomplete（不是 pass，#269）。
+_NEW_UNPARSED_LOCKS = r"(?:bun\.lockb?|pdm\.lock|pylock(?:\.[^/]+)?\.toml)"
+LOCK_UNPARSED_RE = re.compile(rf"(?:^|/)(?:pnpm-lock\.yaml|yarn\.lock|Pipfile\.lock|{_NEW_UNPARSED_LOCKS})$")
+
+MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$'
+                         rf'|(?:^|/){_NEW_UNPARSED_LOCKS}$|' + REQUIREMENTS_RE.pattern)
+# 有 manifest 樣式但尚無解析器的檔（比對檔名）：其中的套件無法逐一檢查 → incomplete（不是 pass；以前 Pipfile／setup.py／bun.lock／pdm.lock／pylock*.toml 不被當無解析器清單）
+UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$'
+                         rf'|^{_NEW_UNPARSED_LOCKS}$')
 
 VIEWS = ("screen", "sbom")
 

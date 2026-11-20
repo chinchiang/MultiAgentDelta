@@ -42,8 +42,8 @@ registries:
 
 # 掃描範圍：manifest + lockfile + Agent 規則檔（AI 助手會「照做」規則檔裡的 pip install / npm i）
 manifests:
-  npm: [package.json, package-lock.json, pnpm-lock.yaml, yarn.lock]
-  pypi: [requirements.txt, requirements/*.txt, pyproject.toml, uv.lock, poetry.lock, Pipfile, Pipfile.lock, setup.py, setup.cfg]
+  npm: [package.json, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, bun.lockb]
+  pypi: [requirements.txt, requirements/*.txt, pyproject.toml, uv.lock, poetry.lock, Pipfile, Pipfile.lock, pdm.lock, pylock.toml, pylock.*.toml, setup.py, setup.cfg]
 agent_rule_files: [".cursorrules", "AGENTS.md", "SKILL.md", "CLAUDE.md", ".cursor/rules/**/*.mdc", "**/*.md"]
 # 具名群組 pypi／npm 對應生態系（g1_slopcheck.py 依群組名稱判讀）。原本把 uv add／poetry add 也接上 \s+install，
 # 實際上要寫成「uv add install」才會命中（第一輪審查）

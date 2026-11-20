@@ -55,7 +55,9 @@ class SubprocessGit:
 
     def show(self, ref, path):
         try:
-            r = subprocess.run(["git", "show", f"{ref}:./{path}"], capture_output=True, text=True, cwd=self.cwd)
+            # 與 staged()／tracked_files() 一致：二進位鎖定檔（如 bun.lockb）含非 UTF-8 位元組，嚴格解碼會誤回 None
+            r = subprocess.run(["git", "show", f"{ref}:./{path}"], capture_output=True, text=True,
+                               encoding="utf-8", errors="surrogateescape", cwd=self.cwd)
             return r.stdout if r.returncode == 0 else None
         except Exception:
             return None
