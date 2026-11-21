@@ -59,7 +59,7 @@ python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 只有預期內�
 ```
 
 - `compare_ci.py` 只讀 GitHub API，一次輸出 check（各狀態數量、差異、不是 workflow 產生的 check 及其來源）、閘門表格、G1（已知漏洞、KEV 命中、slopcheck 是否略過，以及當天 main 的 nightly）、repo-validate 三次 validate 的錯誤與警告，最後把差異分成「預期內」與「需要說明」（#240）。輸出可以直接貼到對話或 PR 留言。
-- 需要 `gh >= 2.97.0`（讀取工作紀錄用到 `gh api --allow-escape-sequences`，該旗標於 `gh 2.97.0` 新增）；版本不足或無法判讀時，`compare_ci.py` 會在啟動時提示升級並以退出碼 2 結束（#274）。
+- 需要 `gh >= 2.97.0`（讀取 job log 用到 `gh api --allow-escape-sequences`，該旗標於 `gh 2.97.0` 新增）；版本不足或無法判讀時，`compare_ci.py` 會在啟動時提示升級並以退出碼 2 結束（#274）。
 - 預期內只有三種：Dependabot 的 `.github/dependabot.yml` 設定驗證 check（PR 改到該檔時 GitHub 才建立）；G1 已知漏洞筆數和當天 nightly 相同；G1 的 allowlist 句只出現在 slopcheck 有掃描的那一邊。其餘差異都要在 PR 逐項說明是哪個改動造成的。
 - 退出碼 2 代表無法比對，不算通過：PR 的 check 或 workflow run 還沒結束（CI 未完成，腳本不比對、也不輪詢，用背景等待 CI 跑完再執行）、找不到 run 或 job、log 缺少需要的行、`gh` 版本過舊或失敗。
 - shadow 下 blocking 發現也是綠燈，所以一定要看表格的比對結果，不能只看 check 的顏色。

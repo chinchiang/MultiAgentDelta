@@ -68,13 +68,13 @@ def _minimal_api_responder(args: list[str]) -> str:
     raise AssertionError(f"未預期的 gh 呼叫：{args}")
 
 
-def _making_gh(version_out: str | Exception, api_calls: list[list[str]]):
+def _gh_stub(version_out: str | Exception, calls: list[list[str]]):
     def gh(args: list[str]) -> str:
+        calls.append(list(args))
         if args == ["--version"]:
             if isinstance(version_out, Exception):
                 raise version_out
             return version_out
-        api_calls.append(list(args))
         return _minimal_api_responder(args)
 
     return gh
@@ -87,69 +87,74 @@ class CompareCiGhVersionTests(unittest.TestCase):
             rc = cc.main(argv, gh=gh)
         return rc, out.getvalue(), err.getvalue()
 
-    def test_parse_gh_version_accepts_release_and_prerelease_and_rejects_invalid(self):
+    def test_parse_gh_version_orders_semver_prerelease_build_metadata_and_rejects_invalid(self):
         if not hasattr(cc, "parse_gh_version"):
             self.fail("compare_ci 尚未定義 parse_gh_version")
-        self.assertEqual(
-            cc.parse_gh_version("gh version 2.104.0 (2026-11-12)\nhttps://github.com/cli/cli/releases/tag/v2.104.0\n"),
-            (2, 104, 0),
+        v_104 = cc.parse_gh_version(
+            "gh version 2.104.0 (2026-11-12)\nhttps://github.com/cli/cli/releases/tag/v2.104.0\n"
         )
-        self.assertEqual(cc.parse_gh_version("gh version 2.97.0 (2026-07-31)\n"), (2, 97, 0))
-        self.assertEqual(cc.parse_gh_version("gh version 2.97.0-rc1 (2026-07-30)\n"), (2, 97, 0))
-        for invalid in ("", "2.104.0", "gh version unknown", "git version 2.47.0"):
+        self.assertEqual((v_104.major, v_104.minor, v_104.patch, v_104.is_release), (2, 104, 0, True))
+        v_exact = cc.parse_gh_version("gh version 2.97.0 (2026-07-31)\n")
+        v_build = cc.parse_gh_version("gh version 2.97.0+dfsg1 (2026-07-31)\n")
+        v_rc = cc.parse_gh_version("gh version 2.97.0-rc1 (2026-07-30)\n")
+        self.assertEqual(v_exact, v_build, "SemVer 建置中繼資料（+dfsg1）應與正式版等序")
+        self.assertLess(v_rc, v_exact, "SemVer 預發佈版（2.97.0-rc1）應低於正式版 2.97.0")
+        self.assertEqual(v_rc.raw, "2.97.0-rc1")
+
+        for invalid in (
+            "",
+            "2.104.0",
+            "gh version unknown",
+            "git version 2.47.0",
+            "wrapper banner\ngh version 2.104.0 (2026-11-12)\n",
+        ):
             with self.subTest(raw=invalid):
                 with self.assertRaises(cc.InputError):
                     cc.parse_gh_version(invalid)
 
-    def test_old_or_unparseable_gh_exits_2_with_upgrade_message_before_any_api_call(self):
+    def test_old_prerelease_or_unparseable_gh_exits_2_with_upgrade_message_before_any_api_call(self):
         for label, ver_out, expected_token in (
             ("回報案例 2.62.0", "gh version 2.62.0 (2024-11-14)\n", "2.62.0"),
             ("緊鄰門檻下界 2.96.9", "gh version 2.96.9 (2026-07-02)\n", "2.96.9"),
+            ("預發佈版 2.97.0-rc1", "gh version 2.97.0-rc1 (2026-07-30)\n", "2.97.0-rc1"),
             ("主版本過舊 1.99.0", "gh version 1.99.0 (2021-08-01)\n", "1.99.0"),
             ("輸出無法判讀", "gh version custom-dev-build\n", "2.97.0"),
+            ("首行非 gh version 之多行輸出", "noise\ngh version 2.104.0 (2026-11-12)\n", "noise"),
         ):
             with self.subTest(case=label):
-                api_calls: list[list[str]] = []
-                rc, out, _err = self._run_main(["250", "--baseline", "249"], _making_gh(ver_out, api_calls))
+                calls: list[list[str]] = []
+                rc, out, _err = self._run_main(["250", "--baseline", "249"], _gh_stub(ver_out, calls))
                 self.assertEqual(rc, 2, f"{label}：out={out!r}")
-                self.assertEqual(api_calls, [], f"{label}：版本不足時不得先發出任何 gh api 請求")
+                self.assertEqual(calls, [["--version"]], f"{label}：只查 --version，不得發出任何 gh api 請求")
                 self.assertIn("無法比對：", out)
                 self.assertIn(expected_token, out)
                 self.assertIn("2.97.0", out)
                 self.assertIn("升級", out)
 
     def test_missing_gh_binary_exits_2_and_bad_cli_args_still_exit_4_without_calling_gh(self):
-        api_calls: list[list[str]] = []
+        calls: list[list[str]] = []
         missing = cc.InputError("無法執行 gh：FileNotFoundError: [Errno 2] No such file or directory: 'gh'")
-        rc, out, _err = self._run_main(["250", "--baseline", "249"], _making_gh(missing, api_calls))
+        rc, out, _err = self._run_main(["250", "--baseline", "249"], _gh_stub(missing, calls))
         self.assertEqual(rc, 2)
         self.assertIn("無法比對：", out)
-        self.assertEqual(api_calls, [])
+        self.assertEqual(calls, [["--version"]])
 
-        called = False
-
-        def boom(_args):
-            nonlocal called
-            called = True
-            raise AssertionError("用法錯誤時不應呼叫 gh")
-
-        rc_bad, _out, _err = self._run_main(["250"], boom)
+        bad_calls: list[list[str]] = []
+        rc_bad, _out, _err = self._run_main(["250"], _gh_stub("gh version 2.104.0\n", bad_calls))
         self.assertEqual(rc_bad, 4)
-        self.assertFalse(called)
+        self.assertEqual(bad_calls, [], "用法錯誤時不應呼叫 gh")
 
-    def test_minimum_and_newer_gh_versions_check_version_first_and_proceed(self):
-        for ver in ("2.97.0", "2.104.0", "3.0.0"):
+    def test_minimum_build_metadata_and_newer_gh_versions_check_version_first_and_proceed(self):
+        for ver in ("2.97.0", "2.97.0+dfsg1", "2.98.0-rc1", "2.104.0", "3.0.0"):
             with self.subTest(version=ver):
-                seen_all: list[list[str]] = []
-                base_stub = _making_gh(f"gh version {ver} (2026-11-12)\n", [])
-
-                def tracking_gh(args: list[str]) -> str:
-                    seen_all.append(list(args))
-                    return base_stub(args)
-
-                rc, out, _err = self._run_main(["250", "--baseline", "249"], tracking_gh)
+                calls: list[list[str]] = []
+                rc, out, _err = self._run_main(
+                    ["250", "--baseline", "249"],
+                    _gh_stub(f"gh version {ver} (2026-11-12)\n", calls),
+                )
                 self.assertEqual(rc, 0, out)
-                self.assertEqual(seen_all[0], ["--version"], "啟動時應先檢查 gh --version")
+                self.assertEqual(calls[0], ["--version"], "啟動時應先檢查 gh --version")
+                self.assertGreater(len(calls), 1)
                 self.assertIn("## 結論", out)
 
 

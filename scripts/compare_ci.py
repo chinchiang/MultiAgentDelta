@@ -24,6 +24,7 @@ CI 未完成：PR 的 check 或 workflow run 還沒結束，或 github-actions �
 """
 from __future__ import annotations
 import collections, json, re, subprocess, sys
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 
@@ -307,28 +308,36 @@ def _note_parts(note: str) -> tuple[tuple, tuple]:
 
 
 # ---------------------------------------------------------------- 取資料（gh）
-MIN_GH_VERSION = (2, 97, 0)
-MIN_GH_TEXT = ".".join(str(x) for x in MIN_GH_VERSION)
-_GH_VERSION_RE = re.compile(r"^gh version (\d+)\.(\d+)\.(\d+)(?:[-+]\S+)?(?:\s|$)", re.M)
+@dataclass(frozen=True, order=True)
+class GhVersion:
+    major: int
+    minor: int
+    patch: int
+    is_release: bool = True
+    raw: str = field(default="", compare=False)
 
 
-def parse_gh_version(text: str) -> tuple[int, int, int]:
-    """解析 `gh --version` 輸出 → (major, minor, patch)；無法判讀時拋 InputError（fail-closed）。"""
-    m = _GH_VERSION_RE.search(text or "")
+MIN_GH_VERSION = GhVersion(2, 97, 0, True, "2.97.0")
+MIN_GH_TEXT = MIN_GH_VERSION.raw
+_GH_VERSION_RE = re.compile(r"\Agh version ((\d+)\.(\d+)\.(\d+)(?:-([^\s+]+))?(?:\+\S+)?)(?:\s|\Z)")
+
+
+def parse_gh_version(text: str) -> GhVersion:
+    """解析 `gh --version` 首行 → GhVersion；SemVer 預發佈版（-rc1 等）排在同號正式版之前，無法判讀時拋 InputError。"""
+    m = _GH_VERSION_RE.match(text or "")
     if not m:
         shown = (text or "").strip().splitlines()[:1]
         raw = shown[0][:80] if shown else "空輸出"
         raise InputError(f"無法判讀 gh 版本（收到 {raw!r}；需要 gh >= {MIN_GH_TEXT}，請升級 GitHub CLI）")
-    return int(m[1]), int(m[2]), int(m[3])
+    return GhVersion(int(m[2]), int(m[3]), int(m[4]), is_release=m[5] is None, raw=m[1])
 
 
 def check_gh_version(gh) -> None:
     """確認 gh >= 2.97.0（支援 gh api --allow-escape-sequences）；過舊則拋 InputError（#274）。"""
     ver = parse_gh_version(gh(["--version"]))
     if ver < MIN_GH_VERSION:
-        cur = ".".join(str(x) for x in ver)
         raise InputError(
-            f"gh 版本過舊（目前 {cur}，需要 >= {MIN_GH_TEXT} 才支援 gh api --allow-escape-sequences）：請升級 gh 後再執行"
+            f"gh 版本過舊（目前 {ver.raw}，需要 >= {MIN_GH_TEXT} 才支援 gh api --allow-escape-sequences）：請升級 gh 後再執行"
         )
 
 
