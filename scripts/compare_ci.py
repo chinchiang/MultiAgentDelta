@@ -16,13 +16,15 @@ workflow 文件「判準」的 CI 一節：check 數量與閘門表格要和最�
 用法：
   python3 -I scripts/compare_ci.py <PR> --baseline <PR>
   python3 scripts/compare_ci.py selftest
+前置需求：GitHub CLI `gh >= 2.97.0`（讀取 job log 需要 `gh api --allow-escape-sequences`；#274）。
 退出碼：0 只有預期內差異；1 有需要說明的差異；
-       2 無法比對（CI 未完成、找不到 run 或 job、log 缺少需要的行、gh／API 失敗；incomplete ≠ pass）；4 用法錯誤。
+       2 無法比對（gh 版本低於 2.97.0、CI 未完成、找不到 run 或 job、log 缺少需要的行、gh／API 失敗；incomplete ≠ pass）；4 用法錯誤。
 CI 未完成：PR 的 check 或 workflow run 還沒結束，或 github-actions 的 check 數少於這些 run 的 job 數。這時不比對。
 不輪詢、不寫入 GitHub（不留言、不合併）。
 """
 from __future__ import annotations
 import collections, json, re, subprocess, sys
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 
@@ -306,6 +308,39 @@ def _note_parts(note: str) -> tuple[tuple, tuple]:
 
 
 # ---------------------------------------------------------------- 取資料（gh）
+@dataclass(frozen=True, order=True)
+class GhVersion:
+    major: int
+    minor: int
+    patch: int
+    is_release: bool = True
+    raw: str = field(default="", compare=False)
+
+
+MIN_GH_VERSION = GhVersion(2, 97, 0, True, "2.97.0")
+MIN_GH_TEXT = MIN_GH_VERSION.raw
+_GH_VERSION_RE = re.compile(r"\Agh version ((\d+)\.(\d+)\.(\d+)(?:-([^\s+]+))?(?:\+\S+)?)(?:\s|\Z)")
+
+
+def parse_gh_version(text: str) -> GhVersion:
+    """解析 `gh --version` 首行 → GhVersion；SemVer 預發佈版（-rc1 等）排在同號正式版之前，無法判讀時拋 InputError。"""
+    m = _GH_VERSION_RE.match(text or "")
+    if not m:
+        shown = (text or "").strip().splitlines()[:1]
+        raw = shown[0][:80] if shown else "空輸出"
+        raise InputError(f"無法判讀 gh 版本（收到 {raw!r}；需要 gh >= {MIN_GH_TEXT}，請升級 GitHub CLI）")
+    return GhVersion(int(m[2]), int(m[3]), int(m[4]), is_release=m[5] is None, raw=m[1])
+
+
+def check_gh_version(gh) -> None:
+    """確認 gh >= 2.97.0（支援 gh api --allow-escape-sequences）；過舊則拋 InputError（#274）。"""
+    ver = parse_gh_version(gh(["--version"]))
+    if ver < MIN_GH_VERSION:
+        raise InputError(
+            f"gh 版本過舊（目前 {ver.raw}，需要 >= {MIN_GH_TEXT} 才支援 gh api --allow-escape-sequences）：請升級 gh 後再執行"
+        )
+
+
 def gh_runner(args: list[str]) -> str:
     try:
         r = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=120)
@@ -405,6 +440,7 @@ def main(argv: list[str], *, gh=gh_runner) -> int:
         return 4
     pr_n, base_n = int(argv[0]), int(argv[2])
     try:
+        check_gh_version(gh)
         sides = []
         for label, n in (("", pr_n), ("基準 PR ", base_n)):   # 先判斷 PR 完成了沒：未完成就不取基準與 log
             side = fetch_side(gh, n)
@@ -721,6 +757,8 @@ def selftest() -> list[str]:
                 "6": _fx_g1(), "9": _fx_nightly()["g1_log"]}
 
         def gh(args):
+            if args == ["--version"]:
+                return "gh version 2.104.0 (2026-11-12)\n"
             path = next(a for a in args if a.startswith(REPO))
             if fail_path and fail_path in path:
                 raise InputError(f"gh api {path} 失敗")
@@ -779,6 +817,18 @@ def selftest() -> list[str]:
                 bad.append(f"{argv} 應 exit 4")
         return "；".join(bad) or None
     check("main：退出碼 0／1／2／4，CI 未完成時不比對", t_main)
+
+    def t_gh_version():   # #274：啟動時先驗 gh >= 2.97.0；過舊或無法判讀 → exit 2 並提示升級，不發 API 請求
+        for raw, want in (("gh version 2.62.0 (2024-11-14)\n", "2.62.0"), ("gh version unknown\n", "2.97.0")):
+            calls = []
+            def old_gh(args, raw=raw, calls=calls):
+                calls.append(args)
+                return raw if args == ["--version"] else _fx_summary()
+            rc, out = run(["250", "--baseline", "249"], old_gh)
+            if rc != 2 or calls != [["--version"]] or want not in out or "2.97.0" not in out or "升級" not in out:
+                return f"{raw.strip()!r} 應先查 --version 並 exit 2 提示升級（rc={rc}, calls={calls}, out={out!r}）"
+        return None
+    check("main：gh 版本低於 2.97.0 或無法判讀 → exit 2 並提示升級", t_gh_version)
     return fails
 
 
