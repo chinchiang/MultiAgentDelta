@@ -53,7 +53,8 @@ def _write_json(path, doc):
 
 def main(argv, policy_root=ROOT, *, env=None, registry=None):
     """唯一有副作用的薄入口：解析命令列旗標、載入政策、呼叫 screen（或 Outcome.unreadable）、
-    印標準輸出與標準錯誤結果行、寫 SARIF（無 SARIF 檢視時刪除舊檔）與閘門結果、回傳 Outcome.exit_code。"""
+    印標準輸出與標準錯誤結果行、寫 SARIF（無 SARIF 檢視時刪除舊檔）與閘門結果、回傳 Outcome.exit_code；
+    輸出檔寫入或舊 SARIF 移除失敗時於標準錯誤指出路徑並回傳退出碼 2（#271）。"""
     args = argv[1:]
     if "--help" in args or "-h" in args:
         print(__doc__.strip())
@@ -84,11 +85,23 @@ def main(argv, policy_root=ROOT, *, env=None, registry=None):
     if sarif_out:
         sarif_doc = outcome.to_sarif()
         if sarif_doc is None:
-            gate_result.remove_stale(sarif_out)
+            try:
+                gate_result.remove_stale(sarif_out)
+            except OSError as e:
+                print(f"無法移除 {sarif_out}：{e}", file=sys.stderr)
+                return 2
         else:
-            _write_json(sarif_out, sarif_doc)
+            try:
+                _write_json(sarif_out, sarif_doc)
+            except OSError as e:
+                print(f"無法寫出 {sarif_out}：{e}", file=sys.stderr)
+                return 2
     if gate_out:
-        _write_json(gate_out, outcome.to_gate_run(started, commit, sarif_ref=sarif_out))
+        try:
+            _write_json(gate_out, outcome.to_gate_run(started, commit, sarif_ref=sarif_out))
+        except OSError as e:
+            print(f"無法寫出 {gate_out}：{e}", file=sys.stderr)
+            return 2
     print(outcome.result_line(), file=sys.stderr)
     return outcome.exit_code
 
@@ -218,6 +231,24 @@ def selftest():
             or g.get("tools") != [gate_result.tool(TOOL_NAME, "error", version=TOOL_VERSION)] \
             or stale or list(schema.iter_errors(g)):
         fails.append(f"政策讀不到命令列契約不符（exit {code}、calls={rec.calls}、stale={stale}、err={err.getvalue()!r}、{g}）")
+
+    # 5. 輸出檔寫入失敗（#271）：在標準錯誤指出路徑並回退出碼 2，不拋未捕捉例外（exit 1）
+    with mode_policy_root("mode: shadow") as pr, tempfile.TemporaryDirectory() as d:
+        (Path(d) / "package.json").write_text('{"dependencies": {"express": "4.21.2"}}\n', encoding="utf-8")
+        reg_ok = FakeRegistry({("npm", "express", "4.21.2"): Found(Facts("npm", "express", "4.21.2", "2020-01-01T00:00:00Z", {}, 10 ** 6))})
+        bad_dir = Path(d, "dir-as-output")
+        bad_dir.mkdir()
+        for flag in ("--sarif", "--gate"):
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(["g1_slopcheck.py", "--target", str(d), "--manifest", "package.json", flag, str(bad_dir)],
+                                policy_root=pr, registry=reg_ok)
+            except OSError as exc:
+                fails.append(f"{flag} 寫入失敗應回退出碼 2 而非拋出例外：{exc}")
+                continue
+            if code != 2 or str(bad_dir) not in err.getvalue() or "無法寫出" not in err.getvalue():
+                fails.append(f"{flag} 寫入失敗契約不符（exit {code}，err={err.getvalue()!r}）")
 
     return fails
 

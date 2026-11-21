@@ -8,6 +8,7 @@ from datetime import date
 import inspect
 import io
 import json
+import os
 import pathlib
 import re
 import sys
@@ -224,6 +225,65 @@ class ThinCliContract(unittest.TestCase):
                         self.assertIn("mode", g.get("status_reason") or "")
                     self.assertEqual(reg.calls, [])
                     self.assertFalse(sp.exists())
+
+    def test_unwritable_sarif_or_gate_reports_path_on_stderr_and_exits_2(self):
+        # #271：--sarif 或 --gate 寫檔失敗（或未完成時刪舊 SARIF 失敗）一律在 stderr 指出路徑並回退出碼 2，不得拋未捕捉例外（exit 1）
+        (self.D / "package.json").write_text('{"dependencies": {"express": "4.21.2"}}\n', encoding="utf-8")
+        (self.D / "bad.json").write_text('{"dependencies": {"evil-pkg": "1.0.0"}}\n', encoding="utf-8")
+        reg = gr.FakeRegistry({
+            ("npm", "express", "4.21.2"): gr.Found(gr.Facts("npm", "express", "4.21.2", OLD, {}, 50_000)),
+            ("npm", "evil-pkg", "1.0.0"): gr.NotFound(),
+        })
+        env = gs.build_env(Policy(ROOT, project_root=self.D), git=FakeGit(), registry=reg, today=date(2026, 10, 1))
+
+        dir_target = self.D / "already-a-dir"
+        dir_target.mkdir()
+        file_parent = self.D / "regular-file"
+        file_parent.write_text("x", encoding="utf-8")
+
+        cases = [
+            ("pass 時 --sarif 為既有目錄", "package.json", "--sarif", dir_target),
+            ("blocking 時 --sarif 父路徑為檔案", "bad.json", "--sarif", file_parent / "g1.sarif"),
+            ("pass 時 --gate 為既有目錄", "package.json", "--gate", dir_target),
+            ("blocking 時 --gate 父路徑為檔案", "bad.json", "--gate", file_parent / "g1-gate.json"),
+        ]
+        for label, manifest, flag, bad_path in cases:
+            with self.subTest(case=label):
+                out, err = io.StringIO(), io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        code = sc.main(
+                            ["g1_slopcheck.py", "--target", str(self.D), "--manifest", manifest, flag, str(bad_path)],
+                            env=env,
+                        )
+                except OSError as exc:
+                    self.fail(f"{label}：寫檔失敗應捕捉 OSError 並回退出碼 2，不得拋出例外：{exc}")
+                self.assertEqual(code, 2, f"{label}：err={err.getvalue()!r}")
+                self.assertIn("無法寫出", err.getvalue())
+                self.assertIn(str(bad_path), err.getvalue())
+                self.assertNotIn("✅", err.getvalue())
+                self.assertNotIn("⛔", err.getvalue())
+
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            ro_dir = self.D / "readonly-dir"
+            ro_dir.mkdir()
+            stale_sarif = ro_dir / "stale.sarif"
+            stale_sarif.write_text('{"stale": true}', encoding="utf-8")
+            ro_dir.chmod(0o555)
+            self.addCleanup(ro_dir.chmod, 0o755)
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with broken_policy_root() as pr, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = sc.main(
+                        ["g1_slopcheck.py", "--target", str(self.D), "--manifest", "package.json", "--sarif", str(stale_sarif)],
+                        policy_root=pr,
+                        registry=reg,
+                    )
+            except OSError as exc:
+                self.fail(f"刪舊 SARIF 失敗應捕捉 OSError 並回退出碼 2，不得拋出例外：{exc}")
+            self.assertEqual(code, 2)
+            self.assertIn("無法移除", err.getvalue())
+            self.assertIn(str(stale_sarif), err.getvalue())
 
 
 if __name__ == "__main__":
