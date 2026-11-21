@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import sarif_gate  # noqa: E402  缺 PyYAML 時以 exit 2 結束（無法判定，不視為通過）
 from g0_trifecta import policy_notes, trifecta_findings  # noqa: E402
 from vibesec_policy import load_policy  # noqa: E402  tier 的唯一來源
-from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本
+from g3_sast import copy_tracked, _git, printable  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本與輸出轉義
 from gate_result import GateRun  # noqa: E402  閘門結果的外層欄位、tool 列與時間戳（#181）
 
 CONTROLS = ["VS-G0-LETHAL-TRIFECTA", "VS-G0-RISK-TIER"]
@@ -155,7 +155,7 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
             gate.fail_condition()
         for x in reasons:
             (gate.problem if status == "incomplete" else gate.note)(x)
-        return gate.result()
+        return printable(gate.result())
 
     policy, problem = load_policy(policy_root, project_root=project_root)   # 只建立一次；讀不到 → incomplete，不判定任何發現
     if problem:   # 控制全部 untested（原因＝problem）、tool 列只有 vibesec-g0 一列 error
@@ -164,13 +164,18 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
     top = _git(target, "rev-parse", "--show-toplevel")
     if top is None or pathlib.Path(top).resolve() != target:
         tool["state"] = "error"
-        reasons.append(f"目標不是 git repo（{target}）" if top is None else f"--target 必須是 git repo 根目錄（{top}）")
+        reasons.append(f"目標不是 git repo（{printable(str(target))}）" if top is None
+                       else f"--target 必須是 git repo 根目錄（{printable(top)}）")
         return done("incomplete")
     gate.commit = _git(target, "rev-parse", "HEAD")
     with tempfile.TemporaryDirectory(prefix="vibesec-g0-") as tmp:
         copy = pathlib.Path(tmp) / "vibesec-target"
         copy.mkdir()
-        copy_tracked(target, copy)
+        _, copy_problem = copy_tracked(target, copy)
+        if copy_problem:
+            tool["state"] = "error"
+            reasons.append(copy_problem)
+            return done("incomplete")
         path, shown, missing = locate_model(copy, explicit, external)
         if path is None:
             reasons.append(missing)
@@ -232,8 +237,8 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
     if external and declared != policy_tier:
         reasons.append(f"目標模型宣告 risk_tier {declared}；G1–G4 以本 repo vibesec.yaml 的 {policy_tier} 計算 tier"
                        "（tier_overrides 只升不降，結果偏嚴）")
-    findings_ref.write_text(json.dumps({"gate": "G0", "threat_model": shown, "risk_tier": {
-        "declared": declared, "derived": derived, "derivation": why, "policy": policy_tier}, "findings": findings},
+    findings_ref.write_text(json.dumps(printable({"gate": "G0", "threat_model": shown, "risk_tier": {
+        "declared": declared, "derived": derived, "derivation": why, "policy": policy_tier}, "findings": findings}),
         ensure_ascii=False, indent=2), encoding="utf-8")
     return done("complete", tier_fail=bool(tier_fail))
 
@@ -502,6 +507,27 @@ def selftest() -> list[str]:
                 # 暫存政策沒有例外（temp_policy_root 預設清空），c-claude 的致命三要素是 blocking → fail；重點是照常判定
                 if g["status"] not in ("pass", "fail") or g["mode"] != m or POLICY_UNREADABLE in (g["status_reason"] or ""):
                     fails.append(f"mode {m} → 照常判定、閘門結果的 mode 取自政策（得到 {g['status']}、mode={g['mode']}）")
+        # #310：受驗樹追蹤檔無法複製時，即使提供外部 --threat-model 仍須記 incomplete
+        with tempfile.TemporaryDirectory() as d:
+            D = pathlib.Path(d)
+            repo, tm_p = D / "r", D / "tm.yaml"
+            repo.mkdir()
+            (repo / "f.py").write_text("x = 1\n", encoding="utf-8")
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "init", "-q"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"], cwd=repo, check=True, capture_output=True)
+            clean_tm = dict(template, system=dict(template["system"], name="clean-g0"), agents=[],
+                            components=[c for c in template["components"] if c["kind"] not in ("llm", "agent")],
+                            flows=[f for f in template["flows"] if "c-agent" not in (f["from"], f["to"])])
+            tm_p.write_text(yaml.safe_dump(clean_tm, allow_unicode=True), encoding="utf-8")
+            (repo / "f.py").unlink(); (repo / "f.py").mkdir()
+            locate_model = real_locate
+            try:
+                ge = check(repo, D / "out", threat_model=tm_p)
+                if ge["status"] != "incomplete" or ge["tools"][0]["state"] != "error" or "f.py" not in (ge["status_reason"] or ""):
+                    fails.append(f"G0 追蹤檔無法複製應記 incomplete（得到 {ge}）")
+            except Exception as e:
+                fails.append(f"G0 追蹤檔無法複製不得拋例外（{type(e).__name__}: {e}）")
     finally:
         locate_model = real_locate
     return fails
@@ -525,7 +551,7 @@ def main(argv=None) -> int:
     g = check(target, pathlib.Path(a.out_dir), pathlib.Path(a.threat_model).expanduser() if a.threat_model else None)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"G0 {g['status']}（{target.resolve()}）：blocking={g['findings_count']['blocking']}"
+    print(f"G0 {g['status']}（{printable(str(target.resolve()))}）：blocking={g['findings_count']['blocking']}"
           + (f"；{g['status_reason']}" if g["status_reason"] else ""))
     return {"pass": 0, "fail": 1}.get(g["status"], 2)
 

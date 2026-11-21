@@ -11,7 +11,7 @@
 退出碼：0 通過（--json 一律 0，結論在 JSON 裡）；1 阻擋。
 """
 from __future__ import annotations
-import json, sys, re, subprocess, fnmatch
+import errno, json, stat, sys, re, subprocess, fnmatch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,11 +20,21 @@ RULE_IGNORE = "vibesec.g2.env-not-ignored"
 RULE_COMMITTED = "vibesec.g2.env-committed"
 ENV_RE = re.compile(r'(^|/)\.env(\.[^/]*)?$')
 
+def _printable(s: str) -> str:
+    """輸出邊界：把 surrogateescape 保留的原始位元組轉成可輸出的 \\xNN，合法 UTF-8 原樣不動。"""
+    try:
+        s.encode("utf-8")
+        return s
+    except UnicodeEncodeError:
+        return "".join(f"\\x{ord(c) - 0xDC00:02x}" if 0xDC80 <= ord(c) <= 0xDCFF
+                       else f"\\u{ord(c):04x}" if 0xD800 <= ord(c) <= 0xDFFF else c for c in s)
+
 def tracked(root=ROOT):
     """已追蹤的檔案路徑；不是 git repo 或 git 失敗 → None（不是空清單：查不到不等於沒有）。
-    -z 與 core.quotepath=false：含非 ASCII 的路徑（設定/.env）否則會被加引號跳脫，規則比對不到（第四次審視 S-7）。"""
+    -z 與 surrogateescape：含非 ASCII 或非 UTF-8 位元組的路徑逐字保留，不讓單一舊編碼檔名使整份列檔失效（#310）。"""
     try:
-        r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"], capture_output=True, text=True, cwd=root)
+        r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"],
+                           capture_output=True, text=True, encoding="utf-8", errors="surrogateescape", cwd=root)
     except Exception:
         return None
     if r.returncode != 0:
@@ -56,15 +66,35 @@ def ignores_env(gi_text: str) -> bool:
     return ignored
 
 def record(root=ROOT):
-    """g2-envcheck.json 的內容：.gitignore 少規則、已提交的機密檔、git 失敗分開記（見檔首說明）。"""
+    """g2-envcheck.json 的內容：.gitignore 少規則、已提交的機密檔、git／.gitignore 讀取失敗分開記（見檔首說明）。"""
     root = Path(root)
     files = tracked(root)
     gi = root / ".gitignore"
+    gi_text, gi_problem = "", None
+    try:
+        st = gi.lstat()
+    except OSError as e:
+        st = None
+        if e.errno != errno.ENOENT:
+            gi_text, gi_problem = None, f"無法讀取 .gitignore（{type(e).__name__}）：無法確認 .env 已忽略"
+    if st is not None:
+        if stat.S_ISLNK(st.st_mode):
+            gi_text, gi_problem = None, "無法讀取 .gitignore（不跟隨 symlink）：無法確認 .env 已忽略"
+        else:
+            try:
+                gi_text = gi.read_text(encoding="utf-8", errors="surrogateescape")
+            except OSError as e:
+                gi_text, gi_problem = None, f"無法讀取 .gitignore（{type(e).__name__}）：無法確認 .env 已忽略"
+    problems = []
+    if files is None:
+        problems.append("無法列出已追蹤檔案（不是 git repo 或 git 失敗）：無法確認 .env 未入版控")
+    if gi_problem:
+        problems.append(gi_problem)
     return {"gate": "G2", "rule_id": RULE_IGNORE,
-            "env_gitignore_fail": 0 if ignores_env(gi.read_text() if gi.exists() else "") else 1,
+            "env_gitignore_fail": 0 if (gi_text is None or ignores_env(gi_text)) else 1,
             "committed_rule_id": RULE_COMMITTED,
-            "committed": sorted(f for f in files or [] if ENV_RE.search(f) and not ALLOW.search(f)),
-            "error": None if files is not None else "無法列出已追蹤檔案（不是 git repo 或 git 失敗）：無法確認 .env 未入版控"}
+            "committed": sorted(_printable(f) for f in files or [] if ENV_RE.search(f) and not ALLOW.search(f)),
+            "error": "；".join(problems) or None}
 
 def check(root=ROOT):
     """回傳錯誤訊息清單；空清單 = 通過。"""
@@ -101,6 +131,34 @@ def selftest():
         subprocess.run(["git", "rm", "-q", "--cached", "設定/.env"], cwd=D, check=True, env=env)
         if check(D):
             fails.append(f"移出版控後應通過（得到 {check(D)}）")
+        # #310：非 UTF-8 追蹤檔名與 .gitignore 讀取防護
+        import os
+        (D / "設定/.env").unlink()
+        try:
+            raw_dir = os.fsencode(D) + b"/cfg-\xff"
+            os.makedirs(raw_dir, exist_ok=True)
+            with open(raw_dir + b"/.env", "wb") as fh:
+                fh.write(b"X=1\n")
+            subprocess.run(["git", "add", "-f", "."], cwd=D, check=True, env=env)
+            rec = record(D)
+            if rec["error"] or rec["committed"] != [r"cfg-\xff/.env"]:
+                fails.append(f"非 UTF-8 目錄下已追蹤的 .env 應轉義記在 committed（得到 {rec}）")
+            json.dumps(rec, ensure_ascii=False).encode("utf-8")
+        except OSError:
+            pass
+        except Exception as e:
+            fails.append(f"非 UTF-8 追蹤檔名不得拋例外（{type(e).__name__}: {e}）")
+        (D / ".gitignore").unlink()
+        (D / ".gitignore").mkdir()
+        try:
+            if not record(D)["error"]:
+                fails.append(".gitignore 為目錄無法讀取時應記 error（incomplete）")
+        except Exception as e:
+            fails.append(f".gitignore 讀取 OSError 不得拋例外（{type(e).__name__}: {e}）")
+        (D / ".gitignore").rmdir()
+        (D / ".gitignore").symlink_to("missing")
+        if not record(D)["error"]:
+            fails.append(".gitignore 為 symlink 時應記 error（incomplete）")
     # .gitignore 必須真的忽略 .env：.env.example、.envrc、反向規則、只限目錄或子路徑者都不算
     for text, want in [(".env\n", True), (".env*\n", True), ("/.env\n", True), ("**/.env\n", True), ("*.env\n", True),
                        ("node_modules/\n  .env\n", False), (".env.example\n", False), (".envrc\n", False),

@@ -32,7 +32,7 @@ import argparse, json, os, pathlib, re, subprocess, sys, tempfile, time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import g4_review  # noqa: E402  審查紀錄的驗證與狀態推導（缺 PyYAML／jsonschema 時以 exit 2 結束）
-from g3_sast import copy_tracked, _git  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本
+from g3_sast import copy_tracked, _git, printable  # noqa: E402  同一份「追蹤中檔案、不跟隨 symlink」的副本與輸出轉義
 import gate_result  # noqa: E402  閘門結果的外層欄位與 tool 列（#183）
 import g4_static  # noqa: E402  只取控制清單與 tool 名稱（靜態檢查本身以子行程執行 STATIC_SCRIPT）
 
@@ -54,14 +54,17 @@ def run_static(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path
     with tempfile.TemporaryDirectory(prefix="vibesec-g4-") as tmp:
         copy = pathlib.Path(tmp) / "vibesec-target"
         copy.mkdir()
-        skipped = copy_tracked(target, copy)
+        skipped, copy_problem = copy_tracked(target, copy)
         if skipped:
             notes.append(f"靜態檢查略過 {skipped} 個 symlink（不跟隨到目標以外的檔案）")
+        if copy_problem:
+            return None, copy_problem, notes
         reports = pathlib.Path(tmp) / "reports"   # 副本以外：不讓輸出成為下一次掃描的內容
         t0 = time.monotonic()
         try:
             p = subprocess.run([sys.executable, "-I", str(script), "--target", str(copy), "--out", str(reports),
-                                "--commit", commit or ""], capture_output=True, text=True, timeout=timeout)
+                                "--commit", commit or ""], capture_output=True, text=True,
+                               encoding="utf-8", errors="surrogateescape", timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, f"G4 靜態檢查逾時（{timeout}s）", notes
         except OSError as e:
@@ -87,9 +90,9 @@ def run_static(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path
         except (ValueError, KeyError, IndexError, TypeError) as e:
             return None, f"G4 靜態檢查的結果無法解析（{type(e).__name__}：{str(e)[:120]}）", notes
         if p.returncode == 1 and not static_blocking:
-            return None, f"G4 靜態檢查 exit 1 但沒有 blocking 發現：{(p.stderr or p.stdout).strip()[-200:]}", notes
+            return None, f"G4 靜態檢查 exit 1 但沒有 blocking 發現：{printable((p.stderr or p.stdout).strip())[-200:]}", notes
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "g4-static.sarif").write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+        (out_dir / "g4-static.sarif").write_text(json.dumps(printable(sarif), ensure_ascii=False, indent=2), encoding="utf-8")
     for t in static.get("tools") or []:
         if t.get("name") == "vibesec-g4-static":
             t.update(output_ref=str(out_dir / "g4-static.sarif"), exit_code=p.returncode,
@@ -132,8 +135,9 @@ def find_external_record(target: pathlib.Path, commit: str, cfg: dict, controls:
 def _dirty_tracked(root: pathlib.Path) -> list[str] | None:
     """root 追蹤中檔案有未提交修改（含已暫存）的路徑；git 失敗回傳 None。"""
     try:
-        p = subprocess.run(["git", "status", "--porcelain", "-z", "--untracked-files=no", "--no-renames"], cwd=root,
-                           capture_output=True, text=True)
+        p = subprocess.run(["git", "-c", "core.quotepath=false", "status", "--porcelain", "-z",
+                            "--untracked-files=no", "--no-renames"], cwd=root,
+                           capture_output=True, text=True, encoding="utf-8", errors="surrogateescape")
     except OSError:
         return None
     return [e[3:] for e in p.stdout.split("\0") if e[3:]] if p.returncode == 0 else None
@@ -151,7 +155,7 @@ def find_self_record(target: pathlib.Path, commit: str, cfg: dict, controls: set
     dirty = _dirty_tracked(target)
     if dirty is None:
         return None, None, None, f"無法取得工作目錄狀態（git status 失敗），不採用審查紀錄 {ref}", None
-    changed = [f for f in dirty if not f.startswith(g4_review.FRESH_PREFIXES)]
+    changed = [printable(f) for f in dirty if not f.startswith(g4_review.FRESH_PREFIXES)]
     if changed:
         shown = "、".join(changed[:5]) + ("…" if len(changed) > 5 else "")
         return None, None, None, (f"工作目錄有未提交的程式變更（{len(changed)} 檔：{shown}），"
@@ -170,8 +174,8 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
     external = target != g4_review.PROJECT   # 本 repo（或 VIBESEC_PROJECT_ROOT）= g4_review 讀 reviews/g4 的同一個 repo
     (out_dir / "g4-static.sarif").unlink(missing_ok=True)   # 不讓上一次的輸出被當成這次的結果
     top = _git(target, "rev-parse", "--show-toplevel")
-    problem = (f"目標不是 git repo（{target}）" if top is None else
-               None if pathlib.Path(top).resolve() == target else f"--target 必須是 git repo 根目錄（{top}）")
+    problem = (f"目標不是 git repo（{printable(str(target))}）" if top is None else
+               None if pathlib.Path(top).resolve() == target else f"--target 必須是 git repo 根目錄（{printable(top)}）")
     commit = _git(target, "rev-parse", "HEAD") if not problem else None
     static, why, notes = (None, problem, []) if problem else run_static(target, out_dir, script, commit, timeout)
     if static is None:
@@ -189,7 +193,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
         run.cover(g4_static.LLM_CONTROL, "pending", why)
         for p in problems:
             run.problem(p)
-        return run.result()
+        return printable(run.result())
     cfg, controls = g4_review.load_cfg(), g4_review.known_controls()
     if external:
         record, ev, ref, reason, cap = find_external_record(target, commit, cfg, controls, review_root)
@@ -205,7 +209,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, script: pathlib.Path = STA
     static = dict(static, scope="full", diff_base=None, commit=commit, started_at=started)
     gate, _ = g4_review.derive_gate(static, record, ev, reason, ref, trust_problems=["；".join(trust)] if trust else [],
                                     notes=notes)
-    return gate
+    return printable(gate)
 
 
 # ------------------------------------------------------------------ selftest
@@ -560,6 +564,18 @@ def _selftest(shadow_tree: pathlib.Path, enforce_tree: pathlib.Path) -> list[str
         g = check(scan(ROOT, pathlib.Path(d), script), "本 repo")
         if "不得自證" in (g["status_reason"] or "") or g["status"] not in ("incomplete", "pending", "pass", "fail"):
             fails.append("目標是本 repo 時照 CI 的方式讀 reviews/g4，不套用外部專案的規則")
+    # #310：受驗樹追蹤檔無法複製時 G4 靜態檢查不執行、記 incomplete
+    with tempfile.TemporaryDirectory() as d:
+        repo, out = pathlib.Path(d) / "r", pathlib.Path(d) / "o"
+        repo.mkdir(); (repo / "f.py").write_text("x = 1\n", encoding="utf-8")
+        git(repo, "init", "-q"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "c1")
+        (repo / "f.py").unlink(); (repo / "f.py").mkdir()
+        try:
+            ge = check(scan(repo, out, script), "G4 追蹤檔無法複製")
+            if ge["status"] != "incomplete" or ge["tools"][0]["state"] != "error" or "f.py" not in (ge["status_reason"] or ""):
+                fails.append(f"G4 追蹤檔無法複製應記 incomplete（得到 {ge}）")
+        except Exception as e:
+            fails.append(f"G4 追蹤檔無法複製不得拋例外（{type(e).__name__}: {e}）")
     _wrap_dir.cleanup()
     return fails
 
@@ -582,7 +598,7 @@ def main(argv=None) -> int:
     g = scan(target, pathlib.Path(a.out_dir), STATIC_SCRIPT, int(g4.get("timeout_seconds") or 900))
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"G4 {g['status']}（{target.resolve()}）：blocking={g['findings_count']['blocking']} "
+    print(f"G4 {g['status']}（{printable(str(target.resolve()))}）：blocking={g['findings_count']['blocking']} "
           f"advisory={g['findings_count']['advisory']}" + (f"；{g['status_reason']}" if g["status_reason"] else ""))
     if g["findings_count"]["blocking"]:
         return 1
