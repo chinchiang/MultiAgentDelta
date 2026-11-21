@@ -16,6 +16,7 @@
   blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用（fail closed）。
 """
 from __future__ import annotations
+import contextlib
 import json
 from pathlib import Path
 import sys
@@ -51,6 +52,31 @@ def _write_json(path, doc):
     Path(path).write_text(dumps_json(doc), encoding="utf-8")
 
 
+def _sync_outputs(outcome, started, commit, sarif_out, gate_out) -> bool:
+    """寫出 --sarif（無 SARIF 檢視時刪除舊檔）與 --gate；任一 I/O 失敗時於 stderr 指出路徑並清掉殘留檔。"""
+    action, target = "寫出", None
+    try:
+        if sarif_out:
+            sarif_doc = outcome.to_sarif()
+            if sarif_doc is None:
+                action, target = "移除", sarif_out
+                gate_result.remove_stale(sarif_out)
+            else:
+                action, target = "寫出", sarif_out
+                _write_json(sarif_out, sarif_doc)
+        if gate_out:
+            action, target = "寫出", gate_out
+            _write_json(gate_out, outcome.to_gate_run(started, commit, sarif_ref=sarif_out))
+        return True
+    except OSError as e:
+        print(f"無法{action} {target}：{e}", file=sys.stderr)
+        for stale in (sarif_out, gate_out):
+            if stale:
+                with contextlib.suppress(OSError):
+                    gate_result.remove_stale(stale)
+        return False
+
+
 def main(argv, policy_root=ROOT, *, env=None, registry=None):
     """唯一有副作用的薄入口：解析命令列旗標、載入政策、呼叫 screen（或 Outcome.unreadable）、
     印標準輸出與標準錯誤結果行、寫 SARIF（無 SARIF 檢視時刪除舊檔）與閘門結果、回傳 Outcome.exit_code；
@@ -82,26 +108,8 @@ def main(argv, policy_root=ROOT, *, env=None, registry=None):
     stdout_doc = outcome.to_stdout()
     if stdout_doc is not None:
         print(dumps_json(stdout_doc))
-    if sarif_out:
-        sarif_doc = outcome.to_sarif()
-        if sarif_doc is None:
-            try:
-                gate_result.remove_stale(sarif_out)
-            except OSError as e:
-                print(f"無法移除 {sarif_out}：{e}", file=sys.stderr)
-                return 2
-        else:
-            try:
-                _write_json(sarif_out, sarif_doc)
-            except OSError as e:
-                print(f"無法寫出 {sarif_out}：{e}", file=sys.stderr)
-                return 2
-    if gate_out:
-        try:
-            _write_json(gate_out, outcome.to_gate_run(started, commit, sarif_ref=sarif_out))
-        except OSError as e:
-            print(f"無法寫出 {gate_out}：{e}", file=sys.stderr)
-            return 2
+    if not _sync_outputs(outcome, started, commit, sarif_out, gate_out):
+        return 2
     print(outcome.result_line(), file=sys.stderr)
     return outcome.exit_code
 
@@ -109,7 +117,6 @@ def main(argv, policy_root=ROOT, *, env=None, registry=None):
 def selftest():
     """命令列契約自我測試（#268）：只驗全部旗標、退出碼、--gate 與未完成刪舊 --sarif、兩種標準輸出形狀、結果行、政策讀不到。
     其餘 95 個舊案例已全數搬至 tests/test_g1_*.py 與 tests/test_https_only.py。"""
-    import contextlib
     import io
     import os
     import subprocess
