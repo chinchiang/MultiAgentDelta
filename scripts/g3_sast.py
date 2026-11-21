@@ -23,7 +23,7 @@ custom 檢查）；trivy config；gate JSON 由 scripts/sarif_gate.py 的 derive
 退出碼：0 無 blocking 且完成；1 有 blocking 發現；2 無法完成（incomplete）。
 """
 from __future__ import annotations
-import argparse, datetime, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time
+import argparse, datetime, errno, json, os, pathlib, re, shutil, stat, subprocess, sys, tempfile, time, urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -34,12 +34,39 @@ CHECKOV_CONFIGS = (".checkov.yaml", ".checkov.yml")
 INLINE_SUPPRESSIONS = r"checkov:skip=|trivy:ignore"
 
 
+def printable(obj):
+    """輸出邊界：把含代理字元（surrogateescape 保留的原始位元組）的字串轉成可輸出 UTF-8 文字，合法 UTF-8 原樣不動。"""
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+            return obj
+        except UnicodeEncodeError:
+            return "".join(f"\\x{ord(c) - 0xDC00:02x}" if 0xDC80 <= ord(c) <= 0xDCFF
+                           else f"\\u{ord(c):04x}" if 0xD800 <= ord(c) <= 0xDFFF else c for c in obj)
+    if isinstance(obj, dict):
+        return {printable(k): printable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [printable(v) for v in obj]
+    return obj
+
+
 def _git(target: pathlib.Path, *args: str) -> str | None:
     try:
-        r = subprocess.run(["git", *args], capture_output=True, text=True, cwd=target)
+        r = subprocess.run(["git", "-c", "core.quotepath=false", *args],
+                           capture_output=True, text=True, encoding="utf-8", errors="surrogateescape", cwd=target)
     except OSError:
         return None
     return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _git_z(target: pathlib.Path, *args: str) -> list[str] | None:
+    """執行帶 -z（NUL 分隔）的 git 命令；保留前導／尾隨空白與非 UTF-8 位元組（surrogateescape），失敗回傳 None。"""
+    try:
+        r = subprocess.run(["git", "-c", "core.quotepath=false", *args],
+                           capture_output=True, text=True, encoding="utf-8", errors="surrogateescape", cwd=target)
+    except OSError:
+        return None
+    return [f for f in r.stdout.split("\0") if f] if r.returncode == 0 else None
 
 
 def g3_config() -> dict:
@@ -52,25 +79,51 @@ def semgrep_configs(cfg: dict) -> list[str]:
     return [r if re.match(r"^[pr]/", r) else str(ROOT / r) for r in rules]
 
 
-def copy_tracked(target: pathlib.Path, dst: pathlib.Path) -> int:
-    """把目標追蹤中的檔案複製到 dst 供 checkov 掃描：去掉 checkov 設定檔（checkov 會自動載入被掃目錄的設定）
-    與 symlink（可能指向主機上的檔案）。回傳略過的 symlink 數。"""
+def sarif_uri(uri: str) -> str:
+    """SARIF artifactLocation.uri：合法 UTF-8 原樣不動，含非 UTF-8 代理字元的路徑改用百分比編碼。"""
+    try:
+        uri.encode("utf-8")
+        return uri
+    except UnicodeEncodeError:
+        pass
+    try:
+        return urllib.parse.quote(uri.encode("utf-8", "surrogateescape"), safe="/")
+    except UnicodeEncodeError:
+        return printable(uri)
+
+
+def copy_tracked(target: pathlib.Path, dst: pathlib.Path) -> tuple[int, str | None]:
+    """把受驗樹追蹤中的檔案複製到 dst 供掃描：去掉 checkov 設定檔（checkov 會自動載入被掃目錄的設定）
+    與 symlink（可能指向主機上的檔案）。回傳 (略過的 symlink 數, 未完成原因或 None)（#310）。"""
+    files = _git_z(target, "ls-files", "-z")
+    if files is None:
+        return 0, f"無法列出已追蹤檔案（git ls-files 失敗：{printable(str(target))}）"
     skipped = 0
-    for f in (_git(target, "ls-files", "-z") or "").split("\0"):
-        if not f or pathlib.PurePosixPath(f).name in CHECKOV_CONFIGS:
+    for f in files:
+        if pathlib.PurePosixPath(f).name in CHECKOV_CONFIGS:
             continue
         src = target / f
-        if src.is_symlink():
+        try:
+            st = src.lstat()
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                continue   # 工作樹已刪除、尚未 git add 的一般檔
+            return skipped, f"無法複製追蹤檔 {printable(f)}（{type(e).__name__}）"
+        if stat.S_ISLNK(st.st_mode):
             skipped += 1
             continue
-        if src.is_file():
+        if not stat.S_ISREG(st.st_mode):
+            return skipped, f"無法複製追蹤檔 {printable(f)}（不是一般檔案）"
+        try:
             (dst / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst / f)
-    return skipped
+        except OSError as e:
+            return skipped, f"無法複製追蹤檔 {printable(f)}（{type(e).__name__}）"
+    return skipped, None
 
 
 def _relativize_sarif(path: pathlib.Path, copy: pathlib.Path) -> None:
-    """checkov 掃副本時回報的路徑帶副本目錄前綴；改成相對目標根目錄，與 semgrep／trivy 一致。"""
+    """checkov 掃副本時回報的路徑帶副本目錄前綴；改成相對受驗樹根目錄，與 semgrep／trivy 一致。"""
     data = json.loads(path.read_text(encoding="utf-8"))
     for run in data.get("runs") or []:
         for r in run.get("results") or []:
@@ -82,8 +135,8 @@ def _relativize_sarif(path: pathlib.Path, copy: pathlib.Path) -> None:
                         uri = uri[len(pre):]
                         break
                 if "uri" in art:
-                    art["uri"] = uri
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                    art["uri"] = sarif_uri(uri)
+    path.write_text(json.dumps(printable(data), ensure_ascii=False), encoding="utf-8")
 
 
 def _version(binary: str, tool: str) -> str | None:
@@ -109,7 +162,8 @@ def _run(tool: str, binary: str | None, cmd: list[str], cwd: pathlib.Path, sarif
         return row
     t0 = time.monotonic()
     try:
-        p = subprocess.run([binary, *cmd], capture_output=True, text=True, timeout=remaining, cwd=cwd)
+        p = subprocess.run([binary, *cmd], capture_output=True, text=True,
+                           encoding="utf-8", errors="surrogateescape", timeout=remaining, cwd=cwd)
     except subprocess.TimeoutExpired:
         row.update(state="timeout", duration_seconds=round(time.monotonic() - t0, 1), reason=f"{tool} 逾時")
         return row
@@ -118,7 +172,7 @@ def _run(tool: str, binary: str | None, cmd: list[str], cwd: pathlib.Path, sarif
         return row
     row.update(exit_code=p.returncode, duration_seconds=round(time.monotonic() - t0, 1))
     if p.returncode != 0 or not sarif.is_file():
-        row.update(state="error", reason=f"{tool} exit {p.returncode}：{(p.stderr or p.stdout).strip()[-200:]}")
+        row.update(state="error", reason=f"{tool} exit {p.returncode}：{printable((p.stderr or p.stdout).strip())[-200:]}")
         return row
     row["state"] = "ran"
     return row
@@ -144,8 +198,8 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
         p.unlink(missing_ok=True)              # 不讓上一次的輸出被當成這次的結果
     notes, reasons = [], {}
     top = _git(target, "rev-parse", "--show-toplevel")
-    problem = (f"目標不是 git repo（{target}）" if top is None else
-               None if pathlib.Path(top).resolve() == target else f"--target 必須是 git repo 根目錄（{top}）")
+    problem = (f"目標不是 git repo（{printable(str(target))}）" if top is None else
+               None if pathlib.Path(top).resolve() == target else f"--target 必須是 git repo 根目錄（{printable(top)}）")
     rows = {}
     if problem:
         rows = {t: {"name": t, "version": None, "state": "error", "exit_code": None, "output_ref": str(sarifs[t]),
@@ -156,7 +210,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
             notes.append(f"{project.note}；# nosemgrep 不採信；checkov 掃描已去除目標的 .checkov.yaml")
             if (target / ".semgrepignore").exists():
                 notes.append("目標專案有 .semgrepignore，semgrep 會略過其中的路徑（未經 blocking-policy 核准，需人工確認）")
-            inline = [f for f in (_git(target, "grep", "-l", "-E", INLINE_SUPPRESSIONS) or "").splitlines() if f]
+            inline = [printable(f) for f in (_git_z(target, "grep", "-l", "-z", "-E", INLINE_SUPPRESSIONS) or [])]
             if inline:
                 notes.append(f"目標專案有 {len(inline)} 個檔案含 checkov:skip／trivy:ignore 行內註解，工具會採信（需人工確認）："
                              + "、".join(inline[:5]) + (" …" if len(inline) > 5 else ""))
@@ -174,18 +228,22 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
             tmp = pathlib.Path(tmp)
             copy, cwd, ck_out = tmp / "vibesec-target", tmp / "cwd", tmp / "checkov-out"
             copy.mkdir(); cwd.mkdir()
-            skipped = copy_tracked(target, copy)
+            skipped, copy_problem = copy_tracked(target, copy)
             if skipped:
                 notes.append(f"checkov 略過 {skipped} 個 symlink（不跟隨到目標以外的檔案）")
-            rows["checkov"] = _run("checkov", bins.get("checkov"),
-                                   ["-d", str(copy), "--config-file", str(ROOT / "config/checkov/.checkov.yaml"),
-                                    "--external-checks-dir", str(ROOT / "config/checkov/custom"),
-                                    "-o", "sarif", "--output-file-path", str(ck_out), "--soft-fail", "--quiet"],
-                                   cwd, ck_out / "results_sarif.sarif", deadline)
-            if rows["checkov"]["state"] == "ran":
-                shutil.copy2(ck_out / "results_sarif.sarif", sarifs["checkov"])
-                _relativize_sarif(sarifs["checkov"], copy)
-            rows["checkov"]["output_ref"] = str(sarifs["checkov"])
+            if copy_problem:
+                rows["checkov"] = {"name": "checkov", "version": None, "state": "error", "exit_code": None,
+                                   "output_ref": str(sarifs["checkov"]), "duration_seconds": None, "reason": copy_problem}
+            else:
+                rows["checkov"] = _run("checkov", bins.get("checkov"),
+                                       ["-d", str(copy), "--config-file", str(ROOT / "config/checkov/.checkov.yaml"),
+                                        "--external-checks-dir", str(ROOT / "config/checkov/custom"),
+                                        "-o", "sarif", "--output-file-path", str(ck_out), "--soft-fail", "--quiet"],
+                                       cwd, ck_out / "results_sarif.sarif", deadline)
+                if rows["checkov"]["state"] == "ran":
+                    shutil.copy2(ck_out / "results_sarif.sarif", sarifs["checkov"])
+                    _relativize_sarif(sarifs["checkov"], copy)
+                rows["checkov"]["output_ref"] = str(sarifs["checkov"])
             rows["trivy"] = _run("trivy", bins.get("trivy"),
                                  ["config", "--format", "sarif", "--output", str(sarifs["trivy"]), "--quiet", str(target)],
                                  cwd, sarifs["trivy"], deadline)
@@ -200,7 +258,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
         gate["status_reason"] = "；".join(([gate["status_reason"]] if gate["status_reason"] else []) + notes)
     gate.update(scope="diff" if base else "full", diff_base=base,
                 commit=_git(target, "rev-parse", "HEAD") if not problem else None)
-    return gate
+    return printable(gate)
 
 
 # ------------------------------------------------------------------ selftest
@@ -344,6 +402,46 @@ def selftest() -> list[str]:
             fails.append("輸出不得寫進被測專案")
         if subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=repo).stdout.strip():
             fails.append("掃描不得改動被測專案的工作目錄")
+        # #310：copy_tracked 遇追蹤檔無法複製時 checkov 列 error、G3 incomplete，且保留前導空白／非 UTF-8 檔名
+        (repo / "app/x.py").unlink(); (repo / "app/x.py").mkdir()
+        try:
+            g, _ = run(repo)
+            crow = next(t for t in g["tools"] if t["name"] == "checkov")
+            if g["status"] != "incomplete" or crow["state"] != "error" or "app/x.py" not in (g["status_reason"] or ""):
+                fails.append(f"追蹤檔無法複製 → checkov error、G3 incomplete（得到 {g['status']}、{crow}）")
+        except Exception as e:
+            fails.append(f"追蹤檔無法複製不得拋例外（{type(e).__name__}: {e}）")
+        finally:
+            (repo / "app/x.py").rmdir(); (repo / "app/x.py").write_text("x = 1\n")
+        try:
+            raw_f = os.fsencode(repo) + b"/ infra-\xff.tf"
+            with open(raw_f, "wb") as fh:
+                fh.write(b"# checkov:skip=CKV_AWS_79: t\n")
+            git(repo, "add", "-A"); git(repo, "commit", "-qm", "raw")
+            g, calls = run(repo)
+            json.dumps(g, ensure_ascii=False).encode("utf-8")
+            if g["status"] != "pass" or r"infra-\xff.tf" not in (g["status_reason"] or "") \
+                    or not any(s.startswith(" infra-") for s in calls.get("checkov", {}).get("scanned", [])):
+                fails.append(f"非 UTF-8／前導空白追蹤檔應正常掃描並轉義輸出（得到 {g['status']}：{g['status_reason']}，{calls.get('checkov', {}).get('scanned')}）")
+            ck_sur = D / "ck-sur.sarif"
+            ck_sur.write_text(json.dumps({"version": "2.1.0", "runs": [{"results": [{"message": {"text": "x-\udcff"},
+                              "locations": [{"physicalLocation": {"artifactLocation": {"uri": "c/a-\udcff.tf"}}}]}]}]}), encoding="utf-8")
+            _relativize_sarif(ck_sur, D / "c")
+            if json.loads(ck_sur.read_text(encoding="utf-8"))["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] != "a-%FF.tf":
+                fails.append("_relativize_sarif 應把非 UTF-8 URI 轉成百分比編碼")
+            if os.geteuid() != 0:
+                (repo / "locked").mkdir(); (repo / "locked/z.tf").write_text("x=1\n")
+                git(repo, "add", "-A"); git(repo, "commit", "-qm", "lk")
+                (repo / "locked").chmod(0o000)
+                try:
+                    if copy_tracked(repo, D / "cp-lk")[1] is None:
+                        fails.append("上層目錄無權限時 copy_tracked 不得當成已刪除而略過")
+                finally:
+                    (repo / "locked").chmod(0o755)
+        except OSError:
+            pass
+        except Exception as e:
+            fails.append(f"非 UTF-8／前導空白追蹤檔不得拋例外（{type(e).__name__}: {e}）")
     # 政策檔讀不到 → scan 一開始就停：不跑工具、G3 incomplete、控制 untested 並寫明未完成原因、沒有任何發現
     # 政策 root 的 vibesec.yaml 缺 mode 也是政策讀不到（#200）；兩種情況 mode 都記 enforce（mode 不明）
     from vibesec_policy import POLICY_UNREADABLE, broken_policy_root, modeless_policy_root
@@ -403,7 +501,7 @@ def main(argv=None) -> int:
     g = scan(target, pathlib.Path(a.out_dir), bins, a.base, timeout)
     pathlib.Path(a.gate).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.gate).write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"G3 {g['status']}（{target.resolve()}）：blocking={g['findings_count']['blocking']} "
+    print(f"G3 {g['status']}（{printable(str(target.resolve()))}）：blocking={g['findings_count']['blocking']} "
           f"advisory={g['findings_count']['advisory']}" + (f"；{g['status_reason']}" if g["status_reason"] else ""))
     if g["findings_count"]["blocking"]:
         return 1
