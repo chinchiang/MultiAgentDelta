@@ -198,7 +198,7 @@ threats:
     category: MAESTRO-L4
     target: c-ci-staging
     description: 執行期下載的 promptfoo／garak 若遭上游入侵，可讀取同 job 的 LLM 金鑰與 staging token 並外傳（harness 發現：供應鏈層致命三要素）。
-    mitigation: 釘版且滿 14 天（PR #42）；token 於 G5 結束即刪。殘留：job 出向不受限、LLM 金鑰仍與 promptfoo 同步驟，未加 egress allow-list。
+    mitigation: promptfoo 的直接與間接依賴以 npm 鎖定檔及完整性雜湊固定，安裝時不執行套件腳本、不提供模型金鑰；garak 使用雜湊鎖定檔。工具版本須滿 14 天；token 於 G5 結束即刪。殘留：job 出向不受限、LLM 金鑰仍與 promptfoo 同步驟，未加 egress allow-list。
     status: open
     gate: G1
   - id: t-ruling-forgery

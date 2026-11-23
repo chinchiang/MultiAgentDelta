@@ -898,6 +898,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check"); c.add_argument("record"); c.add_argument("--head", default="HEAD"); c.add_argument("--no-git", action="store_true")
     g = sub.add_parser("gate"); g.add_argument("--static", required=True); g.add_argument("--head", required=True)
+    g.add_argument("--report-findings", help="輸出正式報告所需的有效審查明細")
     g.add_argument("--out"); g.add_argument("--comment")   # 退出碼依受信任政策的 mode，沒有 --mode（ADR 0002、#203）
     g.add_argument("--base", help="PR base SHA；有值時檢查紀錄是否由本 PR 新增／修改")
     g.add_argument("--pr-author", default="")
@@ -971,6 +972,12 @@ def main(argv=None) -> int:
     md = comment_markdown(gate, ref, llm_findings)
     if a.out:
         pathlib.Path(a.out).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+    if a.report_findings:
+        originals = {f["id"]: f for f in (record or {}).get("findings", [])}
+        details = [{**originals[f["id"]], **f} for f in llm_findings]
+        pathlib.Path(a.report_findings).write_text(json.dumps({
+            "record": ref, "trust_problems": trust, "findings": details
+        }, ensure_ascii=False), encoding="utf-8")
     if a.comment:
         pathlib.Path(a.comment).write_text(md, encoding="utf-8")
     print(f"G4 {gate['status']}：{gate.get('status_reason')}")

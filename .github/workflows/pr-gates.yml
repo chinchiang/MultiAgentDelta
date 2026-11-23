@@ -568,7 +568,9 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           APPROVERS: ${{ steps.approvals.outputs.approvers }}
         run: |
-          VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/g4_review.py gate --static reports/g4-gate.json --head "$HEAD_SHA" \
+          REPORT_ARGS=()
+          if [ -f _trusted/scripts/pr_report.py ]; then REPORT_ARGS=(--report-findings reports/g4-review-findings.json); fi
+          VIBESEC_PROJECT_ROOT="$GITHUB_WORKSPACE" python3 _trusted/scripts/g4_review.py gate "${REPORT_ARGS[@]}" --static reports/g4-gate.json --head "$HEAD_SHA" \
             --base "$BASE_SHA" --pr-author "$PR_AUTHOR" --approvers "$APPROVERS" \
             --out reports/g4-gate.json --comment reports/g4-comment.md   # 退出碼依受信任政策的 mode（ADR 0002）
 
@@ -746,7 +748,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: _artifacts
+          path: ${{ runner.temp }}/vibesec-artifacts
 
       # 判定程式、規則、設定與 mode 一律取自 default branch（_trusted/），PR head 只當被掃描的資料；
       # 細節見 .github/actions/vibesec-trusted/action.yml。
@@ -772,7 +774,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p reports
-          A=_artifacts
+          A="$RUNNER_TEMP/vibesec-artifacts"
           python3 _trusted/scripts/sarif_gate.py --gate G2 --tool gitleaks=$A/vibesec-g2-reports/gitleaks.sarif \
             --envcheck $A/vibesec-g2-reports/g2-envcheck.json --out reports/g2-gate.json
           python3 _trusted/scripts/sarif_gate.py --gate G3 --tool semgrep=$A/vibesec-g3-semgrep-reports/semgrep.sarif \
@@ -787,8 +789,8 @@ jobs:
         run: |
           mkdir -p reports
           # 只取各 job 自己上傳的 gate 檔：以前用 find 混抓所有 artifact 裡的同名檔，PR head 的 G1 程式可寫一份假的 g4-gate.json 蓋掉受信任的那份
-          [ -f _artifacts/vibesec-g1-reports/g1-gate.json ] && cp _artifacts/vibesec-g1-reports/g1-gate.json reports/g1-gate.json
-          [ -f _artifacts/vibesec-g4-reports/g4-gate.json ] && cp _artifacts/vibesec-g4-reports/g4-gate.json reports/g4-gate.json
+          [ -f "$RUNNER_TEMP/vibesec-artifacts/vibesec-g1-reports/g1-gate.json" ] && cp "$RUNNER_TEMP/vibesec-artifacts/vibesec-g1-reports/g1-gate.json" reports/g1-gate.json
+          [ -f "$RUNNER_TEMP/vibesec-artifacts/vibesec-g4-reports/g4-gate.json" ] && cp "$RUNNER_TEMP/vibesec-artifacts/vibesec-g4-reports/g4-gate.json" reports/g4-gate.json
           rc=0
           python3 _trusted/scripts/gate_verdict.py enforce --trusted-root _trusted \
             --gate G1=reports/g1-gate.json --gate G2=reports/g2-gate.json \
@@ -802,6 +804,16 @@ jobs:
             *) echo "::error::gate_verdict 執行失敗（exit $rc），無法判定 → exit 2"; rc=2 ;;
           esac
           exit "$rc"
+
+      - name: 產生並驗收本次 PR 的正式報告
+        if: always()
+        run: |
+          if [ ! -f _trusted/scripts/pr_report.py ] && [ "$(git -C _trusted rev-parse HEAD)" = "32bc307c3c302f7ea95716d1f0d9db1360495092" ]; then
+            echo "::notice::受信任分支尚未導入正式報告，本次只有既有閘門矩陣。"
+            exit 0
+          fi
+          git show "$GITHUB_SHA:docs/threat-model.yaml" > "$RUNNER_TEMP/pr-threat-model.yaml" || echo "::warning::無法取得受驗提交的威脅模型"
+          python3 _trusted/scripts/pr_report.py --threat-model "$RUNNER_TEMP/pr-threat-model.yaml" --artifacts "$RUNNER_TEMP/vibesec-artifacts" --out reports --commit "$GITHUB_SHA"
 
       - name: Upload 彙整 reports
         if: always()

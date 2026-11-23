@@ -41,10 +41,8 @@ jobs:
     # 直接在持有 LLM 金鑰的步驟裡執行（vibesec-harness G0 發現：供應鏈層致命三要素）。版本須已發布滿
     # vibesec.yaml cooldown_days（14）天；Dependabot 不管這兩個，升版請手動確認發布日。
     # garak／torch（含遞移相依）另鎖在 requirements-garak.txt（SHA-256）；下面兩個版本須與鎖定檔一致（validate.py 比對）。
-    # promptfoo 以 npx 執行，不在 pip 鎖定範圍：只釘頂層版本，npm 依 registry 的 integrity 驗證，但遞移相依未鎖定
-    # （沒有 package-lock）；要鎖須另建 package.json＋lockfile 改用 npm ci，留待後續處理。
+    # promptfoo 的直接與間接依賴由受信任分支的 npm 鎖定檔固定。
     env:
-      PROMPTFOO_VERSION: "0.123.1"   # npm，2026-09-18 發布；npm 依 registry 的 integrity（sha512）驗證套件
       GARAK_VERSION: "0.17.0"        # PyPI，2026-09-09 發布
       TORCH_VERSION: "2.14.0"        # PyPI／PyTorch CPU index，2026-09-02 發布（滿 14 天）；garak 需要 torch>=2.13.0
     steps:
@@ -235,9 +233,24 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/vibesec-tokens"
 
       # ---------- G6：LLM / Agent 紅隊 ----------
+      - name: 設定報告工具使用的 Node.js
+        id: promptfoo_node
+        if: steps.target.outputs.allowed == 'true'
+        continue-on-error: true
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+
+      - name: 依鎖定檔安裝 promptfoo（此步驟不帶模型金鑰）
+        id: promptfoo_install
+        if: steps.promptfoo_node.outcome == 'success'
+        continue-on-error: true
+        working-directory: _trusted/config/promptfoo/tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: G6 promptfoo eval（決定性測試，不需模型金鑰）
         id: pfeval
-        if: steps.target.outputs.allowed == 'true'
+        if: steps.target.outputs.allowed == 'true' && steps.promptfoo_install.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -247,7 +260,7 @@ jobs:
           mkdir -p reports
           # 退出碼 100 = 有測試失敗（正常結果，交給 g6_gate.py 判定 fail）；其他非零 = 工具錯誤
           set +e
-          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c _trusted/config/promptfoo/tests.yaml --no-cache \
+          _trusted/config/promptfoo/tooling/node_modules/.bin/promptfoo eval -c _trusted/config/promptfoo/tests.yaml --no-cache \
             --output reports/g6-promptfoo.json </dev/null >reports/_promptfoo.log 2>&1
           code=$?
           set -e
@@ -259,7 +272,7 @@ jobs:
       # GLM / DeepSeek 只允許 public，不在此使用。金鑰只經 env 傳入，不寫入 log。
       - name: G6 promptfoo redteam（選用；需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret）
         id: pfred
-        if: steps.target.outputs.allowed == 'true'
+        if: steps.target.outputs.allowed == 'true' && steps.promptfoo_install.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -292,7 +305,7 @@ jobs:
           print(f"redteam provider: {pid.split(':')[0]}")
           PY
           set +e
-          timeout 1800 npx --yes "promptfoo@${PROMPTFOO_VERSION}" redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml" --no-cache \
+          timeout 1800 _trusted/config/promptfoo/tooling/node_modules/.bin/promptfoo redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml" --no-cache \
             --output reports/g6-promptfoo-redteam.json </dev/null >reports/_promptfoo-redteam.log 2>&1
           code=$?
           set -e

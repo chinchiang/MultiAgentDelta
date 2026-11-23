@@ -1,0 +1,7 @@
+{
+  "name": "vibesec-promptfoo-tooling",
+  "private": true,
+  "dependencies": {
+    "promptfoo": "0.123.1"
+  }
+}

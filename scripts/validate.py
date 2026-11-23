@@ -110,10 +110,12 @@ try:
             data = json.load(open(fj))
         except (ValueError, OSError) as e:
             err(f"reports/findings.json 無法解析：{e}"); data = None
-        items = data.get("findings", []) if isinstance(data, dict) else (data if isinstance(data, list) else None)
-        if data is not None and items is None:
-            err("reports/findings.json 應為 finding 陣列或含 findings 的物件")
-        elif items is not None:
+        from findings_format import finding_items
+        try:
+            items = finding_items(data)
+        except ValueError as exc:
+            err(str(exc))
+        else:
             bad = 0
             for i, f in enumerate(items):
                 fe = sorted(schemas["finding"].iter_errors(f), key=str)

@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "deny": ["WebFetch", "WebSearch"]
+  },
+  "allowedMcpServers": [],
+  "allowManagedMcpServersOnly": true,
+  "allowManagedHooksOnly": true,
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": false,
+    "excludedCommands": [],
+    "network": {
+      "allowedDomains": [],
+      "allowManagedDomainsOnly": true,
+      "strictAllowlist": true
+    }
+  }
+}

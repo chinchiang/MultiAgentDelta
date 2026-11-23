@@ -2,7 +2,7 @@
 
 ## 一、12 個月分階段落地路線圖
 
-> **現況（2026-10）**：G0–G6 皆已有實作並在 CI 執行（PR、nightly、staging 每週），但 `vibesec.yaml` 仍為 `mode: shadow`（尚未 enforce）。尚未實作：標準化 OPA 政策（`config/policy/` 只有 `blocking-policy.yaml`，無 `.rego`）、集團風險儀表板、CVSS 計算器、`findings.json` 等報告的 CI 自動產出。
+> **現況（2026-10）**：G0–G6 皆已有實作並在 CI 執行（PR、nightly、staging 每週），但 `vibesec.yaml` 仍為 `mode: shadow`（尚未 enforce）。尚未實作：標準化 OPA 政策（`config/policy/` 只有 `blocking-policy.yaml`，無 `.rego`）、集團風險儀表板、CVSS 計算器。PR 的 summary 工作會彙整 G1–G4 證據，並在 vibesec-pr-summary 產物中保留發現清單、風險登錄表、SARIF 與摘要。證據缺席或明細與閘門計數不符時，報告驗收失敗。
 
 | 階段 | 重點閘門 | 任務 |
 |---|---|---|
