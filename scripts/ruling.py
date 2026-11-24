@@ -18,6 +18,8 @@
 from __future__ import annotations
 import argparse, copy, datetime, json, pathlib, re, sys
 
+from findings_format import finding_items
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCHEMA = ROOT / "schemas/human-ruling.schema.json"
 BOT_WORDS = re.compile(r"(claude|anthropic|openai|gpt|glm|deepseek|gemini|(?<![a-z])(llm|ai|bot|agent)(?![a-z]))", re.I)
@@ -35,8 +37,19 @@ def load_ruling(path: pathlib.Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
-def find_finding(doc: dict, fid: str) -> dict | None:
-    return next((f for f in doc.get("findings", []) if f.get("id") == fid), None)
+def find_finding(doc, fid: str) -> dict | None:
+    """以既有或新版外層格式查詢；格式錯誤或識別碼重複時拒絕裁決。"""
+    match = None
+    seen = set()
+    for item in finding_items(doc):
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
+            raise ValueError("發現缺少有效識別碼")
+        if item["id"] in seen:
+            raise ValueError("發現識別碼重複")
+        seen.add(item["id"])
+        if item["id"] == fid:
+            match = item
+    return match
 
 
 def minority_of(finding: dict) -> list[tuple[str, str]]:
@@ -206,22 +219,30 @@ def main(argv=None) -> int:
     if not fp.exists():
         print(f"找不到 {fp}（需先執行 harness 產出 findings.json）", file=sys.stderr)
         return 2
-    doc = json.loads(fp.read_text(encoding="utf-8"))
+    try:
+        doc = json.loads(fp.read_text(encoding="utf-8"))
+        if a.cmd == "request":
+            finding = find_finding(doc, a.target)
+        else:
+            rp = pathlib.Path(a.target)
+            ruling = load_ruling(rp)
+            if not isinstance(ruling, dict):
+                raise ValueError("裁決紀錄必須是物件")
+            finding = find_finding(doc, ruling.get("finding_id", ""))
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"無法讀取報告或裁決紀錄：{exc}", file=sys.stderr)
+        return 2
     if a.cmd == "request":
-        f = find_finding(doc, a.target)
-        if not f:
+        if not finding:
             print(f"findings.json 找不到 {a.target}", file=sys.stderr); return 1
-        print(request_comment(f)); return 0
-    rp = pathlib.Path(a.target)
-    ruling = load_ruling(rp)
-    finding = find_finding(doc, ruling.get("finding_id", ""))
+        print(request_comment(finding)); return 0
     errs = check(ruling, finding)
     if errs:
         print("\n".join(f"違反：{e}" for e in errs), file=sys.stderr); return 1
     if a.cmd == "check":
         print(f"裁決通過檢查：{ruling['finding_id']} → {ruling['decision']}"); return 0
     new = apply(ruling, finding, str(rp.relative_to(ROOT) if rp.is_absolute() and ROOT in rp.parents else rp))
-    doc["findings"] = [new if f.get("id") == new["id"] else f for f in doc["findings"]]
+    finding.update(new)
     fp.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"已寫回 {fp}：{new['id']} → {new['validation_status']} / {new['evidence_grade']}"
           f"{' / 仍需人工（defer）' if new['review']['requires_human'] else ''}")

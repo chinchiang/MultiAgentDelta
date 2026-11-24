@@ -29,7 +29,7 @@ _避免_：子閘門、sub-gate；不併入的檢查執行不叫子結果
 _避免_：告警、issue、漏洞（漏洞是發現的一種，不是同義詞）
 
 **發現 ID（finding ID）**：
-由規則、位置與 commit 決定的發現識別碼 `VS-YYYYMMDD-<8 hex>`：日期取發現建立時間的 UTC 日期，hex 取 `sha256(rule_id ␀ path ␀ start_line ␀ commit)` 前 8 碼（`␀` 是 NUL、`null` 編成空字串）。同一個 commit、同一天重跑得到同一個 ID；由 `gate_result.py finding` 產生。
+由規則、位置與 commit 決定的發現識別碼 `VS-YYYYMMDD-<8 hex>`：日期取發現建立時間的 UTC 日期，hex 取 `sha256(rule_id ␀ path ␀ start_line ␀ commit)` 前 8 碼（`␀` 是 NUL、`null` 編成空字串）。同一個 commit、同一天重跑得到同一個 ID；由 `gate_result.py finding` 產生。PR 彙整的靜態發現以受驗 Git 提交時間的 UTC 日期產生 ID，讓同一提交跨日重跑仍可引用同一筆裁決；`created_at` 與報告的 `generated_at` 記錄本次觀測時間。既有審查紀錄保留原 ID。PR 報告遇到具套件名稱的 G1 來源時，另將生態系、套件、版本及弱點識別碼納入雜湊，以區分同一份相依清單內的發現。
 _避免_：由模型產生或手拼的 ID
 
 **控制覆蓋（coverage）**：
@@ -188,7 +188,7 @@ A concrete problem record carrying a rule ID and a policy tier.
 _Avoid_: alert, issue, vulnerability (a vulnerability is one kind of finding, not a synonym)
 
 **Finding ID**:
-The finding identifier `VS-YYYYMMDD-<8 hex>`, determined by the rule, location, and commit: the date is the UTC date of the finding's creation time, and the hex is the first 8 characters of `sha256(rule_id ␀ path ␀ start_line ␀ commit)` (`␀` is NUL; `null` is encoded as an empty string). Rerunning on the same commit on the same day yields the same ID. Produced by `gate_result.py finding`.
+The finding identifier `VS-YYYYMMDD-<8 hex>`, determined by the rule, location, and commit: the date is the UTC date of the finding's creation time, and the hex is the first 8 characters of `sha256(rule_id ␀ path ␀ start_line ␀ commit)` (`␀` is NUL; `null` is encoded as an empty string). Rerunning on the same commit on the same day yields the same ID. Produced by `gate_result.py finding`. Static findings in PR reports use the UTC date of the tested Git commit for the ID so a rerun on a later day can reference the same ruling. The finding’s `created_at` and the report’s `generated_at` record the observation time. Existing reviews retain their original IDs. For G1 sources that identify a package, PR reports also hash the ecosystem, package, version and vulnerability identifier to distinguish findings in the same manifest.
 _Avoid_: IDs generated or assembled by a model
 
 **Coverage**:

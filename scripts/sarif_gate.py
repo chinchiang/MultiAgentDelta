@@ -72,9 +72,44 @@ def load_context(policy: Policy) -> dict:
 _TIMEOUT_RE = re.compile(r"\btime(?:d)?\s?out\b", re.I)
 
 
-def _note_text(n: dict) -> str:
-    m = n.get("message")
-    return (m.get("text") or "") if isinstance(m, dict) else ""
+def _invocation_problems(run, position):
+    invocations = run.get("invocations", [])
+    if not isinstance(invocations, list):
+        return [f"{position}.invocations 不是陣列"]
+    problems = []
+    for index, inv in enumerate(invocations):
+        name = f"{position}.invocations[{index}]"
+        if not isinstance(inv, dict):
+            problems.append(f"{name} 不是物件")
+            continue
+        if inv.get("executionSuccessful", True) is not True:
+            problems.append(f"{name} executionSuccessful=false 或格式錯誤")
+        notifications = inv.get("toolExecutionNotifications", [])
+        if not isinstance(notifications, list):
+            problems.append(f"{name}.toolExecutionNotifications 不是陣列")
+            continue
+        for i, note in enumerate(notifications):
+            message = note.get("message", {}) if isinstance(note, dict) else None
+            if not isinstance(message, dict) or not isinstance(message.get("text", ""), str):
+                problems.append(f"{name}.toolExecutionNotifications[{i}] 格式錯誤")
+                continue
+            text = message.get("text", "")
+            if note.get("level") == "error" or _TIMEOUT_RE.search(text):
+                problems.append(f"{name} 工具錯誤或逾時：{text[:120]}")
+    return problems
+
+
+def _valid_location(location):
+    if not isinstance(location, dict):
+        return False
+    physical = location.get("physicalLocation", {})
+    if not isinstance(physical, dict):
+        return False
+    artifact = physical.get("artifactLocation", {})
+    region = physical.get("region", {})
+    return (isinstance(artifact, dict) and isinstance(artifact.get("uri", ""), str)
+            and isinstance(region, dict)
+            and ("startLine" not in region or type(region["startLine"]) is int and region["startLine"] > 0))
 
 
 def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
@@ -86,31 +121,33 @@ def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
         return None, f"{path.name} 不存在（工具未執行、失敗或 artifact 缺席）"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeError, json.JSONDecodeError) as e:
         return None, f"{path.name} 無法解析（{type(e).__name__}）"
     runs = data.get("runs") if isinstance(data, dict) else None
-    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
+    if not isinstance(runs, list):
         return None, f"{path.name} 沒有 runs 或 runs 內容不是物件（不是有效的 SARIF）"
     if not runs:
         # 空的 runs 代表工具沒有產出任何分析（與「有跑、沒發現」不同）；不能當成 pass（incomplete ≠ pass）
         return None, f"{path.name} 的 runs 為空（工具沒有產出分析結果）"
     out, failed = [], []
-    for run in runs:
-        for inv in run.get("invocations") or []:
-            if not isinstance(inv, dict):
-                continue
-            if inv.get("executionSuccessful") is False:
-                failed.append("executionSuccessful=false")
-            # error 等級一律算未完成；semgrep 1.179 的規則逾時只發 warning（實測 "Timeout when running <rule> on <file>"），
-            # 該檔該規則沒有被分析，同樣不能當成 pass
-            errs = [n for n in inv.get("toolExecutionNotifications") or [] if isinstance(n, dict)
-                    and (n.get("level") == "error" or _TIMEOUT_RE.search(_note_text(n)))]
-            if errs:
-                msg = ((errs[0].get("message") or {}).get("text") or "") if isinstance(errs[0].get("message"), dict) else ""
-                failed.append(f"{len(errs)} 個 error 等級或逾時的 toolExecutionNotifications" + (f"（{msg[:120]}）" if msg else ""))
-        rules = ((run.get("tool") or {}).get("driver") or {}).get("rules") if isinstance(run.get("tool"), dict) else None
-        rules = [x for x in rules or [] if isinstance(x, dict)] if isinstance(rules, list) else []
-        by_id = {x.get("id"): x for x in rules if x.get("id")}
+    if data.get("version") != "2.1.0":
+        failed.append("version 缺少或不是支援的 2.1.0")
+    for run_index, run in enumerate(runs):
+        if not isinstance(run, dict):
+            failed.append(f"runs[{run_index}] 不是物件")
+            continue
+        position = f"runs[{run_index}]"
+        failed.extend(_invocation_problems(run, position))
+        tool = run.get("tool", {})
+        driver = tool.get("driver", {}) if isinstance(tool, dict) else None
+        name = driver.get("name") if isinstance(driver, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            failed.append(f"{position}.tool.driver.name 缺少或格式錯誤")
+        rules = driver.get("rules", []) if isinstance(driver, dict) else None
+        if not isinstance(rules, list):
+            failed.append(f"{position}.tool.driver 格式錯誤")
+            rules = []
+        by_id = {x["id"]: x for x in rules if isinstance(x, dict) and isinstance(x.get("id"), str)}
         # SARIF 2.1.0 §3.14.23：results 缺席或為 null 代表分析沒有完成；空陣列才代表「沒有發現」。
         # 實測 semgrep／checkov／gitleaks／trivy 乾淨掃描都輸出 "results": []。
         if run.get("results") is None:
@@ -118,18 +155,33 @@ def read_sarif(path: pathlib.Path) -> tuple[list[dict] | None, str | None]:
             continue
         results = run["results"]
         if not isinstance(results, list):
-            return None, f"{path.name} 的 results 不是陣列（不是有效的 SARIF）"
-        for r in results:
+            failed.append(f"runs[{run_index}].results 不是陣列")
+            continue
+        for index, r in enumerate(results):
+            position = f"runs[{run_index}].results[{index}]"
             if not isinstance(r, dict):
+                failed.append(f"{position} 不是物件")
                 continue
             idx = r.get("ruleIndex")
-            rule = by_id.get(r.get("ruleId")) or (rules[idx] if isinstance(idx, int) and 0 <= idx < len(rules) else {})
+            indexed = rules[idx] if type(idx) is int and 0 <= idx < len(rules) else {}
+            rid = r.get("ruleId", indexed.get("id") if isinstance(indexed, dict) else None)
+            if not isinstance(rid, str) or not rid.strip():
+                failed.append(f"{position} 缺少有效規則識別碼")
+                continue
+            locations = r.get("locations", [])
+            if not isinstance(locations, list) or not all(_valid_location(loc) for loc in locations):
+                failed.append(f"{position}.locations 格式錯誤")
+                continue
+            if not isinstance(r.get("properties", {}), dict):
+                failed.append(f"{position}.properties 不是物件")
+                continue
+            rule = by_id.get(rid) or {}
             vid = None
             for props in (r.get("properties"), rule.get("properties")):
                 if isinstance(props, dict):
                     md = props.get("metadata") if isinstance(props.get("metadata"), dict) else {}
                     vid = vid or props.get("vibesec_rule_id") or md.get("vibesec_rule_id")
-            out.append(dict(r, _vibesec_rule_id=vid if isinstance(vid, str) else None))
+            out.append(dict(r, ruleId=rid, _vibesec_position=position, _vibesec_rule_id=vid if isinstance(vid, str) else None))
     if failed:
         return out, f"{path.name} 回報工具執行未成功：" + "；".join(dict.fromkeys(failed))
     return out, None
@@ -191,6 +243,26 @@ def to_findings(tool: str, results: list[dict], pol: dict, project: ProjectPolic
                 f["exception"] = c["exception"]   # 各閘門相同的固定形狀
             out.append(f)
     return out
+
+
+def read_envcheck(path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or type(data.get("env_gitignore_fail")) is not int or data["env_gitignore_fail"] not in (0, 1):
+        raise ValueError("env_gitignore_fail 必須是整數 0 或 1")
+    paths = data.get("committed", [])
+    if not isinstance(paths, list):
+        raise ValueError("committed 必須是路徑陣列")
+    for key in ("error", "rule_id", "committed_rule_id"):
+        if data.get(key) is not None and not isinstance(data[key], str):
+            raise ValueError(f"{key} 必須是字串")
+    errors = [data["error"]] if data.get("error") else []
+    valid = []
+    for index, name in enumerate(paths):
+        if isinstance(name, str) and name:
+            valid.append(name)
+        else:
+            errors.append(f"committed[{index}] 必須是非空路徑")
+    return {**data, "committed": valid, "error": "；".join(errors) or None}
 
 
 def env_findings(d: dict, pol: dict) -> list[dict]:
@@ -276,9 +348,7 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
         findings += to_findings(name, results, pol, project)
     if envcheck is not None:
         try:
-            d = json.loads(envcheck.read_text(encoding="utf-8"))
-            if not isinstance(d, dict) or "env_gitignore_fail" not in d:
-                raise json.JSONDecodeError("缺 env_gitignore_fail 欄位", "", 0)   # 空物件不是「檢查通過」
+            d = read_envcheck(envcheck)
             # error：git 無法列出追蹤檔，不知道有沒有提交 .env → 工具未完成（incomplete），不是「沒有已提交的檔」
             if d.get("error"):
                 run.problem(f"envcheck：{d['error']}")
@@ -286,9 +356,9 @@ def derive(gate: str, tools: dict[str, pathlib.Path], envcheck: pathlib.Path | N
                 ran.add("envcheck")
             run.tool("envcheck", "error" if d.get("error") else "ran", output_ref=str(envcheck))
             findings += env_findings(d, pol)
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             run.tool("envcheck", "missing" if isinstance(e, OSError) else "error", output_ref=str(envcheck))
-            run.problem(f"envcheck：{envcheck.name} 缺席或無法解析")
+            run.problem(f"envcheck：{envcheck.name} 缺席或無法解析（{e}）")
     blocking = [f for f in findings if f["policy_tier"] == "blocking"]
     advisory = len(findings) - len(blocking)
     for ctl, owners in GATE_CONTROLS[gate].items():

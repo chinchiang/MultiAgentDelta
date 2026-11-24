@@ -71,6 +71,16 @@
           "id": { "type": "string", "pattern": "^VS-[0-9]{8}-[0-9a-f]{8}$" },
           "rule_id": { "type": "string", "pattern": "^vibesec\\.g4\\.[a-z0-9-]+$" },
           "title": { "type": "string", "minLength": 1 },
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["architecture", "prompt", "code"] },
+              "path": { "type": "string" },
+              "start_line": { "type": "integer", "minimum": 1 }
+            }
+          },
           "policy_tier": { "type": "string", "enum": ["blocking", "advisory"] },
           "evidence_grade": { "type": "string", "enum": ["E0", "E1", "E2", "E3"], "description": "只有模型意見時最高 E2（docs/09 §4）；E3 需人工裁決（rulings/）" },
           "validation_status": { "type": "string", "enum": ["pending", "confirmed", "refuted"] },

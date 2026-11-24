@@ -30,7 +30,7 @@
   tool(name, state, *, version=None, exit_code=None, output_ref=None, duration_seconds=None) -> dict
   sarif(driver, rules, results) -> dict      自產 SARIF 2.1.0 文件骨架；rules、results 照原樣放入
   remove_stale(path) -> bool                 刪掉過期的自產 SARIF（incomplete 一律用：政策讀不到、G1 sbom／kev／
-                                             maintenance／provenance 的 incomplete；部分發現只留在摘要 JSON，#243）；檔案不存在不出錯
+                                             maintenance／provenance 的 incomplete；預設部分發現只留在摘要 JSON；KEV 的部分命中另輸出帶有失敗註記的 SARIF）；檔案不存在不出錯
   now() -> str                               UTC、精度到秒、+00:00
   finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, location=None, commit=None, created_at=None, …)
                                              完整的發現（schemas/finding.schema.json）與決定性的發現 ID（GLOSSARY.md「發現 ID」）：
@@ -56,7 +56,7 @@ CheckRun.execute 例外：它是一項檢查的進入點，會寫出摘要 JSON�
       harness 組裝發現用（不參與阻擋判定）：輸出以 jsonschema 驗證；輸入不合法或缺 jsonschema → exit 2、stderr 寫明原因
 """
 from __future__ import annotations
-import datetime, hashlib, pathlib, re, sys
+import datetime, hashlib, json, pathlib, re, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -274,8 +274,9 @@ class CheckRun:
     """
 
     def __init__(self, *, label, tool_name, version, check, findings, to_sarif, merge_into=None,
-                 unreadable=None, report=None, notes=None, incomplete_report=None):
+                 unreadable=None, report=None, notes=None, incomplete_report=None, retain_partial=False):
         self.label, self.tool_name, self.version = _text("label", label), _text("tool_name", tool_name), version
+        self._retain_partial = retain_partial
         self._check, self._findings, self._to_sarif = check, findings, to_sarif
         if merge_into is not None:
             from gate_verdict import REQUIRED_CONTROLS
@@ -295,17 +296,22 @@ class CheckRun:
         policy, problem = load_policy(policy_root)   # 讀不到 → incomplete，不執行檢查、不分類發現（無法決定 tier）
         summary = self._unreadable(problem) if problem else self._check(policy)
         incomplete = summary["status"] == "incomplete"
-        found = [] if incomplete else self._findings(summary, policy)
+        found = self._findings(summary, policy) if not problem and (not incomplete or self._retain_partial) else []
         blocking = sum(f["policy_tier"] == "blocking" for f in found)
-        sarif_ref = None if incomplete else str(sarif_path)   # tool 列記呼叫端給的原字串（例如 reports/g1-kev.sarif）
+        sarif_ref = None if incomplete and not found else str(sarif_path)   # tool 列記呼叫端給的原字串（例如 reports/g1-kev.sarif）
         sarif_path, json_path = pathlib.Path(sarif_path), pathlib.Path(json_path)
         for out in (sarif_path, json_path):
             out.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        if incomplete:   # 不完整的 SARIF 會被當成完整結果；部分發現只留在摘要 JSON（#243）
+        if sarif_ref is None:
             remove_stale(sarif_path)
         else:
-            sarif_path.write_text(json.dumps(self._to_sarif(summary, found, policy), ensure_ascii=False, indent=2), encoding="utf-8")
+            document = self._to_sarif(summary, found, policy)
+            if incomplete:
+                for run in document["runs"]:
+                    run["invocations"] = [{"executionSuccessful": False, "toolExecutionNotifications": [
+                        {"level": "error", "message": {"text": summary["status_reason"]}}]}]
+            sarif_path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
         if merge_gate:
             gp = pathlib.Path(merge_gate)
             if gp.is_file():
@@ -391,9 +397,11 @@ def _utc_date(created_at) -> str:
     return t.astimezone(datetime.timezone.utc).strftime("%Y%m%d")
 
 
-def _finding_id(rule_id, path, start_line, commit, created_at) -> str:
+def _finding_id(rule_id, path, start_line, commit, created_at, dependency_key=None) -> str:
     """VS-<created_at 的 UTC 日期>-<sha256(rule_id ␀ path ␀ start_line ␀ commit) 前 8 hex>；null 編成空字串。"""
     key = "\0".join("" if v is None else str(v) for v in (rule_id, path, start_line, commit))
+    if dependency_key is not None:
+        key += "\0" + json.dumps(dependency_key, ensure_ascii=False, separators=(",", ":"))
     return f"VS-{_utc_date(created_at)}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:8]}"
 
 
@@ -401,7 +409,7 @@ def finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, locat
             description=None, control_id=None, cwe=None, cve=None, severity=None, cvss_version=None, cvss_vector=None,
             cvss_score=None, epss=None, epss_date=None, kev=None, kev_date=None, validation_status="pending",
             priority=None, owner=None, due_date=None, evidence_refs=None, review=None, retest_result=None, notes=None,
-            exception=None) -> dict:
+            exception=None, id_date=None, dependency_key=None) -> dict:
     """組出完整的發現（schemas/finding.schema.json），ID 由程式決定（GLOSSARY.md「發現 ID」）。
     evidence_grade、policy_tier 必填、沒有預設（規則 4、5；tier 由閘門或 ApplyPolicy 決定）；validation_status 預設 pending；
     其他沒給的欄位為 null 或 []，description、exception 省略。ID 的 commit 只取 commit 參數，location 照原樣放入（#185 決定）。
@@ -433,7 +441,7 @@ def finding(*, gate, rule_id, title, evidence_grade, policy_tier, sources, locat
     if evidence_refs is not None and not isinstance(evidence_refs, list):
         raise ValueError(f"evidence_refs 必須是清單（得到 {evidence_refs!r}）")
     created_at = now() if created_at is None else created_at   # 空字串不當成「沒給」，交給 _utc_date 拒絕
-    f = {"id": _finding_id(rule_id, path, line, commit, created_at), "gate": gate, "rule_id": rule_id, "title": title}
+    f = {"id": _finding_id(rule_id, path, line, commit, created_at if id_date is None else id_date, dependency_key), "gate": gate, "rule_id": rule_id, "title": title}
     if description is not None:
         f["description"] = description
     f.update({"control_id": control_id, "cwe": cwe, "cve": cve, "severity": severity, "cvss_version": cvss_version,
@@ -473,6 +481,8 @@ def finding_cli(stdin, stdout, stderr) -> int:
         print(f"finding：stdin 必須是 JSON 物件（得到 {type(data).__name__}）", file=stderr)
         return 2
     try:
+        if "id_date" in data or "dependency_key" in data:
+            raise ValueError("finding 子命令不接受內部識別鍵參數")
         f = finding(**data)
     except TypeError as e:            # 缺必填欄位、未知欄位（含自帶 id）
         print(f"finding：欄位不合法：{e}", file=stderr)

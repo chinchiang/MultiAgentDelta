@@ -164,7 +164,7 @@ class Policy:
 
     def for_project(self, project, today=None) -> "ProjectPolicy":
         """綁定受驗樹的政策例外。project 必填：None 不再代表本 repo（以前 exceptions_for(None) 是預設值，
-        外部專案忘了替換就套用本 repo 的例外）。today 只供測試注入日期。"""
+        外部專案忘了替換就套用本 repo 的例外）。today 可指定原閘門執行日期，讓報告重播沿用當時有效的例外。"""
         if project is None:
             raise ValueError("for_project 需要受驗樹；None 不代表本 repo")
         # 外部專案（受驗樹不是本 repo）：例外只核准給本 repo 路徑 → 全部不套用（fail closed）

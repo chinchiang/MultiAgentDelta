@@ -75,7 +75,7 @@ def find_hits(grype: dict, kev: dict[str, str | None]) -> list[dict]:
         for cve in match_cves(m):
             if cve not in kev:
                 continue
-            key = (cve, art.get("name"), art.get("version"))
+            key = (cve, art.get("type"), art.get("name"), art.get("version"))
             if key in seen:
                 continue
             seen.add(key)
@@ -107,7 +107,7 @@ def find_vulns(grype: dict, kev: dict[str, str | None]) -> list[dict]:
         vid, cves = v.get("id"), match_cves(m)
         if not vid or any(c in kev for c in cves):
             continue
-        key = (vid, art.get("name"), art.get("version"))
+        key = (vid, art.get("type"), art.get("name"), art.get("version"))
         if key in seen:
             continue
         seen.add(key)
@@ -148,8 +148,40 @@ def to_sarif(hits: list[dict], vulns: list[dict] | None, policy: "Policy") -> di
     return gate_result.sarif({"name": TOOL_NAME, "version": TOOL_VERSION}, [rule, vrule], results)
 
 
+def match_problem(match):
+    """檢查本工具讀取的 Grype 欄位；額外欄位由 Grype 自行擴充。"""
+    if not isinstance(match, dict):
+        return "應為物件"
+    vuln, artifact = match.get("vulnerability"), match.get("artifact")
+    if not isinstance(vuln, dict) or not isinstance(vuln.get("id"), str) or not vuln["id"].strip():
+        return "缺少有效的 vulnerability.id"
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("name"), str) or not artifact["name"].strip():
+        return "缺少有效的 artifact.name"
+    for field in ("version", "type"):
+        if artifact.get(field) is not None and not isinstance(artifact[field], str):
+            return f"artifact.{field} 型別錯誤"
+    for owner, field, key in ((match, "relatedVulnerabilities", "id"), (artifact, "locations", "path")):
+        rows = owner.get(field)
+        if rows is not None and (not isinstance(rows, list) or any(
+                not isinstance(row, dict) or not isinstance(row.get(key), str) for row in rows)):
+            return f"{field} 格式錯誤"
+    fix = vuln.get("fix")
+    if fix is not None:
+        if not isinstance(fix, dict):
+            return "vulnerability.fix 格式錯誤"
+        versions = fix.get("versions")
+        if versions is not None and (not isinstance(versions, list) or not all(isinstance(v, str) for v in versions)):
+            return "vulnerability.fix.versions 格式錯誤"
+    scores = vuln.get("cvss")
+    if scores is not None and (not isinstance(scores, list) or any(
+            not isinstance(row, dict) or (row.get("metrics") is not None and not isinstance(row["metrics"], dict))
+            for row in scores)):
+        return "vulnerability.cvss 格式錯誤"
+    return None
+
+
 def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[dict]]:
-    """回傳 (摘要, 命中)。輸入有問題時摘要 status=incomplete、命中為空——呼叫端不得把它當成「沒有命中」。"""
+    """回傳 (摘要, 命中)。輸入不完整時摘要 status=incomplete，保留可辨識的命中。"""
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
     base = {"rule_id": RULE, "checked_at": now}
     if not grype_path.is_file():
@@ -164,10 +196,29 @@ def run(grype_path: pathlib.Path, kev_path: pathlib.Path) -> tuple[dict, list[di
     if not isinstance(grype, dict) or not isinstance(grype.get("matches"), list):
         # {} 或 [] 不是「沒有命中」：grype 沒掃完或輸出格式不符（第四次審視 S-9）
         return {**base, "status": "incomplete", "status_reason": "grype 輸出沒有 matches 陣列（掃描未完成或格式不符）"}, []
-    hits, vulns = find_hits(grype, kev), find_vulns(grype, kev)
-    return {**base, "status": "fail" if hits else "pass", "status_reason": None, "kev_catalog_size": len(kev),
-            "kev_catalog_released": released,
-            "matches_checked": len(grype.get("matches") or []), "hits": hits, "vulnerable": vulns}, hits
+    valid, problems = [], []
+    for index, match in enumerate(grype["matches"]):
+        problem = match_problem(match)
+        if problem:
+            problems.append(f"matches[{index}]：{problem}")
+        else:
+            valid.append(match)
+    # 舊版輸入可省略 type。同名同版本只對到一種生態系時，仍辨識為同一套件。
+    ecosystems = {}
+    for match in valid:
+        art = match["artifact"]
+        if art.get("type"):
+            ecosystems.setdefault((art["name"], art.get("version")), set()).add(art["type"])
+    for match in valid:
+        art = match["artifact"]
+        choices = ecosystems.get((art["name"], art.get("version")), ())
+        if not art.get("type") and len(choices) == 1:
+            art["type"], = choices
+    checked = {"matches": valid}
+    hits, vulns = find_hits(checked, kev), find_vulns(checked, kev)
+    status = "incomplete" if problems else ("fail" if hits else "pass")
+    return {**base, "status": status, "status_reason": "；".join(problems) or None, "kev_catalog_size": len(kev),
+            "kev_catalog_released": released, "matches_checked": len(valid), "hits": hits, "vulnerable": vulns}, hits
 
 
 KEV_CONTROL = "ASVS5-V15.2"   # cwe-map.yaml vibesec.g1.kev-hit 的 control_ids 之一
@@ -348,7 +399,7 @@ def check_run(a: argparse.Namespace) -> gate_result.CheckRun:
     return gate_result.CheckRun(
         label="KEV", tool_name=TOOL_NAME, version=TOOL_VERSION, merge_into=("G1", KEV_CONTROL),
         check=lambda policy: with_source(run(pathlib.Path(a.grype), pathlib.Path(a.kev_feed))[0]),
-        findings=findings,
+        findings=findings, retain_partial=True,
         to_sarif=lambda summary, found, policy: to_sarif(summary.get("hits") or [], summary.get("vulnerable") or [], policy),
         unreadable=lambda problem: with_source({"rule_id": RULE, "status": "incomplete", "status_reason": problem}),
         report=report, notes=notes,

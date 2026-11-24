@@ -206,15 +206,16 @@ def evaluate(record: dict, cfg: dict, controls: set[str] | None = None, path: pa
             if GRADE[f["evidence_grade"]] > 2:
                 errors.append(f"{fid}: 只有模型意見時 evidence_grade 最高 E2（docs/09 §4）")
         # 有效狀態：裁決優先；否則照紀錄
-        if ruling is not None and not any(s.startswith(f"{fid}: 裁決") for s in errors):
-            dec = ruling["decision"]
-            status = {"confirm": "confirmed", "refute": "refuted", "defer": "pending"}[dec]
-            req_human = dec == "defer"
-        else:
-            status, req_human = f["validation_status"], f["requires_human"] or needs_human
-        if policy:   # 政策讀不到 → 不分類：tier 只用來驗證，不產出發現
-            effective.append({"id": fid, "rule_id": f["rule_id"], "title": f["title"], "policy_tier": tier,
-                              "validation_status": status, "requires_human": req_human, "ruling_ref": f.get("ruling_ref")})
+        result = {**f, "policy_tier": tier, "requires_human": f["requires_human"] or needs_human,
+                  "ruling_ref": f.get("ruling_ref")}
+        if ruling is not None and ruling.get("finding_id") == fid and not any(
+                s.startswith(f"{fid}: 裁決") for s in errors):
+            applied = ruling_tool.apply(ruling, f, f["ruling_ref"])
+            result.update(validation_status=applied["validation_status"], evidence_grade=applied["evidence_grade"],
+                          requires_human=applied["review"]["requires_human"],
+                          human_decision=applied["review"]["human_decision"], evidence_refs=applied.get("evidence_refs", []))
+        if policy:
+            effective.append(result)
     return {"errors": errors, "incomplete": incomplete, "coverage_gaps": coverage_gaps, "findings": effective,
             "families": len(families)}
 
@@ -260,6 +261,14 @@ def _merge_coverage(entries: list[dict]) -> list[dict]:
     return [{"control_id": cid, "state": st, "reason": "；".join(reasons[cid]) or None} for cid, st in states.items()]
 
 
+def effective_review_finding(finding, trust_problems):
+    """未獲信任的紀錄或裁決一律待人工確認；閘門計數與正式報告共用。"""
+    if not trust_problems:
+        return finding
+    return {**finding, "validation_status": "pending", "requires_human": True,
+            "ruling_ref": None, "human_decision": None, "evidence_refs": [], "evidence_grade": "E0" if finding.get("evidence_grade") == "E0" else "E1"}
+
+
 def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason: str | None, record_ref: str | None,
                 trust_problems: list[str] | tuple[str, ...] = (), notes: list[str] | tuple[str, ...] = ()) -> tuple[dict, list[dict]]:
     """G4 組裝的唯一入口（#211、#213）：靜態結果＋（有效的）審查紀錄 → (G4 閘門結果, 審查發現)。
@@ -280,6 +289,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     awaiting: list[str] = []
     notes: list[str] = []
     gaps: list[dict] = []
+    effective = [effective_review_finding(f, trust_problems) for f in ev["findings"]] if ev and record is not None else []
     if record is None or ev is None:
         problems.append(fresh_reason or "G4 LLM 審查（VS-G4-LLM-REVIEW）未在 CI 執行，需由 /vibesec-harness 完成並提交 reviews/g4/<commit>.yaml")
         record_cov = [{"control_id": LLM_CONTROL, "state": "pending", "reason": problems[-1]}]
@@ -291,7 +301,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
                                           output_ref=record_ref))
         record_cov = [dict(c) for c in record["coverage"]]
         human_pending = []
-        for f in ev["findings"]:
+        for f in effective:
             if f["validation_status"] == "refuted":
                 continue
             if f["policy_tier"] == "blocking":
@@ -345,7 +355,7 @@ def derive_gate(static: dict, record: dict | None, ev: dict | None, fresh_reason
     if trust_problems and build(coverage, []).result()["status"] == "pass":
         coverage = [dict(c, state="pending", reason=f"審查紀錄未獲信任：{trust_problems[0]}")
                     if c["control_id"] == LLM_CONTROL and c["state"] == "pass" else c for c in coverage]
-    return build(coverage, trust_problems).result(), (list(ev["findings"]) if ev else [])
+    return build(coverage, trust_problems).result(), effective
 
 
 def trust_cap(changed_in_pr: bool, handle: str, pr_author: str | None, approvers: list[str]) -> str | None:
@@ -973,10 +983,8 @@ def main(argv=None) -> int:
     if a.out:
         pathlib.Path(a.out).write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     if a.report_findings:
-        originals = {f["id"]: f for f in (record or {}).get("findings", [])}
-        details = [{**originals[f["id"]], **f} for f in llm_findings]
         pathlib.Path(a.report_findings).write_text(json.dumps({
-            "record": ref, "trust_problems": trust, "findings": details
+            "record": ref, "trust_problems": trust, "findings": llm_findings
         }, ensure_ascii=False), encoding="utf-8")
     if a.comment:
         pathlib.Path(a.comment).write_text(md, encoding="utf-8")
