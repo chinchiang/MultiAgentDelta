@@ -1,0 +1,22 @@
+id: g1-nomanifest-na-01
+gate: G1
+domain: dependency
+title: 全量掃描時受驗樹沒有任何相依清單，三個快篩控制記 not_applicable 而不是 pass
+input:
+  kind: tree
+  integration: g1-tree   # run_evals.py：g1_slopcheck.py --target 全量掃描 files 寫出的受驗樹
+  files:
+    src/main.c: |
+      int main(void) { return 0; }
+expected:
+  should_flag: false
+  control_id: ASVS5-V15.2
+  rule_id: vibesec.g1.hallucinated-package
+  policy_tier: blocking
+  gate_status: pass
+  coverage:
+    VS-G1-SLOPSQUAT: not_applicable
+    VS-G1-COOLDOWN: not_applicable
+    VS-G1-INSTALL-HOOK: not_applicable
+held_out: false
+notes: 沒有任何已知清單（也沒有規則檔）→ 三個控制 not_applicable（#316；以前記 pass，看起來像檢查過）。

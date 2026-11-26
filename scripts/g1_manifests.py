@@ -37,13 +37,32 @@ MANIFEST_RE = re.compile(r'(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock
 UNPARSED_RE = re.compile(r'(pnpm-lock\.yaml|yarn\.lock|Pipfile(\.lock)?|setup\.py|setup\.cfg)$'
                          rf'|^{_NEW_UNPARSED_LOCKS}$')
 
+# npm／PyPI 以外生態系的慣例清單檔（#316）：repo 尚未支援這些生態系，其中的套件沒有被檢查 → 快篩記 incomplete（不是 pass）。
+# 只比對慣例檔名（不看內容）；以後支援某個生態系時，從這裡移到有解析器的那一類。SBOM 核對（view="sbom"）不看這份清單。
+UNSUPPORTED_ECOSYSTEMS = (
+    ("go", r"go\.mod|go\.sum"),
+    ("rust", r"Cargo\.toml|Cargo\.lock"),
+    ("maven", r"pom\.xml"),
+    ("gradle", r"build\.gradle(?:\.kts)?"),
+    ("ruby", r"Gemfile(?:\.lock)?"),
+    ("php", r"composer\.(?:json|lock)"),
+    ("nuget", r"[^/]+\.csproj|packages\.config|Directory\.Packages\.props"),
+    ("deno", r"deno\.jsonc?"),
+    ("elixir", r"mix\.exs"),
+    ("swift", r"Package\.swift"),
+    ("dart", r"pubspec\.yaml"),
+    ("conda", r"environment\.ya?ml"),
+)
+_UNSUPPORTED_RE = [(eco, re.compile(rf"(?:^|/)(?:{pat})$")) for eco, pat in UNSUPPORTED_ECOSYSTEMS]
+
 VIEWS = ("screen", "sbom")
 
 
 @dataclass(frozen=True)
 class Classified:
-    kind: str       # "parsed"（有解析器）｜"unparsed"（清單，但尚無解析器）｜"other"（不是清單）
+    kind: str       # "parsed"（有解析器）｜"unparsed"（清單，但尚無解析器）｜"unsupported"（不支援的生態系清單，#316）｜"other"
     is_lock: bool   # 鎖定檔：釘選到確切版本的清單（SBOM 核對用的樣式）
+    ecosystem: str | None = None   # kind="unsupported" 時的生態系名稱（例如 go、rust）；其餘為 None
 
 
 def classify(path, *, view: str = "screen") -> Classified:
@@ -52,14 +71,15 @@ def classify(path, *, view: str = "screen") -> Classified:
     if view not in VIEWS:
         raise ValueError(f"view 必須是 {VIEWS} 之一：{view!r}")
     s = path if isinstance(path, str) else Path(path).as_posix()
-    is_lock = bool(LOCKFILE_RE.search(s))
+    is_lock, eco = bool(LOCKFILE_RE.search(s)), None
     if view == "sbom":
         kind = "parsed" if is_lock else "unparsed" if LOCK_UNPARSED_RE.search(s) else "other"
     elif not MANIFEST_RE.search(s):
-        kind = "other"
+        eco = next((e for e, rx in _UNSUPPORTED_RE if rx.search(s)), None)
+        kind = "unsupported" if eco else "other"
     else:
         kind = "unparsed" if UNPARSED_RE.search(Path(s).name) else "parsed"
-    return Classified(kind, is_lock)
+    return Classified(kind, is_lock, eco)
 
 
 # ---------------------------------------------------------------- 回傳形狀

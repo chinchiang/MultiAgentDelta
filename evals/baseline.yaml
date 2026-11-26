@@ -20,6 +20,7 @@ executed:
   - g1-kev-pos-01
   - g1-lowdl-neg-01
   - g1-lowdl-pos-01
+  - g1-nomanifest-na-01
   - g1-postinstall-neg-01
   - g1-postinstall-pos-01
   - g1-rulesfile-neg-01
@@ -29,6 +30,7 @@ executed:
   - g1-slopsquat-neg-02
   - g1-slopsquat-pos-01
   - g1-slopsquat-pos-02
+  - g1-unsupported-incomplete-01
   - g1-vulndep-neg-01
   - g1-vulndep-pos-01
   - g2-envcommitted-neg-01

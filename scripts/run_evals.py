@@ -972,13 +972,14 @@ class IntegrationRunner(Runner):
     """整合層：案例描述工具／環境失敗情境（expected.gate_status），以受控情境跑 CI 用的同一支判定程式，
     檢查閘門狀態（incomplete ≠ pass）。案例以 input.integration 指定情境：
       g1-registry-timeout  g1_slopcheck.py 經「接受連線但永不回應」的本機 proxy 查 registry（真的逾時）
+      g1-tree              g1_slopcheck.py --target 全量掃描 input.files 寫出的受驗樹（不支援的生態系清單、沒有任何清單，#316）
       g5-endpoint-405      g5_api_probes.run_probes 打本機 stub（/openapi.json 200、其餘 405）
       g5-off-origin        同上，但 stub 的 OIDC discovery jwks_uri 與 openapi paths 指向另一個埠的 canary 伺服器：
                            canary 收到任何請求（含帶 Authorization 的）即判執行失敗（規則 8：只能打授權目標）
       g6-gate              g6_gate.py 吃依 config/promptfoo/tests.yaml 組出的結果 fixture（input.fixture）
     run() 回傳 (hits, err, gate)；gate 是閘門結果 JSON（status、status_reason、coverage）。"""
     name = "integration"
-    SCENARIOS = ("g1-registry-timeout", "g5-endpoint-405", "g5-off-origin", "g6-gate")
+    SCENARIOS = ("g1-registry-timeout", "g1-tree", "g5-endpoint-405", "g5-off-origin", "g6-gate")
 
     def __init__(self, *, policy_root: pathlib.Path = ROOT):
         self.policy_root = policy_root
@@ -989,14 +990,15 @@ class IntegrationRunner(Runner):
             return "案例未標記 input.integration（整合層情境）"
         if sc not in self.SCENARIOS:
             return f"未知的整合層情境 {sc!r}"
-        if case["gate"] != {"g1-registry-timeout": "G1", "g5-endpoint-405": "G5", "g5-off-origin": "G5", "g6-gate": "G6"}[sc]:
+        if case["gate"] != {"g1-registry-timeout": "G1", "g1-tree": "G1", "g5-endpoint-405": "G5", "g5-off-origin": "G5",
+                            "g6-gate": "G6"}[sc]:
             return f"情境 {sc} 不適用 {case['gate']}"
         return None
 
     def run(self, case):
         sc = case["input"]["integration"]
         try:
-            return {"g1-registry-timeout": self._g1_timeout, "g5-endpoint-405": self._g5_405,
+            return {"g1-registry-timeout": self._g1_timeout, "g1-tree": self._g1_tree, "g5-endpoint-405": self._g5_405,
                     "g5-off-origin": self._g5_off_origin,
                     "g6-gate": self._g6_gate}[sc](case)
         except (OSError, subprocess.SubprocessError, ValueError, KeyError) as e:
@@ -1037,6 +1039,27 @@ class IntegrationRunner(Runner):
             stop.set(); t.join(timeout=2); srv.close()
             for c in held:
                 c.close()
+        return {f.get("rule_id") for f in out.get("findings", [])}, None, gate
+
+    # -- G1：全量掃描一棵受驗樹（#316）--------------------------------------------
+    def _g1_tree(self, case):
+        """input.files（相對路徑 → 內容）寫成非 git 目錄，g1_slopcheck.py --target 全量掃描（與外部專案相同的路徑）。
+        不支援的生態系清單不查 registry；沒有 npm／PyPI 套件時也不連網。"""
+        files = case["input"].get("files") or {}
+        with tempfile.TemporaryDirectory() as d:
+            dp = pathlib.Path(d) / "tree"
+            for rel, text in files.items():
+                p = dp / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+            dp.mkdir(exist_ok=True)
+            gp = pathlib.Path(d) / "g1-gate.json"
+            p = subprocess.run([sys.executable, str(SLOPCHECK), "--target", str(dp), "--gate", str(gp)],
+                               capture_output=True, text=True, timeout=180, cwd=ROOT)
+            if not gp.exists():
+                return None, f"slopcheck 沒有寫出閘門結果（exit {p.returncode}）：{(p.stderr or '').strip()[-120:]}", None
+            gate = json.loads(gp.read_text(encoding="utf-8"))
+            out = json.loads(p.stdout or "{}")
         return {f.get("rule_id") for f in out.get("findings", [])}, None, gate
 
     # -- G5：端點回 405／目標回應指向其他來源 ----------------------------------

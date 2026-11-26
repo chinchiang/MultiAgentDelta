@@ -44,6 +44,27 @@ class Classify(unittest.TestCase):
         for name in ("package.json", "package-lock.json", "pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt"):
             self.assertEqual(gm.classify(name).kind, "parsed", name)
 
+    def test_screen_unsupported_ecosystems(self):
+        # #316：npm／PyPI 以外生態系的慣例清單檔 → unsupported（帶生態系名稱），不是 other；含子目錄
+        cases = {"go.mod": "go", "go.sum": "go", "Cargo.toml": "rust", "Cargo.lock": "rust", "pom.xml": "maven",
+                 "build.gradle": "gradle", "build.gradle.kts": "gradle", "Gemfile": "ruby", "Gemfile.lock": "ruby",
+                 "composer.json": "php", "composer.lock": "php", "App.csproj": "nuget", "packages.config": "nuget",
+                 "Directory.Packages.props": "nuget", "deno.json": "deno", "deno.jsonc": "deno", "mix.exs": "elixir",
+                 "Package.swift": "swift", "pubspec.yaml": "dart", "environment.yml": "conda", "environment.yaml": "conda"}
+        for name, eco in cases.items():
+            for path in (name, f"services/api/{name}"):
+                c = gm.classify(path)
+                self.assertEqual((c.kind, c.ecosystem), ("unsupported", eco), path)
+        # 既有分類不變；相近但不是慣例檔名的不算
+        for name, kind in (("package.json", "parsed"), ("requirements.txt", "parsed"), ("pnpm-lock.yaml", "unparsed"),
+                           ("docs/go.mod.md", "other"), ("mygo.mod", "other"), ("Cargo.toml.bak", "other"),
+                           ("environment.yml.example", "other"), ("notes.csproj.txt", "other")):
+            self.assertEqual(gm.classify(name).kind, kind, name)
+        self.assertIsNone(gm.classify("package.json").ecosystem)
+        # SBOM 核對的檢視不變（#316 決定 8）
+        for name in ("go.sum", "Cargo.lock", "Gemfile.lock", "composer.lock"):
+            self.assertEqual(gm.classify(name, view="sbom").kind, "other", name)
+
     def test_screen_requirements_directory(self):
         # 從 g1_slopcheck selftest 搬來：requirements/ 目錄下的 .txt 是 manifest；其他 .txt、非 .txt 不是
         self.assertEqual(gm.classify("requirements/base.txt").kind, "parsed")

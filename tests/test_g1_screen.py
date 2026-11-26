@@ -118,6 +118,96 @@ class ScreenHappyAndSkip(_ScreenCase):
         self.assertTrue(any("frontend/yarn.lock" in x for x in (stdout_doc.get("incomplete_checks") or ())))
 
 
+class ScreenUnsupportedEcosystems(_ScreenCase):
+    """#316：npm／PyPI 以外生態系的慣例清單 → 未完成原因、三個控制 untested、G1 incomplete（不是 pass）；
+    full 掃描時受驗樹沒有任何已知清單 → 三個控制 not_applicable（不是 pass）；diff 模式沒改到清單 → 維持 pass。"""
+    UNSUPPORTED = "生態系尚未支援，其中的套件未檢查："
+
+    def test_go_and_cargo_only_full_scan_is_incomplete_not_pass(self):
+        self.write("go.mod", "module x\n\ngo 1.22\n\nrequire github.com/nonexistent-zzz/hallucinated-pkg v1.0.0\n")
+        self.write("Cargo.toml", '[package]\nname="x"\nversion="0.1.0"\n\n[dependencies]\nhallucinated-zzz = "9.9.9"\n')
+        git = FakeGit(tracked=["Cargo.toml", "go.mod"])
+        out = gs.screen(gs.Request(target=self.D), self.env(git=git))
+        self.assertEqual((out.status, out.exit_code), ("incomplete", 2))
+        # 只有這一則原因：不支援的清單不交給 npm／PyPI 的解析器（不會多出「沒有對應的解析器」的通用原因）
+        self.assertEqual(out.problems, (self.UNSUPPORTED + "rust（Cargo.toml）、go（go.mod）",))   # 照路徑排序
+        self.assertEqual([(c["control_id"], c["state"]) for c in out.coverage],
+                         [("VS-G1-SLOPSQUAT", "untested"), ("VS-G1-COOLDOWN", "untested"), ("VS-G1-INSTALL-HOOK", "untested")])
+        stdout = out.to_stdout()
+        self.assertIn("go（go.mod）", stdout.get("status_reason") or "")
+        # 輸出形狀與結果行比照 #269 的無解析器清單（ADR 0003 對外契約）：走完整掃描的檢視，原因列在 incomplete_checks
+        self.assertIn(self.UNSUPPORTED + "rust（Cargo.toml）、go（go.mod）", stdout.get("incomplete_checks") or ())
+        self.assertEqual(out.result_line(), "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。")
+
+    def test_unsupported_in_subdirectory_is_listed_with_relative_path(self):
+        self.write("services/api/go.mod", "module x\n")
+        out = gs.screen(gs.Request(target=self.D), self.env(git=FakeGit(tracked=["services/api/go.mod"])))
+        self.assertIn(self.UNSUPPORTED + "go（services/api/go.mod）", out.problems)
+
+    def test_mixed_project_still_checks_npm_and_blocking_wins_over_incomplete(self):
+        self.write("package.json", '{"dependencies": {"totally-nonexistent-pkg": "1.0.0"}}\n')
+        self.write("go.mod", "module x\n")
+        reg = gr.FakeRegistry({("npm", "totally-nonexistent-pkg", "1.0.0"): gr.NotFound()})
+        out = gs.screen(gs.Request(target=self.D), self.env(registry=reg, git=FakeGit(tracked=["go.mod", "package.json"])))
+        self.assertIn("vibesec.g1.hallucinated-package", {f["rule_id"] for f in out.findings})
+        self.assertEqual((out.status, out.exit_code), ("fail", 1))
+        self.assertIn(self.UNSUPPORTED + "go（go.mod）", out.problems)
+
+    def test_diff_mode_only_looks_at_changed_files(self):
+        self.write("go.mod", "module x\n")
+        self.write("package.json", '{"dependencies": {"express": "4.21.2"}}\n')
+        lst = self.write("changed.txt", "go.mod\n")
+        git = FakeGit(tracked=["go.mod", "package.json"])
+        out = gs.screen(gs.Request(target=self.D, changed_lists=(str(lst),)), self.env(git=git))
+        self.assertEqual(out.status, "incomplete")
+        self.assertIn(self.UNSUPPORTED + "go（go.mod）", out.problems)
+        lst.write_text("package.json\n", encoding="utf-8")
+        reg = gr.FakeRegistry({("npm", "express", "4.21.2"): npm_clean()})
+        out = gs.screen(gs.Request(target=self.D, changed_lists=(str(lst),)), self.env(registry=reg, git=git))
+        self.assertFalse(any(self.UNSUPPORTED in p for p in out.problems), out.problems)
+        self.assertEqual(out.status, "pass")
+        self.write("src/main.c", "int main(void) { return 0; }\n")
+        lst.write_text("src/main.c\n", encoding="utf-8")   # 不是清單也不是規則檔
+        out = gs.screen(gs.Request(target=self.D, changed_lists=(str(lst),)), self.env(git=git))
+        self.assertEqual((out.status, [c["state"] for c in out.coverage]), ("pass", ["pass", "pass", "pass"]))
+        self.assertEqual(out.result_line(), "G1 slopcheck：無相依清單或規則檔變更，略過。")
+
+    def test_diff_mode_lists_unsupported_in_path_order_regardless_of_changed_list_order(self):
+        self.write("go.mod", "module x\n"); self.write("Cargo.toml", "[package]\nname = \"x\"\n")
+        lst = self.write("changed.txt", "go.mod\nCargo.toml\n")
+        out = gs.screen(gs.Request(target=self.D, changed_lists=(str(lst),)), self.env(git=FakeGit(tracked=["Cargo.toml", "go.mod"])))
+        self.assertEqual(out.problems, (self.UNSUPPORTED + "rust（Cargo.toml）、go（go.mod）",))
+
+    def test_full_scan_with_other_problem_is_untested_not_not_applicable(self):
+        # 沒有任何清單，但指定的檔案不存在（未完成原因）→ 三個控制 untested，not_applicable 不得蓋過未完成原因
+        out = gs.screen(gs.Request(target=self.D, manifests=("missing/package.json",)), self.env())
+        self.assertEqual((out.scope, out.status), ("full", "incomplete"))
+        self.assertEqual([c["state"] for c in out.coverage], ["untested"] * 3)
+
+    def test_full_scan_with_only_rule_files_that_mention_no_package_is_not_applicable(self):
+        # 規則檔樣式含 **/*.md：只有 README.md 時，沒有任何套件被檢查 → 仍是 not_applicable（使用者決定，#316 code review）
+        self.write("README.md", "沒有安裝指令。\n")
+        out = gs.screen(gs.Request(target=self.D), self.env(git=FakeGit(tracked=["README.md"])))
+        self.assertEqual((out.status, out.problems), ("pass", ()))
+        self.assertEqual([(c["state"], c["reason"]) for c in out.coverage],
+                         [("not_applicable", "受驗樹沒有任何已知的相依清單")] * 3)
+
+    def test_full_scan_rule_file_mentioning_a_package_is_checked_not_not_applicable(self):
+        self.write("AGENTS.md", "依賴安裝：pip install totally-nonexistent-pkg\n")
+        reg = gr.FakeRegistry({("pypi", "totally-nonexistent-pkg", None): gr.NotFound()})
+        out = gs.screen(gs.Request(target=self.D), self.env(registry=reg, git=FakeGit(tracked=["AGENTS.md"])))
+        self.assertIn("vibesec.g1.rules-file-unknown-package", {f["rule_id"] for f in out.findings})
+        self.assertNotIn("not_applicable", [c["state"] for c in out.coverage])
+
+    def test_full_scan_without_any_known_manifest_is_not_applicable(self):
+        self.write("src/main.c", "int main(void) { return 0; }\n")   # 不是清單也不是規則檔（README.md 會被當成規則檔）
+        out = gs.screen(gs.Request(target=self.D), self.env(git=FakeGit(tracked=["src/main.c"])))
+        self.assertEqual((out.status, out.exit_code, out.problems), ("pass", 0, ()))
+        self.assertEqual([(c["state"], c["reason"]) for c in out.coverage],
+                         [("not_applicable", "受驗樹沒有任何已知的相依清單")] * 3)
+        GATE_SCHEMA.validate(out.to_gate_run())
+
+
 class ScreenDetectionsAndIndirect(_ScreenCase):
     def test_npm_lockfile_v3_checks_similarity_only_on_direct_deps_and_reports_non_registry_entries(self):
         reg_url = lambda n, v: f"https://registry.npmjs.org/{n}/-/{n.split('/')[-1]}-{v}.tgz"  # noqa: E731
