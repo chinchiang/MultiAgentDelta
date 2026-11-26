@@ -33,6 +33,14 @@ import sarif_gate  # noqa: E402  缺 PyYAML 時以 exit 2 結束（無法判定�
 TOOLS = ("semgrep", "checkov", "trivy")
 CHECKOV_CONFIGS = (".checkov.yaml", ".checkov.yml")
 INLINE_SUPPRESSIONS = r"checkov:skip=|trivy:ignore"
+# semgrep 1.179.0 的預設平行數是全部核心；32 核心的機器上掃多檔約一半會無訊息 exit 2，-j ≤ 8 實測不會（#344）。
+# 上限取 4：與 CI runner（4 vCPU）一致
+SEMGREP_MAX_JOBS = 4
+
+
+def semgrep_jobs(cpus: int | None) -> int:
+    """給 semgrep -j 的平行數：min(核心數, SEMGREP_MAX_JOBS)；os.cpu_count() 回傳 None（或 0）時用 1。"""
+    return min(cpus or 1, SEMGREP_MAX_JOBS)
 
 
 def printable(obj):
@@ -268,7 +276,7 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
         cmd = ["scan"] + [x for c in semgrep_configs(g3_config()) for x in ("--config", c)]
         # --max-target-bytes=0：semgrep 預設靜默跳過 >1 MB 的檔案；改成照掃，逾時由 sarif_gate 記 incomplete
         cmd += ["--sarif", "--output", str(sarifs["semgrep"]), "--metrics=off", "--disable-version-check", "--quiet",
-                "--max-target-bytes=0"]
+                "--max-target-bytes=0", "-j", str(semgrep_jobs(os.cpu_count()))]
         if external:
             cmd.append("--disable-nosem")
         with tempfile.TemporaryDirectory(prefix="vibesec-g3-") as tmp:
@@ -390,13 +398,16 @@ def selftest() -> list[str]:
             (bindir / t).write_text(FAKE_TOOL); (bindir / t).chmod(0o755)
         bins = {t: str(bindir / t) for t in TOOLS}
 
-        def run(target, env=None, **kw):
+        def run(target, env=None, cpus=32, **kw):
             env = {"FAKE_LOG": str(log), **(env or {})}
             log.unlink(missing_ok=True)
             os.environ.update(env)
+            real_cpu_count = os.cpu_count   # #344：核心數由測試決定（預設 32），結果不依賴跑 selftest 的機器
+            os.cpu_count = lambda: cpus
             try:
                 g = scan(target, out, kw.pop("bins", bins), pol=pol, **kw)
             finally:
+                os.cpu_count = real_cpu_count
                 for k in env:
                     os.environ.pop(k, None)
             errs = list(schema.iter_errors(g))
@@ -408,7 +419,23 @@ def selftest() -> list[str]:
                     c = json.loads(line); calls[c["tool"]] = c
             return g, calls
 
+        # #344：semgrep 的平行數上限是 min(CPU 核心數, 4)；None／0／1 → 1。用 globals() 取，函式還不存在時回報 FAIL 而不是崩潰
+        jobs = globals().get("semgrep_jobs")
+        for cpus, want in ((None, 1), (0, 1), (1, 1), (3, 3), (4, 4), (32, 4)):
+            got = jobs(cpus) if jobs else None
+            if got != want:
+                fails.append(f"semgrep_jobs({cpus}) → {want}（得到 {got}）")
+        want_j = "4"   # run() 預設核心數 32 → 上限 4
+
+        def has_jobs(argv, want=None):   # semgrep 的 argv 含 -j <want>
+            return any(a == "-j" and argv[i + 1:i + 2] == [want or want_j] for i, a in enumerate(argv))
+
+        _, calls = run(repo, cpus=None)
+        if not has_jobs(calls.get("semgrep", {}).get("argv", []), "1"):
+            fails.append(f"os.cpu_count() 回傳 None：semgrep 帶 -j 1（得到 {calls.get('semgrep', {}).get('argv')}）")
         g, calls = run(repo)
+        if not has_jobs(calls.get("semgrep", {}).get("argv", [])):
+            fails.append(f"外部 full：semgrep 帶 -j {want_j}（得到 {calls.get('semgrep', {}).get('argv')}）")
         head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=repo).stdout.strip()
         if g["status"] != "pass" or g["commit"] != head or g["scope"] != "full" or set(calls) != set(TOOLS):
             fails.append(f"外部目標、三個工具都跑完且無發現 → pass，commit 取目標 HEAD（得到 {g['status']}，{sorted(calls)}）")
@@ -450,6 +477,8 @@ def selftest() -> list[str]:
                                     ("diff", calls_diff.get("semgrep", {}), ["--baseline-commit", "HEAD", "."])):
             if c.get("cwd") != str(repo.resolve()) or "--disable-nosem" in c.get("argv", []) or c.get("argv", [])[-len(want_tail):] != want_tail:
                 fails.append(f"本 repo（{label}）：semgrep 在受驗樹執行、參數與以前相同（得到 {c}）")
+            if not has_jobs(c.get("argv", [])):
+                fails.append(f"本 repo（{label}）：semgrep 帶 -j {want_j}（得到 {c.get('argv')}）")
         if g["status"] == "fail" or g["findings_count"]["blocking"] or g["findings_count"]["advisory"] < 1 \
                 or "筆命中 blocking-policy 例外" not in (g["status_reason"] or ""):
             fails.append(f"本 repo：命中例外 → advisory、status_reason 註明命中筆數（得到 {g['status']}：{g['findings_count']}、{g['status_reason']}）")
@@ -478,6 +507,8 @@ def selftest() -> list[str]:
         g, calls = run(repo, base="HEAD")
         sg = calls.get("semgrep", {})
         argv = sg.get("argv", [])
+        if not has_jobs(argv):
+            fails.append(f"外部 diff：semgrep 帶 -j {want_j}（得到 {argv}）")
         if g["scope"] != "diff" or g["diff_base"] != "HEAD" or "--baseline-commit" not in argv:
             fails.append("--base → semgrep --baseline-commit、scope diff")
         # #317：diff 模式的副本是 clone：HEAD 是「移除 .semgrepignore」的 commit，上一層是受驗樹的 HEAD；base 先在受驗樹解析成 SHA
