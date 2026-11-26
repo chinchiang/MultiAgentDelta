@@ -21,7 +21,8 @@
       讀不到 → 2（優先）；有 blocking（或狀態為 fail）→ 1。Decision 含跳脫後的 Markdown 與 GitHub outputs。
       shadow 下（report_only 除外）以同一套規則另算假設判定（GLOSSARY.md「假設判定」、#334）：Decision 的
       hypothetical 為 {code, block, notes}（其餘情況為 None），Markdown 在判定行後多印「**假設為 enforce**：exit N …」；
-      實際退出碼不變。
+      實際退出碼不變。判定行寫實際結果（#336）：只有退出碼不為 0 才寫「阻擋」；實際不擋卻有 errors（設定錯誤，
+      例如 blocking-policy 讀不到）時，判定行前另印「⚠ 設定錯誤：…」（CONFIG_ERROR_PREFIX）。
   blackbox_health(gates, *, lab, required_tools, job_result="success") -> [問題]
       staging 黑箱通知：靶場看靶場驗收（fail、有 blocking、必要工具都執行），外部目標看 is_clean。
 
@@ -46,6 +47,7 @@ STATUSES = ("pass", "fail", "incomplete", "pending", "not_applicable")
 COVERAGE_STATES = ("pass", "fail", "pending", "untested", "not_applicable")
 RANK = {"not_applicable": 0, "pass": 1, "pending": 2, "incomplete": 3, "fail": 4}
 UNFINISHED_PREFIX = "另有未完成項目："
+CONFIG_ERROR_PREFIX = "⚠ 設定錯誤："   # 實際不擋卻有設定錯誤時的 summary 行（#336）
 # vibesec.yaml gates.*.tools 的名稱 → gate JSON tools[].name（由 g5_api_probes、g5_zap、g6_gate 寫入）。
 # 前綴另存變數：「"api-…": "較長的識別碼字串"」會被 gitleaks generic-api-key 誤判為金鑰（#139；.gitleaksignore 已有前例）
 _G5_TOOL = "vibesec-g5-"
@@ -249,12 +251,13 @@ def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="
                   f"{'-' if r['advisory'] is None else r['advisory']} | {_cell(r['reason'])} |")
     md += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。", ""]
     # 判定行寫實際結果（#336）：enforce 下有阻擋原因或 errors 時 code 必不為 0，與以前相同；
-    # shadow／靶場只報告時 errors（政策讀不到）不擋，改印設定錯誤警告，不讓它看起來像正常通過（規則 2）
+    # 實際不擋（shadow、靶場只報告）時 errors（設定錯誤：shadow 下是政策讀不到，靶場只報告時也可能是 mode 讀不到或 --mode 不合法）
+    # 改印設定錯誤警告，不讓它看起來像正常通過（規則 2）
     if code:
         md.append("**判定：阻擋** — " + _cell("；".join(errors + block)))
     else:
         if errors:
-            md.append("⚠ 設定錯誤：" + _cell("；".join(errors)))
+            md.append(CONFIG_ERROR_PREFIX + _cell("；".join(errors)))
         why = "shadow 只報告" if mode == "shadow" else (report_only or "沒有 blocking 發現")
         md.append(f"**判定：不阻擋**（{_cell(why)}）" + ("；" + _cell("；".join(notes)) if notes else ""))
     if hypo:
