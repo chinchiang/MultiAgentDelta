@@ -50,28 +50,44 @@ SET_ENFORCE = ("import pathlib, sys; sys.path.insert(0, sys.argv[1] + '/scripts'
 
 
 def _independent_git_dir(project: pathlib.Path, copy: pathlib.Path) -> None:
-    """受驗樹是 git worktree（.git 是 gitdir: 檔案，#339）→ 在 copy/.git 建一份獨立的 git 目錄：不得只複製那個檔案，
-    否則副本會和原 worktree 共用 HEAD 與 index。git clone --local --no-hardlinks（整份複製 objects，含已 add 未 commit 的 blob；
-    不用 hardlink：暫存目錄常與 repo 不在同一個裝置，hardlink 會失敗而 git 不會退回複製）
-    → HEAD 與受驗樹相同（從 worktree 路徑 clone，git 取的是該 worktree 的 HEAD：detached 就是同一個 commit，在分支上就保留分支名；
-      selftest 兩種情境都驗）→ index 取受驗樹的 index（git ls-files 一致）
-    → 移除指回受驗樹的 origin（副本裡的 git 操作碰不到原樹）。失敗 → OSError／CalledProcessError（呼叫端轉成 CopyProblem）。"""
-    git = lambda root, *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, check=True).stdout.decode().strip()
-    index = pathlib.Path(git(project, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+    """受驗樹是 git worktree（.git 是 gitdir: 檔案，#339）→ 在 copy/.git 建一份獨立的 git 目錄。不得只複製那個檔案：
+    那樣副本會和原 worktree 共用 HEAD 與 index。步驟（任一步失敗或最後核對不一致 → CopyProblem，訊息寫明步驟；fail-closed）：
+      1. git clone --local --no-hardlinks --no-checkout：整份複製 objects（含已 add 未 commit 的 blob）。不用 hardlink：
+         暫存目錄常與 repo 不在同一個裝置，hardlink 會失敗，而 git 不會退回複製。從 worktree 路徑 clone 時，git 取該
+         worktree 的 HEAD（detached 就是同一個 commit，在分支上就保留分支名）。
+      2. 受驗樹是 shallow → 帶上 shallow 檔，否則副本的歷史斷掉。
+      3. 以受驗樹的 git ls-files -s 重建 index（update-index --index-info）：不複製 index 檔，split index 也適用。
+      4. 移除指回受驗樹的 origin：副本裡的 git 操作碰不到原樹。
+      5. 核對：HEAD、git ls-files -s、是否 shallow 都與受驗樹相同。"""
+    def git(step, root, *a, stdin=None):
+        r = subprocess.run(["git", "-C", str(root), *a], input=stdin, capture_output=True)
+        if r.returncode != 0:
+            last = r.stderr.decode("utf-8", "surrogateescape").strip().splitlines()[-1:] or [f"exit {r.returncode}"]
+            raise CopyProblem(f"複製 {project} 失敗（worktree：{step}）：{last[0]}")
+        return r.stdout.decode("utf-8", "surrogateescape")
+    state = lambda root: (git("核對", root, "rev-parse", "HEAD"), git("核對", root, "ls-files", "-s", "-z"),
+                          git("核對", root, "rev-parse", "--is-shallow-repository"))
     staging = copy.parent / "clone"
-    subprocess.run(["git", "clone", "-q", "--local", "--no-hardlinks", "--no-checkout", str(project), str(staging)], capture_output=True, check=True)
+    git("clone", copy.parent, "clone", "-q", "--local", "--no-hardlinks", "--no-checkout", str(project), str(staging))
     copy.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staging / ".git"), str(copy / ".git"))
     shutil.rmtree(staging)
-    if index.is_file():
-        shutil.copy2(index, copy / ".git/index")
-    git(copy, "remote", "remove", "origin")
+    shallow = pathlib.Path(git("shallow", project, "rev-parse", "--path-format=absolute", "--git-path", "shallow").strip())
+    if shallow.is_file():
+        shutil.copy2(shallow, copy / ".git/shallow")
+    git("index", copy, "read-tree", "--empty")
+    git("index", copy, "update-index", "-z", "--index-info", stdin=git("index", project, "ls-files", "-s", "-z").encode(
+        "utf-8", "surrogateescape"))
+    git("remote", copy, "remote", "remove", "origin")
+    if state(copy) != state(project):
+        raise CopyProblem(f"複製 {project} 失敗（worktree：核對）：副本的 HEAD、index 或 shallow 與受驗樹不一致")
 
 
 @contextlib.contextmanager
 def enforce_copy(project: pathlib.Path):
     """project 的副本，內容對齊 CI checkout 出來的樹：git 追蹤的檔案（取工作目錄的內容，含尚未 commit 的修改）、
     尚未 git add 的新檔，以及 .git（排除它會讓 g0 selftest 失敗）；.gitignore 排除的檔案與 _trusted/ 不複製。
+    .git 是目錄就整份複製；受驗樹是 git worktree（.git 是 gitdir: 檔案）時改由 _independent_git_dir 建獨立的 git 目錄（#339）。
     以副本自己的 vibesec_policy.set_mode_line 改 mode，並確認以 mode: 開頭的行剛好一行 `mode: enforce`
     （比 CI 的 grep -qx 嚴：重複的 mode 行也算失敗）。yield 副本根目錄，離開時刪除。失敗 → CopyProblem。"""
     project = pathlib.Path(project)
@@ -93,8 +109,7 @@ def enforce_copy(project: pathlib.Path):
             else:
                 _independent_git_dir(project, copy)
         except (OSError, shutil.Error, subprocess.CalledProcessError) as e:
-            detail = (getattr(e, "stderr", None) or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or [str(e)]
-            raise CopyProblem(f"複製 {project} 失敗（需要是 git 樹）：{detail[0]}") from e
+            raise CopyProblem(f"複製 {project} 失敗（需要是 git 樹）：{e}") from e
         r = subprocess.run([PYTHON, "-I", "-c", SET_ENFORCE, str(copy)], capture_output=True, text=True)
         lines = (copy / "vibesec.yaml").read_text(encoding="utf-8").splitlines() if (copy / "vibesec.yaml").is_file() else []
         if r.returncode != 0 or [ln for ln in lines if ln.startswith("mode:")] != ["mode: enforce"]:
@@ -337,6 +352,43 @@ def selftest() -> list[str]:
                 if remotes:
                     return f"副本不應有指回受驗樹的 remote（得到 {remotes!r}）"
     check("enforce_copy：worktree 在分支上 → 保留分支名、沒有 remote（#339）", t_copy_worktree_branch)
+
+    def t_copy_worktree_split_shallow():   # split index、shallow 的受驗樹 → 副本的 index 與歷史一樣完整，不是靜默壞掉
+        with tempfile.TemporaryDirectory() as d:
+            src = small_tree(d, "version: 1\nmode: shadow\nrisk_tier: L3\n")
+            run = lambda root, *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=True).stdout
+            ident = ("-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false")
+            (src / "second.txt").write_text("第二個 commit\n", encoding="utf-8"); run(src, "add", "second.txt")
+            run(src, *ident, "commit", "-qm", "second")
+            shallow = pathlib.Path(d, "shallow")
+            subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{src}", str(shallow)], capture_output=True, check=True)
+            wt = pathlib.Path(d, "wt")
+            run(shallow, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
+            run(wt, "update-index", "--split-index")
+            if run(wt, "rev-parse", "--is-shallow-repository").strip() != "true" or not list(pathlib.Path(
+                    run(wt, "rev-parse", "--path-format=absolute", "--git-dir").strip()).glob("sharedindex.*")):
+                return "測試前提：受驗樹應為 shallow 且使用 split index"
+            with enforce_copy(wt) as copy:
+                if run(copy, "ls-files", "-s") != run(wt, "ls-files", "-s"):
+                    return f"split index：副本的 git ls-files -s 應與受驗樹相同（得到 {run(copy, 'ls-files', '-s')!r}）"
+                if run(copy, "rev-parse", "--is-shallow-repository").strip() != "true":
+                    return "shallow：副本也要是 shallow（帶上 .git/shallow），否則歷史斷掉"
+                r = subprocess.run(["git", "-C", str(copy), "rev-list", "--count", "HEAD"], capture_output=True, text=True)
+                if r.returncode != 0 or r.stdout.strip() != "1":
+                    return f"shallow：副本的 git rev-list HEAD 應可執行且只有 1 個 commit（得到 {r.returncode}、{r.stdout!r}、{r.stderr.strip()!r}）"
+    check("enforce_copy：worktree 使用 split index、來自 shallow repo → 副本同樣完整（#339）", t_copy_worktree_split_shallow)
+
+    def t_copy_worktree_step():   # 失敗時寫明是哪一步（brief：要能看出是 clone 或 index 等哪一步）
+        with tempfile.TemporaryDirectory() as d:
+            bad, out = pathlib.Path(d, "bad"), pathlib.Path(d, "out/tree")
+            bad.mkdir(); (bad / ".git").write_text(f"gitdir: {d}/不存在\n", encoding="utf-8")
+            out.parent.mkdir()
+            try:
+                _independent_git_dir(bad, out)
+            except CopyProblem as e:
+                return None if "（worktree：clone）" in str(e) else f"訊息應寫明 clone 這一步（得到 {e}）"
+            return "gitdir 不存在 → CopyProblem"
+    check("enforce_copy：worktree 建立失敗 → CopyProblem 並寫明步驟（#339）", t_copy_worktree_step)
 
     def t_copy_problem():
         with tempfile.TemporaryDirectory() as d:
