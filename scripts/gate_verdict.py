@@ -19,6 +19,9 @@
   enforce(gates, *, mode, incomplete_blocking_gates, report_only=None) -> Decision
       阻擋判定：shadow 或 report_only → 0；enforce 下政策列為「incomplete 也擋」的閘門未完成、或 mode／政策
       讀不到 → 2（優先）；有 blocking（或狀態為 fail）→ 1。Decision 含跳脫後的 Markdown 與 GitHub outputs。
+      shadow 下（report_only 除外）以同一套規則另算假設判定（GLOSSARY.md「假設判定」、#334）：Decision 的
+      hypothetical 為 {code, block, notes}（其餘情況為 None），Markdown 在判定行後多印「**假設為 enforce**：exit N …」；
+      實際退出碼不變。
   blackbox_health(gates, *, lab, required_tools, job_result="success") -> [問題]
       staging 黑箱通知：靶場看靶場驗收（fail、有 blocking、必要工具都執行），外部目標看 is_clean。
 
@@ -601,6 +604,14 @@ def selftest() -> list[str]:
         got = [ln for ln in md if ln.startswith(HYPO)]
         if got != ([want] if want else []):
             fails.append(f"假設判定的 summary 行「{label}」應為 {want!r}（得到 {got}）")
+    # enforce 下輸出與 #334 之前相同（字面值取自 main 的輸出）
+    d = enforce({"G1": g("G1", "incomplete", reason="x"), "G3": g("G3", "fail", 1), "G4": g("G4", "incomplete", reason="y")},
+                mode="enforce", incomplete_blocking_gates=inc)
+    tail = d["markdown"].split("\n")[-1]
+    if (d["block"], d["notes"], d["hypothetical"]) != (["G1 incomplete（政策：enforce 下未完成也擋）", "G3 fail（blocking 1）"],
+                                                      ["G4 incomplete 依政策只報告（不在 incomplete_gate_is_blocking_in_enforce）"], None) \
+            or tail != "**判定：阻擋** — G1 incomplete（政策：enforce 下未完成也擋）；G3 fail（blocking 1）":
+        fails.append(f"enforce 的阻擋原因、附註與判定行應與 #334 之前相同（得到 {d['block']}、{d['notes']}、{tail!r}）")
     want = HYPO + "exit 2 — blocking-policy 無法讀取：未完成的閘門一律視為阻擋"
     got = [ln for ln in enforce({"G3": g("G3", "pass")}, mode="shadow", incomplete_blocking_gates=None)["markdown"].split("\n")
            if ln.startswith(HYPO)]

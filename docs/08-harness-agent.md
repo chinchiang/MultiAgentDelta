@@ -191,6 +191,8 @@ agent `support-bot`: private_data ✓ / untrusted_content ✓ / external_comms �
 
 INCOMPLETE 區塊永遠出現；沒有 incomplete 時寫「無」。
 
+CI 的閘門狀態摘要（`reports/gate-status.md`，由 `gate_verdict.py enforce --markdown-out` 寫出、併入 job summary）在 shadow 下於判定行之後多一行假設判定（§8、#334）；`compare_ci.py` 從 VibeSec Summary 的 log 讀這一行。
+
 ## 10. 三種執行情境
 
 ### (a) Claude Code — `/vibesec-harness` skill

@@ -65,7 +65,12 @@ HYPO_PREFIX = "**假設為 enforce**："
 _MODE_LINE = re.compile(r"^模式：`(shadow|enforce)`")
 
 
-def parse_hypothetical(text: str) -> tuple[str | None, str | None]:
+class Hypothetical(NamedTuple):
+    line: str | None   # 假設判定那一行；None＝沒有
+    mode: str | None   # summary 的「模式：」；None＝讀不到
+
+
+def parse_hypothetical(text: str) -> Hypothetical:
     """VibeSec Summary job log → (假設判定那一行, 模式)。沒有那一行 → None（#334 之前的受信任樹，或 enforce 不輸出）；
     同一份 log 有兩種不同的假設判定 → InputError。模式讀不到 → None。"""
     lines = log_lines(text)
@@ -73,7 +78,7 @@ def parse_hypothetical(text: str) -> tuple[str | None, str | None]:
     if len(hypo) > 1:
         raise InputError(f"VibeSec Summary 有兩種不同的假設判定：{sorted(hypo)}")
     mode = next((m[1] for ln in lines if (m := _MODE_LINE.match(ln))), None)
-    return (next(iter(hypo)) if hypo else None), mode
+    return Hypothetical(next(iter(hypo)) if hypo else None, mode)
 
 
 class ValidateRun(NamedTuple):
@@ -266,10 +271,10 @@ def _compare_gate_tables(acc: _Acc, P: str, pt: dict, pg: G1Info, B: str, bt: di
             _compare_g1_row(acc, (P, a, pg), (B, b, bg), nightly, nightly_known)
 
 
-def _compare_hypothetical(acc: _Acc, P: str, ph: tuple, B: str, bh: tuple) -> None:
+def _compare_hypothetical(acc: _Acc, P: str, ph: Hypothetical, B: str, bh: Hypothetical) -> None:
     """假設判定（#334）：shadow 觀察期要數的就是這一行，兩邊都輸出。只有 PR 有（基準的受信任樹在 #334 之前），
     或 PR 已是 enforce（不輸出假設判定）→ 預期內；其餘不同 → 需要說明。"""
-    (pa, pmode), (ba, _) = ph, bh
+    pa, pmode, ba = ph.line, ph.mode, bh.line
     acc.out.append("## 假設判定（shadow 下 enforce 會怎麼判，#334）")
     acc.out.extend(f"- {who}：{h or '無'}" for who, h in ((P, pa), (B, ba)))
     if pa == ba:
