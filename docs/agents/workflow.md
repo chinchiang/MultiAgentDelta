@@ -90,6 +90,7 @@ python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 只有預期內�
 - **selftest 的 mode**：selftest 用 `tree_copy("mode: …")` 固定 mode，不依賴 repo 目前的 `vibesec.yaml`。CI 的 repo-validate 會在 mode 改為 enforce 的副本裡再跑一次 validate，依賴 repo mode 的 selftest 在 PR 階段就會失敗（#223）。
 - **staging-blackbox**：repo 沒有設定 `vars.VIBESEC_TARGET_URL`，所以 staging-blackbox 只會打 job 內啟動的 vulnapp。
 - **合併條件**：`main` 沒有 required status checks。要確認某個 check 是不是合併條件，用 `gh api repos/chinchiang/MultiAgentDelta/rulesets` 查（#209）。
+- **shadow → enforce**：切換條件、切換程序與退回程序（含 `break-glass`）見 `docs/08-harness-agent.md` §5.1（#333）。agent 可以準備切換 PR 或退回 PR，但不得合併（AGENTS.md 規則 1）。
 
 ---
 
@@ -183,3 +184,4 @@ Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 - **Selftest mode**: selftests pin the mode with `tree_copy("mode: …")` instead of relying on the repo's current `vibesec.yaml`. CI's repo-validate runs validate again in a copy whose mode is enforce, so a selftest that depends on the repo's mode fails at the PR stage (#223).
 - **staging-blackbox**: the repo has no `vars.VIBESEC_TARGET_URL`, so staging-blackbox only hits the vulnapp started inside the job.
 - **Merge requirements**: `main` has no required status checks. To check whether a given check gates merging, query `gh api repos/chinchiang/MultiAgentDelta/rulesets` (#209).
+- **shadow → enforce**: the switch conditions, switch procedure, and rollback procedure (including `break-glass`) are in `docs/08-harness-agent.md` §5.1 (#333). An agent may prepare the switch PR or the rollback PR but must not merge it (AGENTS.md rule 1).
