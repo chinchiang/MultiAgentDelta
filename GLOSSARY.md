@@ -116,8 +116,12 @@ _避免_：與 SBOM 混用（SBOM 是工具從專案產生的軟體物料清單�
 _避免_：鎖檔
 
 **無解析器清單（unparsed manifest）**：
-被選為清單、但 repo 尚無解析器的檔案，例如 `pnpm-lock.yaml`、`yarn.lock`。其中的套件沒有被檢查，記為未完成原因，不是「沒有相依」。
+npm／PyPI 生態系中被選為清單、但 repo 尚無解析器的檔案，例如 `pnpm-lock.yaml`、`yarn.lock`。其中的套件沒有被檢查，記為未完成原因，不是「沒有相依」。
 _避免_：與控制覆蓋的「未實測」混用（未實測是控制的狀態，這裡是檢查的未完成原因）
+
+**不支援的生態系清單（unsupported-ecosystem manifest）**：
+屬於 repo 尚未支援之生態系的慣例清單檔，例如 `go.mod`、`Cargo.toml`。其中的套件沒有被檢查，記為未完成原因，不是「沒有相依」，也不是「不是清單」。
+_避免_：與無解析器清單混用（無解析器清單屬於已支援的生態系，只是缺某種檔案的解析器）
 
 **間接相依（indirect dependency）**：
 鎖定檔中只因其他套件宣告而出現的套件，不做名稱相似度檢查，其他檢查照做。目前只有 npm 鎖定檔與 `requirements*.txt` 會判斷；其他清單，以及無法確定時，一律視同直接相依（較嚴的一側）。
@@ -291,8 +295,12 @@ A manifest that pins exact versions, such as `package-lock.json`, `npm-shrinkwra
 _Avoid_: lock file (two words)
 
 **Unparsed manifest**:
-A file selected as a manifest that this repo has no parser for yet, such as `pnpm-lock.yaml` or `yarn.lock`. The packages in it were not checked; this is recorded as a problem, not as "no dependencies".
+A file in the npm or PyPI ecosystem that is selected as a manifest but that this repo has no parser for yet, such as `pnpm-lock.yaml` or `yarn.lock`. The packages in it were not checked; this is recorded as a problem, not as "no dependencies".
 _Avoid_: confusing it with the coverage state "untested" (untested is the state of a control; this is a problem in the check)
+
+**Unsupported-ecosystem manifest**:
+A conventional manifest file of an ecosystem this repo does not support yet, such as `go.mod` or `Cargo.toml`. The packages in it were not checked; this is recorded as a problem, not as "no dependencies" and not as "not a manifest".
+_Avoid_: confusing it with an unparsed manifest (an unparsed manifest belongs to a supported ecosystem and only lacks a parser for that file type)
 
 **Indirect dependency**:
 A package in a lockfile that appears only because another package declares it. It skips the name-similarity check; every other check still runs. Today only npm lockfiles and `requirements*.txt` are examined for this; any other manifest, and any case that cannot be determined, is treated as direct (the stricter side).

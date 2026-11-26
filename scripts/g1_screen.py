@@ -836,12 +836,19 @@ def dumps_json(obj) -> str:
     return json.dumps(printable(obj), ensure_ascii=False, indent=2)
 
 
-def gate_coverage(findings, incomplete, pypi_checked=0):
-    """G1 快篩三個控制的 coverage（VS-G1-SBOM 與 ASVS5-V15.2 由後續步驟併入）。"""
+NO_MANIFEST_REASON = "受驗樹沒有任何已知的相依清單"
+UNSUPPORTED_PREFIX = "生態系尚未支援，其中的套件未檢查："
+
+
+def gate_coverage(findings, incomplete, pypi_checked=0, not_applicable=None):
+    """G1 快篩三個控制的 coverage（VS-G1-SBOM 與 ASVS5-V15.2 由後續步驟併入）。
+    not_applicable：理由字串時三個控制都記 not_applicable（full 掃描時受驗樹沒有任何已知清單，#316）。"""
     coverage = []
     for ctl in CONTROLS:
         hit = [f for f in findings if _CONTROL_OF.get(f["rule_id"]) == ctl and f["policy_tier"] == "blocking"]
-        if incomplete:
+        if not_applicable and not incomplete and not findings:
+            state, why = "not_applicable", not_applicable
+        elif incomplete:
             state, why = "untested", None
         elif hit:
             state, why = "fail", None
@@ -1076,6 +1083,12 @@ def screen(request: Request, env: Env) -> Outcome:
 
     pre_incomplete, notes = list(scoped.problems), list(scoped.notes)
     manifests, rule_files = list(scoped.manifests), list(scoped.rule_files)
+    # 不支援的生態系清單（#316）：其中的套件沒有被檢查 → 未完成原因（不是 pass），不交給 npm／PyPI 的解析器
+    unsupported = [m for m in manifests if classify(m).kind == "unsupported"]
+    if unsupported:
+        manifests = [m for m in manifests if m not in unsupported]
+        pre_incomplete.append(UNSUPPORTED_PREFIX + "、".join(
+            f"{classify(m).ecosystem}（{rel_path(root, m)}）" for m in sorted(unsupported, key=lambda m: rel_path(root, m))))
     project = env.policy.for_project(root)
     if project.note:
         notes.append(project.note)
@@ -1083,7 +1096,9 @@ def screen(request: Request, env: Env) -> Outcome:
 
     if not manifests and not rule_files:
         problems = tuple(dict.fromkeys(pre_incomplete))
-        cov = tuple(gate_coverage((), problems, 0))
+        # full 掃描、受驗樹什麼清單都沒有 → not_applicable（#316）；diff 模式沒改到清單 → 維持 pass（這次變更沒有引入新的相依）
+        na = NO_MANIFEST_REASON if scope == "full" and not unsupported else None
+        cov = tuple(gate_coverage((), problems, 0, not_applicable=na))
         status, status_reason = gate_status((), problems, cov, notes)
         return Outcome(
             findings=(), problems=problems, notes=tuple(notes), coverage=cov,
