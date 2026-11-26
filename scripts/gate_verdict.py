@@ -231,20 +231,14 @@ def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="
     shown = {r["gate"]: (f"`{r['label']}`（blocking {r['blocking']}，待裁決）" if r.get("awaiting_blocking") else f"`{r['label']}`")
              for r in rows}
     block, notes = [], list(notes)
-    code = 0
-    if mode == "enforce" and not report_only:
-        for r in rows:
-            b = r["blocking"] or 0
-            waiting = "，待裁決" if r.get("awaiting_blocking") else ""
-            if blocks_by_count(r["status"], b):
-                block.append(f"{r['gate']} {r['label']}（blocking {b}{waiting}）"); code = code or 1
-            if r["status"] in ("incomplete", "pending"):
-                if incomplete_blocking_gates is None or r["gate"] in incomplete_blocking_gates:
-                    block.append(f"{r['gate']} {r['label']}（政策：enforce 下未完成也擋）"); code = 2
-                elif not waiting:   # 待裁決的 blocking 已依計數擋下，不再附「只報告」（看起來會像矛盾）
-                    notes.append(f"{r['gate']} {r['label']} 依政策只報告（不在 incomplete_gate_is_blocking_in_enforce）")
-        if errors:
-            code = 2
+    code, hypo = 0, None
+    if not report_only:
+        judged = _judge(rows, incomplete_blocking_gates, errors)
+        if mode == "enforce":
+            code, block = judged["code"], judged["block"]
+            notes += judged["notes"]
+        else:   # 假設判定（#334、GLOSSARY.md）：shadow 下同一套規則再算一次，只報告，不影響退出碼
+            hypo = judged
     md = [f"# {title}", "", f"模式：`{mode}`" + (f"（{report_only}）" if report_only else ""), "",
           "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|"]
     for r in rows:
@@ -256,13 +250,38 @@ def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="
     else:
         why = "shadow 只報告" if mode == "shadow" else (report_only or "沒有 blocking 發現")
         md.append(f"**判定：不阻擋**（{_cell(why)}）" + ("；" + _cell("；".join(notes)) if notes else ""))
+    if hypo:
+        head = f"**假設為 enforce**：exit {hypo['code']}"
+        if hypo["code"]:
+            md.append(f"{head} — " + _cell("；".join(errors + hypo["block"])))
+        else:
+            md.append(f"{head}（" + _cell("；".join(["沒有 blocking 發現"] + hypo["notes"])) + "）")
     outputs = {}
     for r in rows:
         k = r["gate"].lower()
         outputs[f"{k}_status"] = r["label"]
         outputs[f"{k}_blocking"] = "" if r["blocking"] is None else str(r["blocking"])
     return {"code": code, "mode": mode, "rows": rows, "block": block, "notes": notes, "errors": errors,
-            "markdown": "\n".join(md), "outputs": outputs}
+            "hypothetical": hypo, "markdown": "\n".join(md), "outputs": outputs}
+
+
+def _judge(rows, incomplete_blocking_gates, errors) -> dict:
+    """enforce 的判定規則（只有這一份；enforce 與 shadow 的假設判定共用）：2 優先於 1。
+    回傳 {"code", "block"（阻擋原因）, "notes"（依政策只報告的閘門）}；errors（mode／政策讀不到）→ 2。"""
+    block, notes, code = [], [], 0
+    for r in rows:
+        b = r["blocking"] or 0
+        waiting = "，待裁決" if r.get("awaiting_blocking") else ""
+        if blocks_by_count(r["status"], b):
+            block.append(f"{r['gate']} {r['label']}（blocking {b}{waiting}）"); code = code or 1
+        if r["status"] in ("incomplete", "pending"):
+            if incomplete_blocking_gates is None or r["gate"] in incomplete_blocking_gates:
+                block.append(f"{r['gate']} {r['label']}（政策：enforce 下未完成也擋）"); code = 2
+            elif not waiting:   # 待裁決的 blocking 已依計數擋下，不再附「只報告」（看起來會像矛盾）
+                notes.append(f"{r['gate']} {r['label']} 依政策只報告（不在 incomplete_gate_is_blocking_in_enforce）")
+    if errors:
+        code = 2
+    return {"code": code, "block": block, "notes": notes}
 
 
 def required_tools(cfg: dict) -> dict[str, list[str]]:
@@ -555,6 +574,38 @@ def selftest() -> list[str]:
         d = enforce(gates, mode=mode, incomplete_blocking_gates=inc, report_only=rep)
         if d["code"] != want:
             fails.append(f"enforce「{label}」退出碼應為 {want}（得到 {d['code']}：{d['block']} {d['errors']}）")
+    # 假設判定（#334）：shadow 下以同一套規則算出 enforce 會怎麼判，只報告；實際退出碼一律 0
+    for label, gates, pol, want in [
+        ("乾淨 → 假設 0", {"G2": g("G2", "pass"), "G3": g("G3", "pass")}, inc, 0),
+        ("有 blocking → 假設 1", {"G3": g("G3", "fail", 1)}, inc, 1),
+        ("政策列出的閘門 incomplete → 假設 2", {"G1": g("G1", "incomplete", reason="x")}, inc, 2),
+        ("兩者都有 → 假設 2", {"G1": g("G1", "incomplete", reason="x"), "G3": g("G3", "fail", 1)}, inc, 2),
+        ("未列出的閘門 incomplete → 假設 0", {"G4": g("G4", "incomplete", reason="x")}, inc, 0),
+        ("政策讀不到 → 假設 2", {"G3": g("G3", "pass")}, None, 2),
+    ]:
+        d = enforce(gates, mode="shadow", incomplete_blocking_gates=pol)
+        h = d.get("hypothetical") or {}
+        if d["code"] != 0 or h.get("code") != want:
+            fails.append(f"假設判定「{label}」：實際應為 0、假設應為 {want}（得到 {d['code']}、{h}）")
+    HYPO = "**假設為 enforce**："
+    for label, gates, mode, rep, want in [
+        ("shadow 有阻擋原因", {"G1": g("G1", "incomplete", reason="x"), "G3": g("G3", "fail", 1)}, "shadow", None,
+         HYPO + "exit 2 — G1 incomplete（政策：enforce 下未完成也擋）；G3 fail（blocking 1）"),
+        ("shadow 乾淨", {"G3": g("G3", "pass")}, "shadow", None, HYPO + "exit 0（沒有 blocking 發現）"),
+        ("shadow 只報告的閘門附註", {"G4": g("G4", "incomplete", reason="x")}, "shadow", None,
+         HYPO + "exit 0（沒有 blocking 發現；G4 incomplete 依政策只報告（不在 incomplete\\_gate\\_is\\_blocking\\_in\\_enforce））"),
+        ("enforce 不印", {"G3": g("G3", "fail", 1)}, "enforce", None, None),
+        ("靶場不印", {"G3": g("G3", "fail", 1)}, "shadow", "靶場只報告", None),
+    ]:
+        md = enforce(gates, mode=mode, incomplete_blocking_gates=inc, report_only=rep)["markdown"].split("\n")
+        got = [ln for ln in md if ln.startswith(HYPO)]
+        if got != ([want] if want else []):
+            fails.append(f"假設判定的 summary 行「{label}」應為 {want!r}（得到 {got}）")
+    want = HYPO + "exit 2 — blocking-policy 無法讀取：未完成的閘門一律視為阻擋"
+    got = [ln for ln in enforce({"G3": g("G3", "pass")}, mode="shadow", incomplete_blocking_gates=None)["markdown"].split("\n")
+           if ln.startswith(HYPO)]
+    if got != [want]:
+        fails.append(f"假設判定的 summary 行「shadow 政策讀不到」應寫明原因 {want!r}（得到 {got}）")
     d = enforce({"G3": g("G3", "incomplete", reason="see [x](http://evil) @bob |a")}, mode="enforce", incomplete_blocking_gates=None)
     if d["code"] != 2 or "\\[x\\]\\(http://evil\\)" not in d["markdown"] or "@bob" in d["markdown"] or "\\|a" not in d["markdown"]:
         fails.append("enforce：政策讀不到時未完成一律擋；Markdown 須跳脫連結、表格與 @")
