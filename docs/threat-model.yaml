@@ -285,6 +285,13 @@ threats:
     mitigation: 已接第二 family（config/providers.yaml 的 gemini-cloud，family google；本 repo 為公開 repo，送審內容屬 public）。金鑰缺席、provider 失敗或資料分級不允許而 family < 2 時，一律 pending + requires_human，G4 報 incomplete（fail closed，不擋 merge）。殘留：internal 以上的內容只有 anthropic 一個 family，需另接地端 provider。
     status: mitigated
     gate: G4
+  - id: t-review-packet-unmasked
+    category: STRIDE-I
+    target: c-llm
+    description: 未經遮罩的審查包被當成低分級送往雲端 provider（手組審查包、填錯分級、跳過 review_packet，或 agent 被誘導直接呼叫 review_provider；#329）。
+    mitigation: review_provider 只送出帶有效來源標記的審查包（review_packet 產生的 kind=review-packet 已遮罩；prepare_comparison 產生的 kind=eval-fixture 是合成評測案例）；標記以指紋金鑰對整份審查包計算 HMAC，缺少、另一把金鑰、內容被改過或拿不到金鑰 → refused、不送出（ADR 0004）。殘留：金鑰在本機，讀得到金鑰者可偽造標記；不防刻意偽造。
+    status: mitigated
+    gate: G4
 
 risk_tier: L3
 risk_tier_rationale: >

@@ -9,6 +9,7 @@ from unittest.mock import patch
 import yaml
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]/'scripts'))
 import review_provider as provider
+import vibesec_provenance
 
 
 class Bedrock(unittest.TestCase):
@@ -22,9 +23,13 @@ class Bedrock(unittest.TestCase):
         (self.root/'config/providers.yaml').write_text(yaml.safe_dump({'providers':{'bedrock':self.p}}))
         self.env = {'AWS_ACCESS_KEY_ID':'synthetic-access','AWS_SECRET_ACCESS_KEY':'synthetic-secret','AWS_SESSION_TOKEN':'synthetic-token'}
         self.packet = {'output_contract':'finding-opinion'}
+        # 來源標記（#329）：本檔驗的是 Bedrock 憑證邊界；每次呼叫都封上有效標記，指紋金鑰以 env 注入、HOME 指向暫存目錄
+        self.prov_key = 'p' * 40
 
     def call(self, classification='internal', env=None):
-        return provider.call('bedrock','architecture',classification,self.packet,self.root,self.env if env is None else env)
+        packet = vibesec_provenance.seal(self.packet, 'review-packet', self.prov_key.encode())
+        env = {**(self.env if env is None else env), vibesec_provenance.KEY_ENV: self.prov_key, 'HOME': str(self.root)}
+        return provider.call('bedrock','architecture',classification,packet,self.root,env)
 
     def test_no_network_for_disallowed_data_or_missing_secret(self):
         with patch.object(provider, '_bedrock') as backend:

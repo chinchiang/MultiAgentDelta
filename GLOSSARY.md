@@ -161,6 +161,18 @@ _避免_：外部目標、external target（target 專指 G5／G6 的受測服�
 通過目標授權檢查（在允許的目標範圍內）、供黑箱閘門（G5、G6）由外而內送出探針的執行中服務（本機靶場或已核准的測試環境）。
 _避免_：與受驗樹（project tree）混用；把未經授權的位址當成受測服務
 
+**資料分級（data class）**：
+內容可以送往哪些 provider 的等級，由寬到嚴為 public、internal、confidential、pii；provider 只能接收它允許的分級（AGENTS.md 規則 7）。分級只能往嚴的方向調整，不能由呼叫端降級。
+_避免_：機密等級、sensitivity（與祕密掃描的命中混淆）
+
+**審查包（review packet）**：
+送給非 Claude Code provider 做多模型審查的內容：待審的發現或評測案例，加上必要的程式碼摘錄、威脅模型與輸出契約，並宣告資料分級。送出前祕密一律遮罩，只附審查需要的範圍，不送整個 repo。
+_避免_：prompt、payload（審查包是送出的內容本身，不含角色說明）
+
+**來源標記（provenance mark）**：
+審查包上的標記，證明它出自本 repo 的產生工具（G4 審查包經過遮罩，評測審查包是合成案例），而且產生之後沒有被改過；只有標記有效的審查包才會送出。它防的是意外與被誘導（手組審查包、填錯分級、跳過遮罩），不防讀得到本機金鑰的人刻意偽造（ADR 0004）。
+_避免_：簽章、signature（不提供不可否認性，也不防偽造）
+
 ---
 
 <a id="english"></a>
@@ -323,3 +335,15 @@ _Avoid_: external target (target means the service under test in G5/G6)
 **Target**:
 A running service (either the local lab or an approved test environment), cleared by the target authorization check as within the permitted target scope, against which the blackbox gates (G5, G6) send probes from the outside.
 _Avoid_: confusing it with the project tree; treating an unauthorized address as a target
+
+**Data class**:
+The level that decides which providers may receive a piece of content, from broadest to strictest: public, internal, confidential, pii; a provider only receives the classes it allows (AGENTS.md rule 7). A data class can only be made stricter, never lowered by the caller.
+_Avoid_: sensitivity (confused with secret-scan hits)
+
+**Review packet**:
+The content sent to a non-Claude Code provider for multi-model review: the finding or eval case under review, plus the needed code excerpts, threat model, and output contract, with its data class declared. Secrets are always masked before sending, and only the scope the review needs is attached, never the whole repo.
+_Avoid_: prompt, payload (the review packet is the content sent, not the role instructions)
+
+**Provenance mark**:
+A mark on a review packet proving that it came from this repo's producing tools (a G4 review packet has been masked; an eval review packet holds synthetic cases) and has not been changed since; only review packets with a valid mark are sent. It guards against accidents and manipulation (hand-built packets, a wrong data class, skipped masking), not against deliberate forgery by anyone who can read the local key (ADR 0004).
+_Avoid_: signature (it provides no non-repudiation and does not stop forgery)

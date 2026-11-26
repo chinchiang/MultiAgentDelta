@@ -30,7 +30,10 @@ Claude Code 的 reviewer sub-agent 能自己讀 repo，scripts/review_provider.p
        4 參數錯誤。
 """
 from __future__ import annotations
-import argparse, hashlib, hmac, json, os, pathlib, re, secrets, shutil, subprocess, sys, tempfile
+import argparse, hashlib, hmac, json, os, pathlib, re, shutil, subprocess, sys, tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import vibesec_provenance as provenance   # noqa: E402  金鑰讀取與來源標記只有一份（#329）
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONTEXT = 40
@@ -42,9 +45,7 @@ BASE_SCAN_NAME = ".vibesec-packet-base.json"   # 掃描用的暫存檔名（不�
 MASK_CONFIG = ROOT / "config/gitleaks-packet.toml"
 G2_CONFIG = ROOT / "config/gitleaks.toml"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
-PEPPER_ENV = "VIBESEC_FINGERPRINT_KEY"
-PEPPER_FILE = pathlib.PurePosixPath(".config/vibesec/fingerprint-key")   # 相對於家目錄
-PEPPER_MIN = 32   # bytes：太短的金鑰可以連同短祕密一起暴力反推，HMAC 就失去意義
+PEPPER_ENV, PEPPER_FILE, PEPPER_MIN = provenance.KEY_ENV, provenance.KEY_FILE, provenance.KEY_MIN   # 規則在 vibesec_provenance
 
 
 class PacketError(RuntimeError):
@@ -161,34 +162,12 @@ def fingerprint(secret: str, pepper: bytes) -> str:
 
 
 def fingerprint_pepper(environ=None, home: pathlib.Path | None = None) -> bytes:
-    """指紋的金鑰：環境變數 VIBESEC_FINGERPRINT_KEY（空字串視同沒有）；否則 ~/.config/vibesec/fingerprint-key，
-    沒有就建立（隨機 32 bytes 的 hex，權限 0600）。讀不到、建不出來或檔案是空的 → PacketError（不產生審查包）。
-    environ、home 只給 selftest 注入。錯誤訊息不含金鑰。"""
-    env = os.environ if environ is None else environ
-    if env.get(PEPPER_ENV):
-        if len(env[PEPPER_ENV].encode()) < PEPPER_MIN:
-            raise PacketError(f"{PEPPER_ENV} 太短（至少 {PEPPER_MIN} bytes）：不產生審查包")
-        return env[PEPPER_ENV].encode()
-    path = (pathlib.Path.home() if home is None else pathlib.Path(home)) / PEPPER_FILE
+    """指紋的金鑰（規則在 vibesec_provenance.fingerprint_key；review_packet 是唯一會在沒有金鑰檔時建立它的地方）。
+    拿不到 → PacketError（不產生審查包）。environ、home 只給 selftest 注入。錯誤訊息不含金鑰。"""
     try:
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:   # 同時有另一個程序剛建好：讀它的
-                fd = None
-            if fd is not None:
-                os.fchmod(fd, 0o600)
-                with os.fdopen(fd, "w") as f:
-                    f.write(secrets.token_hex(32))
-        if os.name == "posix" and path.stat().st_mode & 0o077:   # 只在建立時給 0600 不夠：既有檔被放寬就拒絕
-            raise PacketError(f"指紋金鑰檔 ~/{PEPPER_FILE} 的權限太寬（群組或其他人可存取）：chmod 600 後再執行；不產生審查包")
-        data = path.read_bytes().strip()
-    except OSError as e:
-        raise PacketError(f"指紋金鑰讀不到也建不出來（{PEPPER_ENV} 未設定；~/{PEPPER_FILE}：{type(e).__name__}）：不產生審查包") from None
-    if len(data) < PEPPER_MIN:
-        raise PacketError(f"指紋金鑰檔 ~/{PEPPER_FILE} 太短或是空的（至少 {PEPPER_MIN} bytes）：不產生審查包")
-    return data
+        return provenance.fingerprint_key(environ, home, create=True)
+    except provenance.KeyUnavailable as e:
+        raise PacketError(f"{e}：不產生審查包") from None
 
 
 def residual_hits(value, hits: list[str]) -> list[str]:
@@ -276,6 +255,8 @@ def build(base: dict, target: pathlib.Path, commit: str = "HEAD", diff_base: str
                                 + (f"略過 {len(skipped)} 個非文字檔（未附上，模型沒看到）：{'、'.join(skipped)}。" if skipped else ""))
     if residual_hits(pkt, hits):   # 遮罩後、序列化前：不得殘留原文（不印殘留的字串）
         raise PacketError("遮罩後仍殘留命中字串：不產生審查包")
+    # 來源標記（#329）：證明這份審查包經過上面的遮罩、之後沒被改過；review_provider 只送出標記有效的審查包
+    pkt = provenance.seal(pkt, "review-packet", pepper)
     size = len(json.dumps(pkt, ensure_ascii=False).encode())
     if size > max_bytes:
         raise PacketError(f"審查包 {size} bytes 超過上限 {max_bytes}：不截斷、不產生（改用 --diff-base 或提高上限）")
@@ -403,6 +384,10 @@ def selftest() -> list[str]:
             fails.append("full：附行號全文")
         if pkt["data_class"] != "internal" or pkt["output"] != "…":
             fails.append("其餘欄位沿用 --base")
+        # 來源標記（#329）：review_packet 產生的審查包帶 kind=review-packet 的有效標記，review_provider 才肯送出
+        from vibesec_provenance import FIELD as PROV, verify as prov_verify
+        if (pkt.get(PROV) or {}).get("kind") != "review-packet" or prov_verify(pkt, K) is not None:
+            fails.append(f"審查包要帶 kind=review-packet 的有效來源標記（得到 {pkt.get(PROV)}，驗證 {prov_verify(pkt, K)!r}）")
         pkt = build(base, repo, diff_base=first, scan=fake, pepper=K)
         api = pkt["source_files"].get("app/api.py", "")
         if set(pkt["source_files"]) != {"app/api.py"} or "  100| changed100" not in api or "   60| line60" not in api \
