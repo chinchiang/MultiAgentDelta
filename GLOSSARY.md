@@ -89,6 +89,10 @@ _避免_：綠燈、green
 依各閘門結果、執行模式與阻擋政策，決定是否擋下合併或部署。
 _避免_：gating、blocking decision（blocking 專指政策 tier）
 
+**假設判定（hypothetical decision）**：
+shadow 下以同一套阻擋判定規則算出「如果是 enforce 會怎麼判」：假設的退出碼與原因，只報告，不影響實際退出碼；shadow 觀察期以此計數（#333、#334）。靶場只報告時不算。
+_避免_：預演、dry run
+
 **黑箱健康（blackbox health）**：
 staging 黑箱閘門（G5、G6）是否需要通知：靶場看靶場驗收，外部目標看是否乾淨。
 _避免_：staging 狀態
@@ -247,6 +251,10 @@ _Avoid_: green
 **Enforcement decision**:
 The decision, from all gate results, the mode, and the blocking policy, whether to block a merge or deployment.
 _Avoid_: gating, blocking decision (blocking refers only to the policy tier)
+
+**Hypothetical decision**:
+In shadow mode, the enforcement decision computed with the same rules as if the mode were enforce: the hypothetical exit code and reasons. It is reported only and never changes the actual exit code; the shadow observation period counts it (#333, #334). Not computed when the lab only reports.
+_Avoid_: rehearsal, dry run
 
 **Blackbox health**:
 Whether the staging blackbox gates (G5, G6) need a notification: the lab is judged by lab acceptance, an external target by whether it is clean.

@@ -141,6 +141,8 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 
 判定一律由 `scripts/gate_verdict.py enforce` 執行（docs/10 §9.1、`GLOSSARY.md`「阻擋判定」）：`pr-gates.yml` 的 summary、`staging-blackbox.yml` 的 verdict 步驟與 harness 本機都用同一份規則，**`2` 優先於 `1`**。CI 以受信任樹（`_trusted/`）的這支程式執行；PR head 只提供 gate JSON，先以受信任的 schema 驗證，缺席、無法解析或不符 schema → 該閘門 `incomplete`。消費前先做最終判定：仍待併入（`coverage` 為 `pending`）或必須併入卻缺席的控制（G1 的 `VS-G1-SBOM`、`ASVS5-V15.2`）視同 `untested`。`--mode` 只能把 shadow 升為 enforce，不能降級。`summary.md` 必須同時列出 blocking 與 incomplete 兩者。
 
+shadow 下（靶場只報告除外），同一份規則再算一次假設判定（`GLOSSARY.md`「假設判定」、#334）：summary 在判定行之後多印一行 `**假設為 enforce**：exit N — 原因`（exit 0 時為 `exit 0（沒有 blocking 發現；依政策只報告的閘門）`）。實際退出碼仍是 `0`。shadow → enforce 的觀察期以這一行計數（#333）；`scripts/compare_ci.py` 會讀出兩邊的這一行並比對。
+
 staging 的失敗通知（`.github/scripts/staging-issue.js`）不自行判定：同一步驟以 `scripts/gate_verdict.py blackbox` 計算黑箱健康問題清單，寫入 job output `blackbox_problems`（JSON 字串陣列，空陣列＝健康），notify 照用。靶場看靶場驗收：G5／G6 都要 `fail` 且有 blocking，且 `vibesec.yaml` 列出的工具都有執行；外部目標看是否乾淨（`pass` 或 `not_applicable`）。
 
 ## 9. 報告產物
@@ -188,6 +190,8 @@ agent `support-bot`: private_data ✓ / untrusted_content ✓ / external_comms �
 ```
 
 INCOMPLETE 區塊永遠出現；沒有 incomplete 時寫「無」。
+
+CI 的閘門狀態摘要（`reports/gate-status.md`，由 `gate_verdict.py enforce --markdown-out` 寫出、併入 job summary）在 shadow 下於判定行之後多一行假設判定（§8、#334）；`compare_ci.py` 從 VibeSec Summary 的 log 讀這一行。
 
 ## 10. 三種執行情境
 

@@ -6,12 +6,14 @@ workflow 文件「判準」的 CI 一節：check 數量與閘門表格要和最�
   1. check：兩邊各狀態的數量、名稱與結果的差異、不是 workflow（github-actions）產生的 check 及其來源（app）
   2. 閘門表格：pr-gates 的 VibeSec Summary job 裡 `| G… |` 那幾行，逐列比對
   3. G1：已知漏洞（非 KEV）筆數、KEV 命中數、slopcheck 是否略過；PR 的已知漏洞筆數再和當天（UTC）main 的 nightly 比
-  4. validate：repo-validate 三次執行（PR 版、受信任樹版、enforce 副本）各自的錯誤數、警告數與警告內容
-  5. 結論：差異分成「預期內」與「需要說明」
+  4. 假設判定：summary 的「**假設為 enforce**：」那一行（shadow 下 enforce 會怎麼判，#334）
+  5. validate：repo-validate 三次執行（PR 版、受信任樹版、enforce 副本）各自的錯誤數、警告數與警告內容
+  6. 結論：差異分成「預期內」與「需要說明」
 預期內只有這幾種，其餘都算需要說明：
   - Dependabot 的 `.github/dependabot.yml` 設定驗證 check 只出現在一邊（GitHub 在 PR 改到該檔時才建立）
   - G1 已知漏洞筆數和當天 nightly 相同（漏洞資料庫每天更新，不和基準 PR 比）
   - G1 說明欄的「忽略的 allowlist 條目」句只出現在一邊，而且那一邊的 slopcheck 有掃描（改到相依清單或規則檔，含 *.md；#210）
+  - 假設判定只在 PR 有（基準的受信任樹在 #334 之前），或只在基準有而 PR 的模式是 enforce（不輸出假設判定）
 
 用法：
   python3 -I scripts/compare_ci.py <PR> --baseline <PR>
@@ -57,6 +59,26 @@ def parse_gate_table(text: str) -> dict[str, list[str]]:
     if not rows:
         raise InputError("VibeSec Summary 的 log 裡沒有閘門表格（`| G… |` 行）")
     return dict(sorted(rows.items()))
+
+
+HYPO_PREFIX = "**假設為 enforce**："
+_MODE_LINE = re.compile(r"^模式：`(shadow|enforce)`")
+
+
+class Hypothetical(NamedTuple):
+    line: str | None   # 假設判定那一行；None＝沒有
+    mode: str | None   # summary 的「模式：」；None＝讀不到
+
+
+def parse_hypothetical(text: str) -> Hypothetical:
+    """VibeSec Summary job log → (假設判定那一行, 模式)。沒有那一行 → None（#334 之前的受信任樹，或 enforce 不輸出）；
+    同一份 log 有兩種不同的假設判定 → InputError。模式讀不到 → None。"""
+    lines = log_lines(text)
+    hypo = {ln.strip() for ln in lines if ln.startswith(HYPO_PREFIX)}
+    if len(hypo) > 1:
+        raise InputError(f"VibeSec Summary 有兩種不同的假設判定：{sorted(hypo)}")
+    mode = next((m[1] for ln in lines if (m := _MODE_LINE.match(ln))), None)
+    return Hypothetical(next(iter(hypo)) if hypo else None, mode)
 
 
 class ValidateRun(NamedTuple):
@@ -186,6 +208,7 @@ def compare(pr: dict, base: dict, nightly: dict) -> Report:
     nightly_known = parse_known_vulns(nightly["g1_log"])
     _compare_gate_tables(acc, P, parse_gate_table(pr["logs"]["summary"]), pg,
                          B, parse_gate_table(base["logs"]["summary"]), bg, nightly, nightly_known)
+    _compare_hypothetical(acc, P, parse_hypothetical(pr["logs"]["summary"]), B, parse_hypothetical(base["logs"]["summary"]))
     _compare_g1(acc, P, pg, B, bg, nightly, nightly_known)
     _compare_validate(acc, P, parse_validate(pr["logs"]["validate"]), B, parse_validate(base["logs"]["validate"]))
     acc.out.append("## 結論")
@@ -246,6 +269,24 @@ def _compare_gate_tables(acc: _Acc, P: str, pt: dict, pg: G1Info, B: str, bt: di
             acc.unexplained.append(f"閘門 {g} 的列不同：{B} {b} → {P} {a}")
         elif a != b:
             _compare_g1_row(acc, (P, a, pg), (B, b, bg), nightly, nightly_known)
+
+
+def _compare_hypothetical(acc: _Acc, P: str, ph: Hypothetical, B: str, bh: Hypothetical) -> None:
+    """假設判定（#334）：shadow 觀察期要數的就是這一行，兩邊都輸出。只有 PR 有（基準的受信任樹在 #334 之前），
+    或 PR 已是 enforce（不輸出假設判定）→ 預期內；其餘不同 → 需要說明。"""
+    pa, pmode, ba = ph.line, ph.mode, bh.line
+    acc.out.append("## 假設判定（shadow 下 enforce 會怎麼判，#334）")
+    acc.out.extend(f"- {who}：{h or '無'}" for who, h in ((P, pa), (B, ba)))
+    if pa == ba:
+        return
+    if pa and not ba:
+        acc.expected.append(f"假設判定只在 {P}：{B} 的 summary 沒有這一行（#334 之前的受信任樹）")
+    elif not pa and pmode == "enforce":
+        acc.expected.append(f"假設判定只在 {B}：{P} 的模式是 enforce，不輸出假設判定")
+    elif not pa:
+        acc.unexplained.append(f"{P} 的 summary 沒有假設判定（{B} 有）")
+    else:
+        acc.unexplained.append(f"假設判定不同：{B}「{ba}」→ {P}「{pa}」")
 
 
 def _compare_g1_row(acc: _Acc, pr_row: tuple, base_row: tuple, nightly: dict, nightly_known: int) -> None:
@@ -467,11 +508,16 @@ ALLOW = "忽略的 allowlist 條目：requests：已於 2026-10-16 過期"
 G4_NOTE = "G4 LLM 審查未在 CI 執行"
 
 
-def _fx_summary(g1_adv=92, g1_note=ALLOW, g2="`pass` | 0 | 0 |  ", dup=True) -> str:
+HYPO_OK = "**假設為 enforce**：exit 0（沒有 blocking 發現）"
+
+
+def _fx_summary(g1_adv=92, g1_note=ALLOW, g2="`pass` | 0 | 0 |  ", dup=True, mode="shadow", hypo=None) -> str:
+    """hypo：假設判定那一行（#334；None＝沒有這一行，例如 #334 之前的受信任樹）。dup 時連同表格重複出現（cat 進 step summary）。"""
     rows = [f"| G1 | `pass` | 0 | {g1_adv} | {g1_note} |", f"| G2 | {g2} |", "| G3 | `pass` | 0 | 0 |  |",
             f"| G4 | `incomplete` | 0 | 0 | {G4_NOTE} |"]
-    return _fx_log("# VibeSec 閘門狀態", "", "| 閘門 | 狀態 | blocking | advisory | 說明 |", "|---|---|---|---|---|",
-                   *rows, "", "**判定：不阻擋**（shadow 只報告）", *(rows if dup else []))
+    tail = ["**判定：不阻擋**（shadow 只報告）"] + ([hypo] if hypo else [])
+    return _fx_log("# VibeSec 閘門狀態", "", f"模式：`{mode}`", "", "| 閘門 | 狀態 | blocking | advisory | 說明 |",
+                   "|---|---|---|---|---|", *rows, "", *tail, *((rows + tail) if dup else []))
 
 
 WARN_TRIFECTA = "  WARN docs/threat-model.yaml：vibesec.g0.lethal-trifecta-open（advisory，例外）"
@@ -647,6 +693,35 @@ def selftest() -> list[str]:
             return f"完全相同應沒有差異（預期內 {rep.expected}、需要說明 {rep.unexplained}）"
         return f"輸出缺少：{miss}" if miss else None
     check("完全相同：0 項差異；輸出含各節", t_same)
+
+    # ---- 假設判定（#334）：輸出兩邊那一行；只有 PR 有（基準在 #334 之前）算預期內，其餘差異都要說明
+    HYPO_BLOCK = "**假設為 enforce**：exit 2 — G1 incomplete（政策：enforce 下未完成也擋）"
+
+    def t_hypo():
+        bad = []
+        for label, pr_kw, base_kw, want in (
+                ("兩邊相同", {"hypo": HYPO_OK}, {"hypo": HYPO_OK}, (0, 0)),
+                ("兩邊都沒有", {}, {}, (0, 0)),
+                ("只有 PR 有", {"hypo": HYPO_BLOCK}, {}, (1, 0)),
+                ("只有基準有", {}, {"hypo": HYPO_OK}, (0, 1)),
+                ("PR 為 enforce 且沒有、基準有", {"mode": "enforce"}, {"hypo": HYPO_OK}, (1, 0)),
+                ("兩邊不同", {"hypo": HYPO_BLOCK}, {"hypo": HYPO_OK}, (0, 1))):
+            rep, e, u = cls(_fx_side(summary=_fx_summary(**pr_kw)), _fx_side(249, summary=_fx_summary(**base_kw)))
+            text = "\n".join(rep.lines)
+            shown = all(h in text for h in (pr_kw.get("hypo"), base_kw.get("hypo")) if h) and "## 假設判定" in text
+            if (e, u) != want or not shown:
+                bad.append(f"{label}：應為 預期內 {want[0]}、需要說明 {want[1]} 並輸出兩邊（得到 {e}、{u}；{rep.expected}{rep.unexplained}）")
+        return "；".join(bad) or None
+    check("假設判定：輸出兩邊、依規則分類", t_hypo)
+
+    def t_hypo_bad():
+        text = _fx_summary(hypo=HYPO_OK) + "\n" + _fx_log(HYPO_BLOCK)
+        try:
+            parse_hypothetical(text)
+        except InputError:
+            return None
+        return "同一份 log 有兩種假設判定 → 無法比對"
+    check("假設判定：同一份 log 兩種不同的行 → 無法比對", t_hypo_bad)
 
     def t_others_both_sides():
         rep, _, _ = cls(_fx_side(), _fx_side(249, checks=_fx_checks(extra=[DEPENDABOT])))
