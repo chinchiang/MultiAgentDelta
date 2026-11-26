@@ -248,9 +248,13 @@ def enforce(gates, *, mode, incomplete_blocking_gates, report_only=None, title="
         md.append(f"| {r['gate']} | {shown[r['gate']]} | {'-' if r['blocking'] is None else r['blocking']} | "
                   f"{'-' if r['advisory'] is None else r['advisory']} | {_cell(r['reason'])} |")
     md += ["", "> incomplete ≠ pass：工具缺席／逾時／API 失敗的閘門不視為通過。", ""]
-    if block or errors:
+    # 判定行寫實際結果（#336）：enforce 下有阻擋原因或 errors 時 code 必不為 0，與以前相同；
+    # shadow／靶場只報告時 errors（政策讀不到）不擋，改印設定錯誤警告，不讓它看起來像正常通過（規則 2）
+    if code:
         md.append("**判定：阻擋** — " + _cell("；".join(errors + block)))
     else:
+        if errors:
+            md.append("⚠ 設定錯誤：" + _cell("；".join(errors)))
         why = "shadow 只報告" if mode == "shadow" else (report_only or "沒有 blocking 發現")
         md.append(f"**判定：不阻擋**（{_cell(why)}）" + ("；" + _cell("；".join(notes)) if notes else ""))
     if hypo:
@@ -617,6 +621,29 @@ def selftest() -> list[str]:
            if ln.startswith(HYPO)]
     if got != [want]:
         fails.append(f"假設判定的 summary 行「shadow 政策讀不到」應寫明原因 {want!r}（得到 {got}）")
+    # #336：判定行寫實際結果；政策讀不到但實際不擋（shadow、靶場只報告）→ 另印設定錯誤警告，不讓它看起來像正常通過
+    WARN = "⚠ 設定錯誤："
+    POL_ERR = "blocking-policy 無法讀取：未完成的閘門一律視為阻擋"
+    for label, mode, pol, rep, want_code, want_verdict, want_warn in [
+        ("shadow＋政策讀不到", "shadow", None, None, 0, "**判定：不阻擋**（shadow 只報告）", WARN + POL_ERR),
+        ("shadow 政策可讀", "shadow", inc, None, 0, "**判定：不阻擋**（shadow 只報告）", None),
+        # enforce：字面值取自 #336 之前 main 的輸出，一字不變、不印警告（原因已在判定行）
+        ("enforce＋政策讀不到", "enforce", None, None, 2, "**判定：阻擋** — " + POL_ERR, None),
+        ("靶場只報告＋政策讀不到", "enforce", None, "靶場只報告", 0, "**判定：不阻擋**（靶場只報告）", WARN + POL_ERR),
+        ("shadow 靶場只報告＋政策讀不到（shadow 優先，維持現狀）", "shadow", None, "靶場只報告", 0, "**判定：不阻擋**（shadow 只報告）",
+         WARN + POL_ERR),
+    ]:
+        d = enforce({"G3": g("G3", "pass")}, mode=mode, incomplete_blocking_gates=pol, report_only=rep)
+        lines = d["markdown"].split("\n")
+        vlines = [ln for ln in lines if ln.startswith("**判定：")]
+        warns = [ln for ln in lines if ln.startswith(WARN)]
+        if d["code"] != want_code or vlines != [want_verdict] or warns != ([want_warn] if want_warn else []):
+            fails.append(f"判定行與設定錯誤警告「{label}」：應為 exit {want_code}、{want_verdict!r}、警告 {want_warn!r}"
+                         f"（得到 {d['code']}、{vlines}、{warns}）")
+    warns = [ln for ln in enforce({"G3": g("G3", "pass")}, mode="shadow", incomplete_blocking_gates=inc,
+                                  errors=["see [x](http://evil) @bob |a"])["markdown"].split("\n") if ln.startswith(WARN)]
+    if len(warns) != 1 or "\\[x\\]\\(http://evil\\)" not in warns[0] or "@bob" in warns[0] or "\\|a" not in warns[0]:
+        fails.append(f"設定錯誤警告須跳脫連結、表格與 @（得到 {warns}）")
     d = enforce({"G3": g("G3", "incomplete", reason="see [x](http://evil) @bob |a")}, mode="enforce", incomplete_blocking_gates=None)
     if d["code"] != 2 or "\\[x\\]\\(http://evil\\)" not in d["markdown"] or "@bob" in d["markdown"] or "\\|a" not in d["markdown"]:
         fails.append("enforce：政策讀不到時未完成一律擋；Markdown 須跳脫連結、表格與 @")

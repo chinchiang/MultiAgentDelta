@@ -194,6 +194,8 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 
 shadow 下（靶場只報告除外），同一份規則再算一次假設判定（`GLOSSARY.md`「假設判定」、#334）：summary 在判定行之後多印一行 `**假設為 enforce**：exit N — 原因`（exit 0 時為 `exit 0（沒有 blocking 發現；依政策只報告的閘門）`）。實際退出碼仍是 `0`。shadow → enforce 的觀察期以這一行計數（#333）；`scripts/compare_ci.py` 會讀出兩邊的這一行並比對。
 
+判定行一律寫實際結果：只有實際退出碼不是 `0` 時才寫「**判定：阻擋**」。實際不擋（shadow 或靶場只報告）卻有設定錯誤時（shadow 下是 blocking-policy 讀不到；靶場只報告時也可能是 mode 讀不到），判定行仍寫「**判定：不阻擋**」，但會在它前面另印一行 `⚠ 設定錯誤：<原因>`，讓「讀不到」不會看起來像正常通過（incomplete ≠ pass）；enforce 下原因已經寫在判定行裡，不另印（#336）。
+
 staging 的失敗通知（`.github/scripts/staging-issue.js`）不自行判定：同一步驟以 `scripts/gate_verdict.py blackbox` 計算黑箱健康問題清單，寫入 job output `blackbox_problems`（JSON 字串陣列，空陣列＝健康），notify 照用。靶場看靶場驗收：G5／G6 都要 `fail` 且有 blocking，且 `vibesec.yaml` 列出的工具都有執行；外部目標看是否乾淨（`pass` 或 `not_applicable`）。
 
 ## 9. 報告產物
