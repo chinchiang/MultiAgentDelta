@@ -87,6 +87,7 @@ python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 只有預期內�
 - **ID 掃描**：`validate.py` 會掃 scripts 裡的 `vibesec.gN.*`、`VS-G*-*`，測試資料也一樣，所以要用目錄裡存在的 ID。
 - **不變式會掃到註解**：`step_mode_decisions` 會略過 bash 的註解行，其他不變式不一定。註解裡改寫說法，避開被禁止的字樣。
 - **雙語**：只有雙語集合（見 AGENTS.md「文件語言」）要中英兩段一起改；改 `AGENTS.md` 時要同步改英文譯本 `docs/agents/rules.en.md`；其他文件只寫正體中文。`validate.py` 會檢查集合內的錨點、切換連結與標題結構，以及譯本與 `AGENTS.md` 的標題結構（`scripts/bilingual.py`），句子是否逐一對應要靠 review。
+- **在 worktree 裡跑 validate**：受驗樹是 git worktree（`.git` 是檔案）時，enforce 副本改用 `git clone --local --no-hardlinks` 建一份獨立的 `.git`，HEAD、index 與受驗樹相同，副本裡的 git 操作不會改到原 worktree。所以第 5 步可以直接在 worktree 裡執行（#339）。
 - **selftest 的 mode**：selftest 用 `tree_copy("mode: …")` 固定 mode，不依賴 repo 目前的 `vibesec.yaml`。CI 的 repo-validate 會在 mode 改為 enforce 的副本裡再跑一次 validate，依賴 repo mode 的 selftest 在 PR 階段就會失敗（#223）。
 - **staging-blackbox**：repo 沒有設定 `vars.VIBESEC_TARGET_URL`，所以 staging-blackbox 只會打 job 內啟動的 vulnapp。
 - **合併條件**：`main` 沒有 required status checks。要確認某個 check 是不是合併條件，用 `gh api repos/chinchiang/MultiAgentDelta/rulesets` 查（#209）。
@@ -181,6 +182,7 @@ Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 - **ID scan**: `validate.py` scans scripts for `vibesec.gN.*` and `VS-G*-*`, test data included, so use IDs that exist in the catalogs.
 - **Invariants scan comments**: `step_mode_decisions` skips bash comment lines; other invariants may not. Reword comments to avoid the forbidden strings.
 - **Bilingual docs**: only the bilingual set (see "文件語言" in AGENTS.md) needs both language sections updated together; a change to `AGENTS.md` also updates its English translation `docs/agents/rules.en.md`; all other documents are Traditional Chinese only. `validate.py` checks the anchors, language links, and heading structure inside the set, and that the translation has the same heading structure as `AGENTS.md` (`scripts/bilingual.py`); sentence-by-sentence correspondence is left to review.
+- **Running validate in a worktree**: when the project tree is a git worktree (`.git` is a file), the enforce copy builds its own independent `.git` with `git clone --local --no-hardlinks`; its HEAD and index match the project tree, and git operations in the copy never touch the original worktree. Step 5 can therefore run directly inside a worktree (#339).
 - **Selftest mode**: selftests pin the mode with `tree_copy("mode: …")` instead of relying on the repo's current `vibesec.yaml`. CI's repo-validate runs validate again in a copy whose mode is enforce, so a selftest that depends on the repo's mode fails at the PR stage (#223).
 - **staging-blackbox**: the repo has no `vars.VIBESEC_TARGET_URL`, so staging-blackbox only hits the vulnapp started inside the job.
 - **Merge requirements**: `main` has no required status checks. To check whether a given check gates merging, query `gh api repos/chinchiang/MultiAgentDelta/rulesets` (#209).

@@ -49,6 +49,25 @@ SET_ENFORCE = ("import pathlib, sys; sys.path.insert(0, sys.argv[1] + '/scripts'
                "set_mode_line(pathlib.Path(sys.argv[1]) / 'vibesec.yaml', 'mode: enforce')")
 
 
+def _independent_git_dir(project: pathlib.Path, copy: pathlib.Path) -> None:
+    """受驗樹是 git worktree（.git 是 gitdir: 檔案，#339）→ 在 copy/.git 建一份獨立的 git 目錄：不得只複製那個檔案，
+    否則副本會和原 worktree 共用 HEAD 與 index。git clone --local --no-hardlinks（整份複製 objects，含已 add 未 commit 的 blob；
+    不用 hardlink：暫存目錄常與 repo 不在同一個裝置，hardlink 會失敗而 git 不會退回複製）
+    → HEAD 與受驗樹相同（從 worktree 路徑 clone，git 取的是該 worktree 的 HEAD：detached 就是同一個 commit，在分支上就保留分支名；
+      selftest 兩種情境都驗）→ index 取受驗樹的 index（git ls-files 一致）
+    → 移除指回受驗樹的 origin（副本裡的 git 操作碰不到原樹）。失敗 → OSError／CalledProcessError（呼叫端轉成 CopyProblem）。"""
+    git = lambda root, *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, check=True).stdout.decode().strip()
+    index = pathlib.Path(git(project, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+    staging = copy.parent / "clone"
+    subprocess.run(["git", "clone", "-q", "--local", "--no-hardlinks", "--no-checkout", str(project), str(staging)], capture_output=True, check=True)
+    copy.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(staging / ".git"), str(copy / ".git"))
+    shutil.rmtree(staging)
+    if index.is_file():
+        shutil.copy2(index, copy / ".git/index")
+    git(copy, "remote", "remove", "origin")
+
+
 @contextlib.contextmanager
 def enforce_copy(project: pathlib.Path):
     """project 的副本，內容對齊 CI checkout 出來的樹：git 追蹤的檔案（取工作目錄的內容，含尚未 commit 的修改）、
@@ -69,9 +88,13 @@ def enforce_copy(project: pathlib.Path):
                     continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst, follow_symlinks=False)
-            shutil.copytree(project / ".git", copy / ".git", symlinks=True)
+            if (project / ".git").is_dir():
+                shutil.copytree(project / ".git", copy / ".git", symlinks=True)
+            else:
+                _independent_git_dir(project, copy)
         except (OSError, shutil.Error, subprocess.CalledProcessError) as e:
-            raise CopyProblem(f"複製 {project} 失敗（需要是 git 樹）：{e}") from e
+            detail = (getattr(e, "stderr", None) or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or [str(e)]
+            raise CopyProblem(f"複製 {project} 失敗（需要是 git 樹）：{detail[0]}") from e
         r = subprocess.run([PYTHON, "-I", "-c", SET_ENFORCE, str(copy)], capture_output=True, text=True)
         lines = (copy / "vibesec.yaml").read_text(encoding="utf-8").splitlines() if (copy / "vibesec.yaml").is_file() else []
         if r.returncode != 0 or [ln for ln in lines if ln.startswith("mode:")] != ["mode: enforce"]:
@@ -258,6 +281,62 @@ def selftest() -> list[str]:
             if copy.exists() or "mode: shadow" not in (src / "vibesec.yaml").read_text(encoding="utf-8"):
                 return f"離開後刪掉副本、原本的樹不動（副本存在：{copy.exists()}）"
     check("enforce_copy：保留 .git、改 mode、用完刪除", t_copy_ok)
+
+    def t_copy_worktree():   # #339：受驗樹是 git worktree（.git 是 gitdir: 檔案）→ 副本有獨立的 git 目錄、狀態與受驗樹一致
+        with tempfile.TemporaryDirectory() as d:
+            src = small_tree(d, "version: 1\nmode: shadow\nrisk_tier: L3\n")
+            wt = pathlib.Path(d, "wt")
+            run = lambda root, *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=True).stdout
+            run(src, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
+            (wt / "vibesec.yaml").write_text("version: 1\nmode: shadow\nrisk_tier: L3\n# 尚未 commit 的修改\n", encoding="utf-8")
+            (wt / "staged.txt").write_text("已 git add、尚未 commit\n", encoding="utf-8"); run(wt, "add", "staged.txt")
+            (wt / "new.txt").write_text("尚未 git add 的新檔\n", encoding="utf-8")
+            index = lambda root: pathlib.Path(run(root, "rev-parse", "--path-format=absolute", "--git-path", "index").strip()).read_bytes()
+            before = (run(wt, "rev-parse", "HEAD"), index(wt), run(src, "rev-parse", "HEAD"), index(src))
+            if not (wt / ".git").is_file():
+                return "測試前提：worktree 的 .git 應為檔案"
+            with enforce_copy(wt) as copy:
+                copy = pathlib.Path(copy)
+                if not (copy / ".git").is_dir() or not (copy / ".git/HEAD").is_file():
+                    return f"副本的 .git 應為獨立的目錄（得到 is_dir={(copy / '.git').is_dir()}）"
+                if run(copy, "rev-parse", "HEAD") != before[0]:
+                    return "副本的 HEAD 應與受驗樹相同"
+                if run(copy, "ls-files", "--cached") != run(wt, "ls-files", "--cached"):
+                    return f"副本的 git ls-files --cached 應與受驗樹相同（得到 {run(copy, 'ls-files', '--cached')!r}）"
+                text = (copy / "vibesec.yaml").read_text(encoding="utf-8")
+                if "尚未 commit 的修改" not in text or not (copy / "new.txt").is_file() or not (copy / "staged.txt").is_file():
+                    return "副本應含尚未 commit 的修改、已 add 的檔與未追蹤的新檔"
+                if [ln for ln in text.splitlines() if ln.startswith("mode:")] != ["mode: enforce"]:
+                    return f"副本的 mode 應改成 enforce（得到 {text!r}）"
+                missing = [ln.split()[1] for ln in run(copy, "ls-files", "-s").splitlines()
+                           if subprocess.run(["git", "-C", str(copy), "cat-file", "-e", ln.split()[1]]).returncode != 0]
+                if missing:
+                    return f"副本的 index 指向的物件都要在副本裡（含已 add 未 commit 的 blob；缺 {missing}）"
+                run(copy, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false",
+                    "commit", "-qam", "副本裡的寫入")
+            after = (run(wt, "rev-parse", "HEAD"), index(wt), run(src, "rev-parse", "HEAD"), index(src))
+            if after != before:
+                return "副本裡的 git 寫入不得改到原 worktree 或主 repo 的 HEAD 與 index"
+    check("enforce_copy：受驗樹是 git worktree → 獨立的 .git、狀態一致、不影響原樹（#339）", t_copy_worktree)
+
+    def t_copy_worktree_branch():   # worktree 在分支上 → 副本保留分支名，且沒有指回原樹的 remote
+        with tempfile.TemporaryDirectory() as d:
+            src = small_tree(d, "version: 1\nmode: shadow\nrisk_tier: L3\n")
+            wt = pathlib.Path(d, "wt")
+            run = lambda root, *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=True).stdout
+            run(src, "worktree", "add", "-q", "-b", "feature/x", str(wt), "HEAD")
+            (wt / "feature.txt").write_text("只在分支上的 commit\n", encoding="utf-8")   # 讓 worktree 與主 repo 的 HEAD 分開
+            run(wt, "add", "feature.txt")
+            run(wt, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "分支")
+            if run(wt, "rev-parse", "HEAD") == run(src, "rev-parse", "HEAD"):
+                return "測試前提：worktree 的 HEAD 應與主 repo 不同"
+            with enforce_copy(wt) as copy:
+                ref, remotes = run(copy, "symbolic-ref", "HEAD").strip(), run(copy, "remote").strip()
+                if ref != "refs/heads/feature/x" or run(copy, "rev-parse", "HEAD") != run(wt, "rev-parse", "HEAD"):
+                    return f"副本的 HEAD 應為同一個 commit 上的 refs/heads/feature/x（得到 {ref!r}）"
+                if remotes:
+                    return f"副本不應有指回受驗樹的 remote（得到 {remotes!r}）"
+    check("enforce_copy：worktree 在分支上 → 保留分支名、沒有 remote（#339）", t_copy_worktree_branch)
 
     def t_copy_problem():
         with tempfile.TemporaryDirectory() as d:
