@@ -103,24 +103,24 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 
 ### 5.1 shadow → enforce 的切換與退回
 
-決定見 #333。依 AGENTS.md 規則 1，改 `mode` 與改政策一樣，必須由人在獨立 PR 決定；agent 可以準備 PR、整理證據，但不得合併。
+決定見 #333。依 AGENTS.md 規則 1，改 `mode` 與改政策一樣，必須由人在獨立 PR 決定；agent 可以準備 PR、整理證據，但不得合併。本節的「維護者」指 `.github/CODEOWNERS` 的 code owner（目前只有一位），也就是核准切換、判定系統性失效與執行 bypass 的人。
 
 **範圍**：只有一個全域開關（`vibesec.yaml` 的 `mode`），不做逐閘門切換；要分階段，就用 `blocking-policy.yaml` 控制 blocking 的範圍（ADR 0002）。CI 的 `mode` 取自受信任樹（main），實際受影響的是 pr-gates：staging-blackbox 只有外部目標才受 enforce 影響（打靶場時只報告），nightly 不讀 `mode`。
 
-#### 切換條件（全部滿足才可切）
+#### 切換條件與觀察期（全部滿足才可切）
 
 1. **前置條件**：
-   - `main` 的 ruleset 設好 required status checks（#315），並保留維護者的 bypass（見下方「破窗」）。
+   - `main` 的 ruleset 設好 required status checks（#315），而且保留 bypass（見下方「破窗」）。
    - #325「agent 可先做的部分」全部完成，包括在分支上實跑 enforce 路徑並留下紀錄。
    - #325「需要人決定」第 1 點（G3–G6 的 `incomplete` 是否擋）已定案並合進 main。
    - 假設判定（§8、#334）已經合進 main。
 2. **觀察期的起算**：上述最後兩項都合進 main 之後才起算，之前的 PR 與 nightly 不回補。
-3. **PR**：連續 10 個合併進 main 的 PR。每個 PR 的假設判定只要會擋（exit 1 或 2），就要有處置：真問題已修正；誤報已開 issue，或已由人用獨立 PR 補上政策例外。最近 10 個 PR 中，正常 PR 被假設判定誤擋的次數必須是 0。不沿用 `docs/12` 的驗收門檻，那是多模型審查的增益指標。
-4. **nightly**：觀察期內至少 14 個 UTC 日，有 main 上由 `schedule` 觸發、已經結束的 `nightly-full.yml` run（`workflow_dispatch` 不算；某天沒有 run 就不算那一天，但不重新起算）。nightly 本身就是 fail-closed（閘門不乾淨或工具失敗 → job 變紅並開追蹤 issue），所以以 run 的結論計數，不需要假設判定。結論不是 `success` 的 run，要在追蹤 issue 寫明原因與處置；工具或外部 API 失效要特別標出，那是下方「系統性失效」的前兆。
-5. **觀察期中的政策變更**：放寬（新增例外、移出 blocking、縮小 incomplete 也擋的範圍）不重算；收緊（新增 blocking 規則、擴大 incomplete 也擋的範圍）時，PR 與 nightly 都從該變更合併的時間點重新起算。
+3. **PR**：連續 10 個合併進 main 的 PR，每一個都要記錄，不只記會擋的。假設判定只要會擋，就要有處置。會擋的情況是 exit 1（blocking 發現或閘門 `fail`）或 exit 2（列在 `incomplete_gate_is_blocking_in_enforce` 的閘門未完成，或 mode／政策讀不到），比 #333 原句「blocking 發現或 blocking 閘門 incomplete」略寬，偏 fail-closed。處置方式：真問題已修正；誤報已開 issue，或已由人用獨立 PR 補上政策例外。最近 10 個 PR 中，正常 PR 被假設判定誤擋的次數必須是 0。不沿用 `docs/12-pilot-and-evaluation.md` 的驗收門檻，那是多模型審查的增益指標。
+4. **nightly**：觀察期內至少 14 個 UTC 日，有 main 上由 `schedule` 觸發、已經結束的 `nightly-full.yml` run（`workflow_dispatch` 不算；某天沒有 run 就不算那一天，但不重新起算）。nightly 本身就是 fail-closed（閘門不乾淨或工具失敗 → job 變紅並開追蹤 issue），所以以 run 的結論計數，不需要假設判定。結論不是 `success` 的 run，要在追蹤 issue 寫明原因與處置，分成三類：真問題，附上修正的 PR；誤報，附上 issue 或由人用獨立 PR 補上的政策例外；工具或外部 API 失效，寫明原因與恢復時間，並特別標出，因為那是下方「系統性失效」的前兆。
+5. **觀察期中的政策變更**：放寬（新增政策例外、移出 blocking、從 `incomplete_gate_is_blocking_in_enforce` 移除閘門）不重算；收緊（新增 blocking 規則、在 `incomplete_gate_is_blocking_in_enforce` 加入閘門）時，PR 與 nightly 都從該變更合併的時間點重新起算。
 6. **處置紀錄**：寫在 #333 的一則留言裡，觀察期間持續更新，分兩張表：
-   - PR 表：PR、假設退出碼、原因、處置連結。
-   - nightly 表：日期、run、結論、處置連結。可以用下面的指令查：
+   - PR 表：每個合併的 PR 一列，欄位是 PR、假設退出碼、原因、處置連結。
+   - nightly 表：每個 UTC 日一列，欄位是日期、run、結論、處置連結。可以用下面的指令查：
 
    ```bash
    gh run list --workflow nightly-full.yml --branch main --event schedule --limit 30 \
@@ -132,15 +132,15 @@ shadow 的意思是「不擋」，不是「少做」。shadow 與 enforce 執行
 開一個專門的切換 PR：
 
 - 只改 `vibesec.yaml` 的 `mode: shadow` → `mode: enforce` 一行，以及對應的文件。
-- 內文附上切換條件的證據：`compare_ci.py` 的輸出、處置紀錄留言的連結。
+- 內文附上切換條件的證據：`compare_ci.py` 的輸出、處置紀錄留言的連結，以及 PR 表與 nightly 表。
 - 由 code owner 核准後合併。
 
 #### 退回程序
 
 1. **預設往前修**：單一誤報的處理方式是修工具，或由人用獨立 PR 補上政策例外，不退回 shadow。
-2. **只有系統性失效才整體退回**：某道閘門的工具或外部 API 失效，導致所有 PR 都被擋，而且無法在 1 個工作天內修好。由維護者判定；1 個工作天從第一個被誤擋的 PR 的 summary 時間起算。
+2. **只有系統性失效才整體退回**：某道閘門的工具或外部 API 失效，導致所有 PR 都被擋，而且無法在 1 個工作天內修好。由維護者判定；1 個工作天從第一個被誤擋的 PR 的 VibeSec Summary job 結束時間起算。
 3. **退回 PR**：只改 `mode: enforce` → `mode: shadow` 一行。因為 CI 的 `mode` 取自 main，這個 PR 本身也是用 enforce 判定。
-4. **破窗（break-glass）**：如果退回 PR 也被同一個失效擋住，由維護者用 ruleset 的 bypass 合併。這是由人執行，符合規則 1。#315 的 ruleset 因此必須保留維護者的 bypass。
+4. **破窗（break-glass）**：如果退回 PR 也被同一個失效擋住，由維護者用 ruleset 的 bypass 合併。這是由人執行，符合規則 1。#315 的 ruleset 因此必須保留維護者（或管理員）的 bypass，不能設成完全無法繞過。
 5. **事後稽核**：每次用 bypass 合併之後，都要開一則 issue 並加上 `break-glass` label，記錄：
    - 觸發原因
    - bypass 合併的 PR
