@@ -133,8 +133,11 @@ class ScreenUnsupportedEcosystems(_ScreenCase):
         self.assertEqual(out.problems, (self.UNSUPPORTED + "rust（Cargo.toml）、go（go.mod）",))   # 照路徑排序
         self.assertEqual([(c["control_id"], c["state"]) for c in out.coverage],
                          [("VS-G1-SLOPSQUAT", "untested"), ("VS-G1-COOLDOWN", "untested"), ("VS-G1-INSTALL-HOOK", "untested")])
-        self.assertIn("go（go.mod）", out.to_stdout().get("status_reason") or "")
-        self.assertIn("incomplete", out.result_line())
+        stdout = out.to_stdout()
+        self.assertIn("go（go.mod）", stdout.get("status_reason") or "")
+        # 輸出形狀與結果行比照 #269 的無解析器清單（ADR 0003 對外契約）：走完整掃描的檢視，原因列在 incomplete_checks
+        self.assertIn(self.UNSUPPORTED + "rust（Cargo.toml）、go（go.mod）", stdout.get("incomplete_checks") or ())
+        self.assertEqual(out.result_line(), "\n⚠️ G1 無法完成檢查（網路/registry 失敗或鎖定檔未解析）→ incomplete，絕不視為通過。")
 
     def test_unsupported_in_subdirectory_is_listed_with_relative_path(self):
         self.write("services/api/go.mod", "module x\n")
@@ -180,6 +183,21 @@ class ScreenUnsupportedEcosystems(_ScreenCase):
         out = gs.screen(gs.Request(target=self.D, manifests=("missing/package.json",)), self.env())
         self.assertEqual((out.scope, out.status), ("full", "incomplete"))
         self.assertEqual([c["state"] for c in out.coverage], ["untested"] * 3)
+
+    def test_full_scan_with_only_rule_files_that_mention_no_package_is_not_applicable(self):
+        # 規則檔樣式含 **/*.md：只有 README.md 時，沒有任何套件被檢查 → 仍是 not_applicable（使用者決定，#316 code review）
+        self.write("README.md", "沒有安裝指令。\n")
+        out = gs.screen(gs.Request(target=self.D), self.env(git=FakeGit(tracked=["README.md"])))
+        self.assertEqual((out.status, out.problems), ("pass", ()))
+        self.assertEqual([(c["state"], c["reason"]) for c in out.coverage],
+                         [("not_applicable", "受驗樹沒有任何已知的相依清單")] * 3)
+
+    def test_full_scan_rule_file_mentioning_a_package_is_checked_not_not_applicable(self):
+        self.write("AGENTS.md", "依賴安裝：pip install totally-nonexistent-pkg\n")
+        reg = gr.FakeRegistry({("pypi", "totally-nonexistent-pkg", None): gr.NotFound()})
+        out = gs.screen(gs.Request(target=self.D), self.env(registry=reg, git=FakeGit(tracked=["AGENTS.md"])))
+        self.assertIn("vibesec.g1.rules-file-unknown-package", {f["rule_id"] for f in out.findings})
+        self.assertNotIn("not_applicable", [c["state"] for c in out.coverage])
 
     def test_full_scan_without_any_known_manifest_is_not_applicable(self):
         self.write("src/main.c", "int main(void) { return 0; }\n")   # 不是清單也不是規則檔（README.md 會被當成規則檔）

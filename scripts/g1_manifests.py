@@ -71,15 +71,15 @@ def classify(path, *, view: str = "screen") -> Classified:
     if view not in VIEWS:
         raise ValueError(f"view 必須是 {VIEWS} 之一：{view!r}")
     s = path if isinstance(path, str) else Path(path).as_posix()
-    is_lock = bool(LOCKFILE_RE.search(s))
+    is_lock, eco = bool(LOCKFILE_RE.search(s)), None
     if view == "sbom":
         kind = "parsed" if is_lock else "unparsed" if LOCK_UNPARSED_RE.search(s) else "other"
     elif not MANIFEST_RE.search(s):
         eco = next((e for e, rx in _UNSUPPORTED_RE if rx.search(s)), None)
-        return Classified("unsupported", is_lock, eco) if eco else Classified("other", is_lock)
+        kind = "unsupported" if eco else "other"
     else:
         kind = "unparsed" if UNPARSED_RE.search(Path(s).name) else "parsed"
-    return Classified(kind, is_lock)
+    return Classified(kind, is_lock, eco)
 
 
 # ---------------------------------------------------------------- 回傳形狀
