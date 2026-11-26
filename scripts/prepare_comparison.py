@@ -128,10 +128,10 @@ def select_cases(cases: list[dict], split: str, split_cfg: dict, salt: str) -> t
 
 
 def build(cases: list[dict], split_cfg: dict, providers_cfg: dict, arms: dict, data_class: str = "internal",
-          split: str = "held_out", salt: str | None = None, *, key: bytes | None = None) -> dict:
+          split: str = "held_out", salt: str | None = None, *, pepper: bytes | None = None) -> dict:
     """純函式：回傳要寫出的檔案內容（不寫檔、不呼叫模型）。計畫驗證失敗、沒給指紋金鑰 → ValueError。
-    key：指紋金鑰（vibesec_provenance.fingerprint_key）；每份審查包以它封上 kind=eval-fixture 的來源標記（#329）。"""
-    if key is None: raise ValueError("需要指紋金鑰才能封上來源標記（review_provider 只送出標記有效的審查包）")
+    pepper：指紋金鑰（vibesec_provenance.load_pepper）；每份審查包以它封上 kind=eval-fixture 的來源標記（#329）。"""
+    if pepper is None: raise ValueError("需要指紋金鑰才能封上來源標記（review_provider 只送出標記有效的審查包）")
     if data_class not in DATA_CLASSES: raise ValueError(f"data_class 必須是 {'／'.join(DATA_CLASSES)}")
     errs = validate_arms(arms, data_class, providers_cfg)
     if errs: raise ValueError("三組計畫不符 providers.yaml／規則 6、7：\n  " + "\n  ".join(errs))
@@ -146,7 +146,7 @@ def build(cases: list[dict], split_cfg: dict, providers_cfg: dict, arms: dict, d
                "finding": {"title": "盲測案例：input 是否含有安全缺陷", "claim": "input 含有應阻擋或修正的安全缺陷"},
                "instructions": INSTRUCTIONS, "input": k["input"]}
         # 合成評測案例刻意不遮罩（G2 案例的假祕密正是要模型找的）；標記只證明出自本工具、之後沒被改過
-        pkt = provenance.seal(pkt, "eval-fixture", key)
+        pkt = provenance.seal(pkt, "eval-fixture", pepper)
         raw = json.dumps(pkt, ensure_ascii=False, indent=2) + "\n"
         packets[f"packets/{pid}.json"] = raw
         e = c["expected"]
@@ -230,7 +230,7 @@ def _fixture():
 def selftest() -> list[str]:
     fails = []
     K = b"k" * 40
-    B = lambda *a, **kw: build(*a, key=K, **kw)   # 指紋金鑰（selftest 注入，不碰真的家目錄）
+    B = lambda *a, **kw: build(*a, pepper=K, **kw)   # 指紋金鑰（selftest 注入，不碰真的家目錄）
     from vibesec_provenance import FIELD as PROV, verify as prov_verify
     cases, split, prov, arms = _fixture()
     r = B(cases, split, prov, arms, "internal", "held_out", "00" * 16)
@@ -301,23 +301,17 @@ def selftest() -> list[str]:
         fails.append(f"沒有指紋金鑰 → 應為 ValueError（得到 {type(e).__name__}）")
     # CLI：拿不到指紋金鑰 → 退出碼 4、不寫任何檔案（不自動建立金鑰；只有 review_packet 會）
     with tempfile.TemporaryDirectory() as h:
-        saved = {k: os.environ.get(k) for k in ("VIBESEC_FINGERPRINT_KEY", "HOME")}
-        os.environ["VIBESEC_FINGERPRINT_KEY"], os.environ["HOME"] = "", h
         out = pathlib.Path(h) / "exp"
-        try:
-            import contextlib, io
-            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
-                rc = main(["prepare_comparison.py", "prepare", "--out", str(out)])
-        finally:
-            for k, v in saved.items():
-                if v is None: os.environ.pop(k, None)
-                else: os.environ[k] = v
+        import contextlib, io
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            rc = main(["prepare_comparison.py", "prepare", "--out", str(out)], environ={"HOME": h})
         if rc != 4 or out.exists() or (pathlib.Path(h) / ".config").exists():
             fails.append(f"CLI 拿不到指紋金鑰 → 退出碼 4、不寫檔、不建立金鑰（得到 {rc}，out 存在 {out.exists()}）")
     return fails
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], environ=None) -> int:
+    """environ 只給 selftest 注入（指紋金鑰與家目錄）；預設 os.environ。"""
     if argv[1:2] == ["selftest"]:
         fails = selftest()
         for f in fails: print(f"FAIL {f}")
@@ -338,13 +332,13 @@ def main(argv: list[str]) -> int:
             if k not in ARM_LABELS or not v: raise ValueError(f"--arm 格式為 A|B|C=provider[:role],...：{s!r}")
             specs[k] = v
         if a.salt: bytes.fromhex(a.salt)
-        key = provenance.fingerprint_key()   # 不自動建立：沒有就照下面的錯誤處理結束（只有 review_packet 會建立）
+        pepper = provenance.load_pepper(environ)   # 不自動建立：沒有就照下面的錯誤處理結束（只有 review_packet 會建立）
         if a.split != "held_out": print(f"注意：--split {a.split} 含 held_in 案例，結果不可當作未調整 prompt 的量測", file=sys.stderr)
         r = build(load_cases(), yaml.safe_load((ROOT / "evals/split.yaml").read_text(encoding="utf-8")),
                   yaml.safe_load((ROOT / "config/providers.yaml").read_text(encoding="utf-8")),
-                  {k: parse_arm(v) for k, v in specs.items()}, a.data_class, a.split, a.salt, key=key)
+                  {k: parse_arm(v) for k, v in specs.items()}, a.data_class, a.split, a.salt, pepper=pepper)
         write(r, a.out)
-    except (ValueError, OSError, provenance.KeyUnavailable) as e:
+    except (ValueError, OSError, provenance.PepperUnavailable) as e:
         print(f"錯誤：{e}", file=sys.stderr); return 4
     p = r["plan"]
     print(f"prepared_not_executed：{p['packets']} 個審查包（排除 {p['excluded_count']}），{p['calls_total']} 次 call "

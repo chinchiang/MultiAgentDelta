@@ -3,10 +3,11 @@
 prepare_comparison（合成評測案例），而且產生之後沒被改過。review_provider 只送出標記有效的審查包。
 
 公開入口（interface）：
-  fingerprint_key(environ=None, home=None, create=False) -> bytes
-      指紋金鑰：環境變數 VIBESEC_FINGERPRINT_KEY（空字串視同沒有）；否則 ~/.config/vibesec/fingerprint-key。
+  load_pepper(environ=None, home=None, create=False) -> bytes
+      指紋金鑰：環境變數 VIBESEC_FINGERPRINT_KEY（空字串視同沒有）；否則 ~/.config/vibesec/fingerprint-key
+      （家目錄：home 參數 → environ 的 HOME → Path.home()，注入的 environ 也決定讀哪個家目錄）。
       create=True 時沒有就建立（隨機 32 bytes 的 hex，權限 0600；只有 review_packet 這樣用）。
-      短於 32 bytes、權限比 0600 寬、讀不到或建不出來 → KeyUnavailable（訊息不含金鑰）。
+      短於 32 bytes、權限比 0600 寬、讀不到或建不出來 → PepperUnavailable（訊息不含金鑰）。
   seal(packet, kind, key) -> dict
       回傳加上 provenance = {kind, key_id, hmac} 的副本。kind 必須是 KINDS 之一。
   verify(packet, key) -> str | None
@@ -22,28 +23,29 @@ HMAC-SHA256 涵蓋整份審查包（provenance 除外），序列化固定為鍵
 from __future__ import annotations
 import hashlib, hmac, json, os, pathlib, secrets, sys, tempfile
 
-KEY_ENV = "VIBESEC_FINGERPRINT_KEY"
-KEY_FILE = pathlib.PurePosixPath(".config/vibesec/fingerprint-key")   # 相對於家目錄
-KEY_MIN = 32   # bytes：太短的金鑰可以連同短祕密一起暴力反推，HMAC 就失去意義
+PEPPER_ENV = "VIBESEC_FINGERPRINT_KEY"
+PEPPER_FILE = pathlib.PurePosixPath(".config/vibesec/fingerprint-key")   # 相對於家目錄
+PEPPER_MIN = 32   # bytes：太短的金鑰可以連同短祕密一起暴力反推，HMAC 就失去意義
 KINDS = ("review-packet", "eval-fixture")
 FIELD = "provenance"
 
 
-class KeyUnavailable(Exception):
+class PepperUnavailable(Exception):
     """拿不到可用的指紋金鑰；訊息不含金鑰。"""
 
 
-def fingerprint_key(environ=None, home: pathlib.Path | None = None, create: bool = False) -> bytes:
+def load_pepper(environ=None, home: pathlib.Path | None = None, create: bool = False) -> bytes:
     env = os.environ if environ is None else environ
-    if env.get(KEY_ENV):
-        if len(env[KEY_ENV].encode()) < KEY_MIN:
-            raise KeyUnavailable(f"{KEY_ENV} 太短（至少 {KEY_MIN} bytes）")
-        return env[KEY_ENV].encode()
-    path = (pathlib.Path.home() if home is None else pathlib.Path(home)) / KEY_FILE
+    if env.get(PEPPER_ENV):
+        if len(env[PEPPER_ENV].encode()) < PEPPER_MIN:
+            raise PepperUnavailable(f"{PEPPER_ENV} 太短（至少 {PEPPER_MIN} bytes）")
+        return env[PEPPER_ENV].encode()
+    base = pathlib.Path(home) if home is not None else (pathlib.Path(env["HOME"]) if env.get("HOME") else pathlib.Path.home())
+    path = base / PEPPER_FILE
     try:
         if not path.exists():
             if not create:
-                raise KeyUnavailable(f"沒有指紋金鑰（{KEY_ENV} 未設定，~/{KEY_FILE} 不存在）")
+                raise PepperUnavailable(f"沒有指紋金鑰（{PEPPER_ENV} 未設定，~/{PEPPER_FILE} 不存在）")
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             try:
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -54,12 +56,12 @@ def fingerprint_key(environ=None, home: pathlib.Path | None = None, create: bool
                 with os.fdopen(fd, "w") as f:
                     f.write(secrets.token_hex(32))
         if os.name == "posix" and path.stat().st_mode & 0o077:   # 只在建立時給 0600 不夠：既有檔被放寬就拒絕
-            raise KeyUnavailable(f"指紋金鑰檔 ~/{KEY_FILE} 的權限太寬（群組或其他人可存取）：chmod 600 後再執行")
+            raise PepperUnavailable(f"指紋金鑰檔 ~/{PEPPER_FILE} 的權限太寬（群組或其他人可存取）：chmod 600 後再執行")
         data = path.read_bytes().strip()
     except OSError as e:
-        raise KeyUnavailable(f"指紋金鑰讀不到也建不出來（{KEY_ENV} 未設定；~/{KEY_FILE}：{type(e).__name__}）") from None
-    if len(data) < KEY_MIN:
-        raise KeyUnavailable(f"指紋金鑰檔 ~/{KEY_FILE} 太短或是空的（至少 {KEY_MIN} bytes）")
+        raise PepperUnavailable(f"指紋金鑰讀不到也建不出來（{PEPPER_ENV} 未設定；~/{PEPPER_FILE}：{type(e).__name__}）") from None
+    if len(data) < PEPPER_MIN:
+        raise PepperUnavailable(f"指紋金鑰檔 ~/{PEPPER_FILE} 太短或是空的（至少 {PEPPER_MIN} bytes）")
     return data
 
 
@@ -68,7 +70,7 @@ def _canonical(packet: dict) -> bytes:
     return json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def key_id(key: bytes) -> str:
+def pepper_tag(key: bytes) -> str:
     """金鑰 SHA-256 的前 8 hex：分辨「另一把金鑰」與「內容被改過」，無法反推金鑰。"""
     return hashlib.sha256(key).hexdigest()[:8]
 
@@ -81,7 +83,7 @@ def seal(packet: dict, kind: str, key: bytes) -> dict:
     if kind not in KINDS:
         raise ValueError(f"kind 必須是 {'／'.join(KINDS)} 之一：{kind!r}")
     out = strip(packet)
-    out[FIELD] = {"kind": kind, "key_id": key_id(key), "hmac": _mac(out, kind, key)}
+    out[FIELD] = {"kind": kind, "key_id": pepper_tag(key), "hmac": _mac(out, kind, key)}
     return out
 
 
@@ -95,9 +97,13 @@ def verify(packet, key: bytes) -> str | None:
         return "來源標記格式不正確"
     if p["kind"] not in KINDS:
         return f"來源標記的 kind 不認得：{p['kind']!r}"
-    if p["key_id"] != key_id(key):
-        return f"來源標記由另一把金鑰產生（key_id {p['key_id']}，本機 {key_id(key)}）"
-    if not hmac.compare_digest(p["hmac"], _mac(packet, p["kind"], key)):
+    if p["key_id"] != pepper_tag(key):
+        return f"來源標記由另一把金鑰產生（key_id {p['key_id']}，本機 {pepper_tag(key)}）"
+    try:
+        want = _mac(packet, p["kind"], key)
+    except (ValueError, TypeError):   # 例如不成對的 surrogate、不能序列化的值：無法驗證就不送（fail-closed）
+        return "審查包含無法序列化的內容，無法驗證來源標記"
+    if not hmac.compare_digest(p["hmac"], want):
         return "內容在標記後被改過（HMAC 不符）"
     return None
 
@@ -125,7 +131,7 @@ def selftest() -> list[str]:
         s = seal(pkt, "review-packet", K)
         p = s.get(FIELD) or {}
         if set(p) != {"kind", "key_id", "hmac"} or p["kind"] != "review-packet" or len(p["hmac"]) != 64 or len(p["key_id"]) != 8:
-            return f"provenance 應為 {{kind, key_id(8 hex), hmac(64 hex)}}（得到 {p}）"
+            return f"provenance 應為 {{kind, pepper_tag(8 hex), hmac(64 hex)}}（得到 {p}）"
         if FIELD in pkt:
             return "seal 不得修改傳入的審查包"
         if verify(s, K) is not None:
@@ -147,6 +153,7 @@ def selftest() -> list[str]:
             ("分級被改", {**s, "data_class": "public"}, "內容在標記後被改過"),
             ("內容被改", {**s, "finding": {**s["finding"], "evidence": "x = 2"}}, "內容在標記後被改過"),
             ("多一個欄位", {**s, "extra": 1}, "內容在標記後被改過"),
+            ("無法序列化", {**s, "finding": {"evidence": "\ud800"}}, "無法序列化"),
         ]
         bad = []
         for label, p, want in cases:
@@ -174,43 +181,45 @@ def selftest() -> list[str]:
         with tempfile.TemporaryDirectory() as h:
             H = pathlib.Path(h)
             long = "z" * 40
-            if fingerprint_key({KEY_ENV: long}, H) != long.encode():
+            if load_pepper({PEPPER_ENV: long}, H) != long.encode():
                 return "有 VIBESEC_FINGERPRINT_KEY 時用它"
-            for env in ({KEY_ENV: "short"},):
+            for env in ({PEPPER_ENV: "short"},):
                 try:
-                    fingerprint_key(env, H); return f"VIBESEC_FINGERPRINT_KEY 短於 {KEY_MIN} bytes 要拒絕"
-                except KeyUnavailable:
+                    load_pepper(env, H); return f"VIBESEC_FINGERPRINT_KEY 短於 {PEPPER_MIN} bytes 要拒絕"
+                except PepperUnavailable:
                     pass
             try:
-                fingerprint_key({}, H); return "create=False 且沒有金鑰檔 → KeyUnavailable，不建立"
-            except KeyUnavailable:
+                load_pepper({}, H); return "create=False 且沒有金鑰檔 → PepperUnavailable，不建立"
+            except PepperUnavailable:
                 pass
             if (H / ".config").exists():
                 return "create=False 不得建立任何檔案"
-            k1 = fingerprint_key({}, H, create=True)
-            f = H / KEY_FILE
-            if not f.is_file() or f.stat().st_mode & 0o777 != 0o600 or len(k1) < KEY_MIN:
+            k1 = load_pepper({}, H, create=True)
+            f = H / PEPPER_FILE
+            if not f.is_file() or f.stat().st_mode & 0o777 != 0o600 or len(k1) < PEPPER_MIN:
                 return "create=True 時建立 0600 的金鑰檔（至少 32 bytes）"
-            if fingerprint_key({}, H) != k1 or fingerprint_key({KEY_ENV: ""}, H) != k1:
+            if load_pepper({}, H) != k1 or load_pepper({PEPPER_ENV: ""}, H) != k1:
                 return "之後讀同一個金鑰檔；空的環境變數視同沒有"
+            if load_pepper({"HOME": str(H)}) != k1:
+                return "沒給 home 時取 environ 的 HOME（注入的 environ 決定讀哪個家目錄）"
             if os.name == "posix":
                 f.chmod(0o644)
                 try:
-                    fingerprint_key({}, H); return "金鑰檔群組或其他人可讀時要拒絕"
-                except KeyUnavailable:
+                    load_pepper({}, H); return "金鑰檔群組或其他人可讀時要拒絕"
+                except PepperUnavailable:
                     pass
                 f.chmod(0o600)
             f.write_bytes(b"short"); f.chmod(0o600)
             try:
-                fingerprint_key({}, H); return f"金鑰檔短於 {KEY_MIN} bytes 要拒絕"
-            except KeyUnavailable:
+                load_pepper({}, H); return f"金鑰檔短於 {PEPPER_MIN} bytes 要拒絕"
+            except PepperUnavailable:
                 pass
             B = H / "blocked"; B.mkdir(); (B / ".config").write_text("x")
             try:
-                fingerprint_key({}, B, create=True); return "讀不到也建不出來時要拒絕"
-            except KeyUnavailable:
+                load_pepper({}, B, create=True); return "讀不到也建不出來時要拒絕"
+            except PepperUnavailable:
                 pass
-    check("fingerprint_key：環境變數、0600 金鑰檔、只有 create=True 才建立", t_key)
+    check("load_pepper：環境變數、0600 金鑰檔、只有 create=True 才建立", t_key)
     return fails
 
 

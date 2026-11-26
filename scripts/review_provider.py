@@ -9,7 +9,7 @@
   - 先驗證審查包的來源標記（provenance，#329、ADR 0004）：只送出 review_packet（kind=review-packet，遮罩過）或
     prepare_comparison（kind=eval-fixture，合成評測案例）產生、之後沒被改過的審查包；缺少、另一把金鑰、內容被改過、
     拿不到指紋金鑰 → state=refused（離開碼 3），note 寫明原因，不送出任何內容。標記本身不送給模型。
-    指紋金鑰規則同 review_packet（vibesec_provenance.fingerprint_key），本工具不建立金鑰。防意外與被誘導，不防讀得到金鑰的偽造者。
+    指紋金鑰規則同 review_packet（vibesec_provenance.load_pepper），本工具不建立金鑰。防意外與被誘導，不防讀得到金鑰的偽造者。
   - 只送給 allowed_data_classes 包含 --data-class 的 provider；不符 → state=refused，不送出任何內容（AGENTS.md 規則 7、docs/08 §12）。
     本工具不替內容判定分級，也不降級；分級由呼叫端依 docs/08 §12 決定。
   - 金鑰只從 api_key_env 讀，不印、不寫入輸出。缺金鑰 → state=missing；逾時 → timeout；HTTP／解析失敗 → error。
@@ -263,15 +263,15 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
     # 來源標記（#329、ADR 0004）：只送出 review_packet（遮罩過）或 prepare_comparison（合成評測案例）產生、之後沒被改過的審查包。
     # 先於分級判斷：呼叫端自報的分級與未遮罩的手組內容都不能讓審查包送出去（規則 7）。防意外與被誘導，不防讀得到金鑰的偽造者
     try:
-        why = provenance.verify(packet, provenance.fingerprint_key(env, pathlib.Path(env["HOME"]) if env.get("HOME") else None))
-    except provenance.KeyUnavailable as e:
+        why = provenance.verify(packet, provenance.load_pepper(env))
+    except provenance.PepperUnavailable as e:
         why = f"無法驗證來源標記：{e}"
     if why:
         return {"provider": provider, "family": p.get("family"), "model": p.get("model"), "role": role,
                 "prompt_version": prompt_version, "data_class": data_class, "state": "refused", "opinion": None,
                 "note": f"審查包沒有有效的來源標記：{why}（未送出任何內容，AGENTS.md 規則 7）"}
-    packet = provenance.strip(packet)   # 標記只給本機驗證用，不送給模型
-    declared = packet.get("data_class") if isinstance(packet, dict) else None
+    packet = provenance.strip(packet)   # 標記只給本機驗證用，不送給模型（verify 已確認是 JSON 物件）
+    declared = packet.get("data_class")
     if declared is not None and declared not in DATA_CLASSES:
         raise ValueError(f"審查包的 data_class {declared!r} 不是 {'／'.join(DATA_CLASSES)} 之一")
     if declared is not None and DATA_CLASSES.index(declared) > DATA_CLASSES.index(data_class):
@@ -421,9 +421,9 @@ def selftest() -> list[str]:
             "flip": mk("flip"), "needhint": mk("needhint"), "bad": mk("bad"), "nojson": mk("nojson"), "noopinions": mk("noopinions"), "badconcern": mk("badconcern"), "badverdict": mk("badverdict"), "norationale": mk("norationale"), "noev": mk("noev"), "http500": mk("http500")},
             "rotation": {"sensitive_data_providers": ["onprem"]}}))
         # 來源標記（#329）：送出的審查包都要帶有效標記；指紋金鑰以 env 注入，HOME 指向暫存目錄，不碰真的家目錄
-        from vibesec_provenance import KEY_ENV, seal
+        from vibesec_provenance import PEPPER_ENV, seal
         PK, home = "p" * 40, str(root)
-        env = {"K": "sk-secret-123", KEY_ENV: PK, "HOME": home}
+        env = {"K": "sk-secret-123", PEPPER_ENV: PK, "HOME": home}
         pk = seal({"finding": {"id": "VS-20260101-00000000"}}, "review-packet", PK.encode())
         r = call("ok", "architecture", "internal", pk, root, env)
         if r["state"] != "ran" or r["opinion"].get("verdict") != "confirm": fails.append(f"正常呼叫應 ran：{r}")
@@ -433,7 +433,7 @@ def selftest() -> list[str]:
             fails.append("應送 temperature 0 與完整 role prompt")
         if "sk-secret-123" in json.dumps(r): fails.append("輸出不得含金鑰")
         # 來源標記（#329）：送出的內容不含 provenance；標記無效 → refused、exit 3 的同一類，note 寫明原因，不得連線
-        if seen and "provenance" in seen[-1]["body"]["messages"][-1]["content"]:
+        if seen and f'"{provenance.FIELD}"' in seen[-1]["body"]["messages"][-1]["content"]:
             fails.append("送給模型的審查包不得含 provenance")
         n = len(seen)
         secret = "AKIA" + "REPRO329EXAMPLEKEY"
@@ -462,15 +462,15 @@ def selftest() -> list[str]:
             fails.append(f"pii + 不在 sensitive_data_providers → refused 且不得送出：{r}")
         r = call("leaky", "architecture", "confidential", pk, root, env)
         if r["state"] != "refused" or len(seen) != n: fails.append("confidential + 不在 sensitive 清單 → refused")
-        r = call("ok", "architecture", "internal", pk, root, {KEY_ENV: PK, "HOME": home})
+        r = call("ok", "architecture", "internal", pk, root, {PEPPER_ENV: PK, "HOME": home})
         if r["state"] != "missing" or len(seen) != n: fails.append("缺金鑰 → missing 且不得送出")
         # note 只含環境變數的名稱、不含金鑰值（#230 PR C；CodeQL 曾把這條 note 判成 password）
         if r["note"] != "K 未設定": fails.append("缺金鑰 → note 寫出環境變數名稱 K")
-        r = call("bed", "architecture", "internal", pk, root, {"AK": "AKIA-only-value-987", KEY_ENV: PK, "HOME": home})
+        r = call("bed", "architecture", "internal", pk, root, {"AK": "AKIA-only-value-987", PEPPER_ENV: PK, "HOME": home})
         if r["state"] != "missing" or len(seen) != n or "AKIA-only-value-987" in json.dumps(r) \
                 or r["note"] != "AK＋AWS_SECRET_ACCESS_KEY 或 AWS_PROFILE_X 未設定 / not configured":
             fails.append("bedrock 金鑰沒給齊 → missing，note 只列環境變數名稱、不含金鑰值，且不得送出")
-        r = call("bed2", "architecture", "internal", pk, root, {"AK": "AKIA-only-value-987", KEY_ENV: PK, "HOME": home})
+        r = call("bed2", "architecture", "internal", pk, root, {"AK": "AKIA-only-value-987", PEPPER_ENV: PK, "HOME": home})
         if r["note"] != "AK＋AWS_SECRET_ACCESS_KEY 未設定 / not configured":
             fails.append("bedrock 沒有 aws_profile_env → note 不列 profile")
         r = call("noenv", "architecture", "internal", pk, root, env)
@@ -485,7 +485,7 @@ def selftest() -> list[str]:
         g["_call"] = lambda *a, **kw: {"note": "x sk-secret-123 y", "opinion": {"k": ["AWS-S3CRET-v", "tok-SESS-1"]}}
         try:
             r = call("bed", "architecture", "internal", pk, root,
-                     {"AK": "sk-secret-123", "AWS_SECRET_ACCESS_KEY": "AWS-S3CRET-v", "AWS_SESSION_TOKEN": "tok-SESS-1", KEY_ENV: PK, "HOME": home})
+                     {"AK": "sk-secret-123", "AWS_SECRET_ACCESS_KEY": "AWS-S3CRET-v", "AWS_SESSION_TOKEN": "tok-SESS-1", PEPPER_ENV: PK, "HOME": home})
             if any(v in json.dumps(r) for v in ("sk-secret-123", "AWS-S3CRET-v", "tok-SESS-1")):
                 fails.append("call() 要把結果裡的金鑰值（api_key_env、AWS secret、session token）再遮一次")
         finally:

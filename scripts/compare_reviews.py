@@ -143,7 +143,7 @@ def selftest() -> list[str]:
             [{"id": "g3-cmdi-pos-01", "gate": "G3", "domain": "general_vulnerabilities", "title": "命令注入正例",
               "input": {"kind": "code", "snippet": "os.system('ping ' + h)"}, "expected": {"should_flag": True}, "held_out": True}]
     split = {"held_out": [c["id"] for c in cases]}
-    r = pc.build(cases, split, prov, arms, "internal", "held_out", "00" * 16, key=b"k" * 40)   # 指紋金鑰注入（#329）
+    r = pc.build(cases, split, prov, arms, "internal", "held_out", "00" * 16, pepper=b"k" * 40)   # 指紋金鑰注入（#329）
     plan, key, fails = r["plan"], r["key"], []
     pid = {v["case_id"]: p for p, v in key["cases"].items()}
     sq, neg, cm = pid["g3-sqli-pos-01"], pid["g3-sqli-neg-01"], pid["g3-cmdi-pos-01"]

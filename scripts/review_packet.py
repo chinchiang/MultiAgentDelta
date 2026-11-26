@@ -45,7 +45,7 @@ BASE_SCAN_NAME = ".vibesec-packet-base.json"   # 掃描用的暫存檔名（不�
 MASK_CONFIG = ROOT / "config/gitleaks-packet.toml"
 G2_CONFIG = ROOT / "config/gitleaks.toml"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
-PEPPER_ENV, PEPPER_FILE, PEPPER_MIN = provenance.KEY_ENV, provenance.KEY_FILE, provenance.KEY_MIN   # 規則在 vibesec_provenance
+from vibesec_provenance import PEPPER_ENV, PEPPER_FILE, PEPPER_MIN   # noqa: E402  規則在 vibesec_provenance
 
 
 class PacketError(RuntimeError):
@@ -162,11 +162,11 @@ def fingerprint(secret: str, pepper: bytes) -> str:
 
 
 def fingerprint_pepper(environ=None, home: pathlib.Path | None = None) -> bytes:
-    """指紋的金鑰（規則在 vibesec_provenance.fingerprint_key；review_packet 是唯一會在沒有金鑰檔時建立它的地方）。
+    """指紋的金鑰（規則在 vibesec_provenance.load_pepper；review_packet 是唯一會在沒有金鑰檔時建立它的地方）。
     拿不到 → PacketError（不產生審查包）。environ、home 只給 selftest 注入。錯誤訊息不含金鑰。"""
     try:
-        return provenance.fingerprint_key(environ, home, create=True)
-    except provenance.KeyUnavailable as e:
+        return provenance.load_pepper(environ, home, create=True)
+    except provenance.PepperUnavailable as e:
         raise PacketError(f"{e}：不產生審查包") from None
 
 

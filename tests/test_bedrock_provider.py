@@ -28,7 +28,7 @@ class Bedrock(unittest.TestCase):
 
     def call(self, classification='internal', env=None):
         packet = vibesec_provenance.seal(self.packet, 'review-packet', self.prov_key.encode())
-        env = {**(self.env if env is None else env), vibesec_provenance.KEY_ENV: self.prov_key, 'HOME': str(self.root)}
+        env = {**(self.env if env is None else env), vibesec_provenance.PEPPER_ENV: self.prov_key, 'HOME': str(self.root)}
         return provider.call('bedrock','architecture',classification,packet,self.root,env)
 
     def test_no_network_for_disallowed_data_or_missing_secret(self):
