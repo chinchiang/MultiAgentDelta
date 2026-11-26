@@ -123,40 +123,54 @@ def copy_tracked(target: pathlib.Path, dst: pathlib.Path) -> tuple[int, str | No
     return skipped, None
 
 
-def semgrep_tree(target: pathlib.Path, dst: pathlib.Path, base: str | None) -> tuple[list[str], str | None, str | None]:
+def _stderr_tail(r) -> str:
+    return printable(r.stderr.decode("utf-8", "replace").strip()[-120:])
+
+
+def semgrep_tree(target: pathlib.Path, dst: pathlib.Path, base: str | None, deadline: float) -> tuple[list[str], str | None, str | None]:
     """外部受驗樹給 semgrep 掃的副本（#317）：semgrep 沒有選項可關掉 .semgrepignore，在受驗樹裡執行就會採信任何深度的
     .semgrepignore；沒有 .semgrepignore 時又套用內建預設忽略（tests/、vendor/…）。所以在副本裡刪除任何深度的 .semgrepignore，
     根目錄放一份空的（也一併停用預設忽略）。
       full：copy_tracked（追蹤檔，去掉 symlink）。
       diff（base）：--baseline-commit 需要 git 且不得有未暫存變更 → git clone --local --no-hardlinks，刪除後在副本裡 commit；
                     base 先在受驗樹解析成 SHA（clone 沒有受驗樹的 remote-tracking ref）。
+    git 呼叫共用 G3 的時間預算（deadline）；git 不在 PATH、逾時、失敗 → 未完成原因（fail-closed，不拋例外）。
     回傳 (移除的 .semgrepignore 相對路徑, 給 --baseline-commit 的 SHA 或 None, 未完成原因或 None)。"""
-    sha = None
-    if base:
-        sha = (_git(target, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}") or "").strip() or None
-        if not sha:
-            return [], None, f"semgrep 副本：base {printable(base)} 在受驗樹找不到"
-        r = subprocess.run(["git", "clone", "-q", "--local", "--no-hardlinks", str(target), str(dst)], capture_output=True)
-        if r.returncode != 0:
-            return [], None, f"semgrep 副本：git clone 失敗（{printable(r.stderr.decode('utf-8', 'replace').strip()[-120:])}）"
-    else:
-        dst.mkdir(parents=True, exist_ok=True)
-        _, problem = copy_tracked(target, dst)
-        if problem:
-            return [], None, f"semgrep 副本：{problem}"
-    removed = sorted(p.relative_to(dst).as_posix() for p in dst.rglob(".semgrepignore") if ".git" not in p.relative_to(dst).parts)
+    def git(*cmd):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError
+        return subprocess.run(["git", *cmd], capture_output=True, timeout=left)
+    removed, sha = [], None
     try:
+        if base:
+            sha = (_git(target, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}") or "").strip() or None
+            if not sha:
+                return [], None, f"semgrep 副本：base {printable(base)} 在受驗樹找不到"
+            r = git("clone", "-q", "--local", "--no-hardlinks", str(target), str(dst))
+            if r.returncode != 0:
+                return [], None, f"semgrep 副本：git clone 失敗（{_stderr_tail(r)}）"
+        else:
+            if deadline - time.monotonic() <= 0:
+                raise TimeoutError
+            dst.mkdir(parents=True, exist_ok=True)
+            _, problem = copy_tracked(target, dst)
+            if problem:
+                return [], None, f"semgrep 副本：{problem}"
+        removed = sorted(p.relative_to(dst).as_posix() for p in dst.rglob(".semgrepignore") if ".git" not in p.relative_to(dst).parts)
         for rel in removed:
             (dst / rel).unlink()
         (dst / ".semgrepignore").write_text("", encoding="utf-8")
+        if base:
+            ident = ["-C", str(dst), "-c", "user.name=vibesec", "-c", "user.email=vibesec@invalid", "-c", "commit.gpgsign=false"]
+            for step in (["add", "-A", "--", "."], ["commit", "-q", "--allow-empty", "-m", "vibesec：移除受測方的 .semgrepignore（#317）"]):
+                r = git(*ident, *step)
+                if r.returncode != 0:
+                    return removed, None, f"semgrep 副本：git {step[0]} 失敗（{_stderr_tail(r)}）"
+    except (TimeoutError, subprocess.TimeoutExpired):
+        return removed, None, "semgrep 副本：G3 時間預算已用完"
     except OSError as e:
-        return removed, None, f"semgrep 副本：無法改寫 .semgrepignore（{type(e).__name__}）"
-    if base:
-        g = ["git", "-C", str(dst), "-c", "user.name=vibesec", "-c", "user.email=vibesec@invalid", "-c", "commit.gpgsign=false"]
-        for cmd in (["add", "-A", "--", "."], ["commit", "-q", "--allow-empty", "-m", "vibesec：移除受測方的 .semgrepignore（#317）"]):
-            r = subprocess.run(g + cmd, capture_output=True)
-            if r.returncode != 0:
-                return removed, None, f"semgrep 副本：git {cmd[0]} 失敗（{printable(r.stderr.decode('utf-8', 'replace').strip()[-120:])}）"
+        return removed, None, f"semgrep 副本：無法建立（{type(e).__name__}）"
     return removed, sha, None
 
 
@@ -265,8 +279,10 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
                 rows["semgrep"] = _run("semgrep", bins.get("semgrep"), cmd + ["."], target, sarifs["semgrep"], deadline)
             else:              # 外部受驗樹（#317）：掃移除了所有 .semgrepignore 的副本
                 sg_dir = tmp / "semgrep-target"
-                removed, sha, sg_problem = semgrep_tree(target, sg_dir, base)
-                if removed:
+                removed, sha, sg_problem = semgrep_tree(target, sg_dir, base, deadline)
+                if sg_problem:
+                    pass   # 副本建不出來：不宣稱已移除或已停用任何東西（原因由 semgrep 那一列帶出）
+                elif removed:
                     shown = "、".join(printable(r) for r in removed[:5]) + (" …" if len(removed) > 5 else "")
                     notes.append(f"已移除目標專案的 {len(removed)} 個 .semgrepignore（{shown}）；semgrep 的預設忽略已停用")
                 else:
@@ -437,6 +453,28 @@ def selftest() -> list[str]:
         if g["status"] == "fail" or g["findings_count"]["blocking"] or g["findings_count"]["advisory"] < 1 \
                 or "筆命中 blocking-policy 例外" not in (g["status_reason"] or ""):
             fails.append(f"本 repo：命中例外 → advisory、status_reason 註明命中筆數（得到 {g['status']}：{g['findings_count']}、{g['status_reason']}）")
+        # #317：diff 副本的 git 不在 PATH（OSError）或逾時 → semgrep error、不崩潰、不在受驗樹上執行
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = str(bindir)   # 只有假工具，沒有 git
+        try:
+            removed, sha, problem = semgrep_tree(repo, D / "sg-nogit", "HEAD", time.monotonic() + 30)
+            if not problem or "semgrep 副本" not in problem:
+                fails.append(f"semgrep_tree：沒有 git → 回報未完成原因，不拋例外（得到 {problem!r}）")
+        except Exception as e:
+            fails.append(f"semgrep_tree：沒有 git 不得拋例外（{type(e).__name__}: {e}）")
+        finally:
+            os.environ["PATH"] = old_path
+        for label, b in (("diff", "HEAD"), ("full", None)):
+            removed, sha, problem = semgrep_tree(repo, D / f"sg-late-{label}", b, time.monotonic() - 1)
+            if not problem or "時間預算" not in problem:
+                fails.append(f"semgrep_tree（{label}）：時間預算用完 → 回報未完成原因（得到 {problem!r}）")
+        (D / "sg-file").write_text("x")   # 副本目的地已是一般檔案 → OSError，不得拋例外
+        try:
+            _, _, problem = semgrep_tree(repo, D / "sg-file", None, time.monotonic() + 30)
+            if not problem or "semgrep 副本" not in problem:
+                fails.append(f"semgrep_tree：建立副本時 OSError → 回報未完成原因（得到 {problem!r}）")
+        except Exception as e:
+            fails.append(f"semgrep_tree：建立副本時 OSError 不得拋例外（{type(e).__name__}: {e}）")
         g, calls = run(repo, base="HEAD")
         sg = calls.get("semgrep", {})
         argv = sg.get("argv", [])
@@ -493,11 +531,12 @@ def selftest() -> list[str]:
             crow = next(t for t in g["tools"] if t["name"] == "checkov")
             if g["status"] != "incomplete" or crow["state"] != "error" or "app/x.py" not in (g["status_reason"] or ""):
                 fails.append(f"追蹤檔無法複製 → checkov error、G3 incomplete（得到 {g['status']}、{crow}）")
-            # #317：semgrep 的副本也建不出來 → semgrep error，不得退回直接掃受驗樹
+            # #317：semgrep 的副本也建不出來 → semgrep error，不得退回直接掃受驗樹；status_reason 不得宣稱已停用預設忽略
             g, calls = run(repo)
             srow = next(t for t in g["tools"] if t["name"] == "semgrep")
-            if srow["state"] != "error" or "semgrep 副本" not in (g["status_reason"] or "") or "semgrep" in calls:
-                fails.append(f"semgrep 副本建不出來 → semgrep error、不在受驗樹上執行（得到 {srow}、{sorted(calls)}）")
+            if srow["state"] != "error" or "semgrep 副本" not in (g["status_reason"] or "") or "semgrep" in calls \
+                    or "預設忽略已停用" in (g["status_reason"] or ""):
+                fails.append(f"semgrep 副本建不出來 → semgrep error、不在受驗樹上執行、不寫預設忽略已停用（得到 {srow}、{sorted(calls)}）")
         except Exception as e:
             fails.append(f"追蹤檔無法複製不得拋例外（{type(e).__name__}: {e}）")
         finally:

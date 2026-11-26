@@ -46,6 +46,11 @@ def repo_problem(target: pathlib.Path) -> str | None:
     return None
 
 
+def _tail(text: str, n: int = 160) -> str:
+    """工具 stderr 的最後 n 字元，跳脫控制字元與 surrogate：內容含受驗方可控的路徑，會寫進 status_reason。"""
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in (text or "").strip()[-n:])
+
+
 def run_gitleaks(binary: str | None, target: pathlib.Path, sarif: pathlib.Path, external: bool,
                  timeout: int) -> dict:
     """執行 gitleaks；回傳 tools[] 一列（state: ran / missing / timeout / error）與失敗原因。"""
@@ -64,27 +69,37 @@ def run_gitleaks(binary: str | None, target: pathlib.Path, sarif: pathlib.Path, 
     # - gitleaks.toml 的全域 allowlist 是為本 repo 寫的（examples/vulnapp、docs/*.md、evals…）→ 改用同一套規則、沒有任何 allowlist
     #   的 gitleaks-packet.toml。
     # - 目標自帶的 .gitleaksignore 不採信：gitleaks 不論 --gitleaks-ignore-path 指向哪裡，都會另外讀「掃描來源」根目錄的
-    #   .gitleaksignore（實測 8.28.0）→ 掃受驗樹的 bare mirror（git clone --mirror：沒有工作目錄，所有 ref 都在，--all 的歷史不少）；
+    #   .gitleaksignore（實測 8.28.0）→ 掃受驗樹的 bare mirror（git clone --mirror：沒有工作目錄，所有 ref 都在；只在其他 linked
+    #   worktree 的 detached HEAD 上、沒有 ref 指向的 commit 不在 mirror 裡，屬已知殘留）；
     #   --gitleaks-ignore-path 指向空目錄（預設是呼叫端的 cwd，在本 repo 裡執行會套用本 repo 的 .gitleaksignore）。
     config = ROOT / ("config/gitleaks-packet.toml" if external else "config/gitleaks.toml")
     t0 = time.monotonic()
+    deadline = t0 + timeout   # mirror 與 gitleaks 共用同一份時間預算
     try:
         with tempfile.TemporaryDirectory(prefix="vibesec-g2-") as tmp:
-            source = target
+            source, empty = target, pathlib.Path(tmp) / "empty"
             if external:
                 source = pathlib.Path(tmp) / "mirror.git"
-                c = subprocess.run(["git", "clone", "-q", "--mirror", "--no-hardlinks", str(target), str(source)],
-                                   capture_output=True, text=True, timeout=timeout)
-                if c.returncode != 0:
-                    row.update(state="error", reason=f"gitleaks 副本：git clone --mirror 失敗（{c.stderr.strip()[-160:]}）")
+                try:
+                    mirror = subprocess.run(["git", "clone", "-q", "--mirror", "--no-hardlinks", str(target), str(source)],
+                                            capture_output=True, text=True, errors="replace", timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    row.update(state="timeout", duration_seconds=round(time.monotonic() - t0, 1),
+                               reason=f"gitleaks 副本：git clone --mirror 逾時（{timeout}s）")
                     return row
-                (pathlib.Path(tmp) / "empty").mkdir()
+                except OSError as e:
+                    row.update(state="error", reason=f"gitleaks 副本：無法執行 git（{type(e).__name__}）")
+                    return row
+                if mirror.returncode != 0:
+                    row.update(state="error", reason=f"gitleaks 副本：git clone --mirror 失敗（{_tail(mirror.stderr)}）")
+                    return row
+                empty.mkdir()
             cmd = [binary, "git", str(source), "--config", str(config),
                    "--report-format", "sarif", "--report-path", str(sarif),
                    "--redact", "--no-banner", "--log-level", "warn", "--exit-code", "0"]
             if external:
-                cmd += ["--ignore-gitleaks-allow", "--gitleaks-ignore-path", str(pathlib.Path(tmp) / "empty")]
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                cmd += ["--ignore-gitleaks-allow", "--gitleaks-ignore-path", str(empty)]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=max(1, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         row.update(state="timeout", duration_seconds=round(time.monotonic() - t0, 1),
                    reason=f"gitleaks 逾時（{timeout}s）")
@@ -95,7 +110,7 @@ def run_gitleaks(binary: str | None, target: pathlib.Path, sarif: pathlib.Path, 
         return row
     row.update(exit_code=p.returncode, duration_seconds=round(time.monotonic() - t0, 1))
     if p.returncode != 0 or not sarif.is_file():
-        row.update(state="error", reason=f"gitleaks exit {p.returncode}：{p.stderr.strip()[-200:]}")
+        row.update(state="error", reason=f"gitleaks exit {p.returncode}：{_tail(p.stderr, 200)}")
         sarif.unlink(missing_ok=True)
         return row
     row["state"] = "ran"
@@ -253,6 +268,25 @@ def selftest() -> list[str]:
         if "目標專案的 .gitleaksignore 不採信（2 筆指紋未套用）" not in why or "需人工確認" in why \
                 or "未套用本 repo 的路徑 allowlist" not in why:
             fails.append(f"外部受驗樹的 .gitleaksignore → status_reason 寫明不採信與筆數、未套用路徑 allowlist（得到 {why}）")
+        # mirror clone 失敗或逾時 → gitleaks error／timeout、G2 incomplete，原因寫明是副本（不是 gitleaks 本身），stderr 跳脫控制字元
+        fakegit = D / "fakegit"; fakegit.mkdir()
+        real_git = shutil.which("git")
+        (fakegit / "git").write_text(f"#!/bin/sh\n[ \"$1\" = clone ] || exec {real_git} \"$@\"\n"
+                                     "[ -n \"$FAKE_GIT_SLEEP\" ] && sleep \"$FAKE_GIT_SLEEP\"\nprintf 'fatal: boom\\033[31m\\n' >&2; exit 128\n")
+        (fakegit / "git").chmod(0o755)
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{fakegit}:{old_path}"
+        try:
+            row = run_gitleaks(str(fake), repo, D / "m.sarif", True, 60)
+            if row["state"] != "error" or "gitleaks 副本" not in (row["reason"] or "") or "\x1b" in (row["reason"] or ""):
+                fails.append(f"mirror clone 失敗 → error、原因寫明 gitleaks 副本、跳脫控制字元（得到 {row}）")
+            os.environ["FAKE_GIT_SLEEP"] = "5"
+            row = run_gitleaks(str(fake), repo, D / "m.sarif", True, 1)
+            if row["state"] != "timeout" or "副本" not in (row["reason"] or ""):
+                fails.append(f"mirror clone 逾時 → timeout、原因寫明是副本逾時，不是 gitleaks 逾時（得到 {row}）")
+        finally:
+            os.environ["PATH"] = old_path
+            os.environ.pop("FAKE_GIT_SLEEP", None)
         (repo / ".gitleaksignore").unlink()
         with temp_policy_root(synthetic) as PR3:
             pol_ext, pol = pol, sarif_gate.load_context(Policy(PR3, project_root=repo))
