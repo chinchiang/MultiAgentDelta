@@ -7,6 +7,8 @@ scripts/env_guard.py；gate JSON 由 scripts/sarif_gate.py 的 derive() 推導�
 --target <dir>：被掃描的 git repo 根目錄（預設本 repo）。設定與阻擋政策一律取自本 repo，輸出寫在本 repo
   （不寫進被測專案）。blocking-policy 的 exceptions 只核准給本 repo 的路徑，掃其他專案時不套用；
   目標專案自己的 `gitleaks:allow` 註解也不採信（--ignore-gitleaks-allow），例外只能經 blocking-policy 核准。
+  掃其他專案時（#317）改用沒有任何 allowlist 的 config/gitleaks-packet.toml（gitleaks.toml 的路徑 allowlist 是為本 repo 寫的），
+  並掃受驗樹的 bare mirror：gitleaks 一定會讀掃描來源根目錄的 .gitleaksignore，mirror 沒有工作目錄 → 目標的 .gitleaksignore 不採信。
 原則（AGENTS.md #2）：gitleaks 缺席／逾時／失敗、目標不是 git repo 根目錄、shallow clone（不是全歷史）
   → incomplete，絕不視為通過。報告只留遮罩（gitleaks --redact），不印出原始祕密（AGENTS.md #7）。
 
@@ -16,7 +18,7 @@ gitleaks 路徑：$VIBESEC_GITLEAKS，否則 PATH 上的 gitleaks（需 v8.19+ �
 退出碼：0 無 blocking 且完成；1 有 blocking 發現；2 無法完成（incomplete）。
 """
 from __future__ import annotations
-import argparse, datetime, json, os, pathlib, shutil, subprocess, sys, time
+import argparse, datetime, json, os, pathlib, shutil, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -44,6 +46,11 @@ def repo_problem(target: pathlib.Path) -> str | None:
     return None
 
 
+def _tail(text: str, n: int = 160) -> str:
+    """工具 stderr 的最後 n 字元，跳脫控制字元與 surrogate：內容含受驗方可控的路徑，會寫進 status_reason。"""
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in (text or "").strip()[-n:])
+
+
 def run_gitleaks(binary: str | None, target: pathlib.Path, sarif: pathlib.Path, external: bool,
                  timeout: int) -> dict:
     """執行 gitleaks；回傳 tools[] 一列（state: ran / missing / timeout / error）與失敗原因。"""
@@ -58,14 +65,41 @@ def run_gitleaks(binary: str | None, target: pathlib.Path, sarif: pathlib.Path, 
                                         timeout=30).stdout.strip().lstrip("v") or None
     except (OSError, subprocess.TimeoutExpired):
         pass
-    cmd = [binary, "git", str(target), "--config", str(ROOT / "config/gitleaks.toml"),
-           "--report-format", "sarif", "--report-path", str(sarif),
-           "--redact", "--no-banner", "--log-level", "warn", "--exit-code", "0"]
-    if external:
-        cmd.append("--ignore-gitleaks-allow")
+    # 外部受驗樹（#317）：
+    # - gitleaks.toml 的全域 allowlist 是為本 repo 寫的（examples/vulnapp、docs/*.md、evals…）→ 改用同一套規則、沒有任何 allowlist
+    #   的 gitleaks-packet.toml。
+    # - 目標自帶的 .gitleaksignore 不採信：gitleaks 不論 --gitleaks-ignore-path 指向哪裡，都會另外讀「掃描來源」根目錄的
+    #   .gitleaksignore（實測 8.28.0）→ 掃受驗樹的 bare mirror（git clone --mirror：沒有工作目錄，所有 ref 都在；只在其他 linked
+    #   worktree 的 detached HEAD 上、沒有 ref 指向的 commit 不在 mirror 裡，屬已知殘留）；
+    #   --gitleaks-ignore-path 指向空目錄（預設是呼叫端的 cwd，在本 repo 裡執行會套用本 repo 的 .gitleaksignore）。
+    config = ROOT / ("config/gitleaks-packet.toml" if external else "config/gitleaks.toml")
     t0 = time.monotonic()
+    deadline = t0 + timeout   # mirror 與 gitleaks 共用同一份時間預算
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        with tempfile.TemporaryDirectory(prefix="vibesec-g2-") as tmp:
+            source, empty = target, pathlib.Path(tmp) / "empty"
+            if external:
+                source = pathlib.Path(tmp) / "mirror.git"
+                try:
+                    mirror = subprocess.run(["git", "clone", "-q", "--mirror", "--no-hardlinks", str(target), str(source)],
+                                            capture_output=True, text=True, errors="replace", timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    row.update(state="timeout", duration_seconds=round(time.monotonic() - t0, 1),
+                               reason=f"gitleaks 副本：git clone --mirror 逾時（{timeout}s）")
+                    return row
+                except OSError as e:
+                    row.update(state="error", reason=f"gitleaks 副本：無法執行 git（{type(e).__name__}）")
+                    return row
+                if mirror.returncode != 0:
+                    row.update(state="error", reason=f"gitleaks 副本：git clone --mirror 失敗（{_tail(mirror.stderr)}）")
+                    return row
+                empty.mkdir()
+            cmd = [binary, "git", str(source), "--config", str(config),
+                   "--report-format", "sarif", "--report-path", str(sarif),
+                   "--redact", "--no-banner", "--log-level", "warn", "--exit-code", "0"]
+            if external:
+                cmd += ["--ignore-gitleaks-allow", "--gitleaks-ignore-path", str(empty)]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=max(1, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         row.update(state="timeout", duration_seconds=round(time.monotonic() - t0, 1),
                    reason=f"gitleaks 逾時（{timeout}s）")
@@ -76,7 +110,7 @@ def run_gitleaks(binary: str | None, target: pathlib.Path, sarif: pathlib.Path, 
         return row
     row.update(exit_code=p.returncode, duration_seconds=round(time.monotonic() - t0, 1))
     if p.returncode != 0 or not sarif.is_file():
-        row.update(state="error", reason=f"gitleaks exit {p.returncode}：{p.stderr.strip()[-200:]}")
+        row.update(state="error", reason=f"gitleaks exit {p.returncode}：{_tail(p.stderr, 200)}")
         sarif.unlink(missing_ok=True)
         return row
     row["state"] = "ran"
@@ -98,9 +132,15 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, binary: str | None, timeou
     project = pol["policy"].for_project(target)          # 受驗樹的政策例外：外部專案 → 沒有任何例外，note 說明
     notes = []
     if external:
-        notes.append(f"{project.note}；目標專案的 gitleaks:allow 註解不採信")
-        if (target / ".gitleaksignore").exists():
-            notes.append("目標專案有 .gitleaksignore，gitleaks 會略過其中的指紋（未經 blocking-policy 核准，需人工確認）")
+        notes.append(f"{project.note}；目標專案的 gitleaks:allow 註解不採信；未套用本 repo 的路徑 allowlist")
+        ignore = target / ".gitleaksignore"
+        if ignore.is_file():
+            try:
+                n = sum(1 for ln in ignore.read_text(encoding="utf-8", errors="replace").splitlines()
+                        if ln.strip() and not ln.lstrip().startswith("#"))
+            except OSError:
+                n = "?"
+            notes.append(f"目標專案的 .gitleaksignore 不採信（{n} 筆指紋未套用）")
     out_dir.mkdir(parents=True, exist_ok=True)
     sarif, envcheck = out_dir / "gitleaks.sarif", out_dir / "g2-envcheck.json"
     problem = repo_problem(target)
@@ -159,6 +199,9 @@ def selftest() -> list[str]:
         fake = D / "gitleaks"
         fake.write_text("#!/bin/sh\n[ \"$1\" = version ] && { echo 8.28.0; exit 0; }\n"
                         "[ -n \"$FAKE_FAIL\" ] && { echo boom >&2; exit 3; }\n"
+                        "[ -n \"$FAKE_ARGS\" ] && { printf '%s\\n' \"$@\" > \"$FAKE_ARGS\"; "
+                        "[ -e \"$2/.gitleaksignore\" ] && echo SRC_HAS_IGNORE >> \"$FAKE_ARGS\"; "
+                        "[ -f \"$2/HEAD\" ] && [ ! -e \"$2/.git\" ] && echo SRC_BARE >> \"$FAKE_ARGS\"; }\n"
                         "while [ $# -gt 0 ]; do [ \"$1\" = --report-path ] && R=$2; shift; done\n"
                         "printf '%s' \"$FAKE_SARIF\" > \"$R\"\n")
         fake.chmod(0o755)
@@ -200,6 +243,60 @@ def selftest() -> list[str]:
         if g["status"] != "pass" or g["findings_count"]["blocking"] or not n \
                 or f"{n} 筆命中 blocking-policy 例外" not in (g["status_reason"] or ""):
             fails.append(f"本 repo：命中例外 → advisory、status_reason 註明命中筆數（得到 {g['status']}：{g['findings_count']}、{g['status_reason']}）")
+        # #317：外部受驗樹 → packet 設定（沒有本 repo 的路徑 allowlist）、不採信目標的 .gitleaksignore；本 repo → 參數不變
+        args_f = D / "args.txt"
+        def args_of(**env):
+            args_f.unlink(missing_ok=True)
+            run(repo, env={"FAKE_SARIF": sarif(), "FAKE_ARGS": str(args_f), **env})
+            if not args_f.exists():   # 紅燈要是 FAIL，不是崩潰
+                fails.append("假 gitleaks 沒有被執行（參數沒有記錄）")
+                return ["", "", "--config", ""], None
+            a = args_f.read_text(encoding="utf-8").splitlines()
+            return a, (a[a.index("--gitleaks-ignore-path") + 1] if "--gitleaks-ignore-path" in a else None)
+        a, ign = args_of()
+        if a[a.index("--config") + 1] != str(ROOT / "config/gitleaks-packet.toml") or ign is None:
+            fails.append(f"外部受驗樹：--config 應為 gitleaks-packet.toml、要有 --gitleaks-ignore-path（得到 {a}）")
+        elif ign == str(repo) or pathlib.Path(ign).resolve() == repo.resolve():
+            fails.append(f"外部受驗樹：--gitleaks-ignore-path 不得指向受驗樹（得到 {ign}）")
+        (repo / ".gitleaksignore").write_text("# 註解\nabc:src/app.py:generic-api-key:1\n\ndef:src/b.py:generic-api-key:2\n")
+        # gitleaks 不論 -i 指向哪裡，都會另外讀「掃描來源」根目錄的 .gitleaksignore（實測 8.28.0）→ 外部受驗樹改掃 bare mirror
+        a, _ = args_of()
+        if a[1] == str(repo) or "SRC_HAS_IGNORE" in a or "SRC_BARE" not in a:
+            fails.append(f"外部受驗樹：gitleaks 掃受驗樹的 bare mirror（沒有工作目錄、沒有 .gitleaksignore），不是受驗樹本身（得到 {a[:2]}、{a[-2:]}）")
+        g = run(repo, env={"FAKE_SARIF": sarif()})
+        why = g["status_reason"] or ""
+        if "目標專案的 .gitleaksignore 不採信（2 筆指紋未套用）" not in why or "需人工確認" in why \
+                or "未套用本 repo 的路徑 allowlist" not in why:
+            fails.append(f"外部受驗樹的 .gitleaksignore → status_reason 寫明不採信與筆數、未套用路徑 allowlist（得到 {why}）")
+        # mirror clone 失敗或逾時 → gitleaks error／timeout、G2 incomplete，原因寫明是副本（不是 gitleaks 本身），stderr 跳脫控制字元
+        fakegit = D / "fakegit"; fakegit.mkdir()
+        real_git = shutil.which("git")
+        (fakegit / "git").write_text(f"#!/bin/sh\n[ \"$1\" = clone ] || exec {real_git} \"$@\"\n"
+                                     "[ -n \"$FAKE_GIT_SLEEP\" ] && sleep \"$FAKE_GIT_SLEEP\"\nprintf 'fatal: boom\\033[31m\\n' >&2; exit 128\n")
+        (fakegit / "git").chmod(0o755)
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{fakegit}:{old_path}"
+        try:
+            row = run_gitleaks(str(fake), repo, D / "m.sarif", True, 60)
+            if row["state"] != "error" or "gitleaks 副本" not in (row["reason"] or "") or "\x1b" in (row["reason"] or ""):
+                fails.append(f"mirror clone 失敗 → error、原因寫明 gitleaks 副本、跳脫控制字元（得到 {row}）")
+            os.environ["FAKE_GIT_SLEEP"] = "5"
+            row = run_gitleaks(str(fake), repo, D / "m.sarif", True, 1)
+            if row["state"] != "timeout" or "副本" not in (row["reason"] or ""):
+                fails.append(f"mirror clone 逾時 → timeout、原因寫明是副本逾時，不是 gitleaks 逾時（得到 {row}）")
+        finally:
+            os.environ["PATH"] = old_path
+            os.environ.pop("FAKE_GIT_SLEEP", None)
+        (repo / ".gitleaksignore").unlink()
+        with temp_policy_root(synthetic) as PR3:
+            pol_ext, pol = pol, sarif_gate.load_context(Policy(PR3, project_root=repo))
+        try:
+            a, ign = args_of()
+        finally:
+            pol = pol_ext
+        if a[a.index("--config") + 1] != str(ROOT / "config/gitleaks.toml") or ign is not None or "--ignore-gitleaks-allow" in a \
+                or a[1] != str(repo.resolve()):
+            fails.append(f"本 repo：參數與以前相同（gitleaks.toml、沒有 --gitleaks-ignore-path）（得到 {a}）")
         g = run(repo, binary=None)
         if g["status"] != "incomplete" or "not found" not in (g["status_reason"] or "") or g["tools"][0]["state"] != "missing":
             fails.append("gitleaks 缺席 → incomplete（state missing），不是 pass")

@@ -141,7 +141,7 @@ python3 scripts/g3_sast.py --target ../MultiAgentBeta [--base <ref>] --out-dir r
 
 | 工具 | 做法 | 原因 |
 |---|---|---|
-| semgrep | 在目標根目錄掃 `.`；外部專案加 `--disable-nosem` | `# nosemgrep` 是目標自己的抑制。目標的 `.semgrepignore` semgrep 一定會讀（沒有公開選項可關）→ 寫進 `status_reason` 待人工確認 |
+| semgrep | 外部專案改掃副本（#317）並加 `--disable-nosem`；本 repo 照舊在根目錄掃 `.` | `# nosemgrep` 是目標自己的抑制。semgrep 沒有選項可關掉 `.semgrepignore`，在受驗樹裡執行就會採信任何深度的 `.semgrepignore`；沒有 `.semgrepignore` 時又套用內建預設忽略（`tests/`、`vendor/`…）。所以外部專案的 semgrep 在副本上執行：full 模式以 `copy_tracked` 複製追蹤檔；diff 模式（`--base`）以 `git clone --local --no-hardlinks` 複製，刪除後在副本裡 commit，`--baseline-commit` 傳在受驗樹解析出的 SHA。副本中任何深度的 `.semgrepignore` 都刪除，根目錄放一份空的（一併停用預設忽略），`status_reason` 寫「已移除目標專案的 N 個 .semgrepignore（…）；semgrep 的預設忽略已停用」。副本建不出來 → semgrep 記 error、G3 `incomplete`，不退回直接掃受驗樹。已知殘留：diff 模式的 baseline 一側由 semgrep 自己 checkout，仍套用 base commit 的 `.semgrepignore`，那些路徑的既有發現會被當成新增（偏嚴） |
 | checkov | 掃目標**追蹤中檔案的暫存副本**（去掉 `.checkov.yaml`／`.checkov.yml` 與 symlink），工作目錄為空的暫存目錄；SARIF 路徑改回相對目標根目錄 | checkov 會自動載入被掃目錄與工作目錄的 `.checkov.yaml`，可停用檢查，或以 `external-checks-dir` 載入並**執行**目標的 Python 檢查；symlink 可能指向主機上的檔案 |
 | trivy | `trivy config <target>`，工作目錄為空的暫存目錄 | trivy 從工作目錄讀 `.trivyignore`／`trivy.yaml` |
 

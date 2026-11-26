@@ -101,7 +101,7 @@ semgrep --config config/semgrep/vibesec-rules.yaml --include '*.py' --include '*
 python3 scripts/g2_secrets.py --target ../MultiAgentBeta --out-dir reports/raw/G2 --gate reports/gates/G2.json
 ```
 
-以本 repo 的 `config/gitleaks.toml` 對目標專案跑 `gitleaks git`（全歷史、`--redact`），再以 `scripts/env_guard.py` 的同一套規則檢查 `.env`，由 `scripts/sarif_gate.py` 推導 G2 gate JSON。gitleaks 缺席／逾時／失敗、目標不是 git repo 根目錄、shallow clone → `incomplete`。外部專案：本 repo 的 `exceptions` 不套用，目標專案自己的 `gitleaks:allow` 不採信（例外只能經 blocking-policy 核准），有 `.gitleaksignore` 時在 `status_reason` 註明。
+對目標專案跑 `gitleaks git`（全歷史、`--redact`；本 repo 用 `config/gitleaks.toml`，外部專案用 `config/gitleaks-packet.toml`，見下文），再以 `scripts/env_guard.py` 的同一套規則檢查 `.env`，由 `scripts/sarif_gate.py` 推導 G2 gate JSON。gitleaks 缺席／逾時／失敗、目標不是 git repo 根目錄、shallow clone → `incomplete`。外部專案（#317）：本 repo 的 `exceptions` 不套用，目標專案自己的 `gitleaks:allow` 不採信（例外只能經 blocking-policy 核准）。`config/gitleaks.toml` 的全域 allowlist 是為本 repo 寫的（`examples/vulnapp/`、`docs/*.md`、`evals/`…），所以外部專案改用同一套規則、沒有任何 allowlist 的 `config/gitleaks-packet.toml`；代價是外部專案的鎖定檔、`${VAR}` 佔位字串等可能出現誤報，當成發現交給人工判斷（fail-closed 的那一側），`status_reason` 註明「未套用本 repo 的路徑 allowlist」。目標自帶的 `.gitleaksignore` 不採信：gitleaks 不論 `--gitleaks-ignore-path` 指向哪裡都會另外讀掃描來源根目錄的 `.gitleaksignore`（實測 8.28.0），所以 gitleaks 改掃受驗樹的 bare mirror（`git clone --mirror --no-hardlinks`：沒有工作目錄；分支、tag、remote-tracking ref、stash 都在。已知殘留：只在受驗樹另一個 linked worktree 的 detached HEAD 上、沒有任何 ref 指向的 commit 不在 mirror 裡），`--gitleaks-ignore-path` 另指向空目錄（預設是呼叫端的 cwd）；有 `.gitleaksignore` 時 `status_reason` 寫「目標專案的 .gitleaksignore 不採信（N 筆指紋未套用）」。mirror 建不出來 → gitleaks 記 error、G2 `incomplete`。
 
 GitHub 原生 Secret Scanning + Push Protection 若可用，開啟後與 gitleaks 並行（互補：GitHub 有合作夥伴驗證金鑰是否有效）。
 

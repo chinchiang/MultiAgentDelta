@@ -7,8 +7,9 @@ custom 檢查）；trivy config；gate JSON 由 scripts/sarif_gate.py 的 derive
 
 --target <dir>：被掃描的 git repo 根目錄（預設本 repo）。設定與阻擋政策一律取自本 repo，輸出寫在本 repo
   （不寫進被測專案）。被測專案自己的抑制設定不採信：
-  - semgrep：--disable-nosem（`# nosemgrep` 不採信）。目標的 .semgrepignore semgrep 一定會讀（沒有公開選項可關），
-    有的話在 status_reason 註明、需人工確認。
+  - semgrep：--disable-nosem（`# nosemgrep` 不採信）。semgrep 沒有選項可關掉 .semgrepignore，所以掃的是副本（#317，
+    semgrep_tree）：副本中任何深度的 .semgrepignore 都刪除、根目錄放一份空的（一併停用 tests/、vendor/ 等預設忽略）；
+    diff 模式以 git clone 建副本、刪除後 commit，--baseline-commit 傳在受驗樹解析出的 SHA。副本建不出來 → semgrep error。
   - checkov：會自動載入被掃目錄的 .checkov.yaml（可停用檢查，或以 external-checks-dir 執行目標的 Python 程式碼），
     所以掃的是目標「追蹤中檔案」的暫存副本（去掉 .checkov.yaml／.checkov.yml 與 symlink），工作目錄為空的暫存目錄。
   - trivy：只從工作目錄讀 .trivyignore／trivy.yaml，以空的暫存目錄執行。
@@ -122,6 +123,57 @@ def copy_tracked(target: pathlib.Path, dst: pathlib.Path) -> tuple[int, str | No
     return skipped, None
 
 
+def _stderr_tail(r) -> str:
+    return printable(r.stderr.decode("utf-8", "replace").strip()[-120:])
+
+
+def semgrep_tree(target: pathlib.Path, dst: pathlib.Path, base: str | None, deadline: float) -> tuple[list[str], str | None, str | None]:
+    """外部受驗樹給 semgrep 掃的副本（#317）：semgrep 沒有選項可關掉 .semgrepignore，在受驗樹裡執行就會採信任何深度的
+    .semgrepignore；沒有 .semgrepignore 時又套用內建預設忽略（tests/、vendor/…）。所以在副本裡刪除任何深度的 .semgrepignore，
+    根目錄放一份空的（也一併停用預設忽略）。
+      full：copy_tracked（追蹤檔，去掉 symlink）。
+      diff（base）：--baseline-commit 需要 git 且不得有未暫存變更 → git clone --local --no-hardlinks，刪除後在副本裡 commit；
+                    base 先在受驗樹解析成 SHA（clone 沒有受驗樹的 remote-tracking ref）。
+    git 呼叫共用 G3 的時間預算（deadline）；git 不在 PATH、逾時、失敗 → 未完成原因（fail-closed，不拋例外）。
+    回傳 (移除的 .semgrepignore 相對路徑, 給 --baseline-commit 的 SHA 或 None, 未完成原因或 None)。"""
+    def git(*cmd):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError
+        return subprocess.run(["git", *cmd], capture_output=True, timeout=left)
+    removed, sha = [], None
+    try:
+        if base:
+            sha = (_git(target, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}") or "").strip() or None
+            if not sha:
+                return [], None, f"semgrep 副本：base {printable(base)} 在受驗樹找不到"
+            r = git("clone", "-q", "--local", "--no-hardlinks", str(target), str(dst))
+            if r.returncode != 0:
+                return [], None, f"semgrep 副本：git clone 失敗（{_stderr_tail(r)}）"
+        else:
+            if deadline - time.monotonic() <= 0:
+                raise TimeoutError
+            dst.mkdir(parents=True, exist_ok=True)
+            _, problem = copy_tracked(target, dst)
+            if problem:
+                return [], None, f"semgrep 副本：{problem}"
+        removed = sorted(p.relative_to(dst).as_posix() for p in dst.rglob(".semgrepignore") if ".git" not in p.relative_to(dst).parts)
+        for rel in removed:
+            (dst / rel).unlink()
+        (dst / ".semgrepignore").write_text("", encoding="utf-8")
+        if base:
+            ident = ["-C", str(dst), "-c", "user.name=vibesec", "-c", "user.email=vibesec@invalid", "-c", "commit.gpgsign=false"]
+            for step in (["add", "-A", "--", "."], ["commit", "-q", "--allow-empty", "-m", "vibesec：移除受測方的 .semgrepignore（#317）"]):
+                r = git(*ident, *step)
+                if r.returncode != 0:
+                    return removed, None, f"semgrep 副本：git {step[0]} 失敗（{_stderr_tail(r)}）"
+    except (TimeoutError, subprocess.TimeoutExpired):
+        return removed, None, "semgrep 副本：G3 時間預算已用完"
+    except OSError as e:
+        return removed, None, f"semgrep 副本：無法建立（{type(e).__name__}）"
+    return removed, sha, None
+
+
 def _relativize_sarif(path: pathlib.Path, copy: pathlib.Path) -> None:
     """checkov 掃副本時回報的路徑帶副本目錄前綴；改成相對受驗樹根目錄，與 semgrep／trivy 一致。"""
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -208,8 +260,6 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
     else:
         if external:
             notes.append(f"{project.note}；# nosemgrep 不採信；checkov 掃描已去除目標的 .checkov.yaml")
-            if (target / ".semgrepignore").exists():
-                notes.append("目標專案有 .semgrepignore，semgrep 會略過其中的路徑（未經 blocking-policy 核准，需人工確認）")
             inline = [printable(f) for f in (_git_z(target, "grep", "-l", "-z", "-E", INLINE_SUPPRESSIONS) or [])]
             if inline:
                 notes.append(f"目標專案有 {len(inline)} 個檔案含 checkov:skip／trivy:ignore 行內註解，工具會採信（需人工確認）："
@@ -219,13 +269,33 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
         # --max-target-bytes=0：semgrep 預設靜默跳過 >1 MB 的檔案；改成照掃，逾時由 sarif_gate 記 incomplete
         cmd += ["--sarif", "--output", str(sarifs["semgrep"]), "--metrics=off", "--disable-version-check", "--quiet",
                 "--max-target-bytes=0"]
-        if base:
-            cmd += ["--baseline-commit", base]
         if external:
             cmd.append("--disable-nosem")
-        rows["semgrep"] = _run("semgrep", bins.get("semgrep"), cmd + ["."], target, sarifs["semgrep"], deadline)
         with tempfile.TemporaryDirectory(prefix="vibesec-g3-") as tmp:
             tmp = pathlib.Path(tmp)
+            if not external:   # 本 repo：在受驗樹裡執行，採信本 repo 自己的 .semgrepignore（CODEOWNERS 保護）
+                if base:
+                    cmd += ["--baseline-commit", base]
+                rows["semgrep"] = _run("semgrep", bins.get("semgrep"), cmd + ["."], target, sarifs["semgrep"], deadline)
+            else:              # 外部受驗樹（#317）：掃移除了所有 .semgrepignore 的副本
+                sg_dir = tmp / "semgrep-target"
+                removed, sha, sg_problem = semgrep_tree(target, sg_dir, base, deadline)
+                if sg_problem:
+                    pass   # 副本建不出來：不宣稱已移除或已停用任何東西（原因由 semgrep 那一列帶出）
+                elif removed:
+                    shown = "、".join(printable(r) for r in removed[:5]) + (" …" if len(removed) > 5 else "")
+                    notes.append(f"已移除目標專案的 {len(removed)} 個 .semgrepignore（{shown}）；semgrep 的預設忽略已停用")
+                else:
+                    notes.append("semgrep 的預設忽略已停用")
+                if sg_problem:   # 不對殘缺的副本執行，也不退回直接掃受驗樹（那樣又會採信目標的 .semgrepignore）
+                    rows["semgrep"] = {"name": "semgrep", "version": None, "state": "error", "exit_code": None,
+                                       "output_ref": str(sarifs["semgrep"]), "duration_seconds": None, "reason": sg_problem}
+                else:
+                    if sha:
+                        cmd += ["--baseline-commit", sha]
+                    rows["semgrep"] = _run("semgrep", bins.get("semgrep"), cmd + ["."], sg_dir, sarifs["semgrep"], deadline)
+                    if rows["semgrep"]["state"] == "ran":
+                        _relativize_sarif(sarifs["semgrep"], sg_dir)
             copy, cwd, ck_out = tmp / "vibesec-target", tmp / "cwd", tmp / "checkov-out"
             copy.mkdir(); cwd.mkdir()
             skipped, copy_problem = copy_tracked(target, copy)
@@ -269,6 +339,12 @@ tool, argv = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
 if argv[:1] in (["--version"], ["version"]):
     print("9.9.9"); sys.exit(0)
 log = {"tool": tool, "argv": argv, "cwd": os.getcwd(), "cwd_files": sorted(os.listdir("."))}
+if tool == "semgrep":   # #317：semgrep 看得到的 .semgrepignore（任何深度）、根目錄那份的內容、副本的 git 狀態
+    import subprocess
+    log["semgrepignores"] = sorted(str(p) for p in pathlib.Path(".").rglob(".semgrepignore") if ".git" not in p.parts)
+    log["root_ignore"] = pathlib.Path(".semgrepignore").read_text() if pathlib.Path(".semgrepignore").is_file() else None
+    log["head_parent"] = subprocess.run(["git", "rev-parse", "HEAD^"], capture_output=True, text=True).stdout.strip() \
+        if pathlib.Path(".git").exists() else None
 if os.environ.get(f"FAKE_{tool.upper()}_EXIT"):
     print("boom", file=sys.stderr); sys.exit(int(os.environ[f"FAKE_{tool.upper()}_EXIT"]))
 if tool == "checkov":
@@ -339,8 +415,12 @@ def selftest() -> list[str]:
         if "exceptions" not in (g["status_reason"] or ""):
             fails.append("外部目標 → status_reason 註明例外未套用")
         sg, ck, tv = calls.get("semgrep", {}), calls.get("checkov", {}), calls.get("trivy", {})
-        if sg.get("cwd") != str(repo.resolve()) or "--disable-nosem" not in sg.get("argv", []) or sg.get("argv", [""])[-1] != ".":
-            fails.append("semgrep 在目標根目錄掃 .，外部目標加 --disable-nosem")
+        # #317：外部受驗樹的 semgrep 改掃副本（不在受驗樹裡執行），根目錄只有一份空的 .semgrepignore（預設忽略停用）
+        if sg.get("cwd") in (str(repo.resolve()), str(repo)) or "--disable-nosem" not in sg.get("argv", []) \
+                or sg.get("argv", [""])[-1] != "." or sg.get("semgrepignores") != [".semgrepignore"] or sg.get("root_ignore") != "":
+            fails.append(f"外部目標：semgrep 在副本根目錄掃 .、只有空的根目錄 .semgrepignore、加 --disable-nosem（得到 {sg}）")
+        if "semgrep 的預設忽略已停用" not in (g["status_reason"] or "") or "已移除目標專案" in (g["status_reason"] or ""):
+            fails.append(f"外部目標沒有 .semgrepignore → status_reason 只寫預設忽略已停用（得到 {g['status_reason']}）")
         if not any(a.startswith(str(ROOT)) and a.endswith("vibesec-rules.yaml") for a in sg.get("argv", [])):
             fails.append("semgrep 規則取自本 repo（vibesec.yaml semgrep_rules）")
         if ({".checkov.yaml", "link.tf"} & set(ck.get("scanned", []))) or ck.get("scanned_symlinks") \
@@ -361,15 +441,51 @@ def selftest() -> list[str]:
         with temp_policy_root(synthetic) as PR2:
             pol_ext, pol = pol, sarif_gate.load_context(Policy(PR2, project_root=repo))
         try:
-            g, _ = run(repo, env={"FAKE_SEMGREP_RULES": json.dumps(["vibesec.g3.command-injection"])})
+            g, calls = run(repo, env={"FAKE_SEMGREP_RULES": json.dumps(["vibesec.g3.command-injection"])})
+            _, calls_diff = run(repo, base="HEAD")
         finally:
             pol = pol_ext
+        # #317：本 repo 不受影響：semgrep 照舊在受驗樹裡執行、不加 --disable-nosem、--baseline-commit 原樣傳 base
+        for label, c, want_tail in (("full", calls.get("semgrep", {}), ["."]),
+                                    ("diff", calls_diff.get("semgrep", {}), ["--baseline-commit", "HEAD", "."])):
+            if c.get("cwd") != str(repo.resolve()) or "--disable-nosem" in c.get("argv", []) or c.get("argv", [])[-len(want_tail):] != want_tail:
+                fails.append(f"本 repo（{label}）：semgrep 在受驗樹執行、參數與以前相同（得到 {c}）")
         if g["status"] == "fail" or g["findings_count"]["blocking"] or g["findings_count"]["advisory"] < 1 \
                 or "筆命中 blocking-policy 例外" not in (g["status_reason"] or ""):
             fails.append(f"本 repo：命中例外 → advisory、status_reason 註明命中筆數（得到 {g['status']}：{g['findings_count']}、{g['status_reason']}）")
+        # #317：diff 副本的 git 不在 PATH（OSError）或逾時 → semgrep error、不崩潰、不在受驗樹上執行
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = str(bindir)   # 只有假工具，沒有 git
+        try:
+            removed, sha, problem = semgrep_tree(repo, D / "sg-nogit", "HEAD", time.monotonic() + 30)
+            if not problem or "semgrep 副本" not in problem:
+                fails.append(f"semgrep_tree：沒有 git → 回報未完成原因，不拋例外（得到 {problem!r}）")
+        except Exception as e:
+            fails.append(f"semgrep_tree：沒有 git 不得拋例外（{type(e).__name__}: {e}）")
+        finally:
+            os.environ["PATH"] = old_path
+        for label, b in (("diff", "HEAD"), ("full", None)):
+            removed, sha, problem = semgrep_tree(repo, D / f"sg-late-{label}", b, time.monotonic() - 1)
+            if not problem or "時間預算" not in problem:
+                fails.append(f"semgrep_tree（{label}）：時間預算用完 → 回報未完成原因（得到 {problem!r}）")
+        (D / "sg-file").write_text("x")   # 副本目的地已是一般檔案 → OSError，不得拋例外
+        try:
+            _, _, problem = semgrep_tree(repo, D / "sg-file", None, time.monotonic() + 30)
+            if not problem or "semgrep 副本" not in problem:
+                fails.append(f"semgrep_tree：建立副本時 OSError → 回報未完成原因（得到 {problem!r}）")
+        except Exception as e:
+            fails.append(f"semgrep_tree：建立副本時 OSError 不得拋例外（{type(e).__name__}: {e}）")
         g, calls = run(repo, base="HEAD")
-        if g["scope"] != "diff" or g["diff_base"] != "HEAD" or "--baseline-commit" not in calls.get("semgrep", {}).get("argv", []):
+        sg = calls.get("semgrep", {})
+        argv = sg.get("argv", [])
+        if g["scope"] != "diff" or g["diff_base"] != "HEAD" or "--baseline-commit" not in argv:
             fails.append("--base → semgrep --baseline-commit、scope diff")
+        # #317：diff 模式的副本是 clone：HEAD 是「移除 .semgrepignore」的 commit，上一層是受驗樹的 HEAD；base 先在受驗樹解析成 SHA
+        elif argv[argv.index("--baseline-commit") + 1] != head or sg.get("head_parent") != head \
+                or sg.get("cwd") in (str(repo.resolve()), str(repo)) or sg.get("semgrepignores") != [".semgrepignore"]:
+            fails.append(f"外部 diff：semgrep 在 clone 的副本執行、--baseline-commit 是受驗樹 HEAD 的 SHA、刪除已 commit（得到 {sg}）")
+        if subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=repo).stdout.strip() != head:
+            fails.append("外部 diff：副本裡的 commit 不得改到受驗樹的 HEAD")
         g, _ = run(repo, bins=dict(bins, trivy=None))
         trow = next(t for t in g["tools"] if t["name"] == "trivy")
         if g["status"] != "incomplete" or trow["state"] != "missing" or "not found" not in (g["status_reason"] or ""):
@@ -379,11 +495,17 @@ def selftest() -> list[str]:
         if g["status"] != "incomplete" or crow["state"] != "error" or crow["exit_code"] != 2:
             fails.append("checkov 非零結束 → incomplete（state error、記 exit_code）")
         (repo / ".semgrepignore").write_text("app/\n")
+        (repo / "app/.semgrepignore").write_text("*\n")
         (repo / "infra/skip.tf").write_text("# checkov:skip=CKV_AWS_79: target says ok\n")
         git(repo, "add", "-A"); git(repo, "commit", "-qm", "suppress")
-        g, _ = run(repo)
-        if ".semgrepignore" not in (g["status_reason"] or "") or "infra/skip.tf" not in (g["status_reason"] or ""):
-            fails.append("目標的 .semgrepignore 與 checkov:skip 行內註解要寫進 status_reason")
+        g, calls = run(repo)
+        why, sg = g["status_reason"] or "", calls.get("semgrep", {})
+        if "已移除目標專案的 2 個 .semgrepignore（.semgrepignore、app/.semgrepignore）；semgrep 的預設忽略已停用" not in why \
+                or "需人工確認" in why.split("checkov:skip")[0] or "infra/skip.tf" not in why:
+            fails.append(f"目標的 .semgrepignore（含子目錄）寫明已移除、checkov:skip 行內註解照舊列出（得到 {why}）")
+        if sg.get("semgrepignores") != [".semgrepignore"] or sg.get("root_ignore") != "" \
+                or not (repo / "app/.semgrepignore").is_file() or (repo / ".semgrepignore").read_text() != "app/\n":
+            fails.append(f"副本裡任何深度的 .semgrepignore 都移除、根目錄換成空的；受驗樹本身不動（得到 {sg}）")
         old_cwd = os.getcwd()
         os.chdir(D)
         try:
@@ -409,6 +531,12 @@ def selftest() -> list[str]:
             crow = next(t for t in g["tools"] if t["name"] == "checkov")
             if g["status"] != "incomplete" or crow["state"] != "error" or "app/x.py" not in (g["status_reason"] or ""):
                 fails.append(f"追蹤檔無法複製 → checkov error、G3 incomplete（得到 {g['status']}、{crow}）")
+            # #317：semgrep 的副本也建不出來 → semgrep error，不得退回直接掃受驗樹；status_reason 不得宣稱已停用預設忽略
+            g, calls = run(repo)
+            srow = next(t for t in g["tools"] if t["name"] == "semgrep")
+            if srow["state"] != "error" or "semgrep 副本" not in (g["status_reason"] or "") or "semgrep" in calls \
+                    or "預設忽略已停用" in (g["status_reason"] or ""):
+                fails.append(f"semgrep 副本建不出來 → semgrep error、不在受驗樹上執行、不寫預設忽略已停用（得到 {srow}、{sorted(calls)}）")
         except Exception as e:
             fails.append(f"追蹤檔無法複製不得拋例外（{type(e).__name__}: {e}）")
         finally:

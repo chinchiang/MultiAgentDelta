@@ -213,11 +213,15 @@ class G3CopyTrackedFailClosedTests(unittest.TestCase):
             self.assertIn("infra/main.tf", gate["status_reason"] or "")
             self.assertEqual(list(SCHEMA.iter_errors(gate)), [])
 
-            # 若 semgrep 同時命中 blocking 規則，G3 仍維持 fail（blocking 優先於 incomplete）
+            # 若 semgrep 同時命中 blocking 規則，G3 仍維持 fail（blocking 優先於 incomplete）。
+            # #317 之後外部受驗樹的 semgrep 也掃副本，副本建不出來時 semgrep 不執行（不退回直接掃受驗樹），
+            # 所以這個子情境改在本 repo 的路徑驗證：semgrep 照舊在受驗樹裡執行，checkov 的副本照樣建不出來
+            with temp_policy_root() as pr:
+                pol_repo = sarif_gate.load_context(Policy(pr, project_root=repo.dir))
             os.environ["FAKE_LOG"] = str(log)
             os.environ["FAKE_SEMGREP_RULES"] = json.dumps(["vibesec.g3.command-injection"])
             try:
-                gate_fail = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out-fail", bins, pol=pol)
+                gate_fail = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out-fail", bins, pol=pol_repo)
             finally:
                 os.environ.pop("FAKE_LOG", None)
                 os.environ.pop("FAKE_SEMGREP_RULES", None)
