@@ -39,7 +39,7 @@ SEMGREP_MAX_JOBS = 4
 
 
 def semgrep_jobs(cpus: int | None) -> int:
-    """給 semgrep -j 的平行數：min(核心數, SEMGREP_MAX_JOBS)；os.cpu_count() 回傳 None 時用 1。"""
+    """給 semgrep -j 的平行數：min(核心數, SEMGREP_MAX_JOBS)；os.cpu_count() 回傳 None（或 0）時用 1。"""
     return min(cpus or 1, SEMGREP_MAX_JOBS)
 
 
@@ -398,13 +398,16 @@ def selftest() -> list[str]:
             (bindir / t).write_text(FAKE_TOOL); (bindir / t).chmod(0o755)
         bins = {t: str(bindir / t) for t in TOOLS}
 
-        def run(target, env=None, **kw):
+        def run(target, env=None, cpus=32, **kw):
             env = {"FAKE_LOG": str(log), **(env or {})}
             log.unlink(missing_ok=True)
             os.environ.update(env)
+            real_cpu_count = os.cpu_count   # #344：核心數由測試決定（預設 32），結果不依賴跑 selftest 的機器
+            os.cpu_count = lambda: cpus
             try:
                 g = scan(target, out, kw.pop("bins", bins), pol=pol, **kw)
             finally:
+                os.cpu_count = real_cpu_count
                 for k in env:
                     os.environ.pop(k, None)
             errs = list(schema.iter_errors(g))
@@ -422,11 +425,14 @@ def selftest() -> list[str]:
             got = jobs(cpus) if jobs else None
             if got != want:
                 fails.append(f"semgrep_jobs({cpus}) → {want}（得到 {got}）")
-        want_j = str(min(os.cpu_count() or 1, 4))
+        want_j = "4"   # run() 預設核心數 32 → 上限 4
 
-        def has_jobs(argv):   # semgrep 的 argv 含 -j <min(os.cpu_count() or 1, 4)>
-            return any(a == "-j" and argv[i + 1:i + 2] == [want_j] for i, a in enumerate(argv))
+        def has_jobs(argv, want=None):   # semgrep 的 argv 含 -j <want>
+            return any(a == "-j" and argv[i + 1:i + 2] == [want or want_j] for i, a in enumerate(argv))
 
+        _, calls = run(repo, cpus=None)
+        if not has_jobs(calls.get("semgrep", {}).get("argv", []), "1"):
+            fails.append(f"os.cpu_count() 回傳 None：semgrep 帶 -j 1（得到 {calls.get('semgrep', {}).get('argv')}）")
         g, calls = run(repo)
         if not has_jobs(calls.get("semgrep", {}).get("argv", [])):
             fails.append(f"外部 full：semgrep 帶 -j {want_j}（得到 {calls.get('semgrep', {}).get('argv')}）")
