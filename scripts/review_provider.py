@@ -40,6 +40,7 @@ try:
     import yaml
 except ImportError:
     print("工具缺席：PyYAML", file=sys.stderr); sys.exit(4)
+import vibesec_providers   # noqa: E402  「能不能送給這個 provider」只有一份判斷（規則 7，#356）；需要 PyYAML，放在缺席檢查之後
 
 
 def load_provider(name: str, root: pathlib.Path = ROOT) -> dict:
@@ -47,16 +48,6 @@ def load_provider(name: str, root: pathlib.Path = ROOT) -> dict:
     if name not in pv:
         raise KeyError(f"providers.yaml 沒有 provider {name!r}")
     return {"name": name, **(pv[name] or {})}
-
-
-# confidential／pii 只能送 rotation.sensitive_data_providers 列出的地端／內網 provider（AGENTS.md 規則 7）。
-# 這是 allowed_data_classes 之外的第二道硬防線：就算有人誤把某雲端 provider 的 allowed_data_classes 開到 pii，
-# 這裡仍會擋下，與 prepare_comparison.py 的判定對齊（不只靠逐一維護每個 provider 的清單）。
-SENSITIVE_CLASSES = ("confidential", "pii")
-
-def load_sensitive_providers(root: pathlib.Path = ROOT) -> set:
-    data = yaml.safe_load((root / "config/providers.yaml").read_text(encoding="utf-8")) or {}
-    return set((data.get("rotation") or {}).get("sensitive_data_providers") or [])
 
 
 def load_role(role: str, root: pathlib.Path = ROOT) -> tuple[str, str | None]:
@@ -238,17 +229,9 @@ def redact_key(value, key):
 NO_ENV_VAR_SETTING = "providers.yaml 沒有設定 api_key_env"   # 以前 note 會寫成「None 未設定」
 
 
-def _setting(p: dict, name: str) -> str:
-    """provider 設定裡某個鍵的字串值（沒有則空字串）。
-    note 要寫出「哪個環境變數沒設定」：以前直接用 p.get("api_key_env") 組字串，CodeQL 依字面上的 api_key
-    把它判成 password（#230 PR C）。值只是環境變數的名稱，不是金鑰；改由本函式取出、存進中性名稱的變數，
-    config/providers.yaml 的設定鍵不變。"""
-    return str(p.get(name) or "")
-
-
 def call(provider: str, role: str, data_class: str, packet: dict, root: pathlib.Path = ROOT, env=os.environ) -> dict:
     p = load_provider(provider, root)
-    names = [_setting(p, "api_key_env")]
+    names = [vibesec_providers.setting(p, "api_key_env")]
     if p.get("kind") == "bedrock":
         names += ["AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
     result = _call(provider, role, data_class, packet, root, env)
@@ -278,21 +261,17 @@ def _call(provider: str, role: str, data_class: str, packet: dict, root: pathlib
         data_class = declared   # 取較嚴格者：--data-class 不能把審查包自己宣告的分級往下降（規則 7）
     out = {"provider": provider, "family": p.get("family"), "model": p.get("model"), "role": role,
            "prompt_version": prompt_version, "data_class": data_class, "state": None, "opinion": None, "note": None}
-    if not p.get("enabled", False):
-        return {**out, "state": "refused", "note": "provider 未啟用（enabled: false）"}
-    if data_class not in (p.get("allowed_data_classes") or []):
-        return {**out, "state": "refused",
-                "note": f"no provider allowed for data_class={data_class}：{provider} 只收 {p.get('allowed_data_classes')}（未送出任何內容）"}
-    if data_class in SENSITIVE_CLASSES and provider not in load_sensitive_providers(root):
-        return {**out, "state": "refused",
-                "note": f"data_class={data_class} 只能送 rotation.sensitive_data_providers；{provider} 不在清單（未送出任何內容，AGENTS.md 規則 7）"}
-    env_var_name = _setting(p, "api_key_env")   # 環境變數的名稱，不是金鑰值
+    # enabled、allowed_data_classes、confidential／pii 只走 sensitive_data_providers：判斷在 vibesec_providers.may_send（#356）
+    allowed, why = vibesec_providers.may_send(vibesec_providers.load_config(root), provider, data_class)
+    if not allowed:
+        return {**out, "state": "refused", "note": why}
+    env_var_name = vibesec_providers.setting(p, "api_key_env")   # 環境變數的名稱，不是金鑰值
     key = env.get(env_var_name, "")
     profile = ""
     if p.get("kind") == "bedrock":
         # 明確金鑰（access key＋secret）優先；否則改用 aws_profile_env 指名的 profile；兩者皆無 → missing
         if not (key and env.get("AWS_SECRET_ACCESS_KEY")):
-            profile_env_name = _setting(p, "aws_profile_env")
+            profile_env_name = vibesec_providers.setting(p, "aws_profile_env")
             profile = env.get(profile_env_name, "")
             if not profile:
                 need = (f"{env_var_name}＋AWS_SECRET_ACCESS_KEY" if env_var_name

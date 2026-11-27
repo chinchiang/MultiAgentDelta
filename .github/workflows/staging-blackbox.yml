@@ -254,9 +254,10 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           echo "promptfoo eval exit=$code"
 
-      # 生成層：只有設定 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret 時執行。
-      # 靶場回應屬 internal，依 config/providers.yaml 只允許 anthropic-cloud / openai-cloud（AGENTS.md 規則 7）；
-      # GLM / DeepSeek 只允許 public，不在此使用。金鑰只經 env 傳入，不寫入 log。
+      # 生成層：會把目標的回應送給 provider 生成攻擊並評分（AGENTS.md 規則 7）。評分 provider 由受信任樹的
+      # scripts/g6_redteam_provider.py 依目標回應的資料分級挑選：靶場是 internal；外部目標是未分類 → 一律不送（#356，
+      # 宣告分級的途徑見 #359）。沒有金鑰、沒有可收該分級的 provider → skipped（記為 untested）。
+      # 腳本出錯或受信任樹沒有這支腳本（只會發生在引入它的 PR 合併前）→ 一律當 skipped，不送出。金鑰只經 env 傳入，不寫入 log。
       - name: G6 promptfoo redteam（選用；需 ANTHROPIC_API_KEY 或 OPENAI_API_KEY secret）
         id: pfred
         if: steps.target.outputs.allowed == 'true'
@@ -264,6 +265,7 @@ jobs:
         shell: bash
         env:
           VIBESEC_TARGET_URL: ${{ steps.target.outputs.url }}
+          TARGET_KIND: ${{ steps.target.outputs.is_vulnapp == 'true' && 'lab' || 'external' }}
           PROMPTFOO_DISABLE_TELEMETRY: "1"
           # 不用 promptfoo 雲端遠端生成：purpose 與靶場回應不得送往 providers.yaml 以外的服務（AGENTS.md 規則 7）
           PROMPTFOO_DISABLE_REMOTE_GENERATION: "true"
@@ -271,26 +273,21 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           mkdir -p reports
-          if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "skipped=未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret" >> "$GITHUB_OUTPUT"
-            echo "::notice::redteam 生成層未執行：未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret（記為 untested）"
-            exit 0
-          fi
-          # 依可用金鑰，從 config/providers.yaml 取模型名稱，產生臨時設定（不修改 repo 內設定檔）
-          python3 -I - <<'PY'
-          import os, yaml, pathlib
-          prov = yaml.safe_load(open("_trusted/config/providers.yaml"))["providers"]
-          if os.environ.get("ANTHROPIC_API_KEY"):
-              pid = f"anthropic:messages:{prov['anthropic-cloud']['model']}"
-          else:
-              pid = f"openai:chat:{prov['openai-cloud']['model']}"
-          cfg = yaml.safe_load(open("_trusted/config/promptfoo/promptfooconfig.yaml"))
-          cfg.setdefault("redteam", {})["provider"] = pid
-          cfg.setdefault("defaultTest", {}).setdefault("options", {})["provider"] = pid
-          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "promptfoo-redteam.yaml"
-          out.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
-          print(f"redteam provider: {pid.split(':')[0]}")
-          PY
+          set +e
+          DECISION=$(python3 -I _trusted/scripts/g6_redteam_provider.py --target-kind "$TARGET_KIND" \
+            --out "$RUNNER_TEMP/promptfoo-redteam.yaml"); rc=$?
+          set -e
+          case "$rc:$DECISION" in
+            0:provider=*) echo "redteam ${DECISION}" ;;
+            0:skipped=*)
+              echo "$DECISION" >> "$GITHUB_OUTPUT"
+              echo "::notice::redteam 生成層未執行：${DECISION#skipped=}（記為 untested）"
+              exit 0 ;;
+            *)
+              echo "skipped=無法判定 redteam 的評分 provider（g6_redteam_provider exit ${rc}），未送出" >> "$GITHUB_OUTPUT"
+              echo "::warning::無法判定 redteam 的評分 provider（exit ${rc}）：不送出，記為 untested"
+              exit 0 ;;
+          esac
           set +e
           timeout 1800 npx --yes "promptfoo@${PROMPTFOO_VERSION}" redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml" --no-cache \
             --output reports/g6-promptfoo-redteam.json </dev/null >reports/_promptfoo-redteam.log 2>&1
