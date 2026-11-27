@@ -19,7 +19,7 @@
   python3 scripts/ci_invariants.py selftest
 """
 from __future__ import annotations
-import re, sys
+import copy, re, sys
 
 _WRITE = re.compile(r"^\s+[a-z-]+:\s*write\b")
 
@@ -304,19 +304,20 @@ def base_change_wiring(pr_gates: dict, base_changed: dict | None) -> list[str]:
     if missing:
         out.append(f"pr-base-changed.yml 的 pull_request.types 少了 {'、'.join(missing)}")
     jobs = base_changed.get("jobs") or {}
+    steps = [st for job in jobs.values() for st in ((job or {}).get("steps") or [])]
     # 只看 step（if／env／run）：job 名稱的運算式也含 changes.base，但它只決定名稱，不決定 fail
-    if not any("changes.base" in repr({k: st.get(k) for k in ("if", "env", "run")})
-               for job in jobs.values() for st in ((job or {}).get("steps") or [])):
+    if not any("changes.base" in repr({k: st.get(k) for k in ("if", "env", "run")}) for st in steps):
         out.append("pr-base-changed.yml 沒有在 step 以 github.event.changes.base 判斷目標分支是否改變（fail 的條件）")
-    if any(str(st.get("uses") or "").startswith("actions/checkout")
-           for job in jobs.values() for st in ((job or {}).get("steps") or [])):
+    if any(str(st.get("uses") or "").startswith("actions/checkout") for st in steps):
         out.append("pr-base-changed.yml 含 actions/checkout（它不需要讀程式碼）")
-    read_only = {"contents": "read"}
-    if base_changed.get("permissions") != read_only:
-        out.append(f"pr-base-changed.yml 的 workflow 權限必須是 contents: read（得到 {base_changed.get('permissions')!r}）")
+    # 權限不得超過 contents: read（更小的 {}、contents: none 可以）；workflow 層必須明確宣告，否則是 repo 的預設權限
+    within = lambda perms: isinstance(perms, dict) and all(v == "none" or (k == "contents" and v == "read")
+                                                           for k, v in perms.items())
+    if not within(base_changed.get("permissions")):
+        out.append(f"pr-base-changed.yml 的 workflow 權限必須明確宣告且不超過 contents: read（得到 {base_changed.get('permissions')!r}）")
     for jid, job in jobs.items():
         perms = (job or {}).get("permissions")
-        if perms is not None and perms != read_only:
+        if perms is not None and not within(perms):
             out.append(f"pr-base-changed.yml 的 job {jid} 權限超過 contents: read（得到 {perms!r}）")
     return out
 
@@ -688,7 +689,6 @@ def selftest() -> list[str]:
             fails.append(f"local_gitleaks_flag_drift「{label}」應回報含「{want_bad}」的問題（得到 {got}）")
 
     # #368：pr-gates 不監聽 edited；目標分支改變由 pr-base-changed.yml 以 fail 的 check 提醒
-    import copy
     pr_ok = {"on": {"pull_request": {"types": ["opened", "synchronize", "reopened"]}, "workflow_dispatch": None}}
     bc_ok = {"on": {"pull_request": {"types": ["opened", "synchronize", "reopened", "edited"]}},
              "permissions": {"contents": "read"},
@@ -713,8 +713,11 @@ def selftest() -> list[str]:
             BASE_CHANGED="${{ github.event.action == 'edited' }}")), "changes.base"),
         ("含 actions/checkout", pr_ok, mut(bc_ok, lambda d: d["jobs"]["base"]["steps"].insert(0, {"uses": "actions/checkout@abc"})), "checkout"),
         ("workflow 權限過大", pr_ok, mut(bc_ok, lambda d: d["permissions"].update({"pull-requests": "write"})), "權限"),
+        ("多給 pull-requests: read 也算超過", pr_ok, mut(bc_ok, lambda d: d["permissions"].update({"pull-requests": "read"})), "權限"),
         ("job 權限過大", pr_ok, mut(bc_ok, lambda d: d["jobs"]["base"]["permissions"].update({"contents": "write"})), "權限"),
         ("沒有宣告 workflow 權限（預設權限）", pr_ok, mut(bc_ok, lambda d: d.pop("permissions")), "權限"),
+        ("權限更小（{} 與 contents: none）", pr_ok, mut(bc_ok, lambda d: (d.update(permissions={}),
+                                                                   d["jobs"]["base"].update(permissions={"contents": "none"}))), False),
     ]:
         try:
             got = wiring(pr, bc) if wiring else None

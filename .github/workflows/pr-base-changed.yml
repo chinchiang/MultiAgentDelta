@@ -9,6 +9,8 @@
 #   opened／synchronize／reopened        → 「目標分支一致性」success（pr-gates 依當下的 base 重跑；也蓋掉先前的紅燈）
 #   edited 但沒有 changes.base（內文、標題）→ 「目標分支一致性（內文變更，不需重跑）」success
 # 不 checkout、不執行 repo 內的程式，權限只有 contents: read（scripts/ci_invariants.py base_change_wiring 檢查）。
+# 不設 concurrency：edited 與 synchronize 幾乎同時觸發時，靠「同名 check 只顯示最新一次」決定 PR 上看到的結果；
+# 加 cancel-in-progress 的話，紅燈會被取消、變成 cancelled，反而看不到。
 name: VibeSec PR Base Changed
 
 on:
