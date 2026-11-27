@@ -1,0 +1,43 @@
+# VibeSec：PR 的目標分支改變時，提醒 pr-gates 的結果已作廢（#368）
+# pr-gates.yml 不監聽 edited：改標題或內文也會觸發 edited，整套重跑是浪費。但目標分支改變時，pr-gates 用的 base
+# （diff-aware 範圍、gitleaks 的 commit 範圍、G4 紀錄的過期判斷）已經不是現在的 base，結果作廢，必須重跑。
+#
+# 這裡不自動重跑：gh run rerun 會沿用原本事件的 payload（base 仍是舊的）；close 再 reopen 或 push 新 commit 才會帶新的 base。
+# job 名稱依事件決定：PR 頁面與 gh pr checks 對同名 check 只顯示最新一次，所以「只改內文」的事件必須用不同的名稱，
+# 否則會蓋掉「目標分支已變更」的紅燈。
+#   edited 且 changes.base 存在          → 「目標分支一致性」fail
+#   opened／synchronize／reopened        → 「目標分支一致性」success（pr-gates 依當下的 base 重跑；也蓋掉先前的紅燈）
+#   edited 但沒有 changes.base（內文、標題）→ 「目標分支一致性（內文變更，不需重跑）」success
+# 不 checkout、不執行 repo 內的程式，權限只有 contents: read（scripts/ci_invariants.py base_change_wiring 檢查）。
+name: VibeSec PR Base Changed
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  base-consistency:
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base && '目標分支一致性（內文變更，不需重跑）' || '目標分支一致性' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: 判斷目標分支是否改變
+        env:
+          ACTION: ${{ github.event.action }}
+          BASE_CHANGED: ${{ github.event.action == 'edited' && github.event.changes.base != null }}
+          FROM_REF: ${{ github.event.changes.base.ref.from }}
+          TO_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "$BASE_CHANGED" = "true" ]; then
+            echo "::error::目標分支已變更（${FROM_REF} → ${TO_REF}）：pr-gates 的結果是依舊的 base 算的，已經作廢；請 close 再 reopen 這個 PR，或 push 一個新 commit 來重跑（#368）"
+            exit 1
+          fi
+          case "$ACTION" in
+            edited) echo "只改了 PR 的標題或內文：不需重跑 pr-gates" ;;
+            *) echo "pr-gates 依目前的目標分支 ${TO_REF} 執行（事件 ${ACTION}）" ;;
+          esac

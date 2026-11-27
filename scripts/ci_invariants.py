@@ -13,6 +13,7 @@
   step_mode_decisions(wf)                 workflow 步驟不得讀 mode 自己判定；判定只在 gate_verdict（#209、GLOSSARY「阻擋判定」）
   g5_probes_wiring(staging)               staging-blackbox.yml 的 G5 api-probes 步驟固定執行 _trusted/scripts/g5_api_probes.py、無路徑覆寫變數與 inline 判定（#292）
   local_gitleaks_flag_drift(pr, md)       workflow.md 第 7 步（中英）的本機 gitleaks 帶 PR CI G2 的掃描旗標（--config 等，#366）
+  base_change_wiring(pr, base_changed)    pr-gates 不監聽 edited；目標分支改變由 pr-base-changed.yml 以 fail 的 check 提醒（#368）
   g6_redteam_wiring(staging)              G6 promptfoo redteam 的評分 provider 由 _trusted/scripts/g6_redteam_provider.py 依資料分級挑選，不 inline、不寫死（#356）
 
   python3 scripts/ci_invariants.py selftest
@@ -273,6 +274,50 @@ def local_gitleaks_flag_drift(pr_gates: dict, workflow_md: str) -> list[str]:
         missing = [f for f in GITLEAKS_SCAN_FLAGS if not _has_flag(command, f)]
         if missing:
             out.append(f"docs/agents/workflow.md「{head}」的指令少了 PR CI G2 用到的旗標：{'、'.join(missing)}")
+    return out
+
+
+BASE_CHANGED_EVENTS = ("opened", "synchronize", "reopened", "edited")
+
+
+def _on(wf: dict) -> dict:
+    """workflow 的 on：PyYAML 把裸的 on 讀成 True。"""
+    on = wf.get("on", wf.get(True))
+    return on if isinstance(on, dict) else {}
+
+
+def base_change_wiring(pr_gates: dict, base_changed: dict | None) -> list[str]:
+    """改 PR 內文不得觸發 pr-gates；目標分支改變由 pr-base-changed.yml 以 fail 的 check 提醒（#368）。
+    pr-gates 監聽 edited → 改標題或內文就整套重跑；而在 job 層略過又會產生同名的 skipped check，蓋掉真正的結果。
+    pr-base-changed.yml：必須存在、監聽 opened／synchronize／reopened／edited、以 changes.base 判斷，
+    不 checkout、權限只有 contents: read（它不需要讀程式碼）。"""
+    out = []
+    types = (_on(pr_gates).get("pull_request") or {}).get("types")
+    if not isinstance(types, list):
+        out.append("pr-gates.yml 的 pull_request 沒有明確列出 types（預設事件無法確認不含 edited）")
+    elif "edited" in types:
+        out.append("pr-gates.yml 的 pull_request.types 含 edited：改 PR 內文就整套重跑（目標分支改變改由 pr-base-changed.yml 處理）")
+    if base_changed is None:
+        return out + ["pr-base-changed.yml 不存在：目標分支改變後沒有任何提醒，pr-gates 的結果會停在舊的 base"]
+    btypes = (_on(base_changed).get("pull_request") or {}).get("types") or []
+    missing = [t for t in BASE_CHANGED_EVENTS if t not in btypes]
+    if missing:
+        out.append(f"pr-base-changed.yml 的 pull_request.types 少了 {'、'.join(missing)}")
+    jobs = base_changed.get("jobs") or {}
+    # 只看 step（if／env／run）：job 名稱的運算式也含 changes.base，但它只決定名稱，不決定 fail
+    if not any("changes.base" in repr({k: st.get(k) for k in ("if", "env", "run")})
+               for job in jobs.values() for st in ((job or {}).get("steps") or [])):
+        out.append("pr-base-changed.yml 沒有在 step 以 github.event.changes.base 判斷目標分支是否改變（fail 的條件）")
+    if any(str(st.get("uses") or "").startswith("actions/checkout")
+           for job in jobs.values() for st in ((job or {}).get("steps") or [])):
+        out.append("pr-base-changed.yml 含 actions/checkout（它不需要讀程式碼）")
+    read_only = {"contents": "read"}
+    if base_changed.get("permissions") != read_only:
+        out.append(f"pr-base-changed.yml 的 workflow 權限必須是 contents: read（得到 {base_changed.get('permissions')!r}）")
+    for jid, job in jobs.items():
+        perms = (job or {}).get("permissions")
+        if perms is not None and perms != read_only:
+            out.append(f"pr-base-changed.yml 的 job {jid} 權限超過 contents: read（得到 {perms!r}）")
     return out
 
 
@@ -641,6 +686,46 @@ def selftest() -> list[str]:
             fails.append(f"local_gitleaks_flag_drift「{label}」應通過（得到 {got}）")
         elif want_bad and not any(want_bad in m for m in got):
             fails.append(f"local_gitleaks_flag_drift「{label}」應回報含「{want_bad}」的問題（得到 {got}）")
+
+    # #368：pr-gates 不監聽 edited；目標分支改變由 pr-base-changed.yml 以 fail 的 check 提醒
+    import copy
+    pr_ok = {"on": {"pull_request": {"types": ["opened", "synchronize", "reopened"]}, "workflow_dispatch": None}}
+    bc_ok = {"on": {"pull_request": {"types": ["opened", "synchronize", "reopened", "edited"]}},
+             "permissions": {"contents": "read"},
+             "jobs": {"base": {"name": "${{ github.event.action == 'edited' && !github.event.changes.base && '目標分支一致性（內文變更，不需重跑）' || '目標分支一致性' }}",
+                               "runs-on": "ubuntu-latest", "permissions": {"contents": "read"},
+                               "steps": [{"name": "判斷", "env": {"BASE_CHANGED": "${{ github.event.action == 'edited' && github.event.changes.base != null }}"},
+                                          "run": 'if [ "$BASE_CHANGED" = "true" ]; then echo "::error::目標分支已變更"; exit 1; fi\n'}]}}}
+    def mut(d, f):
+        d = copy.deepcopy(d); f(d); return d
+    # PyYAML 把 on: 讀成 True：兩種鍵都要認得
+    yaml_on = lambda d: {(True if k == "on" else k): v for k, v in d.items()}
+    wiring = globals().get("base_change_wiring")
+    for label, pr, bc, want_bad in [
+        ("正確設定", pr_ok, bc_ok, False),
+        ("PyYAML 讀成 True 的 on 鍵", yaml_on(pr_ok), yaml_on(bc_ok), False),
+        ("pr-gates 又監聽 edited", mut(pr_ok, lambda d: d["on"]["pull_request"]["types"].append("edited")), bc_ok, "edited"),
+        ("pr-gates 沒有列 types（預設含 edited 以外的事件，但無法確認）", mut(pr_ok, lambda d: d["on"]["pull_request"].pop("types")), bc_ok, "types"),
+        ("pr-base-changed.yml 缺席", pr_ok, None, "不存在"),
+        ("少監聽 reopened", pr_ok, mut(bc_ok, lambda d: d["on"]["pull_request"]["types"].remove("reopened")), "reopened"),
+        ("少監聽 edited", pr_ok, mut(bc_ok, lambda d: d["on"]["pull_request"]["types"].remove("edited")), "edited"),
+        ("fail 條件沒有 changes.base", pr_ok, mut(bc_ok, lambda d: d["jobs"]["base"]["steps"][0]["env"].update(
+            BASE_CHANGED="${{ github.event.action == 'edited' }}")), "changes.base"),
+        ("含 actions/checkout", pr_ok, mut(bc_ok, lambda d: d["jobs"]["base"]["steps"].insert(0, {"uses": "actions/checkout@abc"})), "checkout"),
+        ("workflow 權限過大", pr_ok, mut(bc_ok, lambda d: d["permissions"].update({"pull-requests": "write"})), "權限"),
+        ("job 權限過大", pr_ok, mut(bc_ok, lambda d: d["jobs"]["base"]["permissions"].update({"contents": "write"})), "權限"),
+        ("沒有宣告 workflow 權限（預設權限）", pr_ok, mut(bc_ok, lambda d: d.pop("permissions")), "權限"),
+    ]:
+        try:
+            got = wiring(pr, bc) if wiring else None
+        except Exception as e:
+            got = f"例外 {type(e).__name__}：{e}"
+        if not isinstance(got, list):
+            fails.append(f"base_change_wiring「{label}」無法執行（得到 {got!r}）")
+        elif want_bad is False and got:
+            fails.append(f"base_change_wiring「{label}」應通過（得到 {got}）")
+        elif want_bad and not any(want_bad in m for m in got):
+            fails.append(f"base_change_wiring「{label}」應回報含「{want_bad}」的問題（得到 {got}）")
     return fails
 
 

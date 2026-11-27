@@ -818,13 +818,17 @@ if "pr-gates.yml" in _wf and "staging-blackbox.yml" in _wf:
 if "pr-gates.yml" in _wf:
     for _m in _ci.g4_static_wiring(yaml.safe_load(_wf["pr-gates.yml"]) or {}):
         err(f".github/workflows/pr-gates.yml：{_m}（#152）"); _n_ci += 1
+    # 改 PR 內文不得觸發 pr-gates；目標分支改變由 pr-base-changed.yml 提醒（#368）
+    _bc = _wf.get("pr-base-changed.yml")
+    for _m in _ci.base_change_wiring(yaml.safe_load(_wf["pr-gates.yml"]) or {}, (yaml.safe_load(_bc) or {}) if _bc else None):
+        err(f".github/workflows：{_m}（#368）"); _n_ci += 1
     # 與 workflow 同一棵樹：本機第 7 步的 gitleaks 旗標要跟這份 pr-gates.yml 的 G2 一致（#366）
     _wf_md = ROOT / "docs/agents/workflow.md"
     for _m in _ci.local_gitleaks_flag_drift(yaml.safe_load(_wf["pr-gates.yml"]) or {},
                                             _wf_md.read_text(encoding="utf-8") if _wf_md.is_file() else ""):
         err(f"{_m}（本機第 7 步與 PR CI 的 G2 不一致，#366）"); _n_ci += 1
 if not _n_ci:
-    ok("CI 設定不變式：workflow 層級唯讀、listComments 分頁、pre-commit semgrep 與 CI 一致、staging 只跑 _trusted/ 且不以 sed 代入目標、判定交給 gate_verdict、G4 靜態檢查以受信任腳本執行、G6 redteam 的評分 provider 依資料分級挑選、本機 gitleaks 旗標與 PR CI 一致")
+    ok("CI 設定不變式：workflow 層級唯讀、listComments 分頁、pre-commit semgrep 與 CI 一致、staging 只跑 _trusted/ 且不以 sed 代入目標、判定交給 gate_verdict、G4 靜態檢查以受信任腳本執行、G6 redteam 的評分 provider 依資料分級挑選、本機 gitleaks 旗標與 PR CI 一致、改 PR 內文不觸發 pr-gates")
 
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
