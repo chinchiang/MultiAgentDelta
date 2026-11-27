@@ -21,7 +21,7 @@
      --gitleaks-ignore-path /tmp/wt-main/.gitleaksignore --ignore-gitleaks-allow \
      --log-opts="--text origin/main..HEAD" --no-banner --redact .
    ```
-   - 旗標要與 `pr-gates.yml` 的 G2 step（`id: gitleaks`）一致，`validate.py` 會檢查（#366）。設定與忽略清單取自 `/tmp/wt-main`（main），跟 PR CI 讀 `_trusted/` 一樣；PR 自己改了 `gitleaks.toml` 也照 main 的版本掃。以前沒帶 `--config`，只套用內建規則：本機 no leaks found，CI 的 G2 卻被 `config/gitleaks.toml` 的規則判成 fail（PR #360）。
+   - 旗標要與 `pr-gates.yml` 的 G2 step（`id: gitleaks`）一致，`validate.py` 會檢查（#366）。設定與忽略清單取自 `/tmp/wt-main`（main），跟 PR CI 一致：CI 的設定讀 `_trusted/config/gitleaks.toml`，`.gitleaksignore` 也由受信任 action 換成 default branch 的版本；PR 自己改了 `gitleaks.toml` 也照 main 的版本掃。以前沒帶 `--config`，只套用內建規則：本機 no leaks found，CI 的 G2 卻被 `config/gitleaks.toml` 的規則判成 fail（PR #360）。
    - 發現如果已經進入分支歷史，只加一個修正 commit 不夠：PR CI 掃的是整段 commit 範圍。先 squash 成不含發現的 commit，再以 `--force-with-lease` 推送。
    - `fetch_gitleaks.py` 照 nightly 釘選的版本與 SHA-256 取得並快取 gitleaks，退出碼 2 代表沒拿到經驗證的 binary，不能略過這一步（#241）。
 8. **開 PR、等 CI**：CI 跑完後用 `compare_ci.py` 和最近一個合併的 PR 比對（見「判準」）。
@@ -124,7 +124,7 @@ Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`
      --gitleaks-ignore-path /tmp/wt-main/.gitleaksignore --ignore-gitleaks-allow \
      --log-opts="--text origin/main..HEAD" --no-banner --redact .
    ```
-   - The flags must match the G2 step in `pr-gates.yml` (`id: gitleaks`); `validate.py` checks this (#366). The config and ignore list come from `/tmp/wt-main` (main), the same way PR CI reads `_trusted/`; even if the PR changes `gitleaks.toml`, scan with main's version. Without `--config`, only the built-in rules applied: locally there were no leaks, while CI's G2 failed on a `config/gitleaks.toml` rule (PR #360).
+   - The flags must match the G2 step in `pr-gates.yml` (`id: gitleaks`); `validate.py` checks this (#366). The config and ignore list come from `/tmp/wt-main` (main), matching PR CI: CI reads its config from `_trusted/config/gitleaks.toml`, and the trusted action replaces `.gitleaksignore` with the default branch's version; even if the PR changes `gitleaks.toml`, scan with main's version. Without `--config`, only the built-in rules applied: locally there were no leaks, while CI's G2 failed on a `config/gitleaks.toml` rule (PR #360).
    - If a finding is already in the branch history, a fix-up commit is not enough: PR CI scans the whole commit range. Squash into a commit without the finding first, then push with `--force-with-lease`.
    - `fetch_gitleaks.py` gets and caches gitleaks at the version and SHA-256 pinned in nightly; exit code 2 means no verified binary was obtained, and the step cannot be skipped (#241).
 8. **Open the PR and wait for CI**: once CI finishes, compare it with the most recently merged PR using `compare_ci.py` (see "Pass criteria").

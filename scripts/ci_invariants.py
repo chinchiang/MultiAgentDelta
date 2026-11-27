@@ -231,7 +231,8 @@ def g6_redteam_wiring(staging: dict) -> list[str]:
 
 
 GITLEAKS_SCAN_FLAGS = ("--config", "--gitleaks-ignore-path", "--ignore-gitleaks-allow")
-LOCAL_GITLEAKS_STEPS = ("7. **本機 gitleaks**", "7. **Local gitleaks**")   # workflow.md 中英兩段的第 7 步
+LOCAL_GITLEAKS_STEPS = ("**本機 gitleaks**", "**Local gitleaks**")   # workflow.md 中英兩段該步驟的標題（不綁步驟編號）
+_NUMBERED_ITEM = re.compile(r"^\d+\.\s")
 
 
 def _has_flag(text: str, flag: str) -> bool:
@@ -239,24 +240,37 @@ def _has_flag(text: str, flag: str) -> bool:
 
 
 def local_gitleaks_flag_drift(pr_gates: dict, workflow_md: str) -> list[str]:
-    """workflow.md 第 7 步（中英兩段）的本機 gitleaks 必須帶 PR CI G2（pr-gates.yml 的 id: gitleaks）用到的掃描旗標
-    （--config、--gitleaks-ignore-path、--ignore-gitleaks-allow）。以前第 7 步沒帶 config/gitleaks.toml，本機 no leaks found、
-    CI 的 G2 卻 fail（#366，PR #360）。只比旗標、不比路徑（CI 是 _trusted/…，本機是 /tmp/wt-main/…）。
-    第 7 步的範圍：從該項開頭到下一個「8. 」項目為止。找不到 CI step 或第 7 步 → 回報（無法比對，不是通過）。"""
+    """workflow.md「本機 gitleaks」步驟（中英兩段）的指令與 PR CI 的 G2（pr-gates.yml 的 id: gitleaks）都必須帶三個掃描旗標
+    （--config、--gitleaks-ignore-path、--ignore-gitleaks-allow）。以前本機步驟沒帶 config/gitleaks.toml，本機 no leaks found、
+    CI 的 G2 卻 fail（#366，PR #360）。只比旗標、不比路徑：CI 的設定是 _trusted/config/gitleaks.toml，.gitleaksignore 由受信任
+    action 換成 default branch 的版本；本機兩者都取自 /tmp/wt-main。
+    CI 少帶其中任何一個也回報（等於放寬 G2）。本機步驟只比對該項內的 ```bash 程式碼區塊（說明文字提到旗標不算）；
+    範圍是從該項到下一個編號項目為止。找不到 CI step、該步驟或程式碼區塊 → 回報（無法比對，不是通過）。"""
     runs = [str(st.get("run") or "") for job in (pr_gates.get("jobs") or {}).values()
             for st in ((job or {}).get("steps") or []) if st.get("id") == "gitleaks"]
     if len(runs) != 1:
-        return [f"pr-gates.yml 應恰有一個 id: gitleaks 的步驟（得到 {len(runs)} 個），無法比對本機第 7 步的旗標"]
-    wanted = [f for f in GITLEAKS_SCAN_FLAGS if _has_flag(runs[0], f)]
-    lines, out = workflow_md.splitlines(), []
+        return [f"pr-gates.yml 應恰有一個 id: gitleaks 的步驟（得到 {len(runs)} 個），無法比對本機 gitleaks 的旗標"]
+    out = [f"pr-gates.yml 的 gitleaks 步驟少了掃描旗標 {f}（G2 不得少於這三個旗標）"
+           for f in GITLEAKS_SCAN_FLAGS if not _has_flag(runs[0], f)]
+    lines = workflow_md.splitlines()
     for head in LOCAL_GITLEAKS_STEPS:
-        starts = [i for i, ln in enumerate(lines) if ln.lstrip().startswith(head)]
+        starts = [i for i, ln in enumerate(lines) if _NUMBERED_ITEM.match(ln) and head in ln]
         if len(starts) != 1:
-            out.append(f"docs/agents/workflow.md 應恰有一個「{head}」第 7 步（得到 {len(starts)} 個）")
+            out.append(f"docs/agents/workflow.md 應恰有一個「{head}」步驟（得到 {len(starts)} 個）")
             continue
-        end = next((j for j in range(starts[0] + 1, len(lines)) if re.match(r"^\s*8\.\s", lines[j])), len(lines))
-        section = "\n".join(lines[starts[0]:end])
-        missing = [f for f in wanted if not _has_flag(section, f)]
+        end = next((j for j in range(starts[0] + 1, len(lines)) if _NUMBERED_ITEM.match(lines[j])), len(lines))
+        code, inside = [], False
+        for ln in lines[starts[0] + 1:end]:
+            if ln.strip().startswith("```"):
+                inside = not inside
+                continue
+            if inside:
+                code.append(ln)
+        command = "\n".join(code)
+        if not command.strip():
+            out.append(f"docs/agents/workflow.md「{head}」步驟沒有 ```bash 程式碼區塊，無法比對旗標")
+            continue
+        missing = [f for f in GITLEAKS_SCAN_FLAGS if not _has_flag(command, f)]
         if missing:
             out.append(f"docs/agents/workflow.md「{head}」的指令少了 PR CI G2 用到的旗標：{'、'.join(missing)}")
     return out
@@ -607,8 +621,14 @@ def selftest() -> list[str]:
         ("只有名稱相近的 --config-dir 不算 --config", pr_wf(ci_run),
          md(local.replace("--config /tmp/wt-main/config/gitleaks.toml", "--config-dir /tmp/wt-main/config"), local), "--config"),
         ("舊的第 7 步（#366 以前）", pr_wf(ci_run), md('gitleaks git --log-opts="--text origin/main..HEAD" --no-banner --redact .', local), "--config"),
-        ("CI 沒用的旗標不要求", pr_wf(ci_run.replace("--ignore-gitleaks-allow ", "")), md(local.replace(" --ignore-gitleaks-allow", ""), local), False),
-        ("找不到第 7 步", pr_wf(ci_run), "6. **code review**：…\n", "第 7 步"),
+        ("CI 少帶 --ignore-gitleaks-allow 也回報", pr_wf(ci_run.replace("--ignore-gitleaks-allow ", "")), md(local, local), "pr-gates.yml"),
+        ("說明文字提到旗標不算", pr_wf(ci_run),
+         md(local.replace(" --ignore-gitleaks-allow", ""), local).replace("   必須沒有發現。", "   必須沒有發現。以前沒帶 --ignore-gitleaks-allow 等旗標。"),
+         "--ignore-gitleaks-allow"),
+        ("步驟沒有程式碼區塊", pr_wf(ci_run), md(local, local).replace("   ```bash\n   " + local + "\n   ```\n   必須沒有發現。", "   必須沒有發現。", 1),
+         "程式碼區塊"),
+        ("步驟重新編號（第 6 步）仍找得到", pr_wf(ci_run), md(local, local).replace("7. **本機 gitleaks**", "6. **本機 gitleaks**"), False),
+        ("找不到該步驟", pr_wf(ci_run), "6. **code review**：…\n", "步驟"),
         ("pr-gates 找不到 gitleaks step", {"jobs": {"g2": {"steps": [{"id": "other", "run": ci_run}]}}}, md(local, local), "無法比對"),
     ]:
         try:
