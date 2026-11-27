@@ -809,6 +809,9 @@ if "staging-blackbox.yml" in _wf:
         err(f".github/workflows/staging-blackbox.yml：{_m}（#292）"); _n_ci += 1
     for _m in _ci.g6_redteam_wiring(yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
         err(f".github/workflows/staging-blackbox.yml：{_m}（規則 7，#356）"); _n_ci += 1
+# pr-gates.yml 缺席時，下面以它為對象的不變式（判定、G4 靜態檢查、本機 gitleaks 旗標）全部無從檢查：不得靜默略過（#366）
+if "pr-gates.yml" not in _wf:
+    err(".github/workflows/pr-gates.yml 不存在：無法檢查判定、G4 靜態檢查與本機 gitleaks 旗標的 CI 不變式"); _n_ci += 1
 if "pr-gates.yml" in _wf and "staging-blackbox.yml" in _wf:
     for _m in _ci.verdict_wiring(yaml.safe_load(_wf["pr-gates.yml"]) or {}, yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
         err(f"{_m}（判定規則只有 scripts/gate_verdict.py 一份，docs/08 §8）"); _n_ci += 1
