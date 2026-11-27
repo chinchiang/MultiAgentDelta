@@ -115,6 +115,9 @@ python3 scripts/g6_gate.py --eval reports/g6-promptfoo.json --redteam reports/g6
 | 單一測試執行錯誤（`failureReason: 2`） | 該 check `untested`，附錯誤訊息 |
 | promptfoo 無輸出或無法解析 | promptfoo 層 `untested`，閘門 `incomplete`，寫明工具錯誤 |
 | 未設定 provider 金鑰 | **只有** redteam 生成層 `untested`，理由「未設定 ANTHROPIC_API_KEY / OPENAI_API_KEY secret」 |
+| 目標不是靶場（外部受測服務） | redteam 生成層一律不執行、記 `untested`，理由「外部目標的回應未分類，依規則 7 不送雲端評分」（#356；宣告分級的途徑見 #359） |
+| 有金鑰，但對應的 provider 停用或 `allowed_data_classes` 不含 `internal` | redteam 生成層 `untested`，理由寫明哪個 provider、哪一項不符 |
+| 無法判定評分 provider（`g6_redteam_provider.py` 出錯，或受信任樹沒有這支腳本） | redteam 生成層 `untested`，不送出任何內容 |
 | 成本探針結果缺席、無法解析或 `untested` | 成本面（LLM10）`untested` |
 | 成本探針 `fail`（接受超長輸入、看不到成本上限） | 成本面 `fail` → `vibesec.g6.denial-of-wallet`（tier 查 blocking-policy） |
 | 觀測檔缺席、無法解析、目標被拒，或提供工具的探針沒有 `tool_events` | 工具事件遙測（LLM06）`untested` |
@@ -142,7 +145,10 @@ garak 在 staging 以 pip 安裝：先從 PyTorch CPU index 裝釘版的 CPU 版
 
 1. GitHub → repo **Settings → Secrets and variables → Actions → New repository secret**。
 2. 新增 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`（擇一即可；兩者皆有時優先用 Anthropic）。模型名稱取自 `config/providers.yaml` 的 `anthropic-cloud.model` / `openai-cloud.model`。
-3. 只接這兩家：redteam 會把靶場回應送給評分模型，資料分級為 `internal`；`config/providers.yaml` 中`anthropic-cloud`、`openai-cloud`、`anthropic-bedrock`、`gemini-cloud` 與地端 provider 的 `allowed_data_classes` 含 `internal`，但 redteam 步驟目前只實作 anthropic／openai 兩條路徑。`glm-cloud`、`deepseek-cloud` 只允許 `public`，**不得**用於 redteam（AGENTS.md 規則 7）。
+3. 只接這兩家：redteam 會把目標回應送給評分模型。評分 provider 由受信任樹的 `scripts/g6_redteam_provider.py` 依目標回應的資料分級挑選（#356），workflow 只傳目標種類：
+   - **靶場**（`examples/vulnapp`）的回應是 `internal`：依序挑 `anthropic-cloud`、`openai-cloud` 中有金鑰的那一個，而且必須通過 `scripts/vibesec_providers.py` 的 `may_send`（`enabled`、`allowed_data_classes` 含 `internal`，與多模型審查共用同一份判斷）。`anthropic-bedrock`、`gemini-cloud` 與地端 provider 雖然也收 `internal`，但 redteam 目前只實作 anthropic／openai 兩條路徑。
+   - **外部受測服務**的回應是未分類資料，依 AGENTS.md 規則 7 只能留在地端：redteam 一律不執行，記 `untested`。讓外部目標合法執行的做法（宣告資料分級、改用地端 provider）見 #359。
+   - `glm-cloud`、`deepseek-cloud` 只允許 `public`，**不得**用於 redteam（AGENTS.md 規則 7）。`scripts/ci_invariants.py` 擋下在 workflow 裡寫死 provider ID、直接讀 `providers.yaml`，或改回 inline 選 provider。
 4. 金鑰只經 step `env` 傳入，不寫入 `${{ }}` 插值的 run 內容、不 echo；secret 值由 Actions 自動遮罩。
 5. promptfoo redteam 可能要求一次性 email 驗證；若 CI 中因此失敗，該層記 `untested` 並在 `_promptfoo-redteam.log` 留下原因，不會產生 pass。
 6. workflow 設定 `PROMPTFOO_DISABLE_REMOTE_GENERATION=true`：攻擊一律由上述 provider 在本地生成，不送往 promptfoo 雲端服務（它不在 `config/providers.yaml`）。少數僅支援遠端生成的 plugin／strategy 因此可能報錯，該項記 `untested`，不會被當成 pass。
@@ -158,7 +164,7 @@ garak 在 staging 以 pip 安裝：先從 PyTorch CPU index 裝釘版的 CPU 版
 #### 設定後如何確認
 
 1. Actions → **staging-blackbox** → Run workflow（`main`）。
-2. 在 step「G6 promptfoo redteam」的 log 應看到 `redteam provider: anthropic`（或 `openai`），而**不是** `redteam 生成層未執行` 的 notice。
+2. 在 step「G6 promptfoo redteam」的 log 應看到 `redteam provider=anthropic-cloud`（或 `openai-cloud`），而**不是** `redteam 生成層未執行` 的 notice。
 3. 下載 artifact 中的 `reports/g6-gate.json`：redteam 層不再是 `untested`；`status_reason` 不再出現「未設定 … secret」。
 4. 若仍為 `untested`，依下表排查（原因寫在 `reports/_promptfoo-redteam.log`）：
 

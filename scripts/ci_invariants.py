@@ -12,6 +12,7 @@
   gate_mode_channels(wf)                  workflow 不得以 --mode／VIBESEC_MODE 把 mode 傳給閘門腳本（mode 只取自受信任政策，ADR 0002）
   step_mode_decisions(wf)                 workflow 步驟不得讀 mode 自己判定；判定只在 gate_verdict（#209、GLOSSARY「阻擋判定」）
   g5_probes_wiring(staging)               staging-blackbox.yml 的 G5 api-probes 步驟固定執行 _trusted/scripts/g5_api_probes.py、無路徑覆寫變數與 inline 判定（#292）
+  g6_redteam_wiring(staging)              G6 promptfoo redteam 的評分 provider 由 _trusted/scripts/g6_redteam_provider.py 依資料分級挑選，不 inline、不寫死（#356）
 
   python3 scripts/ci_invariants.py selftest
 """
@@ -197,6 +198,34 @@ def g5_probes_wiring(staging: dict) -> list[str]:
     other_lines = [ln for ln in lines if not exact_line.match(ln)]
     if any(not _G5_GUARD_LINE.match(ln) for ln in other_lines):
         out.append(f"「{G5_PROBES_STEP}」步驟含允許守衛以外的額外指令或退回分支")
+    return out
+
+
+G6_REDTEAM_STEP = "G6 promptfoo redteam"
+G6_REDTEAM_CALL = "python3 -I _trusted/scripts/g6_redteam_provider.py"
+_G6_HARDCODED_PROVIDER = re.compile(r"\banthropic:messages:|\bopenai:chat:")
+
+
+def g6_redteam_wiring(staging: dict) -> list[str]:
+    """redteam 會把目標回應送給 provider 評分（#356、規則 7）：評分 provider 只能由受信任樹的 g6_redteam_provider.py
+    依資料分級挑選。改回 inline 選 provider、寫死 provider ID、直接讀 providers.yaml、改呼叫本分支腳本或拿掉 -I → 回報。
+    註解不算（只看指令行）。"""
+    matches = _matching_steps(staging, G6_REDTEAM_STEP)
+    if len(matches) != 1:
+        return [f"staging-blackbox.yml 應恰有一個「{G6_REDTEAM_STEP}」步驟（得到 {len(matches)} 個）"]
+    lines = [ln for ln in str(matches[0][1].get("run") or "").splitlines() if not ln.lstrip().startswith("#")]
+    code, out = "\n".join(lines), []
+    if G6_REDTEAM_CALL not in code:
+        out.append(f"「{G6_REDTEAM_STEP}」步驟沒有以 `{G6_REDTEAM_CALL}` 挑選評分 provider")
+    if _has_inline_python(code):
+        out.append(f"「{G6_REDTEAM_STEP}」步驟含 inline 程式碼（heredoc／stdin／-c／pipe），provider 必須由受信任的腳本挑選")
+    if _G6_HARDCODED_PROVIDER.search(code):
+        out.append(f"「{G6_REDTEAM_STEP}」步驟寫死 provider ID（anthropic:messages:／openai:chat:）")
+    if "providers.yaml" in code:
+        out.append(f"「{G6_REDTEAM_STEP}」步驟直接讀 providers.yaml（資料分級判斷只在 g6_redteam_provider.py）")
+    # fail-closed：只有「exit 0 且輸出 provider=」才往下執行 redteam；退出碼被忽略時，腳本出錯也會照樣送出
+    if not re.search(r'case "\$rc:\$DECISION" in', code) or not re.search(r"^\s*0:provider=\*\)", code, re.M):
+        out.append(f"「{G6_REDTEAM_STEP}」步驟沒有以 case \"$rc:$DECISION\" 判斷退出碼（只有 0:provider=* 可以往下執行 redteam）")
     return out
 
 
@@ -492,6 +521,39 @@ def selftest() -> list[str]:
             fails.append(f"g5_probes_wiring「{label}」應回報問題（得到 {got}）")
         elif isinstance(want_bad, str) and not any(want_bad in m for m in got):
             fails.append(f"g5_probes_wiring「{label}」應回報含「{want_bad}」的問題（得到 {got}）")
+
+    # #356：redteam 的評分 provider 只能由受信任樹的 g6_redteam_provider.py 依資料分級挑選（規則 7）
+    g6_ok_run = ('set +e\nDECISION=$(python3 -I _trusted/scripts/g6_redteam_provider.py --target-kind "$TARGET_KIND" '
+                 '--out "$RUNNER_TEMP/promptfoo-redteam.yaml"); rc=$?\nset -e\ncase "$rc:$DECISION" in\n'
+                 '  0:provider=*) echo ok ;;\n  *) exit 0 ;;\nesac\n'
+                 'timeout 1800 npx --yes "promptfoo@${PROMPTFOO_VERSION}" redteam run -c "$RUNNER_TEMP/promptfoo-redteam.yaml"\n')
+    g6_wf = lambda run: {"jobs": {"blackbox": {"steps": [{"name": "G6 promptfoo redteam（選用）", "run": run}]}}}
+    old_inline = ("python3 -I - <<'PY'\nprov = yaml.safe_load(open(\"_trusted/config/providers.yaml\"))[\"providers\"]\n"
+                  "pid = f\"anthropic:messages:{prov['anthropic-cloud']['model']}\"\nPY\n")
+    wiring = globals().get("g6_redteam_wiring")
+    for label, wf, want_bad in [
+        ("呼叫受信任腳本", g6_wf(g6_ok_run), False),
+        ("註解提到 providers.yaml 不算", g6_wf("# 依 config/providers.yaml 的分級挑選\n" + g6_ok_run), False),
+        ("改回 inline 選 provider（#356 以前）", g6_wf(old_inline), "inline"),
+        ("寫死 anthropic provider ID", g6_wf(g6_ok_run + "PID=anthropic:messages:claude\n"), "寫死"),
+        ("寫死 openai provider ID", g6_wf(g6_ok_run + "PID=openai:chat:gpt\n"), "寫死"),
+        ("直接讀 providers.yaml", g6_wf(g6_ok_run + "yq .providers _trusted/config/providers.yaml\n"), "providers.yaml"),
+        ("呼叫本分支的腳本", g6_wf(g6_ok_run.replace("_trusted/scripts/", "scripts/")), "g6_redteam_provider"),
+        ("拿掉 -I", g6_wf(g6_ok_run.replace("python3 -I ", "python3 ")), "g6_redteam_provider"),
+        ("步驟缺席", {"jobs": {"blackbox": {"steps": [{"name": "其他", "run": g6_ok_run}]}}}, "恰有一個"),
+        ("忽略退出碼直接執行", g6_wf("python3 -I _trusted/scripts/g6_redteam_provider.py --target-kind lab --out x || true\n"
+                                 "npx promptfoo redteam run -c x\n"), "退出碼"),
+    ]:
+        try:
+            got = wiring(wf) if wiring else None
+        except Exception as e:
+            got = f"例外 {type(e).__name__}：{e}"
+        if not isinstance(got, list):
+            fails.append(f"g6_redteam_wiring「{label}」無法執行（得到 {got!r}）")
+        elif want_bad is False and got:
+            fails.append(f"g6_redteam_wiring「{label}」應通過（得到 {got}）")
+        elif want_bad and not any(want_bad in m for m in got):
+            fails.append(f"g6_redteam_wiring「{label}」應回報含「{want_bad}」的問題（得到 {got}）")
     return fails
 
 

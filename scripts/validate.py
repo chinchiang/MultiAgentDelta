@@ -807,6 +807,8 @@ if "staging-blackbox.yml" in _wf:
         err(f".github/workflows/staging-blackbox.yml:{_i}: 以 sed 代入 VIBESEC_TARGET_URL（URL 含 # 或 & 會壞；改用 scripts/garak_config.py）"); _n_ci += 1
     for _m in _ci.g5_probes_wiring(yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
         err(f".github/workflows/staging-blackbox.yml：{_m}（#292）"); _n_ci += 1
+    for _m in _ci.g6_redteam_wiring(yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
+        err(f".github/workflows/staging-blackbox.yml：{_m}（規則 7，#356）"); _n_ci += 1
 if "pr-gates.yml" in _wf and "staging-blackbox.yml" in _wf:
     for _m in _ci.verdict_wiring(yaml.safe_load(_wf["pr-gates.yml"]) or {}, yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
         err(f"{_m}（判定規則只有 scripts/gate_verdict.py 一份，docs/08 §8）"); _n_ci += 1
@@ -814,7 +816,7 @@ if "pr-gates.yml" in _wf:
     for _m in _ci.g4_static_wiring(yaml.safe_load(_wf["pr-gates.yml"]) or {}):
         err(f".github/workflows/pr-gates.yml：{_m}（#152）"); _n_ci += 1
 if not _n_ci:
-    ok("CI 設定不變式：workflow 層級唯讀、listComments 分頁、pre-commit semgrep 與 CI 一致、staging 只跑 _trusted/ 且不以 sed 代入目標、判定交給 gate_verdict、G4 靜態檢查以受信任腳本執行")
+    ok("CI 設定不變式：workflow 層級唯讀、listComments 分頁、pre-commit semgrep 與 CI 一致、staging 只跑 _trusted/ 且不以 sed 代入目標、判定交給 gate_verdict、G4 靜態檢查以受信任腳本執行、G6 redteam 的評分 provider 依資料分級挑選")
 
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
