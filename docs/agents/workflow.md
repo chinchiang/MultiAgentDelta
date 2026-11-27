@@ -15,7 +15,15 @@
 4. **評測逐案比對**：在同一台機器、用同一組參數，分別在 `/tmp/wt-main` 和分支各跑一次 `run_evals`，再用 `compare_evals.py` 比對，必須 exit 0（見「判準」）。動到 G5、G6 或 workflow 時，接 vulnapp 的版本也要再比對一次（拿掉 `--no-target`）。
 5. **validate**：`python3 -I scripts/ci_validate.py --trusted /tmp/wt-main` 必須退出碼 0，也就是 CI repo-validate 的三次 validate 都 0 個錯誤：PR 版、受信任樹版驗受驗樹（PR head；抓版本錯開，#207、#235）、mode 改成 enforce 的副本（#223）。副本只含 git 追蹤的檔案與尚未 git add 的新檔（加上 `.git`），和 CI checkout 出來的樹一致。validate 會自動執行所有 `scripts/*.py` 的 selftest，不必另外跑迴圈。退出碼 2 代表無法判定，不算通過（#238）。
 6. **code review**：`/mattpocock-skills:code-review`。Standards、Spec 兩個 sub-agent 平行執行，結果分兩軸彙整，每軸各寫一句最嚴重的問題。完成條件是兩軸的每項意見都已修正，或在 PR 寫明不改的理由。修正之後，重跑第 2、5 步。
-7. **本機 gitleaks**：`"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .`，必須沒有發現。`fetch_gitleaks.py` 照 nightly 釘選的版本與 SHA-256 取得並快取 gitleaks，退出碼 2 代表沒拿到經驗證的 binary，不能略過這一步（#241）。
+7. **本機 gitleaks**：必須沒有發現。
+   ```bash
+   "$(python3 -I scripts/fetch_gitleaks.py)" git --config /tmp/wt-main/config/gitleaks.toml \
+     --gitleaks-ignore-path /tmp/wt-main/.gitleaksignore --ignore-gitleaks-allow \
+     --log-opts="--text origin/main..HEAD" --no-banner --redact .
+   ```
+   - 旗標要與 `pr-gates.yml` 的 G2 step（`id: gitleaks`）一致，`validate.py` 會檢查（#366）。設定與忽略清單取自 `/tmp/wt-main`（main），跟 PR CI 一致：CI 的設定讀 `_trusted/config/gitleaks.toml`，`.gitleaksignore` 也由受信任 action 換成 default branch 的版本；PR 自己改了 `gitleaks.toml` 也照 main 的版本掃。以前沒帶 `--config`，只套用內建規則：本機 no leaks found，CI 的 G2 卻被 `config/gitleaks.toml` 的規則判成 fail（PR #360）。
+   - 發現如果已經進入分支歷史，只加一個修正 commit 不夠：PR CI 掃的是整段 commit 範圍。先 squash 成不含發現的 commit，再以 `--force-with-lease` 推送。
+   - `fetch_gitleaks.py` 照 nightly 釘選的版本與 SHA-256 取得並快取 gitleaks，退出碼 2 代表沒拿到經驗證的 binary，不能略過這一步（#241）。
 8. **開 PR、等 CI**：CI 跑完後用 `compare_ci.py` 和最近一個合併的 PR 比對（見「判準」）。
 9. **維護者說了才合併**：`gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`。`<sha>` 要給完整 40 碼，短 SHA 會被 GitHub 拒絕（`Could not coerce value ... to GitObjectID`）。
 
@@ -110,7 +118,15 @@ Follow this file whenever you implement a ticket (`/mattpocock-skills:implement`
 4. **Case-by-case eval comparison**: on the same machine with the same flags, run `run_evals` once in `/tmp/wt-main` and once on the branch, then compare with `compare_evals.py`, which must exit 0 (see "Pass criteria"). When G5, G6, or a workflow changes, also compare the vulnapp run (drop `--no-target`).
 5. **validate**: `python3 -I scripts/ci_validate.py --trusted /tmp/wt-main` must exit 0, meaning all three validate runs of CI's repo-validate job report 0 errors: the PR version, the trusted-tree version checking the project tree (the PR head; catches version skew, #207, #235), and a copy with mode switched to enforce (#223). The copy holds only git-tracked files and new files not yet added (plus `.git`), matching the tree CI checks out. validate runs every `scripts/*.py` selftest automatically; no separate loop is needed. Exit code 2 means the result could not be determined and does not count as a pass (#238).
 6. **Code review**: `/mattpocock-skills:code-review`. Standards and Spec sub-agents run in parallel; report the two axes separately, with one line for the worst issue in each. The step is done when every finding on both axes is fixed or the PR states why it was left as is. After fixing, rerun steps 2 and 5.
-7. **Local gitleaks**: `"$(python3 -I scripts/fetch_gitleaks.py)" git --log-opts="--text origin/main..HEAD" --no-banner --redact .` must find nothing. `fetch_gitleaks.py` gets and caches gitleaks at the version and SHA-256 pinned in nightly; exit code 2 means no verified binary was obtained, and the step cannot be skipped (#241).
+7. **Local gitleaks**: must find nothing.
+   ```bash
+   "$(python3 -I scripts/fetch_gitleaks.py)" git --config /tmp/wt-main/config/gitleaks.toml \
+     --gitleaks-ignore-path /tmp/wt-main/.gitleaksignore --ignore-gitleaks-allow \
+     --log-opts="--text origin/main..HEAD" --no-banner --redact .
+   ```
+   - The flags must match the G2 step in `pr-gates.yml` (`id: gitleaks`); `validate.py` checks this (#366). The config and ignore list come from `/tmp/wt-main` (main), matching PR CI: CI reads its config from `_trusted/config/gitleaks.toml`, and the trusted action replaces `.gitleaksignore` with the default branch's version; even if the PR changes `gitleaks.toml`, scan with main's version. Without `--config`, only the built-in rules applied: locally there were no leaks, while CI's G2 failed on a `config/gitleaks.toml` rule (PR #360).
+   - If a finding is already in the branch history, a fix-up commit is not enough: PR CI scans the whole commit range. Squash into a commit without the finding first, then push with `--force-with-lease`.
+   - `fetch_gitleaks.py` gets and caches gitleaks at the version and SHA-256 pinned in nightly; exit code 2 means no verified binary was obtained, and the step cannot be skipped (#241).
 8. **Open the PR and wait for CI**: once CI finishes, compare it with the most recently merged PR using `compare_ci.py` (see "Pass criteria").
 9. **Merge only when the maintainer says so**: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`. `<sha>` must be the full 40-character SHA; GitHub rejects a short SHA (`Could not coerce value ... to GitObjectID`).
 
