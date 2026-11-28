@@ -131,35 +131,8 @@ def scan(COMMIT: str | None, REPORTS: pathlib.Path, policy_root: pathlib.Path = 
                 add("vibesec.g4.supabase-table-without-rls", "warning",
                     f"{p}：資料表 {tbl} 未見 enable row level security", p, 1)
 
-    # Agent 工具註冊脈絡與工具名稱（3) allow-list lint 與 3b) HITL 共用）
-    TOOL_CTX = re.compile(r'@(?:\w+\.)?tool\b|register_tool|\btools\s*[=:]|\.tool\(|\btool\(\s*\{', re.I)
-    def _tool_names(body):
-        """(名稱, 行號)：@tool／@mcp.tool 下一個 def、tools=[…]／tools: […] 清單、YAML tools: 區塊條目、
-        register_tool("x")／server.tool("x")、tool({name: "x"})、tools: { x: tool({…}) }（Vercel AI SDK）、
-        Tool(name="x")／StructuredTool.from_function(name="x")（LangChain）。"""
-        out = []
-        lines = body.splitlines()
-        for i, ln in enumerate(lines, 1):
-            if re.search(r'@(?:\w+\.)?tool\b', ln):
-                for j in range(i, min(i + 4, len(lines))):
-                    m = re.match(r'\s*(?:async\s+)?def\s+(\w+)', lines[j])
-                    if m: out.append((m.group(1), j + 1)); break
-            for m in re.finditer(r'\btools\s*[=:]\s*\[([^\]]*)\]', ln):
-                out += [(n, i) for n in re.findall(r'[A-Za-z_][\w-]*', m.group(1))]
-            for m in re.finditer(r'(?:register_tool|\.tool)\(\s*["\']([\w-]+)', ln):
-                out.append((m.group(1), i))
-            for m in re.finditer(r'\bname\s*:\s*["\']([\w-]+)["\']', ln):
-                out.append((m.group(1), i))
-            for m in re.finditer(r'\b([A-Za-z_]\w*)\s*:\s*tool\(', ln):
-                out.append((m.group(1), i))
-            for m in re.finditer(r'(?:\bTool|from_function)\([^)]*?\bname\s*=\s*["\']([\w-]+)', ln):
-                out.append((m.group(1), i))
-            if re.match(r'\s*tools\s*:\s*$', ln):          # YAML 區塊清單：tools:\n  - refund_payment
-                for j in range(i, len(lines)):
-                    m = re.match(r'\s*-\s*(?:name\s*:\s*)?["\']?([A-Za-z_][\w-]*)', lines[j])
-                    if not m: break
-                    out.append((m.group(1), j + 1))
-        return out
+    # Agent 工具註冊脈絡與工具名稱（3) allow-list lint 與 3b) HITL 共用）：樣式在 scripts/agent_signals.py（#379）
+    from agent_signals import TOOL_CTX, tool_names as _tool_names
     # 3) Agent 工具 allow-list lint（高危工具暴露）：只看「註冊給 Agent 的工具名稱」（_tool_names）。
     #    以前只要檔案出現 tool 字樣、且任一處提到 delete_user／execute_sql／drop_table 就報：分類工具名稱的正則、
     #    文件字串、測試資料都會誤報（例如 scripts/llm_observations.py 第 23 行判定高影響工具用的 HIGH_IMPACT，L3 下為 blocking）。

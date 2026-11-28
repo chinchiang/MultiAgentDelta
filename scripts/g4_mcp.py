@@ -16,9 +16,9 @@ import pathlib, re, sys, tempfile
 # 綁定做在其他檔案（共用 auth 模組、gateway）時會誤報；同檔案有 resource 字樣也不代表 server 真的驗 aud、沒有 token passthrough——
 # 這兩者交 LLM 審查（VS-G4-LLM-REVIEW）。樣式刻意只認 import 行與設定鍵這類結構：本檔的 regex 原文不會讓本 repo 命中自己。
 MCP_RULE, MCP_CONTROL = "vibesec.g4.mcp-missing-resource-indicator", "VS-G4-MCP-RESOURCE-INDICATOR"
-MCP_EXTS = (".py", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".json", ".yaml", ".yml", ".toml")
-MCP_SKIP = (".git/", "node_modules/", ".github/", "evals/cases/", "_trusted/", "reports/")
-MCP_CTX = re.compile(r'^\s*(?:from|import)\s+(?:fast)?mcp\b|["\']@modelcontextprotocol/|["\']mcpServers["\']\s*:|^\s*mcpServers\s*:', re.M)
+# MCP 程式碼或設定的判定範圍與樣式：在 scripts/agent_signals.py（G0 的交叉核對也用同一份，#379）
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))   # 以 -I 單獨執行時，腳本目錄不在 sys.path
+from agent_signals import MCP_CTX, MCP_EXTS, MCP_SKIP  # noqa: E402
 OAUTH_CTX = re.compile(r'oauth|authorization_endpoint|token_endpoint|grant_type|client_credentials|authorization_code|'
                        r'\bTokenVerifier\b|\bAuthSettings\b|\bverify_token\b|jwt\.(?:decode|verify)\b|\bjwtVerify\b|access_token|\bBearer\b', re.I)
 AUD_BIND = re.compile(r'\bresource\s*=\s*["\'\w]|["\']resource["\']\s*:|\bresource\s*:\s*(?![\s{\[])|\bresource_(?:server_)?url\b|'
