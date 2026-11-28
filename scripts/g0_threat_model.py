@@ -215,9 +215,15 @@ def check(target: pathlib.Path, out_dir: pathlib.Path, threat_model: pathlib.Pat
             reasons.append(f"致命三要素未切斷：{f['agent']}（依 blocking-policy 例外降為 advisory，核准 {f['exception']['approved_by']}、"
                            f"到期 {f['exception']['expires']}）")
     reasons += policy_notes(findings, tm_rel, project)   # 命中筆數、忽略與缺 agent_id 的例外（各閘門相同的文字；外部專案 → 無）
-    cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "fail" if open_agents else "pass"
     if open_agents:
+        cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "fail"
         reasons.append("致命三要素未切斷：" + "、".join(str(f["agent"]) for f in open_agents))
+    elif not tm.get("agents"):
+        # 沒有任何 agent 可以評估：不是「已確認切斷」（#378）。之後比對受驗樹的 agent 訊號時（#380），
+        # 受驗樹有訊號、模型卻沒有 agent 的情況要在這個分支之前改記 fail
+        cov["VS-G0-LETHAL-TRIFECTA"].update(state="not_applicable", reason="威脅模型沒有宣告任何 agent，沒有可評估的致命三要素")
+    else:
+        cov["VS-G0-LETHAL-TRIFECTA"]["state"] = "pass"
     contains_llm = bool((vb.get("project") or {}).get("contains_llm")) if not external else _model_contains_llm(tm)
     extra = coverage_findings(tm, vb, contains_llm, external, policy=policy)
     findings += extra
@@ -330,6 +336,21 @@ def selftest() -> list[str]:
         got = json.loads((out / "g0-findings.json").read_text())["findings"]
         if g["findings_count"] != {"blocking": 0, "advisory": 1} or [f["rule_id"] for f in got] != ["vibesec.g0.threats-empty-public"]:
             fails.append(f"範本衍生模型 exposure public、threats 為空 → advisory 一筆，仍 pass（得到 {g['findings_count']}）")
+        # 三要素控制（#378）：有 agent 且都切腳 → pass；沒有 agent → not_applicable（附理由），閘門狀態不受影響；
+        # 有 agent 但沒有一個三要素全成立 → 仍是 pass（每個 agent 都評估過）
+        tri = lambda g: next(((c["state"], c["reason"]) for c in g["coverage"] if c["control_id"] == "VS-G0-LETHAL-TRIFECTA"),
+                             (None, None))
+        if tri(g)[0] != "pass":
+            fails.append(f"agent 三要素已切腳 → VS-G0-LETHAL-TRIFECTA pass（得到 {tri(g)}）")
+        commit_model(dict(good, agents=[]))
+        g = run(repo, out)
+        st, why = tri(g)
+        if st != "not_applicable" or not (why or "").strip() or g["status"] != "pass":
+            fails.append(f"沒有 agent → VS-G0-LETHAL-TRIFECTA not_applicable 且附理由、閘門仍 pass（得到 {(st, why)}，{g['status']}）")
+        commit_model(dict(good, agents=[dict(good["agents"][0], can_communicate_externally=False)]))
+        g = run(repo, out)
+        if tri(g)[0] != "pass" or g["status"] != "pass":
+            fails.append(f"有 agent 但沒有一個三要素全成立 → 仍是 pass（得到 {tri(g)}，{g['status']}）")
         commit_model(dict(good, risk_tier="L1"))
         g = run(repo, out)
         rt = next(c for c in g["coverage"] if c["control_id"] == "VS-G0-RISK-TIER")
@@ -363,6 +384,8 @@ def selftest() -> list[str]:
         g = run(repo, out)
         if g["status"] != "fail" or g["findings_count"]["blocking"] != 1:
             fails.append(f"證據檔 symlink 到目標之外不採信；tier 取本 repo 政策 → blocking、fail（得到 {g['status']}，{g['findings_count']}）")
+        if tri(g)[0] != "fail":
+            fails.append(f"有未切斷的 agent → VS-G0-LETHAL-TRIFECTA fail（得到 {tri(g)}）")
         # 證據是目標內真正追蹤的檔案 → mitigation 成立（切腳的 tool_allowlist 只採信 deny；ask 是 human_in_the_loop）
         (repo / ".claude/settings.json").unlink()
         (repo / ".claude/settings.json").write_text(json.dumps({"permissions": {"deny": ["mcp__x__merge"]}}))
