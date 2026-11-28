@@ -14,6 +14,7 @@
   g5_probes_wiring(staging)               staging-blackbox.yml 的 G5 api-probes 步驟固定執行 _trusted/scripts/g5_api_probes.py、無路徑覆寫變數與 inline 判定（#292）
   local_gitleaks_flag_drift(pr, md)       workflow.md 第 7 步（中英）的本機 gitleaks 帶 PR CI G2 的掃描旗標（--config 等，#366）
   base_change_wiring(pr, base_changed)    pr-gates 不監聽 edited；目標分支改變由 pr-base-changed.yml 以 fail 的 check 提醒（#368）
+  semgrep_registry_wiring(wf, jobs)       semgrep 不以 --config p/ 自己下載；經 semgrep_registry.py fetch／annotate，帶 -j（#374）
   g6_redteam_wiring(staging)              G6 promptfoo redteam 的評分 provider 由 _trusted/scripts/g6_redteam_provider.py 依資料分級挑選，不 inline、不寫死（#356）
 
   python3 scripts/ci_invariants.py selftest
@@ -319,6 +320,35 @@ def base_change_wiring(pr_gates: dict, base_changed: dict | None) -> list[str]:
         perms = (job or {}).get("permissions")
         if perms is not None and not within(perms):
             out.append(f"pr-base-changed.yml 的 job {jid} 權限超過 contents: read（得到 {perms!r}）")
+    return out
+
+
+_SEMGREP_RUN = re.compile(r"\bsemgrep\s+(?:ci|scan)\b")
+_REGISTRY_CONFIG = re.compile(r"--config[\s=]+['\"]?[pr]/")
+
+
+def semgrep_registry_wiring(wf: dict, max_jobs: int) -> list[str]:
+    """workflow 的 semgrep 不得以 --config p/<名稱> 讓 semgrep 自己下載 registry 規則集（#374）：那樣沒有任何紀錄能說明
+    這次用的是哪一版規則集。要經 semgrep_registry.py fetch（下載一次、記 SHA-256、輸出檔案路徑）與 annotate（紀錄寫進 SARIF），
+    semgrep 也要帶 -j <max_jobs>（scripts/g3_sast.py 的 SEMGREP_MAX_JOBS，#344）。沒有執行 semgrep 的 workflow 不檢查；註解行略過。"""
+    runs = ["\n".join(ln for ln in str(st.get("run") or "").splitlines() if not ln.lstrip().startswith("#"))
+            for job in (wf.get("jobs") or {}).values() for st in ((job or {}).get("steps") or [])]
+    code = "\n".join(runs)
+    if not _SEMGREP_RUN.search(code):
+        return []
+    out = []
+    if _REGISTRY_CONFIG.search(code):
+        out.append("semgrep 以 --config p/<名稱>（或 r/）讓 semgrep 自己下載 registry 規則集；要經 semgrep_registry.py fetch 取得檔案")
+    for sub in ("fetch", "annotate"):
+        if f"semgrep_registry.py {sub}" not in code:
+            out.append(f"沒有以 semgrep_registry.py {sub} 處理 registry 規則集")
+    # 一個指令可能跨好幾行（行尾 \）：先接成一行再找 -j
+    joined = re.sub(r"\\\n\s*", " ", code)
+    for ln in joined.splitlines():
+        if _SEMGREP_RUN.search(ln):
+            m = re.search(r"(?:^|\s)(?:-j|--jobs)[\s=]+(\d+)", ln)
+            if not m or int(m.group(1)) != max_jobs:
+                out.append(f"semgrep 沒有帶 -j {max_jobs}（SEMGREP_MAX_JOBS，#344）：{ln.strip()[:80]}")
     return out
 
 
@@ -729,6 +759,35 @@ def selftest() -> list[str]:
             fails.append(f"base_change_wiring「{label}」應通過（得到 {got}）")
         elif want_bad and not any(want_bad in m for m in got):
             fails.append(f"base_change_wiring「{label}」應回報含「{want_bad}」的問題（得到 {got}）")
+
+    # #374：workflow 的 semgrep 不得以 --config p/<名稱> 讓 semgrep 自己下載；經 semgrep_registry.py fetch／annotate，帶 -j
+    sg_ok = ('CONFIGS=$(python3 -I _trusted/scripts/semgrep_registry.py fetch --out "$RUNNER_TEMP/r" --record reports/semgrep-rulesets.json \\\n'
+             '  _trusted/config/semgrep/vibesec-rules.yaml p/owasp-top-ten p/security-audit); rc=$?\n'
+             'semgrep ci --disable-nosem -j 4 "${args[@]}" --sarif --output reports/semgrep.sarif || true\n'
+             'python3 -I _trusted/scripts/semgrep_registry.py annotate --sarif reports/semgrep.sarif --record reports/semgrep-rulesets.json\n')
+    sg_wf = lambda run: {"jobs": {"g3": {"steps": [{"name": "Semgrep", "run": run}]}}}
+    wiring = globals().get("semgrep_registry_wiring")
+    for label, wf, jobs, want_bad in [
+        ("經 fetch／annotate、帶 -j 4", sg_wf(sg_ok), 4, False),
+        ("註解提到 --config p/ 不算", sg_wf("# 以前用 --config p/security-audit\n" + sg_ok), 4, False),
+        ("又用 --config p/（#374 以前）", sg_wf(sg_ok + "semgrep scan --config p/security-audit -j 4 .\n"), 4, "--config p/"),
+        ("--config=r/ 的寫法", sg_wf(sg_ok.replace("semgrep ci --disable-nosem", "semgrep ci --config=r/python.x --disable-nosem")), 4, "--config"),
+        ("沒有經 fetch", sg_wf(sg_ok.replace("semgrep_registry.py fetch", "other.py fetch")), 4, "fetch"),
+        ("沒有 annotate", sg_wf(sg_ok.replace("semgrep_registry.py annotate", "other.py annotate")), 4, "annotate"),
+        ("semgrep 沒有帶 -j", sg_wf(sg_ok.replace(" -j 4", "")), 4, "-j"),
+        ("-j 與 SEMGREP_MAX_JOBS 不一致", sg_wf(sg_ok.replace(" -j 4", " -j 8")), 4, "-j"),
+        ("沒有 semgrep 的 workflow 不檢查", {"jobs": {"x": {"steps": [{"run": "echo hi\n"}]}}}, 4, False),
+    ]:
+        try:
+            got = wiring(wf, jobs) if wiring else None
+        except Exception as e:
+            got = f"例外 {type(e).__name__}：{e}"
+        if not isinstance(got, list):
+            fails.append(f"semgrep_registry_wiring「{label}」無法執行（得到 {got!r}）")
+        elif want_bad is False and got:
+            fails.append(f"semgrep_registry_wiring「{label}」應通過（得到 {got}）")
+        elif want_bad and not any(want_bad in m for m in got):
+            fails.append(f"semgrep_registry_wiring「{label}」應回報含「{want_bad}」的問題（得到 {got}）")
     return fails
 
 

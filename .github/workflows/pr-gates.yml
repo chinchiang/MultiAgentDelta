@@ -375,12 +375,31 @@ jobs:
           # --disable-nosem：`# nosemgrep` 寫在一般程式碼裡、不受 CODEOWNERS 把關，PR 作者加一行就能讓發現消失；
           # 例外只能經 blocking-policy 核准（與 scripts/g3_sast.py 對外部專案的處理一致，第一輪審查 C8）
           # --max-target-bytes=0：預設會靜默跳過 >1 MB 的檔案（實測不留任何通知）；改成照掃，逾時則由 sarif_gate 記 incomplete
-          semgrep ci --disable-nosem --max-target-bytes=0 \
-            --config _trusted/config/semgrep/vibesec-rules.yaml \
-            --config p/owasp-top-ten \
-            --config p/security-audit \
+          # registry 規則集（p/…）由受信任的 semgrep_registry.py 下載一次、記 SHA-256，再以檔案交給 --config（#374）：
+          # 以前 --config p/<名稱> 由 semgrep 自己下載、沒有紀錄，同一份程式碼不同時間掃描 G3 時有時無卻無從分辨原因。
+          # 取得失敗 → 不執行 semgrep、沒有 SARIF → sarif_gate 記 G3 incomplete（不退回 --config p/<名稱>）。
+          # 規則集下載到 $RUNNER_TEMP（工作區之外：不會被掃描，也不會被 PR head 的檔案取代）。
+          set +e
+          CONFIGS=$(python3 -I _trusted/scripts/semgrep_registry.py fetch --out "$RUNNER_TEMP/semgrep-rules" \
+            --record reports/semgrep-rulesets.json \
+            _trusted/config/semgrep/vibesec-rules.yaml p/owasp-top-ten p/security-audit); rc=$?
+          set -e
+          if [ "$rc" != "0" ]; then
+            echo "::error::semgrep registry 規則集取得失敗（semgrep_registry exit ${rc}；原因見上方 log 與 reports/semgrep-rulesets.json）→ 不執行 semgrep，G3 incomplete"
+            exit 0
+          fi
+          args=()
+          while IFS= read -r c; do args+=(--config "$c"); done <<< "$CONFIGS"
+          # -j 4：與 CI runner 的 4 vCPU、scripts/g3_sast.py 的 SEMGREP_MAX_JOBS 一致（#344；核心數更多時預設平行數會偶發無訊息 exit 2）
+          semgrep ci --disable-nosem --max-target-bytes=0 -j 4 "${args[@]}" \
             --exclude _trusted \
             --sarif --output reports/semgrep.sarif ${BASELINE} || true
+          # 規則集紀錄寫進 SARIF 每個 run 的 properties.vibesec_semgrep_rulesets；寫不進去 → 刪掉 SARIF（看不出用了哪一版規則集 → incomplete）
+          if [ -s reports/semgrep.sarif ] && ! python3 -I _trusted/scripts/semgrep_registry.py annotate \
+              --sarif reports/semgrep.sarif --record reports/semgrep-rulesets.json; then
+            echo "::error::無法在 semgrep SARIF 寫入規則集紀錄 → 刪除 SARIF，G3 incomplete"
+            rm -f reports/semgrep.sarif
+          fi
 
       - name: Upload Semgrep SARIF
         if: always()
