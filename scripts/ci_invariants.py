@@ -323,32 +323,35 @@ def base_change_wiring(pr_gates: dict, base_changed: dict | None) -> list[str]:
     return out
 
 
-_SEMGREP_RUN = re.compile(r"\bsemgrep\s+(?:ci|scan)\b")
-_REGISTRY_CONFIG = re.compile(r"--config[\s=]+['\"]?[pr]/")
+# semgrep 的呼叫：行首（可有 VAR=值 前綴）的 semgrep，後面接 ci／scan 子命令或直接接旗標（舊寫法 `semgrep --config …`）
+_SEMGREP_RUN = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*semgrep\s+(?:ci\b|scan\b|-)", re.M)
+# registry 規則集：--config／-c 接 p/、r/，或 auto（也會從 registry 下載）
+_REGISTRY_CONFIG = re.compile(r"(?:--config|(?<![\w-])-c)[\s=]+['\"]?(?:[pr]/|auto\b)")
 
 
 def semgrep_registry_wiring(wf: dict, max_jobs: int) -> list[str]:
     """workflow 的 semgrep 不得以 --config p/<名稱> 讓 semgrep 自己下載 registry 規則集（#374）：那樣沒有任何紀錄能說明
     這次用的是哪一版規則集。要經 semgrep_registry.py fetch（下載一次、記 SHA-256、輸出檔案路徑）與 annotate（紀錄寫進 SARIF），
     semgrep 也要帶 -j <max_jobs>（scripts/g3_sast.py 的 SEMGREP_MAX_JOBS，#344）。沒有執行 semgrep 的 workflow 不檢查；註解行略過。"""
-    runs = ["\n".join(ln for ln in str(st.get("run") or "").splitlines() if not ln.lstrip().startswith("#"))
-            for job in (wf.get("jobs") or {}).values() for st in ((job or {}).get("steps") or [])]
-    code = "\n".join(runs)
-    if not _SEMGREP_RUN.search(code):
-        return []
     out = []
-    if _REGISTRY_CONFIG.search(code):
-        out.append("semgrep 以 --config p/<名稱>（或 r/）讓 semgrep 自己下載 registry 規則集；要經 semgrep_registry.py fetch 取得檔案")
-    for sub in ("fetch", "annotate"):
-        if f"semgrep_registry.py {sub}" not in code:
-            out.append(f"沒有以 semgrep_registry.py {sub} 處理 registry 規則集")
-    # 一個指令可能跨好幾行（行尾 \）：先接成一行再找 -j
-    joined = re.sub(r"\\\n\s*", " ", code)
-    for ln in joined.splitlines():
-        if _SEMGREP_RUN.search(ln):
-            m = re.search(r"(?:^|\s)(?:-j|--jobs)[\s=]+(\d+)", ln)
-            if not m or int(m.group(1)) != max_jobs:
-                out.append(f"semgrep 沒有帶 -j {max_jobs}（SEMGREP_MAX_JOBS，#344）：{ln.strip()[:80]}")
+    for job in (wf.get("jobs") or {}).values():
+        for st in ((job or {}).get("steps") or []):
+            code = "\n".join(ln for ln in str(st.get("run") or "").splitlines() if not ln.lstrip().startswith("#"))
+            # 一個指令可能跨好幾行（行尾 \）：接成一行再比對（`--config \` 換行後才接 p/ 也抓得到）
+            calls = [ln for ln in re.sub(r"\\\n\s*", " ", code).splitlines() if _SEMGREP_RUN.match(ln)]
+            if not calls:
+                continue
+            where = f"「{st.get('name') or st.get('id') or '（未命名 step）'}」"
+            if any(_REGISTRY_CONFIG.search(ln) for ln in calls):
+                out.append(f"{where} 的 semgrep 以 --config p/<名稱>（或 -c p/、r/、auto）讓 semgrep 自己下載 registry 規則集；"
+                           "要經 semgrep_registry.py fetch 取得檔案")
+            for sub in ("fetch", "annotate"):   # 同一個 step 裡（不是整份 workflow 任一處）
+                if f"semgrep_registry.py {sub}" not in code:
+                    out.append(f"{where} 沒有以 semgrep_registry.py {sub} 處理 registry 規則集")
+            for ln in calls:
+                m = re.search(r"(?:^|\s)(?:-j|--jobs)[\s=]+(\d+)", ln)
+                if not m or int(m.group(1)) != max_jobs:
+                    out.append(f"{where} 的 semgrep 沒有帶 -j {max_jobs}（SEMGREP_MAX_JOBS，#344）：{ln.strip()[:80]}")
     return out
 
 
@@ -777,6 +780,15 @@ def selftest() -> list[str]:
         ("semgrep 沒有帶 -j", sg_wf(sg_ok.replace(" -j 4", "")), 4, "-j"),
         ("-j 與 SEMGREP_MAX_JOBS 不一致", sg_wf(sg_ok.replace(" -j 4", " -j 8")), 4, "-j"),
         ("沒有 semgrep 的 workflow 不檢查", {"jobs": {"x": {"steps": [{"run": "echo hi\n"}]}}}, 4, False),
+        ("註解提到 semgrep_registry.py fetch 不算", sg_wf("# 用 semgrep_registry.py fetch 取得\n" + sg_ok.replace("semgrep_registry.py fetch", "other.py fetch")), 4, "fetch"),
+        ("semgrep login 不是掃描（不要求 -j）", {"jobs": {"x": {"steps": [{"run": "semgrep login\n"}]}}}, 4, False),
+        ("只是提到 semgrep 的 echo 不算呼叫", {"jobs": {"x": {"steps": [{"run": 'echo "semgrep exit=$code"\n'}]}}}, 4, False),
+        ("短旗標 -c p/", sg_wf(sg_ok + "semgrep scan -c p/security-audit -j 4 .\n"), 4, "-c p/"),
+        ("--config auto", sg_wf(sg_ok + "semgrep scan --config auto -j 4 .\n"), 4, "auto"),
+        ("--config 換行後才接 p/", sg_wf(sg_ok + "semgrep scan -j 4 --config \\\n  p/security-audit .\n"), 4, "--config"),
+        ("沒有子命令的舊寫法", sg_wf("semgrep --config p/security-audit -j 4 .\n"), 4, "--config"),
+        ("fetch 在別的 step 不算", {"jobs": {"g3": {"steps": [{"name": "取得", "run": "python3 -I _trusted/scripts/semgrep_registry.py fetch --out x --record y a\n"},
+                                                         {"name": "Semgrep", "run": sg_ok.replace("semgrep_registry.py fetch", "other.py fetch")}]}}}, 4, "fetch"),
     ]:
         try:
             got = wiring(wf, jobs) if wiring else None

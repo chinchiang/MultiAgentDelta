@@ -811,14 +811,14 @@ if "staging-blackbox.yml" in _wf:
         err(f".github/workflows/staging-blackbox.yml：{_m}（規則 7，#356）"); _n_ci += 1
 # workflow 的 semgrep 經 semgrep_registry.py 取得 registry 規則集、帶 -j SEMGREP_MAX_JOBS（#374）。
 # -j 的期望值取自 scripts/g3_sast.py（同一個常數；讀不到 → 報錯，不用寫死的數字代替）
-_sg_jobs = re.search(r"^SEMGREP_MAX_JOBS\s*=\s*(\d+)", (ROOT / "scripts/g3_sast.py").read_text(encoding="utf-8"), re.M)
+_g3_src = ROOT / "scripts/g3_sast.py"
+_sg_jobs = re.search(r"^SEMGREP_MAX_JOBS\s*=\s*(\d+)", _g3_src.read_text(encoding="utf-8"), re.M) if _g3_src.is_file() else None
 if not _sg_jobs:
-    err("scripts/g3_sast.py 找不到 SEMGREP_MAX_JOBS：無法檢查 workflow 的 semgrep -j（#374）"); _n_ci += 1
+    err("scripts/g3_sast.py 缺席或找不到 SEMGREP_MAX_JOBS：無法檢查 workflow 的 semgrep -j（#374）"); _n_ci += 1
 else:
-    for _name in ("pr-gates.yml", "nightly-full.yml"):
-        if _name in _wf:
-            for _m in _ci.semgrep_registry_wiring(yaml.safe_load(_wf[_name]) or {}, int(_sg_jobs.group(1))):
-                err(f".github/workflows/{_name}：{_m}（#374）"); _n_ci += 1
+    for _name, _text in sorted(_wf.items()):   # 所有 workflow：之後新增的 semgrep 呼叫也要經 semgrep_registry.py
+        for _m in _ci.semgrep_registry_wiring(yaml.safe_load(_text) or {}, int(_sg_jobs.group(1))):
+            err(f".github/workflows/{_name}：{_m}（#374）"); _n_ci += 1
 # pr-gates.yml 缺席時，下面以它為對象的不變式（判定、G4 靜態檢查、本機 gitleaks 旗標）全部無從檢查：不得靜默略過（#366）
 if "pr-gates.yml" not in _wf:
     err(".github/workflows/pr-gates.yml 不存在：無法檢查判定、G4 靜態檢查與本機 gitleaks 旗標的 CI 不變式"); _n_ci += 1

@@ -33,6 +33,7 @@ jobs:
       # 不設 continue-on-error、不吞退出碼：未加 --error 時 semgrep 有命中也回 0，非 0 = 工具錯誤（規則載入失敗、
       # registry 下載失敗、當掉）。此時刪掉不完整的 SARIF，job 變紅並由 notify 開 issue（incomplete ≠ pass，AGENTS.md #2）。
       - name: Semgrep scan（全庫、無 diff baseline）
+        shell: bash   # args=() 與 <<< 只有 bash 支援，不依賴容器的預設 shell
         run: |
           mkdir -p reports
           set +e
@@ -41,8 +42,7 @@ jobs:
           CONFIGS=$(python3 -I scripts/semgrep_registry.py fetch --out "$RUNNER_TEMP/semgrep-rules" \
             --record reports/semgrep-rulesets.json \
             config/semgrep/vibesec-rules.yaml p/owasp-top-ten p/security-audit); rc=$?
-          if [ "$rc" != "0" ]; then
-            set -e
+          if [ "$rc" != "0" ] || [ -z "$CONFIGS" ]; then
             echo "::error::semgrep registry 規則集取得失敗（semgrep_registry exit ${rc}；原因見上方 log 與 reports/semgrep-rulesets.json）→ 全量 SAST incomplete"
             exit 1
           fi

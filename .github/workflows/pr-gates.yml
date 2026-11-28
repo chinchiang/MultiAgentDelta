@@ -384,7 +384,7 @@ jobs:
             --record reports/semgrep-rulesets.json \
             _trusted/config/semgrep/vibesec-rules.yaml p/owasp-top-ten p/security-audit); rc=$?
           set -e
-          if [ "$rc" != "0" ]; then
+          if [ "$rc" != "0" ] || [ -z "$CONFIGS" ]; then
             echo "::error::semgrep registry 規則集取得失敗（semgrep_registry exit ${rc}；原因見上方 log 與 reports/semgrep-rulesets.json）→ 不執行 semgrep，G3 incomplete"
             exit 0
           fi
