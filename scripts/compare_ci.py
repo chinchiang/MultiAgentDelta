@@ -180,6 +180,10 @@ def incomplete_reason(side: dict) -> str | None:
 
 ACTIONS = "github-actions"
 DEPENDABOT_CHECK = ("dependabot", ".github/dependabot.yml")
+# pr-base-changed.yml 的 check（#368）：job 名稱依事件決定（「目標分支一致性」或帶括號後綴的內文變更變體），
+# 每次 open／push／reopen／改內文都會多一次，基準 PR 可能沒有、也可能有好幾次。只要都是 pass／skipping 就屬預期內；
+# failure（目標分支改了、pr-gates 結果作廢）由下面「是 fail／cancel」那一段照實列出
+BASE_CHANGED_PREFIX = "目標分支一致性"
 SOURCE_NOTE = {"github-advanced-security": "code scanning：各 job 上傳的 SARIF", "dependabot": "Dependabot 設定驗證",
                "commit status": "commit status API"}
 BUCKETS = ("pass", "skipping", "fail", "cancel", "pending")
@@ -241,6 +245,10 @@ def _compare_checks(acc: _Acc, P: str, pr_checks: list, B: str, base_checks: lis
         if a == b:
             continue
         name = f"{ident[1]}（{ident[0]}）"
+        if ident[0] == ACTIONS and ident[1].startswith(BASE_CHANGED_PREFIX) \
+                and not any(k in c for c in (a, b) for k in ("fail", "cancel", "pending")):
+            acc.expected.append(f"check {name} 的有無或次數不同（依 PR 的事件次數產生，#368）")
+            continue
         if not a or not b:
             msg = f"check {name} 只在 {P if a else B}"
             if ident == DEPENDABOT_CHECK:
@@ -752,6 +760,23 @@ def selftest() -> list[str]:
         _, e, u = cls(_fx_side(), _fx_side(249, checks=_fx_checks(extra=[DEPENDABOT])))
         return None if (e, u) == (1, 0) else f"基準多 Dependabot check 也是預期內（得到 {e}、{u}）"
     check("分類：Dependabot 設定驗證 check → 預期內", t_dependabot)
+
+    def t_base_changed():   # #368：pr-base-changed.yml 的「目標分支一致性」check
+        bc = lambda name="目標分支一致性", state="success": (name, "github-actions", state)
+        note = "目標分支一致性（內文變更，不需重跑）"
+        for label, pr, base, want in [
+            ("只在 PR、success", [bc()], [], (1, 0)),
+            ("只在基準、success", [], [bc()], (1, 0)),
+            ("兩邊個數不同（基準多一次內文變更）", [bc()], [bc(), bc(note)], (1, 0)),
+            ("內文變更的變體只在 PR", [bc(), bc(note)], [bc()], (1, 0)),
+        ]:
+            _, e, u = cls(_fx_side(checks=_fx_checks(extra=pr)), _fx_side(249, checks=_fx_checks(extra=base)))
+            if (e, u) != want:
+                return f"{label} → 預期內 {want[0]}、需要說明 {want[1]}（得到 {e}、{u}）"
+        _, e, u = cls(_fx_side(checks=_fx_checks(extra=[bc(state="failure")])), _fx_side(249))
+        return None if e == 0 and u >= 1 else \
+            f"PR 的「目標分支一致性」是 failure → 必須列為需要說明、不得算預期內（得到 {e}、{u}）"
+    check("分類：目標分支一致性 check（#368）→ success 預期內、failure 照實列出", t_base_changed)
 
     def t_checks_unexplained():
         bad = []

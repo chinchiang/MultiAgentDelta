@@ -68,11 +68,11 @@ python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 只有預期內�
 
 - `compare_ci.py` 只讀 GitHub API，一次輸出 check（各狀態數量、差異、不是 workflow 產生的 check 及其來源）、閘門表格、G1（已知漏洞、KEV 命中、slopcheck 是否略過，以及當天 main 的 nightly）、假設判定（shadow 下 enforce 會怎麼判，#334）、repo-validate 三次 validate 的錯誤與警告，最後把差異分成「預期內」與「需要說明」（#240）。輸出可以直接貼到對話或 PR 留言。
 - 需要 `gh >= 2.97.0`（讀取 job log 用到 `gh api --allow-escape-sequences`，該旗標於 `gh 2.97.0` 新增）；版本不足或無法判讀時，`compare_ci.py` 會在啟動時提示升級並以退出碼 2 結束（#274）。
-- 預期內只有四種：Dependabot 的 `.github/dependabot.yml` 設定驗證 check（PR 改到該檔時 GitHub 才建立）；G1 已知漏洞筆數和當天 nightly 相同；G1 的 allowlist 句只出現在 slopcheck 有掃描的那一邊；假設判定只出現在 PR（基準在 #334 之前），或只出現在基準而 PR 已是 enforce。其餘差異都要在 PR 逐項說明是哪個改動造成的。
+- 預期內只有五種：Dependabot 的 `.github/dependabot.yml` 設定驗證 check（PR 改到該檔時 GitHub 才建立）；`pr-base-changed.yml` 的「目標分支一致性」check 的有無或次數不同（依 PR 的事件次數產生，#368；它是 failure 時照實列出）；G1 已知漏洞筆數和當天 nightly 相同；G1 的 allowlist 句只出現在 slopcheck 有掃描的那一邊；假設判定只出現在 PR（基準在 #334 之前），或只出現在基準而 PR 已是 enforce。其餘差異都要在 PR 逐項說明是哪個改動造成的。
 - 退出碼 2 代表無法比對，不算通過：PR 的 check 或 workflow run 還沒結束（CI 未完成，腳本不比對、也不輪詢，用背景等待 CI 跑完再執行）、找不到 run 或 job、log 缺少需要的行、`gh` 版本過舊或失敗。
 - shadow 下 blocking 發現也是綠燈，所以一定要看表格的比對結果，不能只看 check 的顏色。
 
-參考值（2026-10-17）：15 pass／5 skipping。各列由誰決定：
+參考值（2026-10-17）：15 pass／5 skipping；#368 起多了「目標分支一致性」，所以是 16 pass／5 skipping。各列由誰決定：
 
 | 閘門 | 狀態 | blocking／advisory | 由誰決定 |
 | --- | --- | --- | --- |
@@ -97,6 +97,7 @@ python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 只有預期內�
 - **雙語**：只有雙語集合（見 AGENTS.md「文件語言」）要中英兩段一起改；改 `AGENTS.md` 時要同步改英文譯本 `docs/agents/rules.en.md`；其他文件只寫正體中文。`validate.py` 會檢查集合內的錨點、切換連結與標題結構，以及譯本與 `AGENTS.md` 的標題結構（`scripts/bilingual.py`），句子是否逐一對應要靠 review。
 - **在 worktree 裡跑 validate**：受驗樹是 git worktree（`.git` 是檔案）時，enforce 副本改用 `git clone --local --no-hardlinks` 建一份獨立的 `.git`，HEAD、index 與受驗樹相同，副本裡的 git 操作不會改到原 worktree。所以第 5 步可以直接在 worktree 裡執行（#339）。
 - **selftest 的 mode**：selftest 用 `tree_copy("mode: …")` 固定 mode，不依賴 repo 目前的 `vibesec.yaml`。CI 的 repo-validate 會在 mode 改為 enforce 的副本裡再跑一次 validate，依賴 repo mode 的 selftest 在 PR 階段就會失敗（#223）。
+- **改 PR 的目標分支**：`pr-gates` 不監聽 `edited`，只改 PR 的標題或內文不會重跑（#368）。改了目標分支時，`pr-base-changed.yml` 的「目標分支一致性」check 會變紅：pr-gates 的結果是依舊的 base 算的，已經作廢。請 close 再 reopen 這個 PR，或 push 一個新 commit 來重跑；`gh run rerun` 會沿用舊的 base，沒有用。
 - **staging-blackbox**：repo 沒有設定 `vars.VIBESEC_TARGET_URL`，所以 staging-blackbox 只會打 job 內啟動的 vulnapp。
 - **合併條件**：`main` 沒有 required status checks。要確認某個 check 是不是合併條件，用 `gh api repos/chinchiang/MultiAgentDelta/rulesets` 查（#209）。
 - **shadow → enforce**：切換條件、切換程序與退回程序（含 `break-glass`）見 `docs/08-harness-agent.md` §5.1（#333）。agent 可以準備切換 PR 或退回 PR，但不得合併（AGENTS.md 規則 1）。
@@ -171,11 +172,11 @@ python3 -I scripts/compare_ci.py <PR> --baseline "$base"   # 0 expected differen
 
 - `compare_ci.py` only reads the GitHub API. In one run it prints the checks (counts per state, differences, and checks not produced by a workflow with their source), the gate table, G1 (known vulnerabilities, KEV hits, whether slopcheck was skipped, and that day's nightly on main), the hypothetical decision (what enforce would decide under shadow, #334), and the errors and warnings of the three validate runs in repo-validate, then sorts the differences into "expected" and "to explain" (#240). The output can be pasted straight into the conversation or a PR comment.
 - Requires `gh >= 2.97.0` (`gh api --allow-escape-sequences`, used to fetch job logs, was added in `gh 2.97.0`); when `gh` is older or its version cannot be read, `compare_ci.py` asks you to upgrade at startup and exits 2 (#274).
-- Only four kinds of difference are expected: Dependabot's `.github/dependabot.yml` configuration check (GitHub creates it only when the PR touches that file); a G1 known-vulnerability count equal to that day's nightly; the G1 allowlist line appearing only on the side where slopcheck scanned; and the hypothetical decision appearing only on the PR (the baseline predates #334), or only on the baseline when the PR is already in enforce. Every other difference must be explained in the PR by the change that caused it.
+- Only five kinds of difference are expected: Dependabot's `.github/dependabot.yml` configuration check (GitHub creates it only when the PR touches that file); the presence or count of the "目標分支一致性" (base consistency) check from `pr-base-changed.yml` (it depends on how many events the PR had, #368; a failure is still reported); a G1 known-vulnerability count equal to that day's nightly; the G1 allowlist line appearing only on the side where slopcheck scanned; and the hypothetical decision appearing only on the PR (the baseline predates #334), or only on the baseline when the PR is already in enforce. Every other difference must be explained in the PR by the change that caused it.
 - Exit code 2 means the comparison could not be made and does not count as a pass: the PR's checks or workflow runs have not finished (CI incomplete; the script does not compare and does not poll, so wait for CI in the background and run it afterwards), a run or job is missing, a log lacks a required line, or `gh` is too old or failed.
 - In shadow mode a blocking finding still shows green, so always read the gate-table comparison rather than the check colours.
 
-Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
+Reference values (2026-10-17): 15 pass / 5 skipping; since #368 the "目標分支一致性" (base consistency) check adds one, so 16 pass / 5 skipping. What decides each row:
 
 | Gate | Status | blocking/advisory | Decided by |
 | --- | --- | --- | --- |
@@ -200,6 +201,7 @@ Reference values (2026-10-17): 15 pass / 5 skipping. What decides each row:
 - **Bilingual docs**: only the bilingual set (see "文件語言" in AGENTS.md) needs both language sections updated together; a change to `AGENTS.md` also updates its English translation `docs/agents/rules.en.md`; all other documents are Traditional Chinese only. `validate.py` checks the anchors, language links, and heading structure inside the set, and that the translation has the same heading structure as `AGENTS.md` (`scripts/bilingual.py`); sentence-by-sentence correspondence is left to review.
 - **Running validate in a worktree**: when the project tree is a git worktree (`.git` is a file), the enforce copy builds its own independent `.git` with `git clone --local --no-hardlinks`; its HEAD and index match the project tree, and git operations in the copy never touch the original worktree. Step 5 can therefore run directly inside a worktree (#339).
 - **Selftest mode**: selftests pin the mode with `tree_copy("mode: …")` instead of relying on the repo's current `vibesec.yaml`. CI's repo-validate runs validate again in a copy whose mode is enforce, so a selftest that depends on the repo's mode fails at the PR stage (#223).
+- **Changing a PR's base branch**: `pr-gates` does not listen for `edited`, so editing only a PR's title or body does not rerun it (#368). If you change the base branch, the "目標分支一致性" (base consistency) check from `pr-base-changed.yml` turns red: the pr-gates results were computed against the old base and are void. Close and reopen the PR, or push a new commit, to rerun; `gh run rerun` reuses the old base and does not help.
 - **staging-blackbox**: the repo has no `vars.VIBESEC_TARGET_URL`, so staging-blackbox only hits the vulnapp started inside the job.
 - **Merge requirements**: `main` has no required status checks. To check whether a given check gates merging, query `gh api repos/chinchiang/MultiAgentDelta/rulesets` (#209).
 - **shadow → enforce**: the switch conditions, switch procedure, and rollback procedure (including `break-glass`) are in `docs/08-harness-agent.md` §5.1 (#333). An agent may prepare the switch PR or the rollback PR but must not merge it (AGENTS.md rule 1).

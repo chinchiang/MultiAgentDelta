@@ -5,8 +5,10 @@ name: VibeSec PR Gates
 
 on:
   pull_request:
-    # edited：改 PR 的目標分支也要重跑（受信任程式已改取 default branch，但 diff／過期判斷仍用 base）
-    types: [opened, synchronize, reopened, edited]
+    # 不監聽 edited（#368）：改 PR 的標題或內文也會觸發 edited，整套重跑卻不可能改變結果（沒有 step 讀標題、內文或標籤）。
+    # 目標分支改變仍會讓 diff／過期判斷用的 base 失效：由 pr-base-changed.yml 以 fail 的「目標分支一致性」check 提醒，
+    # 要人 close 再 reopen（或 push 新 commit）重跑。scripts/ci_invariants.py base_change_wiring 擋下加回 edited。
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 # 最小權限：workflow 層級只給 read；寫入權限由需要的 job 各自宣告（job 層級會整組取代這裡）。
