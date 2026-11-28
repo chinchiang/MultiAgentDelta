@@ -295,8 +295,11 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
                                                                        get=registry_get)
             for ln in semgrep_registry.log_lines(fetched, rules_problems):
                 print(ln, file=sys.stderr)
-            rulesets.write_text(json.dumps(semgrep_registry.record(fetched, rules_problems), ensure_ascii=False, indent=2) + "\n",
-                                encoding="utf-8")
+            rules_record = semgrep_registry.record(fetched, rules_problems)
+            try:
+                rulesets.write_text(json.dumps(rules_record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            except OSError as e:   # 紀錄寫不出來 → 雜湊沒有被記下，不執行 semgrep（#374）
+                rules_problems = [*rules_problems, f"無法寫出 {rulesets}（{type(e).__name__}）"]
             cmd = cmd[:1] + [x for v in values for x in ("--config", v)] + cmd[1:]
             if rules_problems:
                 rows["semgrep"] = {"name": "semgrep", "version": None, "state": "error", "exit_code": None,
@@ -325,6 +328,11 @@ def scan(target: pathlib.Path, out_dir: pathlib.Path, bins: dict, base: str | No
                     rows["semgrep"] = _run("semgrep", bins.get("semgrep"), cmd + ["."], sg_dir, sarifs["semgrep"], deadline)
                     if rows["semgrep"]["state"] == "ran":
                         _relativize_sarif(sarifs["semgrep"], sg_dir)
+            # SARIF 也帶規則集紀錄（#374）：寫不進去 → semgrep error（看不到它用了哪一版規則集）
+            if rows["semgrep"]["state"] == "ran":
+                why = semgrep_registry.annotate_sarif(sarifs["semgrep"], rules_record)
+                if why:
+                    rows["semgrep"] = {**rows["semgrep"], "state": "error", "reason": why}
             copy, cwd, ck_out = tmp / "vibesec-target", tmp / "cwd", tmp / "checkov-out"
             copy.mkdir(); cwd.mkdir()
             skipped, copy_problem = copy_tracked(target, copy)
@@ -395,6 +403,15 @@ with open(os.environ["FAKE_LOG"], "a") as f:
 
 
 def selftest() -> list[str]:
+    """selftest 期間把 semgrep_registry 的預設下載換成「記錄並失敗」的版本（不得連網），結束時一定換回（#374）。"""
+    real_get = semgrep_registry._https_get
+    try:
+        return _selftest()
+    finally:
+        semgrep_registry._https_get = real_get
+
+
+def _selftest() -> list[str]:
     from jsonschema import Draft202012Validator
     fails: list[str] = []
     schema = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
@@ -421,13 +438,11 @@ def selftest() -> list[str]:
 
         # #374：registry 規則集以假的下載函式提供（selftest 不連網）；失敗情境另外注入。
         # 沒注入就會走到真正的下載：換成記錄並失敗的版本，漏注入的地方直接報 FAIL
-        import traceback
         leaked: list[str] = []
-        real_get = semgrep_registry._urllib_get
         def _no_network(url):
-            leaked.append(f"{url}（{traceback.extract_stack()[-4].lineno} 行）")
+            leaked.append(url)
             raise OSError("selftest 不得連網")
-        semgrep_registry._urllib_get = _no_network
+        semgrep_registry._https_get = _no_network   # selftest 結束時（finally）換回
         rules_body = b"rules:\n- id: selftest\n  pattern: never_matches_selftest()\n  message: m\n  languages: [python]\n  severity: INFO\n"
         registry_ok = lambda url: (200, rules_body)
 
@@ -473,6 +488,10 @@ def selftest() -> list[str]:
         rec = json.loads((out / "semgrep-rulesets.json").read_text()) if (out / "semgrep-rulesets.json").is_file() else {}
         if any(c.startswith(("p/", "r/")) for c in cfgs) or len(cfgs) != len(semgrep_configs(g3_config())):
             fails.append(f"semgrep 的 --config 不得是 p/<名稱>，registry 規則集要換成下載的檔案（得到 {cfgs}）")
+        sarif_rec = ((json.loads((out / "semgrep.sarif").read_text()).get("runs") or [{}])[0].get("properties") or {}).get(
+            semgrep_registry.SARIF_KEY) if (out / "semgrep.sarif").is_file() else None
+        if sarif_rec != rec:
+            fails.append(f"semgrep.sarif 的 run.properties.{semgrep_registry.SARIF_KEY} 要帶同一份規則集紀錄（得到 {sarif_rec}）")
         if [r.get("name") for r in rec.get("rulesets", [])] != [c for c in semgrep_configs(g3_config()) if c.startswith(("p/", "r/"))] \
                 or any(len(r.get("sha256", "")) != 64 for r in rec.get("rulesets", [])) or rec.get("problems"):
             fails.append(f"semgrep-rulesets.json 記錄每份 registry 規則集的名稱與 SHA-256（得到 {rec}）")
@@ -673,11 +692,11 @@ def selftest() -> list[str]:
     envs = [f"VIBESEC_{t.upper()}" for t in TOOLS]
     with temp_policy_root() as pr, tempfile.TemporaryDirectory() as d:   # 對照組：政策讀得到時替身確實會被執行
         # main_with_policy 經 CLI 的 main() 呼叫 scan，沒辦法傳 registry_get：暫時把預設的下載換成假的成功版本（#374）
-        semgrep_registry._urllib_get = registry_ok
+        semgrep_registry._https_get = registry_ok
         try:
             ran = sarif_gate.main_with_policy(sys.modules[__name__], pr, pathlib.Path(d), *envs)[1]
         finally:
-            semgrep_registry._urllib_get = _no_network
+            semgrep_registry._https_get = _no_network
         if "VIBESEC_SEMGREP" not in (ran or []):
             fails.append(f"對照組：政策讀得到時 semgrep 替身也應被執行（registry 規則集取得成功；得到 {ran}）")
         if not ran:
@@ -689,7 +708,6 @@ def selftest() -> list[str]:
             g = scan(pathlib.Path(d), pathlib.Path(d, "out"), {}, policy_root=pr, registry_get=registry_ok)
             if g["mode"] != m or POLICY_UNREADABLE in (g["status_reason"] or ""):
                 fails.append(f"G3：閘門結果的 mode 取自政策（{m}）（得到 {g['mode']}：{g['status_reason']}）")
-    semgrep_registry._urllib_get = real_get
     if leaked:
         fails.append(f"selftest 不得連網：沒有注入 registry_get 的 scan 呼叫連到了 {leaked}")
     return fails

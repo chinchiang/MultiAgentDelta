@@ -15,14 +15,15 @@ sys.path.insert(0, str(ROOT / "tests"))
 import env_guard  # noqa: E402
 import g0_threat_model  # noqa: E402
 import g3_sast  # noqa: E402
-# #374：g3_sast 會先下載 registry 規則集；測試注入假的下載，不連網
-_REGISTRY_OK = lambda url: (200, b"rules:\n- id: t\n  pattern: never_matches_t()\n  message: m\n  languages: [python]\n  severity: INFO\n")
 import g4_access  # noqa: E402
 import g4_review  # noqa: E402
 import sarif_gate  # noqa: E402
 from gitrepo import TempRepo, isolated_git_environment  # noqa: E402
 from jsonschema import Draft202012Validator  # noqa: E402
 from vibesec_policy import Policy, temp_policy_root, tree_copy  # noqa: E402
+
+# #374：g3_sast 會先下載 registry 規則集；測試注入假的下載，不連網
+_REGISTRY_OK = lambda url: (200, b"rules:\n- id: t\n  pattern: never_matches_t()\n  message: m\n  languages: [python]\n  severity: INFO\n")
 
 SCHEMA = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
 
