@@ -33,14 +33,24 @@ jobs:
       # 不設 continue-on-error、不吞退出碼：未加 --error 時 semgrep 有命中也回 0，非 0 = 工具錯誤（規則載入失敗、
       # registry 下載失敗、當掉）。此時刪掉不完整的 SARIF，job 變紅並由 notify 開 issue（incomplete ≠ pass，AGENTS.md #2）。
       - name: Semgrep scan（全庫、無 diff baseline）
+        shell: bash   # args=() 與 <<< 只有 bash 支援，不依賴容器的預設 shell
         run: |
           mkdir -p reports
           set +e
+          # registry 規則集（p/…）由 semgrep_registry.py 下載一次、記 SHA-256，再以檔案交給 --config（#374）。
+          # 排程只在 default branch 執行，工作區的 scripts/ 就是 default branch 的版本。取得失敗 → job 變紅（同工具錯誤）
+          CONFIGS=$(python3 -I scripts/semgrep_registry.py fetch --out "$RUNNER_TEMP/semgrep-rules" \
+            --record reports/semgrep-rulesets.json \
+            config/semgrep/vibesec-rules.yaml p/owasp-top-ten p/security-audit); rc=$?
+          if [ "$rc" != "0" ] || [ -z "$CONFIGS" ]; then
+            echo "::error::semgrep registry 規則集取得失敗（semgrep_registry exit ${rc}；原因見上方 log 與 reports/semgrep-rulesets.json）→ 全量 SAST incomplete"
+            exit 1
+          fi
+          args=()
+          while IFS= read -r c; do args+=(--config "$c"); done <<< "$CONFIGS"
           # --disable-nosem 與 PR 閘門一致；--max-target-bytes=0：不靜默跳過 >1 MB 的檔案
-          semgrep scan --disable-nosem --max-target-bytes=0 \
-            --config config/semgrep/vibesec-rules.yaml \
-            --config p/owasp-top-ten \
-            --config p/security-audit \
+          # -j 4：與 CI runner 的 4 vCPU、scripts/g3_sast.py 的 SEMGREP_MAX_JOBS 一致（#344）
+          semgrep scan --disable-nosem --max-target-bytes=0 -j 4 "${args[@]}" \
             --sarif --output reports/semgrep-full.sarif
           code=$?
           set -e
@@ -68,6 +78,12 @@ jobs:
           n = sum(len(r.get("results") or []) for r in runs)
           print(f"semgrep SARIF：{n} 筆結果")
           '
+          # 規則集紀錄寫進 SARIF 每個 run 的 properties.vibesec_semgrep_rulesets（#374）；寫不進去 → incomplete
+          if ! python3 -I scripts/semgrep_registry.py annotate --sarif reports/semgrep-full.sarif --record reports/semgrep-rulesets.json; then
+            mv -f reports/semgrep-full.sarif reports/semgrep-full.invalid.sarif
+            echo "::error::無法在 semgrep SARIF 寫入規則集紀錄 → 全量 SAST incomplete"
+            exit 1
+          fi
       # 上傳失敗（例如 repo 尚未開啟 Code scanning，見 #68）不影響判定；SARIF 由下一步保存成 artifact。
       - name: Upload Semgrep full SARIF
         if: always() && hashFiles('reports/semgrep-full.sarif') != ''

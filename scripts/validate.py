@@ -809,6 +809,16 @@ if "staging-blackbox.yml" in _wf:
         err(f".github/workflows/staging-blackbox.yml：{_m}（#292）"); _n_ci += 1
     for _m in _ci.g6_redteam_wiring(yaml.safe_load(_wf["staging-blackbox.yml"]) or {}):
         err(f".github/workflows/staging-blackbox.yml：{_m}（規則 7，#356）"); _n_ci += 1
+# workflow 的 semgrep 經 semgrep_registry.py 取得 registry 規則集、帶 -j SEMGREP_MAX_JOBS（#374）。
+# -j 的期望值取自 scripts/g3_sast.py（同一個常數；讀不到 → 報錯，不用寫死的數字代替）
+_g3_src = ROOT / "scripts/g3_sast.py"
+_sg_jobs = re.search(r"^SEMGREP_MAX_JOBS\s*=\s*(\d+)", _g3_src.read_text(encoding="utf-8"), re.M) if _g3_src.is_file() else None
+if not _sg_jobs:
+    err("scripts/g3_sast.py 缺席或找不到 SEMGREP_MAX_JOBS：無法檢查 workflow 的 semgrep -j（#374）"); _n_ci += 1
+else:
+    for _name, _text in sorted(_wf.items()):   # 所有 workflow：之後新增的 semgrep 呼叫也要經 semgrep_registry.py
+        for _m in _ci.semgrep_registry_wiring(yaml.safe_load(_text) or {}, int(_sg_jobs.group(1))):
+            err(f".github/workflows/{_name}：{_m}（#374）"); _n_ci += 1
 # pr-gates.yml 缺席時，下面以它為對象的不變式（判定、G4 靜態檢查、本機 gitleaks 旗標）全部無從檢查：不得靜默略過（#366）
 if "pr-gates.yml" not in _wf:
     err(".github/workflows/pr-gates.yml 不存在：無法檢查判定、G4 靜態檢查與本機 gitleaks 旗標的 CI 不變式"); _n_ci += 1
@@ -828,7 +838,7 @@ if "pr-gates.yml" in _wf:
                                             _wf_md.read_text(encoding="utf-8") if _wf_md.is_file() else ""):
         err(f"{_m}（本機第 7 步與 PR CI 的 G2 不一致，#366）"); _n_ci += 1
 if not _n_ci:
-    ok("CI 設定不變式：workflow 層級唯讀、listComments 分頁、pre-commit semgrep 與 CI 一致、staging 只跑 _trusted/ 且不以 sed 代入目標、判定交給 gate_verdict、G4 靜態檢查以受信任腳本執行、G6 redteam 的評分 provider 依資料分級挑選、本機 gitleaks 旗標與 PR CI 一致、改 PR 內文不觸發 pr-gates")
+    ok("CI 設定不變式：workflow 層級唯讀、listComments 分頁、pre-commit semgrep 與 CI 一致、staging 只跑 _trusted/ 且不以 sed 代入目標、判定交給 gate_verdict、G4 靜態檢查以受信任腳本執行、G6 redteam 的評分 provider 依資料分級挑選、本機 gitleaks 旗標與 PR CI 一致、改 PR 內文不觸發 pr-gates、semgrep 經 semgrep_registry.py 取得規則集")
 
 # 通過細項靜音；僅印摘要與警告/錯誤
 print(f"通過 {len(oks)} 項；警告 {len(warns)}；錯誤 {len(errors)}")
