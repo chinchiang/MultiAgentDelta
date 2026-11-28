@@ -137,7 +137,7 @@ allow if {
 
 高影響動作定義：刪除 / 不可逆變更、金流、對外送信 / 發布、部署、改權限、對正式 DB 寫入。要求：Agent 先產出「擬執行內容」→ 人工核准（含 diff 或 SQL 預覽）→ 才執行；核准票有時效；全部寫稽核日誌（`ASVS5-V16.1`、MAESTRO-L5）。缺 HITL → `vibesec.g4.missing-hitl`（advisory，CWE-250）。對應 threat-model 的 `agents[].high_impact_tools` 與 `mitigations: [human_in_the_loop]`。
 
-靜態規則（啟發式，`scripts/g4_static.py`，py / ts / js / yaml / json；略過 `.github/` 與 `evals/cases/`）：檔案有 Agent 工具註冊脈絡（`@tool`、`@mcp.tool()`、`tools=[…]`／`tools:`、`register_tool`、`server.tool("…")`、`tool({name: …})`），註冊的工具名稱屬高影響動作（refund／transfer／payment／delete／drop／deploy／publish／send_email／grant／revoke…），且**同一檔案**看不到人工核准訊號（confirm、approval、HITL、`interrupt(`、`ask_user`、`require_human`…）→ `vibesec.g4.missing-hitl`（advisory）。只看單一檔案：核准做在其他檔案（框架設定、gateway、policy engine）時會誤報，請在 LLM 審查（VS-G4-LLM-REVIEW）說明；反過來，同檔案出現核准字樣不代表核准真的擋在執行前，跨檔與執行順序的確認仍由 LLM 審查負責。
+靜態規則（啟發式，`scripts/g4_static.py`；工具註冊脈絡與工具名稱的樣式在 `scripts/agent_signals.py`；py / ts / js / yaml / json；略過 `.github/` 與 `evals/cases/`）：檔案有 Agent 工具註冊脈絡（`@tool`、`@mcp.tool()`、`tools=[…]`／`tools:`、`register_tool`、`server.tool("…")`、`tool({name: …})`），註冊的工具名稱屬高影響動作（refund／transfer／payment／delete／drop／deploy／publish／send_email／grant／revoke…），且**同一檔案**看不到人工核准訊號（confirm、approval、HITL、`interrupt(`、`ask_user`、`require_human`…）→ `vibesec.g4.missing-hitl`（advisory）。只看單一檔案：核准做在其他檔案（框架設定、gateway、policy engine）時會誤報，請在 LLM 審查（VS-G4-LLM-REVIEW）說明；反過來，同檔案出現核准字樣不代表核准真的擋在執行前，跨檔與執行順序的確認仍由 LLM 審查負責。
 
 ### 6. Rules File Backdoor：隱形 Unicode 掃描（`rules_file_unicode`）
 
@@ -171,7 +171,7 @@ EOF
 
 MCP client 向授權伺服器要 Token 時必須帶 `resource=<MCP server canonical URI>`；MCP server 驗證 `aud` 等於自己，拒絕為其他資源簽發的 Token（防 token passthrough / confused deputy）。檢查：授權請求與 token 請求含 `resource` 參數；server 端驗 `aud`；不把上游 Token 原樣轉給下游 API。缺失 → `vibesec.g4.mcp-missing-resource-indicator`（advisory，CWE-863，`ASVS5-V10.1`）。
 
-靜態規則（啟發式，判定在 `scripts/g4_mcp.py`；由 `scripts/g4_static.py` 呼叫；CI、本機／harness 版 `scripts/g4_access.py` 與 `run_evals.py` 都執行這同一支腳本，CI 與本機的 G4 gate JSON 都含此控制；受信任樹缺這支模組或執行失敗 → `untested` 並寫進 `status_reason`）：py / ts / js / json / yaml / toml，略過 `.github/`、`evals/cases/`、`node_modules/`；檔案是 MCP 程式碼或設定（`from mcp…`／`import mcp`／`fastmcp`、`"@modelcontextprotocol/…"`、`mcpServers` 鍵），同檔案有 OAuth／Token 驗證脈絡（oauth、`grant_type`、`token_endpoint`、`jwt.decode`、`TokenVerifier`、`AuthSettings`、`Bearer`…），且看不到 `resource=`／`resource:`／`resource_server_url`／`audience`／`aud` 綁定，或明確關掉 `verify_aud` → 回報。coverage `VS-G4-MCP-RESOURCE-INDICATOR`：沒有 MCP 程式碼或設定、或 MCP 未見 OAuth 流程（例如 stdio server）→ `not_applicable`（附理由）；有命中 → `fail`；MCP OAuth 檔案皆見綁定 → `pass`（啟發式；token passthrough 與驗證順序仍由 LLM 審查確認）。只看單一檔案：綁定做在共用 auth 模組時會誤報。
+靜態規則（啟發式，判定在 `scripts/g4_mcp.py`，MCP 程式碼或設定的判定範圍與樣式在 `scripts/agent_signals.py`；由 `scripts/g4_static.py` 呼叫；CI、本機／harness 版 `scripts/g4_access.py` 與 `run_evals.py` 都執行這同一支腳本，CI 與本機的 G4 gate JSON 都含此控制；受信任樹缺這支模組或執行失敗 → `untested` 並寫進 `status_reason`）：py / ts / js / json / yaml / toml，略過 `.github/`、`evals/cases/`、`node_modules/`；檔案是 MCP 程式碼或設定（`from mcp…`／`import mcp`／`fastmcp`、`"@modelcontextprotocol/…"`、`mcpServers` 鍵），同檔案有 OAuth／Token 驗證脈絡（oauth、`grant_type`、`token_endpoint`、`jwt.decode`、`TokenVerifier`、`AuthSettings`、`Bearer`…），且看不到 `resource=`／`resource:`／`resource_server_url`／`audience`／`aud` 綁定，或明確關掉 `verify_aud` → 回報。coverage `VS-G4-MCP-RESOURCE-INDICATOR`：沒有 MCP 程式碼或設定、或 MCP 未見 OAuth 流程（例如 stdio server）→ `not_applicable`（附理由）；有命中 → `fail`；MCP OAuth 檔案皆見綁定 → `pass`（啟發式；token passthrough 與驗證順序仍由 LLM 審查確認）。只看單一檔案：綁定做在共用 auth 模組時會誤報。
 
 ## 自動化作法
 

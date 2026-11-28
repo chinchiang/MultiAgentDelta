@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """G4 mcp_resource_indicator（VS-G4-MCP-RESOURCE-INDICATOR，docs/05 §7）的單檔啟發式靜態檢查。
 
-由 scripts/g4_static.py（G4 靜態檢查）呼叫；scripts/g4_access.py（本機／harness 版）與 scripts/run_evals.py（G4 評測）
-都執行同一支 g4_static.py（CI 目前仍執行 pr-gates.yml 的 inline，改用腳本見 #152）。只用標準函式庫：CI 的靜態步驟在
-安裝 PyYAML／jsonschema 之前執行，不能 import g4_access（它載入 g4_review，缺套件時直接結束）。
+由 scripts/g4_static.py（G4 靜態檢查）呼叫；CI（受信任樹的 _trusted/scripts/g4_static.py）、scripts/g4_access.py（本機／harness 版）
+與 scripts/run_evals.py（G4 評測）都執行同一支 g4_static.py。MCP 程式碼或設定的判定範圍與樣式（MCP_CTX、MCP_EXTS、MCP_SKIP）
+在 scripts/agent_signals.py（#379）。只用標準函式庫：CI 的靜態步驟在安裝 PyYAML／jsonschema 之前執行，
+不能 import g4_access（它載入 g4_review，缺套件時直接結束）。
 
 用法：python3 scripts/g4_mcp.py selftest
 """
@@ -16,7 +17,7 @@ import pathlib, re, sys, tempfile
 # 綁定做在其他檔案（共用 auth 模組、gateway）時會誤報；同檔案有 resource 字樣也不代表 server 真的驗 aud、沒有 token passthrough——
 # 這兩者交 LLM 審查（VS-G4-LLM-REVIEW）。樣式刻意只認 import 行與設定鍵這類結構：本檔的 regex 原文不會讓本 repo 命中自己。
 MCP_RULE, MCP_CONTROL = "vibesec.g4.mcp-missing-resource-indicator", "VS-G4-MCP-RESOURCE-INDICATOR"
-# MCP 程式碼或設定的判定範圍與樣式：在 scripts/agent_signals.py（G0 的交叉核對也用同一份，#379）
+# MCP 程式碼或設定的判定範圍與樣式：在 scripts/agent_signals.py（#379；G0 的交叉核對 #380 會用同一份）
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))   # 以 -I 單獨執行時，腳本目錄不在 sys.path
 from agent_signals import MCP_CTX, MCP_EXTS, MCP_SKIP  # noqa: E402
 OAUTH_CTX = re.compile(r'oauth|authorization_endpoint|token_endpoint|grant_type|client_credentials|authorization_code|'

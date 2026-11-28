@@ -59,6 +59,7 @@ def selftest() -> list[str]:
         ("@tool 下一個 def", "from x import tool\n@tool\ndef search_docs(query):\n    pass\n", [("search_docs", 3)]),
         ("@mcp.tool() 與 async def", "@mcp.tool()\nasync def get_weather(city):\n    ...\n", [("get_weather", 2)]),
         ("tools=[…] 清單", "agent = Agent(tools=[search, summarize])\n", [("search", 1), ("summarize", 1)]),
+        ("行內 tools: […] 清單", "tools: [search, summarize]\n", [("search", 1), ("summarize", 1)]),
         ("YAML tools: 區塊", "tools:\n  - list_files\n  - name: read_note\nother: 1\n",
          [("list_files", 2), ("read_note", 3)]),
         ("register_tool 與 server.tool", 'register_tool("geo-lookup")\nserver.tool("lookup", fn)\n',
