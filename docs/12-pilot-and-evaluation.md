@@ -63,7 +63,7 @@ python3 scripts/compare_reviews.py --dir reports/comparison/run-01 [--rulings ru
 
 注意事項：
 
-- **成本**：預設 35 個審查包 × (1 + 2 + 2) = **175 次 call**（A=35／B=70／C=70）；`rotation.budget.max_calls_per_run`（400）以一次 harness 執行為單位，此實驗應另行核准預算。費用與人工確認時間不在模型輸出中，需人工另行記錄，不得補造。
+- **成本**：預設每個審查包 × (1 + 2 + 2) = **5 次 call**（A 1 次、B 2 次、C 2 次），總數是 `count` 的可盲測數 × 5，`prepare` 也會印出實際的 call 數；`rotation.budget.max_calls_per_run`（400）以一次 harness 執行為單位，此實驗應另行核准預算。費用與人工確認時間不在模型輸出中，需人工另行記錄，不得補造。
 - **來源標記**（#329、ADR 0004）：`prepare_comparison.py` 以指紋金鑰（`VIBESEC_FINGERPRINT_KEY` 或 `~/.config/vibesec/fingerprint-key`；拿不到就不產生任何檔案，不自動建立）對每份審查包封上 `kind: eval-fixture` 的來源標記。合成案例刻意不遮罩（G2 案例的假祕密正是要讓模型找的）。`review_provider.py` 只送出標記有效的審查包；**#329 之前準備的 run 沒有標記，要重新 prepare**。準備之後改過的審查包也會被拒送。
 - **資料分級**：評測案例是本 repo 的合成 fixture，預設 `internal`；境外雲端 `glm-cloud`、`deepseek-cloud` 只收 public，放進 internal 計畫會被拒絕。改用 confidential／pii 時三組都只能用地端／內網 provider（iec-glm、iec-deepseek、lmstudio-local、onprem_vllm）。
 - **可比較性**：`anthropic-bedrock` 不接受 temperature，同一 prompt 的輸出可能不同；內網端點連不到會是 error。只有三組都 complete 且分母相同時才比較召回率；可盲測的案例只有數十個，區間很寬，不能當作普遍結論。

@@ -26,10 +26,11 @@
     C ≥2 個 agent 且 ≥2 個 family。任一不符 → 不寫任何檔案（離開碼 4）。
 count（#370）：只印出案例數，不讀指紋金鑰、不寫任何檔案。與 prepare 用同一份 select_cases 判斷：split 的總數、
 可盲測數（正例／反例，依 expected.should_flag）、排除數與各排除原因的數量。docs/12 不寫死這些數字，以這裡的輸出為準。
-離開碼：0 已準備（count：已輸出）；4 參數、設定或計畫驗證錯誤（count：讀不到案例或 evals/split.yaml）。
+離開碼：0 已準備（count：已輸出）；4 參數、設定或計畫驗證錯誤（count：讀不到案例或 evals/split.yaml）；
+argparse 層級的參數錯誤（未知的子命令、prepare 缺 --out）是 argparse 的 2。
 """
 from __future__ import annotations
-import argparse, hashlib, hmac, json, os, pathlib, secrets, shlex, sys, tempfile
+import argparse, contextlib, hashlib, hmac, io, json, os, pathlib, secrets, shlex, sys, tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import vibesec_provenance as provenance   # noqa: E402  金鑰讀取與來源標記只有一份（#329）
@@ -111,45 +112,46 @@ def select_cases(cases: list[dict], split: str, split_cfg: dict, salt: str) -> t
     for c in sorted(cases, key=lambda c: c["id"]):
         if c["id"] not in wanted: continue
         exp, inp = c.get("expected") or {}, c.get("input") or {}
-        if exp.get("gate_status"): excluded.append({"case_id": c["id"], "reason": "gate_status 狀態驗證案例"}); continue
-        if not isinstance(exp.get("should_flag"), bool): excluded.append({"case_id": c["id"], "reason": "缺 expected.should_flag"}); continue
-        if inp.get("target_app"): excluded.append({"case_id": c["id"], "reason": f"需要執行中的靶場（target_app: {inp['target_app']}）"}); continue
+        # category：穩定的排除類別（count 依它分類；reason 可以帶細節，例如哪個 target_app、洩漏了哪些字串）
+        ex = lambda category, reason=None: excluded.append({"case_id": c["id"], "category": category, "reason": reason or category})
+        if exp.get("gate_status"): ex("gate_status 狀態驗證案例"); continue
+        if not isinstance(exp.get("should_flag"), bool): ex("缺 expected.should_flag"); continue
+        if inp.get("target_app"): ex("需要執行中的靶場", f"需要執行中的靶場（target_app: {inp['target_app']}）"); continue
         blind = strip_labels(inp)
         text = json.dumps(blind, ensure_ascii=False)
         tokens = [c["id"], exp.get("rule_id"), "-pos-", "-neg-", "should_flag", "vulnapp-patched"] + \
                  [s for s in (c.get("title"), c.get("notes")) if isinstance(s, str) and len(s) >= 8]
         leak = [t for t in tokens if t and t in text]
-        if leak: excluded.append({"case_id": c["id"], "reason": f"去標籤後仍含標籤字串 {leak}"}); continue
+        if leak: ex("去標籤後仍含標籤字串", f"去標籤後仍含標籤字串 {leak}"); continue
         kept.append({"case": c, "input": blind, "packet_id": packet_id(salt, c["id"]), "text": text})
     by_text: dict[str, list[dict]] = {}
     for k in kept: by_text.setdefault(k["text"], []).append(k)
     for group in by_text.values():
         if len({k["case"]["expected"]["should_flag"] for k in group}) > 1:
             for k in group:
-                excluded.append({"case_id": k["case"]["id"], "reason": "去標籤後輸入與答案不同的案例相同"}); kept.remove(k)
+                excluded.append({"case_id": k["case"]["id"], "category": "去標籤後輸入與答案不同的案例相同",
+                                 "reason": "去標籤後輸入與答案不同的案例相同"}); kept.remove(k)
     return sorted(kept, key=lambda k: k["packet_id"]), excluded
 
 
 COUNT_SALT = "00" * 16   # count 只計數、不輸出 packet_id：salt 不影響納入或排除
 
 
-def _reason_category(reason: str) -> str:
-    """排除原因 → 類別：兩種 target_app 併成一類，標籤字串不列出內容（輸出穩定、可以比對）。"""
-    for prefix in ("需要執行中的靶場", "去標籤後仍含標籤字串"):
-        if reason.startswith(prefix):
-            return prefix
-    return reason
-
-
 def count_cases(cases: list[dict], split: str, split_cfg: dict) -> dict:
-    """split 的總數、可盲測數（正例／反例）、排除數與各排除原因的數量；與 prepare 同一份 select_cases 判斷（#370）。"""
+    """split 的總數、可盲測數（正例／反例）、排除數與各排除類別的數量；與 prepare 同一份 select_cases 判斷（#370）。
+    總數一定等於可盲測＋排除：split.yaml 列出但找不到案例檔的 ID 也算一類排除。沒有任何案例 → ValueError。"""
+    if not cases:
+        raise ValueError("evals/cases 沒有任何案例")
     kept, excluded = select_cases(cases, split, split_cfg, COUNT_SALT)
-    total = len(cases) if split == "all" else len(set(split_cfg.get(split) or []))
+    if split != "all":
+        loaded = {c["id"] for c in cases}
+        excluded = excluded + [{"case_id": cid, "category": "split.yaml 列出但找不到案例檔"}
+                               for cid in sorted(set(split_cfg.get(split) or []) - loaded)]
+    total = len(kept) + len(excluded)
     positive = sum(1 for k in kept if k["case"]["expected"]["should_flag"])
     by_reason: dict[str, int] = {}
     for e in excluded:
-        cat = _reason_category(e["reason"])
-        by_reason[cat] = by_reason.get(cat, 0) + 1
+        by_reason[e["category"]] = by_reason.get(e["category"], 0) + 1
     return {"split": split, "total": total, "blindable": len(kept), "positive": positive, "negative": len(kept) - positive,
             "excluded": len(excluded), "excluded_by_reason": dict(sorted(by_reason.items()))}
 
@@ -342,10 +344,21 @@ def selftest() -> list[str]:
     got = cnt(cases, "held_out", split) if cnt else None
     if got != want:
         fails.append(f"count_cases：held_out 的總數、可盲測（正反例）、排除與原因（得到 {got}）")
-    elif (got["blindable"], got["excluded"]) != (plan["packets"], plan["excluded_count"]):
-        fails.append(f"count_cases 要跟 prepare 的納入與排除數一致（count {got['blindable']}／{got['excluded']}，"
-                     f"prepare {plan['packets']}／{plan['excluded_count']}）")
-    import contextlib, io
+    else:
+        key_pos = sum(1 for v in key["cases"].values() if v["should_flag"])
+        if (got["blindable"], got["positive"], got["negative"], got["excluded"]) != \
+                (plan["packets"], key_pos, plan["packets"] - key_pos, plan["excluded_count"]):
+            fails.append(f"count_cases 要跟 prepare 的納入、正反例與排除數一致（count {got}，prepare 納入 {plan['packets']}、"
+                         f"正例 {key_pos}、排除 {plan['excluded_count']}）")
+    # split.yaml 列出但找不到案例檔 → 算一類排除，總數＝可盲測＋排除；沒有任何案例 → ValueError
+    if cnt:
+        g2 = cnt(cases, "held_out", {**split, "held_out": split["held_out"] + ["g9-missing-01"]})
+        if g2["total"] != g2["blindable"] + g2["excluded"] or g2["excluded_by_reason"].get("split.yaml 列出但找不到案例檔") != 1:
+            fails.append(f"count_cases：split.yaml 列出但找不到的案例要算一類排除，總數＝可盲測＋排除（得到 {g2}）")
+        try:
+            cnt([], "held_out", split); fails.append("count_cases：沒有任何案例 → 應拋 ValueError")
+        except ValueError:
+            pass
     with tempfile.TemporaryDirectory() as d:
         home, cwd = pathlib.Path(d, "home"), pathlib.Path(d, "cwd")
         home.mkdir(); cwd.mkdir()
@@ -384,6 +397,9 @@ def main(argv: list[str], environ=None) -> int:
     ap.add_argument("--arm", action="append", default=[], help="X=provider[:role|auto],...；X 為 A／B／C")
     a = ap.parse_args(argv[1:])
     if a.cmd == "count":   # 只計數：不讀指紋金鑰、不寫任何檔案（#370）
+        ignored = [f for f, v in (("--out", a.out), ("--salt", a.salt), ("--arm", a.arm)) if v]
+        if ignored:
+            print(f"注意：count 不使用 {'、'.join(ignored)}", file=sys.stderr)
         try:
             c = count_cases(load_cases(), a.split, yaml.safe_load((ROOT / "evals/split.yaml").read_text(encoding="utf-8")) or {})
         except (ValueError, OSError, yaml.YAMLError, KeyError, TypeError) as e:
