@@ -5,6 +5,7 @@
       [--split held_out] [--data-class internal] [--salt <hex>] \\
       [--arm A=anthropic-bedrock:auto] [--arm B=anthropic-bedrock:auto,anthropic-cloud:auto] \\
       [--arm C=anthropic-bedrock:auto,gemini-cloud:auto]
+  python3 scripts/prepare_comparison.py count [--split held_out]
   python3 scripts/prepare_comparison.py selftest
 
 只準備、不呼叫模型。產出（--out 必須是不存在的目錄）：
@@ -23,7 +24,9 @@
   - 計畫依 config/providers.yaml 驗證（AGENTS.md 規則 6、7）：provider 存在且 enabled；allowed_data_classes 含審查包分級；
     confidential／pii 只能用 rotation.sensitive_data_providers；A 恰 1 個 agent；B ≥2 個 agent 且只有 1 個 family；
     C ≥2 個 agent 且 ≥2 個 family。任一不符 → 不寫任何檔案（離開碼 4）。
-離開碼：0 已準備；4 參數、設定或計畫驗證錯誤。
+count（#370）：只印出案例數，不讀指紋金鑰、不寫任何檔案。與 prepare 用同一份 select_cases 判斷：split 的總數、
+可盲測數（正例／反例，依 expected.should_flag）、排除數與各排除原因的數量。docs/12 不寫死這些數字，以這裡的輸出為準。
+離開碼：0 已準備（count：已輸出）；4 參數、設定或計畫驗證錯誤（count：讀不到案例或 evals/split.yaml）。
 """
 from __future__ import annotations
 import argparse, hashlib, hmac, json, os, pathlib, secrets, shlex, sys, tempfile
@@ -125,6 +128,30 @@ def select_cases(cases: list[dict], split: str, split_cfg: dict, salt: str) -> t
             for k in group:
                 excluded.append({"case_id": k["case"]["id"], "reason": "去標籤後輸入與答案不同的案例相同"}); kept.remove(k)
     return sorted(kept, key=lambda k: k["packet_id"]), excluded
+
+
+COUNT_SALT = "00" * 16   # count 只計數、不輸出 packet_id：salt 不影響納入或排除
+
+
+def _reason_category(reason: str) -> str:
+    """排除原因 → 類別：兩種 target_app 併成一類，標籤字串不列出內容（輸出穩定、可以比對）。"""
+    for prefix in ("需要執行中的靶場", "去標籤後仍含標籤字串"):
+        if reason.startswith(prefix):
+            return prefix
+    return reason
+
+
+def count_cases(cases: list[dict], split: str, split_cfg: dict) -> dict:
+    """split 的總數、可盲測數（正例／反例）、排除數與各排除原因的數量；與 prepare 同一份 select_cases 判斷（#370）。"""
+    kept, excluded = select_cases(cases, split, split_cfg, COUNT_SALT)
+    total = len(cases) if split == "all" else len(set(split_cfg.get(split) or []))
+    positive = sum(1 for k in kept if k["case"]["expected"]["should_flag"])
+    by_reason: dict[str, int] = {}
+    for e in excluded:
+        cat = _reason_category(e["reason"])
+        by_reason[cat] = by_reason.get(cat, 0) + 1
+    return {"split": split, "total": total, "blindable": len(kept), "positive": positive, "negative": len(kept) - positive,
+            "excluded": len(excluded), "excluded_by_reason": dict(sorted(by_reason.items()))}
 
 
 def build(cases: list[dict], split_cfg: dict, providers_cfg: dict, arms: dict, data_class: str = "internal",
@@ -307,6 +334,37 @@ def selftest() -> list[str]:
             rc = main(["prepare_comparison.py", "prepare", "--out", str(out)], environ={"HOME": h})
         if rc != 4 or out.exists() or (pathlib.Path(h) / ".config").exists():
             fails.append(f"CLI 拿不到指紋金鑰 → 退出碼 4、不寫檔、不建立金鑰（得到 {rc}，out 存在 {out.exists()}）")
+    # count（#370）：跟 build／prepare 同一份判斷；排除原因依類別歸併；不需要指紋金鑰、不寫任何檔案
+    cnt = globals().get("count_cases")
+    want = {"split": "held_out", "total": 7, "blindable": 2, "positive": 1, "negative": 1, "excluded": 5,
+            "excluded_by_reason": {"gate_status 狀態驗證案例": 1, "需要執行中的靶場": 1, "去標籤後仍含標籤字串": 1,
+                                   "去標籤後輸入與答案不同的案例相同": 2}}
+    got = cnt(cases, "held_out", split) if cnt else None
+    if got != want:
+        fails.append(f"count_cases：held_out 的總數、可盲測（正反例）、排除與原因（得到 {got}）")
+    elif (got["blindable"], got["excluded"]) != (plan["packets"], plan["excluded_count"]):
+        fails.append(f"count_cases 要跟 prepare 的納入與排除數一致（count {got['blindable']}／{got['excluded']}，"
+                     f"prepare {plan['packets']}／{plan['excluded_count']}）")
+    import contextlib, io
+    with tempfile.TemporaryDirectory() as d:
+        home, cwd = pathlib.Path(d, "home"), pathlib.Path(d, "cwd")
+        home.mkdir(); cwd.mkdir()
+        old = os.getcwd(); os.chdir(cwd)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(["prepare_comparison.py", "count"], environ={"HOME": str(home)})   # 沒有指紋金鑰
+        except SystemExit as e:
+            rc = e.code
+        except Exception as e:   # 紅燈要是 FAIL、不是崩潰（例如 count 去讀指紋金鑰）
+            rc = f"例外 {type(e).__name__}"
+        finally:
+            os.chdir(old)
+        made = sorted(str(x.relative_to(d)) for x in pathlib.Path(d).rglob("*") if x not in (home, cwd))
+        if rc != 0 or "可盲測" not in out.getvalue() or "排除" not in out.getvalue():
+            fails.append(f"count：沒有指紋金鑰也要成功並印出可盲測與排除（得到 exit {rc}，{out.getvalue()!r}，{err.getvalue()!r}）")
+        if made:
+            fails.append(f"count 不得寫任何檔案（得到 {made}）")
     return fails
 
 
@@ -318,13 +376,24 @@ def main(argv: list[str], environ=None) -> int:
         print("selftest " + ("通過" if not fails else f"失敗 {len(fails)} 項"))
         return 1 if fails else 0
     ap = argparse.ArgumentParser(description="三組比較的盲測審查包與執行計畫（不呼叫模型）")
-    ap.add_argument("cmd", choices=["prepare"])
-    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("cmd", choices=["prepare", "count"])
+    ap.add_argument("--out", type=pathlib.Path, help="prepare 的輸出目錄（必須不存在）；count 不需要")
     ap.add_argument("--split", default="held_out", choices=["held_out", "held_in", "all"])
     ap.add_argument("--data-class", default="internal", choices=DATA_CLASSES)
     ap.add_argument("--salt", help="hex；重現同一組 packet_id 時沿用 answer-key.json 的 salt")
     ap.add_argument("--arm", action="append", default=[], help="X=provider[:role|auto],...；X 為 A／B／C")
     a = ap.parse_args(argv[1:])
+    if a.cmd == "count":   # 只計數：不讀指紋金鑰、不寫任何檔案（#370）
+        try:
+            c = count_cases(load_cases(), a.split, yaml.safe_load((ROOT / "evals/split.yaml").read_text(encoding="utf-8")) or {})
+        except (ValueError, OSError, yaml.YAMLError, KeyError, TypeError) as e:
+            print(f"錯誤：無法計算案例數（{type(e).__name__}: {e}）", file=sys.stderr); return 4
+        print(f"{c['split']}：{c['total']} 個案例；可盲測 {c['blindable']}（正例 {c['positive']}、反例 {c['negative']}）；排除 {c['excluded']}")
+        for reason, n in c["excluded_by_reason"].items():
+            print(f"  排除：{reason} {n}")
+        return 0
+    if a.out is None:
+        ap.error("prepare 需要 --out")
     try:
         specs = dict(DEFAULT_ARMS)
         for s in a.arm:
