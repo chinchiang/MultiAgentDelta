@@ -25,7 +25,8 @@ repos:
         args:
           - "--config=config/semgrep/vibesec-rules.yaml"
           - "--config=p/owasp-top-ten"
-          - "--config=p/security-audit"   # 與 CI 的 semgrep 規則集一致（vibesec.yaml g3_sast_iac.semgrep_rules）
+          - "--config=p/security-audit"   # 規則集名稱與 vibesec.yaml g3_sast_iac.semgrep_rules 一致；但這裡仍由 semgrep 直接向 registry 下載、
+                                          # 沒有記錄 SHA-256（g3_sast 與 CI 經 scripts/semgrep_registry.py），結果可能與 CI 不同（#374）
           - "--error"
           - "--disable-nosem"   # 與 CI 一致：`# nosemgrep` 不採信
           - "--skip-unknown-extensions"

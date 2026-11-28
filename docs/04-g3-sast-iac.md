@@ -145,6 +145,8 @@ python3 scripts/g3_sast.py --target ../MultiAgentBeta [--base <ref>] --out-dir r
 | checkov | 掃目標**追蹤中檔案的暫存副本**（去掉 `.checkov.yaml`／`.checkov.yml` 與 symlink），工作目錄為空的暫存目錄；SARIF 路徑改回相對目標根目錄 | checkov 會自動載入被掃目錄與工作目錄的 `.checkov.yaml`，可停用檢查，或以 `external-checks-dir` 載入並**執行**目標的 Python 檢查；symlink 可能指向主機上的檔案 |
 | trivy | `trivy config <target>`，工作目錄為空的暫存目錄 | trivy 從工作目錄讀 `.trivyignore`／`trivy.yaml` |
 
+registry 規則集（`p/owasp-top-ten`、`p/security-audit`）由 `scripts/semgrep_registry.py` 下載一次、算出 SHA-256，再把**同一份檔案**交給 `--config`，不再讓 semgrep 自己在執行時下載（#374）。以前同一份程式碼在不同時間掃描，G3 的結果時有時無（nightly 11/23 與 11/24 掃同一個 commit，`validate.py:520` 的 `tainted-env-args` 一次有、一次沒有），卻沒有任何紀錄能分辨是規則集變了，還是 semgrep 不穩定；另外下載一份來算雜湊也沒用，因為 semgrep 會自己再下載一次，兩次的內容可能不同。名稱、SHA-256、位元組數與下載時間寫到 `<out-dir>/semgrep-rulesets.json` 並印進 log；任一份下載失敗、HTTP 狀態不是 200，或內容不是 semgrep 規則檔，semgrep 就記 error、G3 記 `incomplete`，不退回 `--config p/<名稱>`。規則集不收進 repo（registry 規則多半採 Semgrep Rules License，公開 repo 重新散布可能不被允許）。目前只有本機的 `g3_sast.py` 改用這個方式；pr-gates 與 nightly 要等這個模組進入 main 後另一個 PR 再改（版本錯開，#207）。
+
 semgrep 的平行數一律帶 `-j min(CPU 核心數, 4)`（`SEMGREP_MAX_JOBS`；`os.cpu_count()` 讀不到時用 1），本 repo 與外部專案、full 與 diff 模式都一樣（#344）。semgrep 1.179.0 的預設平行數是全部核心；在 32 核心的機器上掃多個檔案時，約一半的執行會無訊息 `exit 2`（G3 記 `incomplete`），`-j` 不大於 8 時實測不會發生。上限取 4，與 CI runner 的 4 vCPU 一致。CI 的 `pr-gates.yml`、`nightly-full.yml` 目前沒有帶 `-j`，因為 runner 只有 4 vCPU，從沒發生過這個問題；換成核心數更多的 runner 時，workflow 也要加上同樣的上限。
 
 外部專案也不套用本 repo blocking-policy 的 `exceptions`；`checkov:skip=`、`trivy:ignore` 行內註解工具一定會採信 → 列進 `status_reason`。`config/checkov/.checkov.yaml` 的 `skip-path`（含本 repo 靶場路徑）對所有目標相同。

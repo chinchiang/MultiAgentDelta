@@ -22,6 +22,9 @@ from gitrepo import TempRepo, isolated_git_environment  # noqa: E402
 from jsonschema import Draft202012Validator  # noqa: E402
 from vibesec_policy import Policy, temp_policy_root, tree_copy  # noqa: E402
 
+# #374：g3_sast 會先下載 registry 規則集；測試注入假的下載，不連網
+_REGISTRY_OK = lambda url: (200, b"rules:\n- id: t\n  pattern: never_matches_t()\n  message: m\n  languages: [python]\n  severity: INFO\n")
+
 SCHEMA = Draft202012Validator(json.loads((ROOT / "schemas/gate-result.schema.json").read_text(encoding="utf-8")))
 
 
@@ -144,7 +147,7 @@ class G3CopyTrackedFailClosedTests(unittest.TestCase):
             bins, log = self._make_fake_bins(pathlib.Path(tmp))
             os.environ["FAKE_LOG"] = str(log)
             try:
-                gate = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out", bins, pol=pol)
+                gate = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out", bins, pol=pol, registry_get=_REGISTRY_OK)
             finally:
                 os.environ.pop("FAKE_LOG", None)
             self.assertEqual(gate["status"], "pass", gate)
@@ -202,7 +205,7 @@ class G3CopyTrackedFailClosedTests(unittest.TestCase):
             os.environ["FAKE_LOG"] = str(log)
             try:
                 try:
-                    gate = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out", bins, pol=pol)
+                    gate = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out", bins, pol=pol, registry_get=_REGISTRY_OK)
                 except Exception as e:
                     self.fail(f"g3_sast.scan 在追蹤檔無法複製時不得崩潰：{type(e).__name__}: {e}")
             finally:
@@ -221,7 +224,7 @@ class G3CopyTrackedFailClosedTests(unittest.TestCase):
             os.environ["FAKE_LOG"] = str(log)
             os.environ["FAKE_SEMGREP_RULES"] = json.dumps(["vibesec.g3.command-injection"])
             try:
-                gate_fail = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out-fail", bins, pol=pol_repo)
+                gate_fail = g3_sast.scan(repo.dir, pathlib.Path(tmp) / "out-fail", bins, pol=pol_repo, registry_get=_REGISTRY_OK)
             finally:
                 os.environ.pop("FAKE_LOG", None)
                 os.environ.pop("FAKE_SEMGREP_RULES", None)
