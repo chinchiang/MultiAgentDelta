@@ -207,7 +207,10 @@ MultiAgentDelta/
 │   ├── env_guard.py
 │   ├── g3_sast.py                 # G3：semgrep + checkov + trivy config
 │   ├── sarif_gate.py              # SARIF → gate JSON（G2、G3 共用）
-│   ├── g4_access.py               # G4：靜態檢查 + LLM 審查紀錄
+│   ├── g4_access.py               # G4：本機／harness 版閘門（靜態檢查 + LLM 審查紀錄）
+│   ├── g4_static.py               # G4：靜態檢查（CI 與本機同一支）
+│   ├── g4_mcp.py                  # G4：MCP resource indicator 檢查
+│   ├── agent_signals.py           # agent 訊號的偵測樣式（工具註冊、MCP；G4 共用）
 │   ├── g4_review.py               # G4：紀錄驗證、閘門推導、外部紀錄信任檢查
 │   ├── g5_zap.py                  # G5：ZAP 警示 → 覆蓋與 SARIF（併入 api-probes）
 │   ├── g6_gate.py                 # G6：promptfoo / garak / 成本探針結果彙整
